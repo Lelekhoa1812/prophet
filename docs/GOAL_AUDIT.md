@@ -71,3 +71,8 @@ Loop 11, censoring (B2 closed for the assumed strength): the forecast under-read
 - It has no SELECT on `public.products`, the one raw table the lab reads (shelf life, catch-weight flag, cost, price). Using it needs either a grant or an `axis_semantic` products view (an upstream FoodFlow change).
 - `SET ROLE axis_semantic_reader` is refused for the lab's current login, so privileges cannot be dropped in-session.
 - Therefore the fix is a dedicated login that is only a member of the reader role, plus the products view. That is an access change for Liam to approve; nothing was written to staging.
+
+## 8. Accessibility and UX audit (loop 15, automated checks on all 7 console routes, browser pane)
+Passed: every button and link has a name, every input has a label, one h1 per page, `main` and `nav` landmarks, `lang="en"`, no images without alt, no table without header cells, no horizontal overflow at 375 px on the pages checked.
+Fixed: 60 "Open" links on Proposals were 57x20 px (WCAG 2.2 target size minimum is 24x24): now at least 24 px tall. Four agent enable switches were 36x20: now 44x24. Heading levels skipped from h1 to h3 on every page (card titles were h3, proposal titles h3, Rollout sub-headings h4): card and proposal titles are now h2 and Rollout sub-headings h3.
+Not checked: keyboard-only walk-through, screen-reader announcement of the briefing, colour contrast in dark mode, the Explorer horizon slider (native control, 20 px), reduced-motion. These need a manual pass.

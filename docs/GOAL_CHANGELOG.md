@@ -83,3 +83,8 @@
 - Gap: rule 7 (prove it continuously): CI checked correctness, not decision quality; a change that halved what the agents catch would pass.
 - Change: shared `mini` fixture in `tests/conftest.py`; `tests/test_eval_gate.py` replays 90 days on the mini twin and fails below recorded precision, recall and volume floors, with a control that silences shortfall.
 - Rule: if a deliberate change moves a number, re-measure, change the floor in the same commit and say why here.
+- Remote: GitHub Actions run 44523550916 on 9f1f6e3 concluded as above (fast suite plus evaluation gate, no model, no data).
+
+## Loop 15, 19 Nov 2026
+- Gap (lens H): no accessibility audit. Automated route scan found target sizes below 24 px and heading skips. Fixed in the console (links, switches, h2/h3 levels). Re-scan: no skips except none remaining on 7 routes, small targets only the native slider.
+- Residual: manual keyboard, screen-reader and dark-mode contrast checks not done.

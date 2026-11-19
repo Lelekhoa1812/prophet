@@ -59,7 +59,7 @@ export function ProposalDetail() {
             <h2 className="text-base font-semibold">What the agent will do if you approve</h2>
             <pre className="overflow-x-auto rounded-md bg-menu-hover p-3 text-xs">{JSON.stringify(data.action, null, 2)}</pre>
             <p className="text-xs text-muted-foreground">Nothing is sent or changed by this lab. In FoodFlow this would become a draft that a person confirms.</p>
-            {data.decisions?.length > 0 && <div><h3 className="text-sm font-medium">Decision history</h3><ul className="text-xs">{data.decisions.map((d: any, i: number) => <li key={i}>{d.at}: {d.decision}{d.reason ? ` (${d.reason})` : ""} by {d.by}</li>)}</ul></div>}
+            {data.decisions?.length > 0 && <div><h2 className="text-sm font-medium">Decision history</h2><ul className="text-xs">{data.decisions.map((d: any, i: number) => <li key={i}>{d.at}: {d.decision}{d.reason ? ` (${d.reason})` : ""} by {d.by}</li>)}</ul></div>}
           </CardContent></Card>
         </>
       )}

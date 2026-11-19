@@ -57,7 +57,7 @@ export function Rollout() {
 
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <h4 className="text-sm font-semibold">What each alert budget buys</h4>
+                <h3 className="text-sm font-semibold">What each alert budget buys</h3>
                 <Button variant="outline" size="sm" loading={busy === "frontier"} onClick={() => run("frontier", async () => setFrontier(await api(`/policy/frontier?dataset=${dataset}`)))}>Show the trade-off</Button>
               </div>
               {!frontier && <p className="text-xs text-muted-foreground">More alerts catch more problems but cost attention. This replays the saved candidates under your settings, so it takes a few seconds.</p>}
@@ -80,7 +80,7 @@ export function Rollout() {
             </div>
 
             <div>
-              <h4 className="mb-2 text-sm font-semibold">Readiness check on this client's history</h4>
+              <h3 className="mb-2 text-sm font-semibold">Readiness check on this client's history</h3>
               <ul className="divide-y text-sm">
                 {agents.map(([k, a]: any) => {
                   const r = ready[k];
@@ -112,7 +112,7 @@ export function Rollout() {
 
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <h4 className="text-sm font-semibold">Forecast health by volume class</h4>
+                <h3 className="text-sm font-semibold">Forecast health by volume class</h3>
                 <Button variant="outline" size="sm" loading={busy === "drift"} onClick={() => run("drift", async () => setDrift(await api(`/drift?dataset=${dataset}`)))}>Run drift check</Button>
               </div>
               {!drift && <EmptyState title="Not run yet">Compares the forecast range with what happened over the last eight weeks.</EmptyState>}
@@ -130,7 +130,7 @@ export function Rollout() {
             </div>
 
             <div>
-              <h4 className="mb-1 text-sm font-semibold">What the system has learned</h4>
+              <h3 className="mb-1 text-sm font-semibold">What the system has learned</h3>
               {t.learning_log.length === 0
                 ? <p className="text-xs text-muted-foreground">Nothing yet. As operators approve or dismiss alerts, the system learns which kinds (for example a product category) it can trust. Priorities move by at most 10% a step, never outside 0.5 to 2 times, and every change is listed here. Nothing disappears: a distrusted kind drops down the list into the digest.</p>
                 : <ul className="text-xs">{t.learning_log.map((l: any) => <li key={l.at + (l.key ?? l.agent)}>{l.at.slice(0, 10)}: {(l.key ?? l.agent).replace("|", " · ")} priority {l.old} to {l.new} ({pct(l.basis.precision, 0)} of {l.basis.useful + l.basis.not_useful} reviewed were useful)</li>)}</ul>}
