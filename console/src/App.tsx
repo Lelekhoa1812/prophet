@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes, Navigate } from "react-router-dom";
+import { NavLink, Route, Routes, Navigate, useNavigate } from "react-router-dom";
 import { Moon, Sun, Eye, EyeOff, Compass, Briefcase, Code2, Presentation } from "lucide-react";
 import { useApp, type Lens } from "@/lib/context";
 import { Button, InlineAlert, Select } from "@/components/ui";
@@ -29,39 +29,44 @@ const NAV: Record<Lens, { to: string; label: string }[]> = {
 
 export default function App() {
   const { meta, metaError, dataset, setDataset, lens, setLens, dark, toggleDark, reveal, setReveal } = useApp();
+  const navigate = useNavigate();
   const ds = meta?.datasets ?? {};
   const available = Object.keys(ds);
-  const defaultPath = { executive: "/", operator: "/briefing", developer: "/developer", demo: "/" }[lens];
+  const DEFAULT_PATH: Record<Lens, string> = { executive: "/", operator: "/briefing", developer: "/developer", demo: "/" };
+  const defaultPath = DEFAULT_PATH[lens];
+  // Bugs vs Fixes. Bug: switching lens changed the tabs but left the old page open, so no tab looked active.
+  // Fix: each lens switch also opens that lens's first page.
+  const pickLens = (k: Lens) => { setLens(k); navigate(DEFAULT_PATH[k]); };
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 lg:px-6">
+        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 lg:px-6">
           <div className="flex items-center gap-2.5">
             <span className="grid h-8 w-8 place-items-center rounded-md bg-primary text-primary-foreground font-semibold">T</span>
             <div className="leading-tight">
               <p className="text-sm font-semibold">TimesFM ERP Lab</p>
-              <p className="text-[11px] text-muted-foreground">Forecasting and anomaly agents for food distribution</p>
+              <p className="hidden text-[11px] text-muted-foreground sm:block">Forecasting and anomaly agents for food distribution</p>
             </div>
           </div>
           <nav aria-label="Lens" className="flex flex-wrap gap-1 rounded-lg bg-[#e7ecf2] p-1 dark:bg-slate-800">
             {LENSES.map((l) => (
-              <button key={l.key} onClick={() => setLens(l.key)} title={l.hint}
+              <button key={l.key} onClick={() => pickLens(l.key)} title={l.hint}
                 className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium cursor-pointer transition-colors",
                   lens === l.key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
                 aria-pressed={lens === l.key}>
-                <l.icon className="h-3.5 w-3.5" aria-hidden />{l.label}
+                <l.icon className="h-3.5 w-3.5" aria-hidden /><span className="hidden min-[420px]:inline">{l.label}</span><span className="sr-only min-[420px]:hidden">{l.label}</span>
               </button>
             ))}
           </nav>
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">Dataset
+            <label className="flex items-center gap-2 text-xs text-muted-foreground"><span className="hidden sm:inline">Dataset</span>
               <Select aria-label="Dataset" value={dataset} onChange={(e) => setDataset(e.target.value)} className="h-8 text-xs">
                 {available.length === 0 && <option value={dataset}>{dataset}</option>}
-                {available.map((k) => <option key={k} value={k}>{k === "twin" ? "Synthetic twin (labelled)" : "Staging (real, 8 weeks)"}</option>)}
+                {available.map((k) => <option key={k} value={k}>{k === "twin" ? "Synthetic twin" : "Staging (real)"}</option>)}
               </Select>
             </label>
-            <Button variant="outline" size="sm" onClick={() => setReveal(!reveal)} aria-pressed={reveal} title="Show real names. Local only; the reveal map never leaves this machine.">
-              {reveal ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{reveal ? "Names shown" : "Names hidden"}
+            <Button variant="outline" size="sm" onClick={() => setReveal(!reveal)} aria-pressed={reveal} aria-label={reveal ? "Names shown" : "Names hidden"} title="Show real names. Local only; the reveal map never leaves this machine.">
+              {reveal ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}<span className="hidden sm:inline">{reveal ? "Names shown" : "Names hidden"}</span>
             </Button>
             <Button variant="ghost" size="icon" onClick={toggleDark} aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}>
               {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}

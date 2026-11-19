@@ -4,7 +4,6 @@ import { useApi } from "@/lib/api";
 import { useApp } from "@/lib/context";
 import { ProposalCard, AGENT_LABEL } from "@/components/ProposalCard";
 import { Button, Card, CardContent, EmptyState, InlineAlert, PageHeader, Select, Skeleton } from "@/components/ui";
-import { money } from "@/lib/utils";
 
 /** Review queue for every proposal in the dataset. Filters persist in the URL-free state for this session. */
 export function Proposals() {
@@ -32,6 +31,12 @@ export function Proposals() {
       {error && <InlineAlert title="Proposals could not load" onRetry={reload}>{error}</InlineAlert>}
       {loading && !data && <div className="grid gap-4 md:grid-cols-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-44" />)}</div>}
       {data && data.length === 0 && <EmptyState title="Nothing in this queue">Run the time machine to raise proposals, or change the filters.</EmptyState>}
+      {data && data.length > 0 && (
+        <p className="mb-3 text-xs text-muted-foreground">
+          {data.length >= 60 ? "Showing the top 60. " : `${data.length} shown. `}
+          The test runs 7 days a week for months, so the queue holds many days of alerts. In real use the agents would show only today's.
+        </p>
+      )}
       <div className="grid gap-4 xl:grid-cols-2">
         {data?.map((p) => <ProposalCard key={p.proposal_id} p={p} compact onDecided={reload} />)}
       </div>
@@ -58,7 +63,7 @@ export function ProposalDetail() {
           </CardContent></Card>
         </>
       )}
-      <p className="mt-6 text-xs text-muted-foreground">{money(0)} is the reference zero in this lab. Figures are for method testing, not production.</p>
+      <p className="mt-6 text-xs text-muted-foreground">Figures are for method testing, not production.</p>
     </>
   );
 }
