@@ -24,11 +24,11 @@ export function ProposalCard({ p, onDecided, compact = false }: { p: Proposal; o
   const sev = SEVERITY[p.severity];
   const text = (s: string) => (reveal ? s.replace(/\b(C|P)-\d{4}\b/g, (m) => (revealed[m] ? `${revealed[m]} (${m})` : m)) : s);
 
-  const decide = async (decision: "approve" | "adjust" | "dismiss", reason?: string) => {
+  const decide = async (decision: "approve" | "adjust" | "dismiss", reason?: string, scope: "entity" | "agent" = "entity") => {
     setBusy(decision); setErr(null);
     try {
-      await post(`/proposals/${p.proposal_id}/decision`, { decision, reason, decided_by: "reviewer" });
-      setDone(decision === "approve" ? "Approved" : decision === "adjust" ? "Sent back to adjust" : "Dismissed. The agent will learn from this, and you can undo it.");
+      await post(`/proposals/${p.proposal_id}/decision`, { decision, reason, scope, decided_by: "reviewer" });
+      setDone(decision === "approve" ? "Approved" : decision === "adjust" ? "Sent back to adjust" : scope === "agent" ? "Dismissed. The whole-agent lesson waits for a second person to approve it (Agents page)." : "Dismissed. The agent will learn from this, and you can undo it.");
       onDecided?.();
     } catch (e: any) { setErr(String(e.message ?? e)); } finally { setBusy(null); }
   };
@@ -116,7 +116,7 @@ export function ProposalCard({ p, onDecided, compact = false }: { p: Proposal; o
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <Button variant="cta" size="sm" onClick={() => decide("approve")} loading={busy === "approve"} disabled={!!busy}><Check className="h-3.5 w-3.5" />Approve</Button>
             <Button variant="outline" size="sm" onClick={() => decide("adjust")} loading={busy === "adjust"} disabled={!!busy}><Pencil className="h-3.5 w-3.5" />Adjust</Button>
-            <DismissMenu onPick={(r) => decide("dismiss", r)} disabled={!!busy} />
+            <DismissMenu onPick={(r, sc) => decide("dismiss", r, sc)} disabled={!!busy} />
             <Link to={`/proposals/${p.proposal_id}`} aria-label={`Open proposal: ${text(p.title)}`} className="ml-auto inline-flex min-h-6 min-w-6 items-center gap-1 py-0.5 text-sm text-primary hover:underline">Open <ChevronRight className="h-3.5 w-3.5" /></Link>
           </div>
         )}
@@ -126,8 +126,9 @@ export function ProposalCard({ p, onDecided, compact = false }: { p: Proposal; o
   );
 }
 
-function DismissMenu({ onPick, disabled }: { onPick: (reason: string) => void; disabled?: boolean }) {
+function DismissMenu({ onPick, disabled }: { onPick: (reason: string, scope: "entity" | "agent") => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [wide, setWide] = useState(false);
   const reasons: [string, string][] = [["one_off", "One-off, won't repeat"], ["known_promo", "Known promotion"], ["wrong_alert", "Wrong alert"], ["not_useful", "Not useful now"]];
   return (
     <div className="relative">
@@ -135,8 +136,12 @@ function DismissMenu({ onPick, disabled }: { onPick: (reason: string) => void; d
       {open && (
         <div role="menu" className="absolute left-0 top-9 z-20 w-56 rounded-md border bg-card p-1 shadow-[var(--menu-shadow)]">
           <p className="px-2 py-1 text-xs text-muted-foreground">Why? The agent learns from this, and you can undo it.</p>
+          <label className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs">
+            <input type="checkbox" checked={wide} onChange={(e) => setWide(e.target.checked)} className="mt-0.5 h-4 w-4" />
+            <span>Apply to every alert of this agent at or below this dollar value. A second person must approve it.</span>
+          </label>
           {reasons.map(([k, l]) => (
-            <button key={k} role="menuitem" onClick={() => { setOpen(false); onPick(k); }} className="block w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm hover:bg-menu-hover">{l}</button>
+            <button key={k} role="menuitem" onClick={() => { setOpen(false); onPick(k, wide ? "agent" : "entity"); setWide(false); }} className="block w-full cursor-pointer rounded px-2 py-1.5 text-left text-sm hover:bg-menu-hover">{l}</button>
           ))}
         </div>
       )}
