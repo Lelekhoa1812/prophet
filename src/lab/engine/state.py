@@ -105,29 +105,61 @@ def unit_cost_at(w: WorldData, as_of: pd.Timestamp) -> pd.Series:
     return p.reindex(base.index).fillna(base)
 
 
+def _legacy_fp() -> str:
+    """Fingerprint of the default all-TimesFM router: what every cache file written before fingerprints came from."""
+    from .models import Router
+    return Router.fingerprint(Router(registry={k: v for k, v in get_forecaster().registry.items()}))
+
+
+def cached(path: Path, mat: np.ndarray, compute) -> dict:
+    """Return the cached result only if it came from this model setup and this exact history; otherwise recompute.
+
+    Bugs vs Fixes
+    Bug: the cache key was date and horizon only. A new route, a new model or a corrected history still served the old
+    forecast, so model comparisons on replays silently measured the previous model.
+    Fix: each entry stores the forecaster fingerprint and the history matrix it was made from; both must match.
+    Entries written before this change have no fingerprint and count as the default TimesFM route (the only one that
+    existed), and are still accepted when their history matches, so the existing cache stays usable.
+    """
+    fp = get_forecaster().fingerprint()
+    if path.exists():
+        res = pickle.loads(path.read_bytes())
+        same_model = res.get("fp", _legacy_fp()) == fp
+        if same_model and np.array_equal(res.get("mat"), mat, equal_nan=True):
+            return res
+    res = compute()
+    res["fp"] = fp
+    path.write_bytes(pickle.dumps(res))
+    return res
+
+
 class ForecastService:
     """Weekly and daily forecasts at an as-of date, cached on disk so replays are cheap."""
 
     def __init__(self, w: WorldData):
         self.w = w
+        self._memo: dict = {}
 
     def _path(self, kind: str, as_of: pd.Timestamp, horizon: int) -> Path:
         return CACHE_DIR / f"{self.w.name}_{kind}_{as_of:%Y%m%d}_{horizon}.pkl"
 
     def weekly(self, as_of: pd.Timestamp, horizon: int = 4) -> dict:
-        path = self._path("wk", week_start(as_of), horizon)
-        if path.exists():
-            return pickle.loads(path.read_bytes())
+        key = (week_start(as_of), horizon, get_forecaster().fingerprint())
+        if key in self._memo:
+            return self._memo[key]
         mat, weeks = weekly_matrix(self.w, as_of)
-        active = np.where(mat[:, -min(26, mat.shape[1]):].sum(axis=1) > 0)[0] if mat.shape[1] else np.array([], dtype=int)
-        res = {"weeks": weeks, "active": active, "mat": mat, "future_start": week_start(as_of)}
-        if len(active) and mat.shape[1] >= 4:
-            fc = get_forecaster().predict([mat[i] for i in active], horizon)
-            res["fc"] = fc
-        else:
-            res["fc"] = None
-        path.write_bytes(pickle.dumps(res))
-        return res
+
+        def compute() -> dict:
+            active = np.where(mat[:, -min(26, mat.shape[1]):].sum(axis=1) > 0)[0] if mat.shape[1] else np.array([], dtype=int)
+            res = {"weeks": weeks, "active": active, "mat": mat, "future_start": week_start(as_of)}
+            if len(active) and mat.shape[1] >= 4:
+                res["fc"] = get_forecaster().predict([mat[i] for i in active], horizon)
+            else:
+                res["fc"] = None
+            return res
+
+        self._memo[key] = cached(self._path("wk", week_start(as_of), horizon), mat, compute)
+        return self._memo[key]
 
     def weekday_profile(self, as_of: pd.Timestamp, product: int, weeks: int = 12, k: float = 2.0) -> np.ndarray:
         """Mon..Sun share of demand for one product over the last `weeks` weeks, mean 1.
@@ -233,17 +265,18 @@ def customer_weekly(w: WorldData, as_of: pd.Timestamp) -> tuple[np.ndarray, list
 
 def customer_fc(fs: "ForecastService", as_of: pd.Timestamp, horizon: int = 2) -> dict:
     path = CACHE_DIR / f"{fs.w.name}_cust_{week_start(as_of):%Y%m%d}_{horizon}.pkl"
-    if path.exists():
-        return pickle.loads(path.read_bytes())
     mat, cids, weeks = customer_weekly(fs.w, as_of)
-    res = {"weeks": weeks, "cids": cids, "mat": mat, "future_start": week_start(as_of), "fc": None, "active": np.array([], dtype=int)}
-    if mat.shape[1] >= 8:
-        active = np.where(((mat[:, -12:] > 0).sum(axis=1) >= 3))[0]
-        if len(active):
-            res["active"] = active
-            res["fc"] = get_forecaster().predict([mat[i] for i in active], horizon)
-    path.write_bytes(pickle.dumps(res))
-    return res
+
+    def compute() -> dict:
+        res = {"weeks": weeks, "cids": cids, "mat": mat, "future_start": week_start(as_of), "fc": None, "active": np.array([], dtype=int)}
+        if mat.shape[1] >= 8:
+            active = np.where(((mat[:, -12:] > 0).sum(axis=1) >= 3))[0]
+            if len(active):
+                res["active"] = active
+                res["fc"] = get_forecaster().predict([mat[i] for i in active], horizon)
+        return res
+
+    return cached(path, mat, compute)
 
 
 def cost_weekly(w: WorldData, as_of: pd.Timestamp) -> tuple[np.ndarray, pd.DatetimeIndex]:
@@ -271,14 +304,15 @@ def cost_weekly(w: WorldData, as_of: pd.Timestamp) -> tuple[np.ndarray, pd.Datet
 
 def cost_fc(fs: "ForecastService", as_of: pd.Timestamp, horizon: int = 2) -> dict:
     path = CACHE_DIR / f"{fs.w.name}_cost_{week_start(as_of):%Y%m%d}_{horizon}.pkl"
-    if path.exists():
-        return pickle.loads(path.read_bytes())
     mat, weeks = cost_weekly(fs.w, as_of)
-    res = {"weeks": weeks, "mat": mat, "future_start": week_start(as_of), "fc": None, "active": np.array([], dtype=int)}
-    if mat.shape[1] >= 10:
-        active = np.where(~np.isnan(mat[:, -10:]).any(axis=1))[0]
-        if len(active):
-            res["active"] = active
-            res["fc"] = get_forecaster().predict([np.nan_to_num(mat[i]) for i in active], horizon)
-    path.write_bytes(pickle.dumps(res))
-    return res
+
+    def compute() -> dict:
+        res = {"weeks": weeks, "mat": mat, "future_start": week_start(as_of), "fc": None, "active": np.array([], dtype=int)}
+        if mat.shape[1] >= 10:
+            active = np.where(~np.isnan(mat[:, -10:]).any(axis=1))[0]
+            if len(active):
+                res["active"] = active
+                res["fc"] = get_forecaster().predict([np.nan_to_num(mat[i]) for i in active], horizon)
+        return res
+
+    return cached(path, mat, compute)

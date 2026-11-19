@@ -158,6 +158,20 @@ class Router:
                     pt[i], q[i] = f.point[j], f.q[j]
         return Forecast(pt, q)
 
+    def fingerprint(self) -> str:
+        """Short id of what produces a forecast: routing, licence mode and model names. Cache entries carry it.
+
+        Motivation vs Logic
+        Motivation: cached forecasts were keyed by date only, so changing the route or model kept serving the old
+        model's numbers and no comparison could be trusted. Logic: hash the settings that decide which model answers.
+        It covers names, licences and routing, not weights; a retrained model under the same name needs a new name.
+        """
+        import hashlib
+        import json
+        from ..config import TIMESFM_CHECKPOINT
+        d = self.describe() | {"checkpoint": TIMESFM_CHECKPOINT, "licence_fallback": self.licence_fallback}
+        return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:10]
+
     def describe(self) -> dict:
         return {"default": self.default, "route": dict(self.route), "allow_non_commercial": self.allow_non_commercial,
                 "models": {k: {"licence": v.licence, "min_history": v.min_history} for k, v in self.registry.items()}}
