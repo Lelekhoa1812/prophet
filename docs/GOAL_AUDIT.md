@@ -112,3 +112,10 @@ Built from sections 1, 2, 2b, 2c and the loop 18 to 26 checks. Every code path w
 | Dollars protected | `policy/whatif.py` | Estimates excluded for customer and margin | Assumption-driven | Labelled expected value, not observed savings |
 
 **Next challenge from this matrix:** the value paper's claims about the market and competitors (section 10) remain unchecked against the cited articles. The strongest within-lab gap is still 'Acts before being asked', which needs a shadow run that the user has not yet approved.
+
+## 12. Loop 28: value paper, full visible prose read; two claims with no behaviour behind them
+- Read: the complete visible text of `docs/ai-native-value.html` (about 24.7 KB, extracted from the HTML, scripts and styles excluded). Sections 1 to 17 read, including the 8 capabilities, 3 moves, 5 decisions, the market and battle-card copy, and the one hidden block ("Part 1f", the limits dial, switched off in the script).
+- Claim with no behaviour: the value paper says an agent 'drops a level automatically' after a serious error (wrong customer, wrong product, skipped approval) and that the lab's Agents page says 'Recent precision has fallen. Step back one level until it recovers.' Nothing in `src/lab` changes the level from precision or errors; `ladder_status` only reports criteria. The page text reads as if the step happens. It does not. This is a display-only claim, the same finding as 'Earns autonomy' above.
+- Claim with no behaviour: 'AXION sets a hard limit for each action' and 'some actions never go above level 2'. The lab has only the `MAX_LAB_LEVEL` ceiling (prepares). There is no per-action limit table.
+- Not in this repo, so not checkable here: AXIS doctrine, FoodFlow product status and starting scores (AXION SharePoint and code outside this repo).
+- Orientation status: complete for the visible prose and script data. The strategic matrix is section 11.
