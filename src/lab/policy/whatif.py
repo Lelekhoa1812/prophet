@@ -23,7 +23,13 @@ CAVEAT = ("Expected value under stated assumptions on a synthetic replay. Not ob
 
 
 def measured(s: dict) -> bool:
-    """Whether the replay has a dollar truth for this agent. Customer and margin events carry no recorded dollars."""
+    """Whether the replay has a recorded dollar truth for this agent.
+
+    Motivation vs Logic: customer and margin dollars are estimates from a pre-event baseline (sim/event_dollars.py). Putting
+    them in the headline net would mix estimates with recorded losses, so they are reported separately and left unmeasured here.
+    """
+    if s.get("dollar_basis") == "estimate":
+        return False
     return float(s.get("dollars_truth_total", 0.0) or 0.0) > 0.0
 
 

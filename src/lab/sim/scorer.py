@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from ..store import open_dataset
+from . import event_dollars as ed
 
 
 def _clusters(days: list[pd.Timestamp]) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -35,9 +36,13 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
     exp = con.execute("""select m.lot_id, m.product_id, m.moved_on, -m.qty_change as qty, l.unit_cost
                          from stock_movements m join lots l using(lot_id) where m.movement_type='Expired write-off'""").df()
     exp["moved_on"] = pd.to_datetime(exp.moved_on)
-    ol = con.execute("""select l.customer_id, l.product_id, l.delivery_date, l.qty, l.unit_price from order_lines l
-                        where (l.customer_id || '|' || l.product_id) in (select entity_id from truth_events where kind in ('KEYING_ERROR','PRICE_BELOW_FLOOR'))""").df()
+    # Motivation vs Logic: customer and margin dollars need the full line history (run-rates, pre-event prices and costs).
+    # Bug: this query loaded only keying and price pairs, so customer and margin dollars could not be valued.
+    # Fix: load every line, then value each event from its own pre-event baseline (sim/event_dollars.py).
+    ol = con.execute("""select l.customer_id, l.product_id, l.delivery_date, l.qty, l.unit_price, l.unit_cost from order_lines l
+                        where not coalesce(l.cancelled, false)""").df()
     ol["delivery_date"] = pd.to_datetime(ol.delivery_date)
+    data_end = ol.delivery_date.max() if len(ol) else pd.Timestamp(hi)
     con.close()
     lo, hi = window
     P = pd.DataFrame(proposals)
@@ -60,8 +65,14 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
             "events": len(events), "caught": len(caught), "recall": (len(caught) / len(events)) if events else None,
             "median_delay_days": float(np.median([e["delay_days"] for e in caught])) if caught else None,
             "dollars_at_stake_total": float(sub.dollars_at_stake.sum()),
-            "dollars_truth_caught": float(sum(e["dollars"] for e in caught)),
-            "dollars_truth_total": float(sum(e["dollars"] for e in events)),
+            # Motivation vs Logic: an event that could not be valued (dollars None) is counted in recall but not in dollars.
+            # Bug: unvalued events were summed as 0, which made missed events look worth nothing.
+            # Fix: sum only valued events, and report how many were left out.
+            "dollars_truth_caught": float(sum(e["dollars"] for e in caught if e["dollars"] is not None)),
+            "dollars_truth_total": float(sum(e["dollars"] for e in events if e["dollars"] is not None)),
+            "dollars_unvalued": int(sum(1 for e in events if e["dollars"] is None)),
+            # Customer and margin dollars are estimates from a pre-event baseline, not recorded losses (see sim/event_dollars.py).
+            "dollar_basis": "estimate" if agent in ("customer", "margin") else "recorded",
             **(extra or {}),
         }
         res["events"] += events
@@ -132,13 +143,17 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
             if e.kind == "KEYING_ERROR":
                 c_, p_ = e.entity_id.split("|")
                 ln = ol[(ol.customer_id == c_) & (ol.product_id == p_) & (ol.delivery_date == e.start_date)]
-                if ln.empty or (ln.qty.iloc[0] * (1 - 1 / max(e.magnitude, 1)) * (ln.unit_price.iloc[0] or 0)) < 100:
+                dollars = ed.keying_dollars(ln, e.magnitude)
+                if ln.empty or dollars < 100:
                     continue            # unobservable or immaterial: nobody could or should flag it
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of == e.start_date) & sub.dedupe_key.str.startswith("keying")]
             else:
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of >= e.start_date) & (sub.as_of <= e.end_date + pd.Timedelta(days=7))]
+                cl = ol[ol.customer_id == e.entity_id]
+                v = ed.customer_lost_dollars(cl, e.start_date) if e.kind == "CUSTOMER_LOST" else ed.customer_slowdown_dollars(cl, e.start_date, e.end_date)
+                dollars = None if v is None else float(v)   # estimate from the pre-event run-rate; None (unvalued) without history
             events.append({"agent": "customer", "kind": e.kind, "entity_id": e.entity_id, "start": str(e.start_date.date()),
-                           "end": str(e.end_date.date()), "dollars": 0.0, "caught": len(m) > 0,
+                           "end": str(e.end_date.date()), "dollars": dollars, "caught": len(m) > 0,
                            "delay_days": float((m.as_of.min() - e.start_date).days) if len(m) else None, "event_id": e.event_id, "note": e.note})
         finish("customer", flags, events)
 
@@ -156,14 +171,18 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
         for e in truth[truth.kind.isin(["COST_SPIKE", "PRICE_BELOW_FLOOR"]) & (truth.start_date >= lo) & (truth.start_date <= hi)].itertuples():
             if e.kind == "PRICE_BELOW_FLOOR":
                 c_, p_ = e.entity_id.split("|")
-                ln = ol[(ol.customer_id == c_) & (ol.product_id == p_) & (ol.delivery_date >= e.start_date) & (ol.delivery_date <= e.end_date)]
-                if ln.empty or ((ln.qty * ln.unit_price * (1 / 0.7 - 1)).sum()) < 15:
-                    continue            # no order placed during the event, or too small to matter
+                pl = ol[(ol.customer_id == c_) & (ol.product_id == p_)]
+                ln = pl[(pl.delivery_date >= e.start_date) & (pl.delivery_date <= e.end_date)]
+                dollars = ed.price_below_floor_dollars(pl, e.start_date, e.end_date)
+                if ln.empty or dollars is None or dollars < 15:
+                    continue            # no order placed during the event, no pre-event price, or too small to matter
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of >= e.start_date) & (sub.as_of <= e.end_date) & sub.dedupe_key.str.startswith("price")]
             else:
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of >= e.start_date) & sub.dedupe_key.str.startswith("margin-cost")]
+                v = ed.cost_rise_dollars(ol[ol.product_id == e.entity_id], e.start_date, data_end)
+                dollars = None if v is None else float(v)   # eight-week margin lost, from recorded costs; None without a pre-event cost
             events.append({"agent": "margin", "kind": e.kind, "entity_id": e.entity_id, "start": str(e.start_date.date()),
-                           "end": str(e.end_date.date()), "dollars": 0.0, "caught": len(m) > 0,
+                           "end": str(e.end_date.date()), "dollars": dollars, "caught": len(m) > 0,
                            "delay_days": float((m.as_of.min() - e.start_date).days) if len(m) else None, "event_id": e.event_id, "note": e.note})
         finish("margin", flags, events)
     return res

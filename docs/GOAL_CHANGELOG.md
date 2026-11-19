@@ -102,3 +102,4 @@
 - Loop 22: TIMESFM_ERP_LAB_DB env override (default unchanged) lets the console run on a throwaway lab database. Approve flow tested in the browser: same-person refused, different person approved, audit 3 checked / 2 would suppress. Real lab DB untouched (verified 0 rows). Full suite 101 passed.
 - Loop 23: staging feasibility for 'acts before asked'. 31 delivery days, 14 Sep to 6 Nov 2026. A replay can run as a smoke test but cannot support a performance claim. Recorded; no code change.
 - Loop 23 decision (user): acts-before-asked marked unmeasurable; next is B14, customer and margin dollar truth on the twin. Not started.
+- Loop 24 (B14): customer and margin dollars from order lines (estimate basis). Unvalued events excluded from dollar totals. Customer dollar recall 84% of $593k estimate; margin 100% of $198k, concentrated in three cost spikes. Estimates kept out of the what-if headline. 110 tests pass.

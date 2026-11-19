@@ -68,3 +68,11 @@ def test_problem_level_collapses_repeat_alerts_on_one_problem():
     r = problem_level(rows, gap_days=10)
     assert r["shortfall"] == {"alerts": 5, "problems": 3, "claimed_dollars": 300.0 + 50.0 + 40.0}
     assert r["freshness"]["problems"] == 1
+
+
+def test_estimated_dollars_stay_out_of_the_headline():
+    # Motivation vs Logic: customer and margin dollars are baseline estimates; they must not enter the headline net.
+    from lab.policy.whatif import measured
+    assert measured({"dollars_truth_total": 500_000.0, "dollar_basis": "estimate"}) is False
+    assert measured({"dollars_truth_total": 500_000.0, "dollar_basis": "recorded"}) is True
+    assert measured({"dollars_truth_total": 500_000.0}) is True
