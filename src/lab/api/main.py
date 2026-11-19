@@ -372,6 +372,14 @@ def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: i
         step = pd.Timedelta(days=1)
         fut_start = a
         actual_full = pd.Series(w.demand[pi], index=w.days)
+    # Motivation vs Logic
+    # Motivation: the history slider must change what the model sees, not only what the chart shows.
+    # Logic: cut the series to the requested window first, then forecast and run baselines on that cut only.
+    if not 1 <= horizon <= (12 if freq == "W" else 28):
+        raise HTTPException(400, "horizon out of range (weekly 1 to 12, daily 1 to 28)")
+    history = max(8, min(int(history), len(series)))
+    series = series[-history:]
+    idx = idx[-history:]
     if len(series) < 8:
         raise HTTPException(400, "not enough history before this date")
     fc = TimesFMEngine.get().predict([series], horizon)
@@ -381,7 +389,7 @@ def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: i
     for m in (["ma4", "ma8", "seasonal_year"] if freq == "W" else ["ma8", "seasonal_naive"]):
         b = baselines.run(m, [series], horizon, season)
         base[m] = {"point": [round(float(x), 2) for x in b.point[0]], "q10": [round(float(x), 2) for x in b.q[0, :, 0]], "q90": [round(float(x), 2) for x in b.q[0, :, 8]]}
-    tail = slice(-history, None)
+    tail = slice(-history, None)  # history was already cut above, so this keeps the same window for the chart
     actual_future = [None if (fut_start + step * i) not in actual_full.index else round(float(actual_full[fut_start + step * i]), 2) for i in range(horizon)]
     expected = _expected_series(dataset, product, freq)
     return {
@@ -392,6 +400,10 @@ def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: i
         "baselines": base, "actual_future": actual_future,
         "truth_expected": None if expected is None else {"x": [str(x) for x in expected.index], "y": [round(float(v), 2) for v in expected.values]},
         "events": _product_events(dataset, product),
+        "model_saw": {"periods": int(len(series)), "from": str(idx[0].date()) if len(idx) else None,
+                      "to": str(idx[-1].date()) if len(idx) else None, "unit": "weeks" if freq == "W" else "days",
+                      "full_year": bool(len(series) >= (52 if freq == "W" else 365)),
+                      "seasonal_years": round(len(series) / (52 if freq == "W" else 365), 2)},
     }
 
 

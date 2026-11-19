@@ -80,7 +80,7 @@ export function BandChart({ s, height = 280, label, clip = false }: { s: BandSer
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
         <Key c="var(--chart-history)" t="Actual demand" />{s.forecast && <Key c="var(--chart-forecast)" t="TimesFM median" bold />}{s.forecast && <Key c="var(--chart-band)" t="10–90% band" box />}
         {(s.baselines?.length ?? 0) > 0 && <Key c="var(--chart-baseline)" t="Baseline" dash />}{s.truth && <Key c="var(--chart-truth)" t="True underlying demand" dash />}
-        {(s.events?.length ?? 0) > 0 && <Key c="var(--chart-truth)" t="Known event" box faint />}
+        {(s.events?.length ?? 0) > 0 && <Key c="var(--chart-truth)" t="Labelled event (twin)" box faint />}
         {s.unit && <span className="ml-auto">{s.unit}</span>}
       </div>
       {idx && (
