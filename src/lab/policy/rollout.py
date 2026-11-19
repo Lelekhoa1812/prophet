@@ -89,23 +89,38 @@ def learn(ds: str, rows: list[tuple], cfg: dict | None = None) -> list[dict]:
         seg_of = {pid: str(c) for pid, c in w.products.set_index("product_id").category.items()}
     except Exception:                                    # no world loaded: agent-level learning still works
         pass
+    # Bugs vs Fixes
+    # Bug: every call re-applied the whole decision history, so pressing Learn again and again moved a weight by 10% each
+    # time with no new evidence, until it hit its bound.
+    # Fix: rows carry a decision id (row[4]; position if absent). Precision is still measured on all decisions, but a
+    # weight moves only when enough decisions it has not yet learned from have arrived, and those ids are then recorded.
+    done = cfg.setdefault("learned", {"agent": [], "segment": []})
+    done_agent, done_seg = set(done.get("agent", [])), set(done.get("segment", []))
     by: dict[str, list[int]] = {}
+    new_agent: dict[str, list] = {}
+    new_seg: dict[str, list] = {}
     learner = SegmentLearner(bounds=econ.weight_bounds)
-    for row in rows:
+    for i, row in enumerate(rows):
         agent, decision, reason = row[0], row[1], row[2]
         entity = row[3] if len(row) > 3 else None
+        did = str(row[4]) if len(row) > 4 and row[4] is not None else f"anon-{i}"
         useful = decision in ("approve", "adjust")
         if not useful and not (decision == "dismiss" and reason in ("wrong_alert", "not_useful")):
             continue
         c = by.setdefault(agent, [0, 0])                 # [good, bad]
         c[0 if useful else 1] += 1
         learner.observe(agent, seg_of.get(entity), useful)
+        if did not in done_agent:
+            new_agent.setdefault(agent, []).append(did)
+        if seg_of.get(entity) is not None and did not in done_seg:
+            new_seg.setdefault(f"{agent}|{seg_of[entity]}", []).append(did)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     changes = []
     for agent, (good, bad) in by.items():
         n = good + bad
-        if n < MIN_DECISIONS_TO_LEARN:
+        if n < MIN_DECISIONS_TO_LEARN or len(new_agent.get(agent, [])) < MIN_DECISIONS_TO_LEARN:
             continue
+        done_agent.update(new_agent[agent])
         prec = good / n
         old = econ.agent_weight.get(agent, 1.0)
         step = float(np.clip(prec / TARGET_PRECISION, 1 - MAX_STEP, 1 + MAX_STEP))
@@ -116,8 +131,9 @@ def learn(ds: str, rows: list[tuple], cfg: dict | None = None) -> list[dict]:
     lo, hi = econ.weight_bounds
     for key, target in learner.weights().items():
         n = learner.total[key]
-        if n < SEGMENT_MIN_DECISIONS:
+        if n < SEGMENT_MIN_DECISIONS or len(new_seg.get(key, [])) < SEGMENT_MIN_DECISIONS:
             continue
+        done_seg.update(new_seg[key])
         old = econ.segment_weight.get(key, 1.0)
         new = round(float(np.clip(target, max(lo, old * (1 - MAX_STEP)), min(hi, old * (1 + MAX_STEP)))), 3)
         if abs(new - old) > 1e-9:
@@ -125,7 +141,8 @@ def learn(ds: str, rows: list[tuple], cfg: dict | None = None) -> list[dict]:
             changes.append({"at": now, "kind": "segment", "key": key, "agent": key.split("|")[0], "old": round(old, 3), "new": new,
                             "basis": {"useful": learner.good.get(key, 0), "not_useful": n - learner.good.get(key, 0),
                                       "precision": round(learner.good.get(key, 0) / n, 3), "target": round(target, 3)}})
-    if changes:
+    if changes or done_agent != set(done.get("agent", [])) or done_seg != set(done.get("segment", [])):
+        cfg["learned"] = {"agent": sorted(done_agent)[-5000:], "segment": sorted(done_seg)[-5000:]}
         cfg["economics"] = econ.describe()
         cfg["learning_log"] = (cfg["learning_log"] + changes)[-400:]
         save(ds, cfg)

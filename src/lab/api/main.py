@@ -163,7 +163,8 @@ def agents(dataset: str = "twin"):
         stats = (sc.get("agents") or {}).get(k, {})
         stats = {**stats, "proposals": stats.get("proposals", 0)}
         lab = _lab()
-        d = lab.execute("""select decision, count(*) from decisions d join proposals p on p.proposal_id=d.proposal_id where p.dataset=? and p.agent=? group by 1""", [dataset, k]).fetchall()
+        d = lab.execute("""select decision, count(*) from (select d.decision from decisions d join proposals p on p.proposal_id=d.proposal_id where p.dataset=? and p.agent=?
+                           qualify row_number() over (partition by d.proposal_id order by d.decided_at desc) = 1) group by 1""", [dataset, k]).fetchall()
         lab.close()
         out.append({"key": k, **m, "config": cfg, "stats": stats, "operator_decisions": dict(d),
                     "ladder": ladder_status(k, cfg["autonomy_level"], stats), "defaults": getattr(REGISTRY[k], "DEFAULTS", {})})
@@ -250,6 +251,12 @@ def decide(pid: str, body: DecisionIn):
             lab.close(); raise HTTPException(404, "proposal not found")
         ds, agent, entity, dk, as_of = r
         did = f"D-{uuid.uuid4().hex[:8]}"
+        # Bugs vs Fixes
+        # Bug: a second decision on the same proposal left the first dismissal's lesson active (or stacked a duplicate), so a
+        # reviewer changing their mind kept suppressing the entity.
+        # Fix: the latest decision wins. Active lessons born from earlier decisions on this proposal are retired first.
+        lab.execute("""update lessons set active=false, undone_at=? where active and source_decision_id in
+                       (select decision_id from decisions where proposal_id=?)""", [datetime.now(timezone.utc), pid])
         lab.execute("insert into decisions values (?,?,?,?,?,?,?)", [did, pid, datetime.now(timezone.utc), body.decided_by, body.decision, body.reason, body.note])
         lab.execute("update proposals set status=? where proposal_id=?", [{"approve": "approved", "adjust": "adjusted", "dismiss": "dismissed"}[body.decision], pid])
         lesson = None
@@ -259,7 +266,7 @@ def decide(pid: str, body: DecisionIn):
             lab.execute("insert into lessons values (?,?,?,?,?,?,?,?,?,?)",
                         [lid, ds, agent, "entity", entity, json.dumps({"suppress_days": days, "reason": body.reason}), did, True, datetime.now(timezone.utc), None])
             lesson = {"lesson_id": lid, "agent": agent, "scope": entity, "suppress_days": days, "reason": body.reason}
-            _governors.pop(ds, None)           # lessons changed: rebuild governor on next use
+        _governors.pop(ds, None)               # lessons may have changed (added or retired): rebuild governor on next use
         lab.close()
     return {"decision_id": did, "lesson": lesson}
 
@@ -690,7 +697,7 @@ def tenant_calibrate(dataset: str = "twin"):
 def tenant_learn(dataset: str = "twin"):
     _ds(dataset)
     lab = _lab()
-    rows = lab.execute("select p.agent, d.decision, d.reason, p.entity_id from decisions d join proposals p using(proposal_id) where p.dataset=?", [dataset]).fetchall()
+    rows = lab.execute("select p.agent, d.decision, d.reason, p.entity_id, d.decision_id from decisions d join proposals p using(proposal_id) where p.dataset=? qualify row_number() over (partition by d.proposal_id order by d.decided_at desc) = 1", [dataset]).fetchall()
     lab.close()
     return {"changes": rollout.learn(dataset, rows), "decisions_seen": len(rows)}
 

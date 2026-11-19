@@ -21,3 +21,10 @@
 - Hypothesis: agents see data after the as-of day. Result: falsified (no code change). Added `tests/test_no_future_leak.py` as a guard; suite 55 passed.
 - Open caveats recorded in the audit (same-day order entry time; staging cost fallback).
 - Next: B4 (repeat decisions on one proposal).
+
+## Loop 4, 19 Nov 2026
+- Gap: learning re-applied the same decisions each call; a changed decision left a stale lesson; stats double-counted.
+- Change: `rollout.learn` records consumed decision ids and steps only on 20 new agent decisions (8 per segment); API sends latest decision per proposal with ids; `decide` retires lessons from earlier decisions on that proposal and always resets the governor.
+- Test: suite 60 passed (was 55). Old test that looped on identical rows and called hitting the bound correct was rewritten.
+- Residual: the console's Learn button now often returns no changes; the UI text does not yet say why (candidate for a copy fix). Reviewer verdicts are still free-form `decided_by`.
+- Next: B2 generator option, B6 durable jobs.

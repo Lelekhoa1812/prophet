@@ -32,9 +32,11 @@ Hidden in the HTML and not reviewed as functionality: the interactive autonomy d
 | S4 | Read-only staging relies on a session option plus hard-coded SELECT; `assert` is stripped under `python -O`; no proof the DB role itself lacks write rights | C: `source/staging.py` | Medium | Open (needs DB role check; staging access is Liam's decision) |
 | S5 | Jobs live in process memory: a restart loses progress and results; no cancel | C: `api/jobs.py` | Medium (lab convenience) | Open |
 | S6 | Pickle caches under `data/` are loaded without integrity checks | C | Low (local, git-ignored); high if the directory is ever shared | Open |
+| S8 | Learning re-applied the full decision history on every call (weights ratcheted to bound with no new evidence); a changed decision left a stale suppression; stats double-counted | T: 2 of 5 learning tests failed before; 3 integrity tests | High for the 'learns from corrections' claim | Fixed in loop 4 |
 | S7 | Unknown dataset names return 500 on several routes instead of 404 | C | Low | Open |
 
-## 4. Falsified hypotheses
+## 4. Falsified hypotheses and validity limits
+- Twin demand censoring (loop 4, haiku sub-agent, reconciled with the code): history = order qty = true demand on the twin (5,465,171 both; fulfilled is 7.3% lower); top-stockout products ratio 0.998 of truth. This is because the generator never suppresses orders during stockouts, so the twin CANNOT test censoring. Whether real customers stop ordering when out of stock is unknown; staging (about 8 weeks) cannot tell either.
 - "Weekly forecast sees data from as_of onward": falsified. Metamorphic test sets every value from as_of on to 999; history matrix and quantiles are identical (`test_future_data_does_not_change_the_forecast`). Scope: weekly forecast path. Loop 3 extended this end to end: all four agents raise identical proposals on a twin world with everything after the as_of day removed (8 Mondays; shortfall 45, freshness 341, customer 42, margin 1 proposals seen; negative control cutting 10 days early changed shortfall 3→7 and freshness 38→44). Caveats: margin has almost no power in the test; the same-day price and keying checks read orders delivered on the as_of day itself, and the data has no order-entry time, so replay assumes those orders were already entered at day start; the cost fallback `products.unit_cost` on staging is today's last cost, not the cost then.
 
 ## 5. Evidence limits that stay in force
