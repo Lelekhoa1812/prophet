@@ -54,7 +54,7 @@ def save(ds: str, cfg: dict) -> None:
 
 def economics_of(cfg: dict) -> alerts.Economics:
     e = cfg["economics"]
-    return alerts.from_dict({k: e[k] for k in ("review_cost", "effectiveness", "budget_per_owner", "false_alarm_cost", "agent_weight", "segment_weight") if k in e})
+    return alerts.from_dict({k: e[k] for k in ("review_cost", "effectiveness", "budget_per_owner", "false_alarm_cost", "ranking_false_alarm_cost", "agent_weight", "segment_weight") if k in e})
 
 
 def phase(cfg: dict, as_of: date | str) -> dict:

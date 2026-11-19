@@ -45,7 +45,7 @@ def test_governor_commit_false_does_not_start_cooldown():
 
 
 def test_false_alarm_cost_demotes_uncertain_alerts_of_equal_size():
-    econ = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=1, false_alarm_cost=200)
+    econ = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=1, false_alarm_cost=200, ranking_false_alarm_cost={})
     sure = prop(1, 300); sure.p_event = 0.95
     unsure = prop(2, 300); unsure.p_event = 0.55
     shown, digest, below = select([unsure, sure], econ)
@@ -55,7 +55,26 @@ def test_false_alarm_cost_demotes_uncertain_alerts_of_equal_size():
 
 
 def test_false_alarm_cost_can_push_an_alert_below_zero():
-    econ = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=5, false_alarm_cost=400)
+    econ = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=5, false_alarm_cost=400, ranking_false_alarm_cost={})
     weak = prop(3, 150); weak.p_event = 0.6          # 75 - 10 - 160 < 0
     shown, digest, below = select([weak], econ)
     assert shown == [] and digest == [] and len(below) == 1
+
+
+def test_agent_ranking_cost_changes_only_that_agents_score():
+    import pytest
+    from types import SimpleNamespace as N
+    from lab.policy.alerts import Economics, net_value
+    mk = lambda agent: N(agent=agent, dollars_at_stake=1000.0, p_event=0.7, segment=None)
+    base = Economics(ranking_false_alarm_cost={})
+    tuned = Economics(ranking_false_alarm_cost={"shortfall": 1000.0})
+    assert net_value(mk("freshness"), tuned) == net_value(mk("freshness"), base)
+    assert net_value(mk("shortfall"), tuned) == pytest.approx(net_value(mk("shortfall"), base) - 0.3 * (1000.0 - 200.0))
+
+
+def test_default_economics_rank_shortfall_with_the_tuned_cost_and_state_it():
+    from lab.policy.alerts import Economics, from_dict
+    d = Economics().describe()
+    assert d["ranking_false_alarm_cost"] == {"shortfall": 1500.0} and d["false_alarm_cost"] == 200.0
+    assert from_dict(d).ranking_false_alarm_cost == {"shortfall": 1500.0}
+    assert from_dict({"review_cost": 10}).ranking_false_alarm_cost == {"shortfall": 1500.0}     # old tenant files get the default

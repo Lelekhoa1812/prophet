@@ -57,3 +57,10 @@
 ## Loop 9, 19 Nov 2026
 - Gap (S3, B11): audit identity was free text. Change: validated name, `X-Operator` header, `unverified:` prefix. Tests: 3 new, suite 82 passed.
 - Residual: identity is asserted not authenticated.
+
+## Loop 10, 19 Nov 2026
+- Gap (B10): shortfall alerts net negative under default economics.
+- Decision (user, AskUserQuestion): per-agent cost, shortfall only.
+- Change: `Economics.ranking_false_alarm_cost` (ranking and gating only; the what-if still values with the stated $200); default {"shortfall": 1500}; old tenant files inherit it. Tests: 2 new, 2 existing made independent of the override; suite 84 passed.
+- Result: held-out expected net +17%, shortfall alerts -41%, shortfall dollar recall -7.3 pts (see evidence).
+- Residual: stored scorecard stale until a full twin replay is rerun; twin-tuned default must be re-checked per client in readiness.

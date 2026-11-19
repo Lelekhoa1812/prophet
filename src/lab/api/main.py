@@ -689,7 +689,7 @@ def policy_frontier(dataset: str = "twin", budgets: str = "3,5,8,12,20"):
     rows = []
     for b in [int(x) for x in budgets.split(",") if x.strip()][:8]:
         e = alert_policy.Economics(review_cost=econ.review_cost, effectiveness=econ.effectiveness, budget_per_owner=b,
-                                   false_alarm_cost=econ.false_alarm_cost, agent_weight=econ.agent_weight)
+                                   false_alarm_cost=econ.false_alarm_cost, ranking_false_alarm_cost=econ.ranking_false_alarm_cost, agent_weight=econ.agent_weight)
         r = simulate(_CANDS[dataset], e, dataset, scored_window(w))
         rows.append({"budget_per_owner": b, "shown_per_day": r["shown_per_day"], "digest_per_day": r["digest_per_day"], "agents": r["agents"]})
     return {"dataset": dataset, "policy": econ.describe(), "rows": rows,

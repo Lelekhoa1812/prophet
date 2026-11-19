@@ -26,6 +26,7 @@ class Economics:
     effectiveness: float = 0.5           # share of expected loss a reviewed alert typically recovers
     budget_per_owner: int = 8            # alerts one owner sees per morning
     false_alarm_cost: float = 200.0      # dollars lost when an alert that did not happen is acted on (wasted order, wasted call)
+    ranking_false_alarm_cost: dict = field(default_factory=lambda: {"shortfall": 1500.0})   # agent -> cost used ONLY to rank and gate that agent's alerts. Twin-tuned default (19 Nov 2026, held-out +17% expected net); review per client
     weight_bounds: tuple = (0.5, 2.0)    # learning may scale an agent's score only within these
     agent_weight: dict = field(default_factory=dict)
     segment_weight: dict = field(default_factory=dict)      # 'agent|segment' -> learned multiplier, bounded like agent_weight
@@ -36,7 +37,7 @@ class Economics:
 
     def describe(self) -> dict:
         return {"review_cost": self.review_cost, "effectiveness": self.effectiveness, "budget_per_owner": self.budget_per_owner, "false_alarm_cost": self.false_alarm_cost,
-                "score_floor": round(self.floor, 2), "agent_weight": dict(self.agent_weight), "segment_weight": dict(self.segment_weight)}
+                "ranking_false_alarm_cost": dict(self.ranking_false_alarm_cost), "score_floor": round(self.floor, 2), "agent_weight": dict(self.agent_weight), "segment_weight": dict(self.segment_weight)}
 
 
 def from_dict(d: dict | None) -> Economics:
@@ -72,7 +73,13 @@ def net_value(p, econ: Economics) -> float:
     expected cost of acting on a false alarm. Alerts without a modelled chance (p_event) pay no false-alarm cost."""
     gain = econ.effectiveness * value_of(p, econ)
     pe = _get(p, "p_event")
-    fa = (1.0 - float(pe)) * econ.false_alarm_cost if pe is not None else 0.0
+    # Motivation vs Logic
+    # Motivation: on held-out twin data a higher false-alarm cost in the ranking raised expected net by 24-28% at the same
+    # alert budget, mostly by dropping shortfall alerts that were wrong about as often as right. The tenant's stated cost
+    # of a false alarm is a business fact and is still what the what-if uses to value alerts.
+    # Logic: an agent may carry its own, higher cost for ranking and gating only; absent, the stated cost applies.
+    cost = econ.ranking_false_alarm_cost.get(_get(p, "agent"), econ.false_alarm_cost)
+    fa = (1.0 - float(pe)) * cost if pe is not None else 0.0
     return gain - econ.review_cost - fa
 
 
