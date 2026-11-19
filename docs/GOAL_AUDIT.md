@@ -90,3 +90,25 @@ Code-checked: a global `:focus-visible` outline exists (`index.css`), `prefers-r
 - Cited sources: 16 unique external URLs appear in the script. A plain GET returned 13 HTTP 200, 3 HTTP 403 (blocked to automated clients, status unknown). Live links were not checked against the quoted figures or quotes, so no claim in the page is verified from its sources.
 - Not verifiable from this repo: FoodFlow 'live today' capability status (cites an AXION SharePoint document) and the 'FoodFlow starting scores' (AXION review, not in the repo).
 - Handling: the page's own caveat stays. Nothing from the page is treated as shipped behaviour. This repo implements none of the eight capabilities end to end (see section 1).
+
+## 11. Strategic-promise matrix (consolidated, loop 27)
+Built from sections 1, 2, 2b, 2c and the loop 18 to 26 checks. Every code path was confirmed to exist in the current tree. Status uses the HTML's own labels; 'Verified' means a test or a reproducible replay, never a live outcome.
+
+| Promise (value paper) | Code path | Test or evidence | Status | Gap |
+|---|---|---|---|---|
+| Design the action before the screen | `Proposal.action`, `/api/proposals/{id}/decision`, lesson undo | `test_decision_integrity.py` | Partial | No action schema, limits or undo for the action itself; the lab only proposes |
+| Describe the business for a machine | `store.py` canonical tables, `engine/profile.py` | Schema via loaders | Partial | No units conversion, contract floors, delivery runs |
+| Autonomy is policy (3 layers) | `agent_config.autonomy_level`, `ladder_status`, `MAX_LAB_LEVEL` | `test_api_guard.py` (ceiling) | Label only | Nothing enforces a level; the lab cannot act |
+| A trace that can be replayed | `runs`, `proposals.evidence`, `decisions`, `as_of` replay | `test_no_future_leak*.py`, `test_forecast_cache.py` | Partial, strengthened | No event stream; decisions are `unverified:` |
+| Learning is a product feature | Dismissal lessons with scope, pending approval and audit (`governor.py`, `audit_lesson`) | `test_decision_integrity.py`, `test_core.py`, browser check on a throwaway DB (loop 22) | Partial | Approver identity unverified; learning still needs real operator verdicts |
+| The screen is a view | One console, lenses over one API | Browser checks on the Agents page; `console` build | Partial | Not composed per role; belongs upstream (AXIS) |
+| Prove it continuously | CI (`tests.yml`), evaluation gate (`test_eval_gate.py`) | 109 pass locally; clean clone reproduces; CI blocked by billing | Partial | CI not running since 0948e9a; no decision-quality regression gate beyond the mini twin |
+| Acts before being asked | `agents/*`, `sim/replay.py` | Synthetic twin replay only | Unmeasured on real data | Staging has 31 delivery days; a live shadow run is needed (user decision, loop 23) |
+| Does the work end to end | None | None | Not applicable | Writes belong to FoodFlow governed actions |
+| Earns autonomy | `ladder_status`, promotion criteria | Ceiling test only | Display only | No behavioural effect |
+| Thinks in food | FEFO freshness, shelf-life classes, pack sizes | `test_distribution.py`, twin replay | Partial | No catch-weight, substitutes, contract prices, delivery runs |
+| Trustworthy by design | Pseudonymisation (`source/pseudo.py`), read-only session (`source/staging.py`), narration number check | `test_staging_guard.py`, `role_audit` | Partial | API has no login; staging role not read-only at DB level (B12, accepted risk) |
+| Demand censoring (value paper silent) | `twin/censor.py` | Sweep, loop 17: recall loss gradual | Synthetic only | Real censoring unknown |
+| Dollars protected | `policy/whatif.py` | Estimates excluded for customer and margin | Assumption-driven | Labelled expected value, not observed savings |
+
+**Next challenge from this matrix:** the value paper's claims about the market and competitors (section 10) remain unchecked against the cited articles. The strongest within-lab gap is still 'Acts before being asked', which needs a shadow run that the user has not yet approved.

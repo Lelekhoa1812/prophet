@@ -107,3 +107,4 @@
 - Loop 25 (CI): 0948e9a and 2631976 never started. The runner annotation says 'recent account payments have failed or your spending limit needs to be increased'. Code is fine: clean clone passes 108 and 1 skipped. Needs the account owner to fix billing; not something the loop can change.
 - Loop 25 (B14 follow-up): shown-alert dollar recall under the default policy recorded in GOAL_EVIDENCE.md.
 - Loop 26: read the value paper's script and checked its 16 cited URLs (13 resolve, 3 blocked). Claims in the page are not verified against the sources. Recorded in GOAL_AUDIT section 10.
+- Loop 27: consolidated the strategic-promise matrix into GOAL_AUDIT section 11; every referenced code path confirmed present. No code change.
