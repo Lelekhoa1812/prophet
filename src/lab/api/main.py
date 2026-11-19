@@ -181,6 +181,9 @@ def agents(dataset: str = "twin"):
     return out
 
 
+MAX_LAB_LEVEL = "prepares"
+
+
 @app.put("/api/agents/{agent}")
 def put_agent(agent: str, body: AgentConfigIn, dataset: str = "twin"):
     if agent not in REGISTRY:
@@ -188,6 +191,10 @@ def put_agent(agent: str, body: AgentConfigIn, dataset: str = "twin"):
     cfg = {**_config(dataset, agent), **{k: v for k, v in body.model_dump().items() if v is not None}}
     if cfg["autonomy_level"] not in LADDER:
         raise HTTPException(400, "unknown autonomy level")
+    # Motivation vs Logic: the lab is read-only and only proposes, so "acts" or "runs" would label proposals with a power nothing
+    # here has (and no code reads the level to change behaviour). The ceiling is "prepares" until FoodFlow governed actions exist.
+    if LADDER.index(cfg["autonomy_level"]) > LADDER.index(MAX_LAB_LEVEL):
+        raise HTTPException(400, f"the lab cannot act on its own; the highest level it can show is '{MAX_LAB_LEVEL}'")
     with _lock:
         lab = _lab()
         lab.execute("delete from agent_config where dataset=? and agent=?", [dataset, agent])

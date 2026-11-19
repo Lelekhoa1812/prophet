@@ -44,3 +44,16 @@ def test_allowed_hosts_env_accepts_ports_and_schemes(monkeypatch):
 def test_no_origin_header_is_allowed():                       # curl and the proxy-less same-origin console
     r = c.get("/api/meta")
     assert r.status_code == 200
+
+
+def test_lab_cannot_be_set_above_prepares(monkeypatch, tmp_path):
+    # Motivation vs Logic: no code in the lab acts, so the API refuses levels that claim it can.
+    from lab import store
+    from lab.api import main
+    monkeypatch.setattr(store, "LAB_DB", tmp_path / "lab.duckdb")
+    from fastapi.testclient import TestClient
+    cl = TestClient(main.app, base_url="http://localhost:8000")
+    hdr = {"Origin": "http://localhost:8000"}
+    for lvl in ("acts", "runs"):
+        assert cl.put("/api/agents/shortfall", json={"autonomy_level": lvl}, headers=hdr).status_code == 400
+    assert cl.put("/api/agents/shortfall", json={"autonomy_level": "prepares"}, headers=hdr).status_code == 200

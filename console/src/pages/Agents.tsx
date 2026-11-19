@@ -81,8 +81,10 @@ function AgentCard({ a, dataset, onSaved }: { a: AgentInfo; dataset: string; onS
           <p className="text-xs font-medium">Autonomy</p>
           <div className="flex flex-wrap items-center gap-1" role="radiogroup" aria-label="Autonomy level">
             {LADDER_ORDER.map((k) => (
-              <button key={k} role="radio" aria-checked={cfg.autonomy_level === k} onClick={() => setCfg({ ...cfg, autonomy_level: k })}
-                className={`rounded-full border px-2.5 py-1 text-xs cursor-pointer ${cfg.autonomy_level === k ? "border-primary bg-accent font-semibold" : "hover:bg-menu-hover"}`}>{LADDER_TEXT[k]}</button>
+              <button key={k} role="radio" aria-checked={cfg.autonomy_level === k} disabled={LADDER_ORDER.indexOf(k) > LADDER_ORDER.indexOf("prepares")}
+                title={LADDER_ORDER.indexOf(k) > LADDER_ORDER.indexOf("prepares") ? "The lab only proposes. This level needs FoodFlow governed actions." : undefined}
+                onClick={() => setCfg({ ...cfg, autonomy_level: k })}
+                className={`rounded-full border px-2.5 py-1 text-xs ${LADDER_ORDER.indexOf(k) > LADDER_ORDER.indexOf("prepares") ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${cfg.autonomy_level === k ? "border-primary bg-accent font-semibold" : "hover:bg-menu-hover"}`}>{LADDER_TEXT[k]}</button>
             ))}
           </div>
           <div className="rounded-md border p-3 text-xs">
