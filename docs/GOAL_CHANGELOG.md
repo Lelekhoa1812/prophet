@@ -92,3 +92,6 @@
 ## Loop 16, 19 Nov 2026
 - Gap: contrast never measured. Measured, found light and dark failures, fixed with colour tokens, re-measured clean (text only). Methodological note: measure with transitions disabled in the background browser pane.
 - Loop 16b: keyboard walk-through found no skip link and unnamed repeated links; both fixed (WCAG 2.4.1, 2.4.4).
+
+## Loop 17, 20 Nov 2026
+- B2 follow-up: censoring sweep finished. Shortfall recall degrades gradually (41.0% base to 37.2% at the harshest tested), no cliff; precision flat. Synthetic only.
