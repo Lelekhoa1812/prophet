@@ -16,3 +16,8 @@
 - Side effect to disclose: before the guard existed, the first test run reset the real twin replay cursor (`/api/time/reset`). Tests now use a dummy dataset. The cursor is demo state and can be stepped again.
 - Residual: no authentication, `decided_by` still free text (S3).
 - Next: B3.
+
+## Loop 3, 19 Nov 2026
+- Hypothesis: agents see data after the as-of day. Result: falsified (no code change). Added `tests/test_no_future_leak.py` as a guard; suite 55 passed.
+- Open caveats recorded in the audit (same-day order entry time; staging cost fallback).
+- Next: B4 (repeat decisions on one proposal).

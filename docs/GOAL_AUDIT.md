@@ -35,7 +35,7 @@ Hidden in the HTML and not reviewed as functionality: the interactive autonomy d
 | S7 | Unknown dataset names return 500 on several routes instead of 404 | C | Low | Open |
 
 ## 4. Falsified hypotheses
-- "Weekly forecast sees data from as_of onward": falsified. Metamorphic test sets every value from as_of on to 999; history matrix and quantiles are identical (`test_future_data_does_not_change_the_forecast`). Scope: weekly forecast path only. Daily weekday profile, stock and pipeline were read by eye (all strictly before as_of), not yet by a test.
+- "Weekly forecast sees data from as_of onward": falsified. Metamorphic test sets every value from as_of on to 999; history matrix and quantiles are identical (`test_future_data_does_not_change_the_forecast`). Scope: weekly forecast path. Loop 3 extended this end to end: all four agents raise identical proposals on a twin world with everything after the as_of day removed (8 Mondays; shortfall 45, freshness 341, customer 42, margin 1 proposals seen; negative control cutting 10 days early changed shortfall 3→7 and freshness 38→44). Caveats: margin has almost no power in the test; the same-day price and keying checks read orders delivered on the as_of day itself, and the data has no order-entry time, so replay assumes those orders were already entered at day start; the cost fallback `products.unit_cost` on staging is today's last cost, not the cost then.
 
 ## 5. Evidence limits that stay in force
 Twin results are method demos. Staging has about eight weeks. The ship bar (15% better than the best baseline) was not met earlier (about 17% only against one baseline on the twin, none on real data). TimesFM weights are non-commercial. No dollar here is an observed saving.

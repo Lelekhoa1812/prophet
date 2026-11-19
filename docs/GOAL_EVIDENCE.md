@@ -11,3 +11,4 @@
 Datasets: twin = 4-year synthetic (seeded generator); staging = about 8 weeks real, pseudonymised, not in Git.
 
 | Cross-site write and rebound host | Test-derived + live probe | `tests/test_api_guard.py` (3 of 7 failed before), curl against restarted API | Evil Origin POST 403, Host attacker.example 400, console origins and no-Origin pass, browser same-origin POST 200 | Local checks only; no login added; a non-browser attacker on the machine is out of scope |
+| No look-ahead in agents | Synthetic replay + test | `tests/test_no_future_leak.py`: 4 agents × 8 Mondays on the twin, world truncated at the as_of day vs full | Identical proposals; negative control (cut 10 days early) differs | Twin only; margin 1 proposal; skipped where `data/` is absent (so not in a fresh CI) |
