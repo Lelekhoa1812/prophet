@@ -27,7 +27,10 @@ def spent() -> float:
 
 
 def _numbers(text: str) -> set[str]:
-    return {n.replace(",", "") for n in re.findall(r"\d[\d,]*\.?\d*", text)}
+    # Bugs vs Fixes
+    # Bug: the old pattern kept a trailing full stop ("$214." -> "214."), so a correct figure at the end of a sentence was rejected.
+    # Fix: only take a decimal part when digits follow the point, and strip thousands separators.
+    return {n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)}
 
 
 def allowed_numbers(p: dict) -> set[str]:

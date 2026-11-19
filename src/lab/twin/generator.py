@@ -82,8 +82,8 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
     rng = np.random.default_rng(cfg.seed)
     days = pd.date_range(cfg.start, cfg.end, freq="D")
     nd = len(days)
-    doy = days.dayofyear.values
-    dow = days.dayofweek.values
+    doy = days.day_of_year.values
+    dow = days.day_of_week.values
 
     # ---- products
     cats = list(CATEGORIES)
