@@ -77,7 +77,7 @@ export function ProposalCard({ p, onDecided, compact = false }: { p: Proposal; o
         {!compact && s && (
           <div className="rounded-md border bg-background p-3">
             <p className="mb-1 text-xs font-medium text-muted-foreground">{s.label}</p>
-            <BandChart height={180} label={s.label} s={{ history: s.history, forecast: s.forecast, unit: s.unit }} />
+            <BandChart height={180} clip label={s.label} s={{ history: s.history, forecast: s.forecast, unit: s.unit }} />
           </div>
         )}
 

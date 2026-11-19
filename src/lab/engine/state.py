@@ -127,11 +127,29 @@ class ForecastService:
         path.write_bytes(pickle.dumps(res))
         return res
 
-    def daily_demand_quantiles(self, as_of: pd.Timestamp, product: int, days_ahead: int) -> dict | None:
-        """Projected demand over the next days_ahead days (point, q10, q50, q90) from the weekly forecast.
+    def weekday_profile(self, as_of: pd.Timestamp, product: int, weeks: int = 12, k: float = 2.0) -> np.ndarray:
+        """Mon..Sun share of demand for one product over the last `weeks` weeks, mean 1.
 
-        Weekly quantiles are scaled by days/7. This treats days as perfectly correlated, which is conservative
-        for the upper band and is documented in the console.
+        Motivation vs Logic: the twin and real trade both sell very unevenly by weekday (median busiest day 1.7x
+        the quietest). Logic: count units per weekday, then shrink toward flat with k pseudo-weeks of flat history
+        (k=2) so a product with few orders does not get an invented pattern, while a real weekly rhythm survives.
+        """
+        end = int(self.w.days.searchsorted(as_of))
+        start = max(0, end - 7 * weeks)
+        seg = self.w.demand[product, start:end]
+        dows = np.asarray(self.w.days[start:end].day_of_week)
+        S = np.array([seg[dows == d].sum() for d in range(7)], dtype=float)
+        m = S.mean()
+        if m <= 0 or len(seg) == 0:
+            return np.ones(7)
+        return (S + k * m) / ((1.0 + k) * m)
+
+    def daily_path(self, as_of: pd.Timestamp, product: int, days_ahead: int) -> dict | None:
+        """Expected units per day for the next days_ahead days (q10, q50, q90, point).
+
+        Motivation vs Logic: the weekly TimesFM median was spread evenly over each day, so the daily view was flat
+        and expiry maths ignored that Saturday sells more than Sunday. Logic: each day takes its week's forecast
+        total divided by 7, times the product's weekday share from weekday_profile.
         """
         res = self.weekly(as_of, 4)
         fc: Forecast | None = res["fc"]
@@ -141,19 +159,27 @@ class ForecastService:
         if len(pos) == 0:
             return None
         k = pos[0]
-        # as_of may be mid-week: first forecast week is the week containing as_of
-        used = (as_of - res["future_start"]).days
-        remaining = days_ahead
-        point = q10 = q50 = q90 = 0.0
-        wk = 0
-        offset = used
-        while remaining > 0 and wk < fc.point.shape[1]:
-            span = min(remaining, 7 - offset)
-            frac = span / 7.0
-            point += fc.point[k, wk] * frac
-            q10 += fc.q[k, wk, 0] * frac; q50 += fc.q[k, wk, 4] * frac; q90 += fc.q[k, wk, 8] * frac
-            remaining -= span; wk += 1; offset = 0
-        return dict(point=float(point), q10=float(q10), q50=float(q50), q90=float(q90))
+        shape = self.weekday_profile(as_of, product)
+        out = {"point": [], "q10": [], "q50": [], "q90": [], "dates": []}
+        for j in range(days_ahead):
+            day = as_of + pd.Timedelta(days=j)
+            wk = int((day - res["future_start"]).days // 7)
+            if wk < 0 or wk >= fc.point.shape[1]:
+                break
+            f = shape[day.dayofweek] / 7.0
+            out["dates"].append(day)
+            out["point"].append(float(fc.point[k, wk] * f))
+            out["q10"].append(float(fc.q[k, wk, 0] * f))
+            out["q50"].append(float(fc.q[k, wk, 4] * f))
+            out["q90"].append(float(fc.q[k, wk, 8] * f))
+        return out
+
+    def daily_demand_quantiles(self, as_of: pd.Timestamp, product: int, days_ahead: int) -> dict | None:
+        """Projected demand over the next days_ahead days (point, q10, q50, q90), summed from daily_path."""
+        path = self.daily_path(as_of, product, days_ahead)
+        if path is None:
+            return None
+        return {key: float(sum(path[key])) for key in ("point", "q10", "q50", "q90")}
 
 
 def customer_weekly(w: WorldData, as_of: pd.Timestamp) -> tuple[np.ndarray, list, pd.DatetimeIndex]:

@@ -59,6 +59,9 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
                      json.dumps({k: v for k, v in result.items() if k != "events"})])
         lab.execute("delete from proposals where dataset=? and run_id like 'RP-%'", [dataset])
         for p in raised:
+            # Bugs vs Fixes. Bug: a time-machine (TT-live) row with the same content-derived id made the insert fail
+            # with a duplicate key, so the whole replay aborted. Fix: replace any row with the same id before inserting.
+            lab.execute("delete from proposals where proposal_id=?", [p.proposal_id])
             lab.execute("""insert into proposals values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         [p.proposal_id, rid, dataset, p.agent, p.as_of, p.entity_type, p.entity_id, p.title, p.severity,
                          p.dollars_at_stake, p.confidence, p.autonomy_level, p.owner, json.dumps(p.evidence, default=str),

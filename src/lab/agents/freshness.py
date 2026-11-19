@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..engine.state import stock_at, unit_cost_at, weekly_matrix
+from ..engine.state import stock_at, unit_cost_at
 from .base import AgentContext, Proposal, dstr, series_evidence, severity_for
 
 NAME = "freshness"
@@ -22,23 +22,21 @@ def run(ctx: AgentContext) -> list[Proposal]:
         return []
     cost = unit_cost_at(w, as_of)
     prod = w.products.set_index("product_id")
-    mat, weeks = weekly_matrix(w, as_of)
-    res = ctx.fs.weekly(as_of, 4)
-    pos_in_fc = {int(pi): k for k, pi in enumerate(res["active"])}
     out: list[Proposal] = []
     recent = w.lines[(w.lines.delivery_date >= as_of - pd.Timedelta(days=56)) & (w.lines.delivery_date < as_of)]
     for pid, lots in stock.groupby("product_id"):
         pi = w.pidx[pid]
         lots = lots.sort_values("use_by_date")
         horizon = int(lots.dte.max()) + 1
-        d = ctx.fs.daily_demand_quantiles(as_of, pi, horizon)
-        if not d:
+        path = ctx.fs.daily_path(as_of, pi, horizon)
+        if not path or not path[P["demand_percentile"]]:
             continue
-        per_day = d[P["demand_percentile"]] / max(horizon, 1)
+        cum_demand = np.cumsum(path[P["demand_percentile"]])           # expected units sold through each day
         cum_before = 0.0
         at_risk_lots = []
         for lot in lots.itertuples():
-            consumable = per_day * (lot.dte + 1) - cum_before          # demand available to this lot before expiry
+            through = cum_demand[min(int(lot.dte), len(cum_demand) - 1)]
+            consumable = through - cum_before                          # demand available to this lot before expiry
             used = float(np.clip(consumable, 0, lot.qty))
             cum_before += lot.qty
             at_risk = lot.qty - used
@@ -61,12 +59,18 @@ def run(ctx: AgentContext) -> list[Proposal]:
                 "days_since_last": int((as_of - r.last).days), "orders": int(r.orders)} for cid, r in buyers.iterrows()]
         discount = 30 if soonest <= 2 else 20 if soonest <= 4 else 10
         conf = float(np.clip(0.55 + 0.4 * share - 0.05 * max(0, soonest - 5) / 5, 0.3, 0.95))
-        hist_x = [dstr(x) for x in weeks[-12:]]
-        fx = [dstr(res["future_start"] + pd.Timedelta(days=7 * i)) for i in range(4)]
-        k = pos_in_fc.get(pi); fc = res["fc"]
+        # Daily chart: the last 28 days of real orders, then the daily path. Weekly totals are kept in the method note.
+        dem_pi = w.demand[pi]
+        end_i = int(w.days.searchsorted(as_of))
+        hist_days = w.days[max(0, end_i - 28):end_i]
+        hist_x = [dstr(x) for x in hist_days]
+        hist_y = list(dem_pi[max(0, end_i - 28):end_i])
+        # Chart a fixed two weeks so every card looks alike; the expiry maths above uses only the lot horizon.
+        chart = ctx.fs.daily_path(as_of, pi, max(horizon, 14)) or path
+        fx = [dstr(x) for x in chart["dates"]]
         ev = {
-            "series": series_evidence(hist_x, mat[pi, -12:], fx, fc.q[k, :, 0], fc.q[k, :, 4], fc.q[k, :, 8], "units / week",
-                                      "Weekly demand and forecast band") if k is not None else None,
+            "series": series_evidence(hist_x, hist_y, fx, chart["q10"], chart["q50"], chart["q90"], "units / day",
+                                      "Daily demand and forecast band"),
             "facts": [
                 {"label": "On hand", "value": round(on_hand_total, 1), "unit": "units"},
                 {"label": "Lots at risk", "value": len(at_risk_lots), "unit": f"of {len(lots)}"},
@@ -75,7 +79,7 @@ def run(ctx: AgentContext) -> list[Proposal]:
                 {"label": "Cost at risk", "value": round(dollars, 2), "unit": "$"},
             ],
             "why": f"{at_risk_total:.0f} of {on_hand_total:.0f} units are expected to still be on the shelf at use-by, after first-expiry-first-out against the forecast.",
-            "method": "Weekly TimesFM 3 median demand spread evenly over the window; lots consumed first-expiry-first-out.",
+            "method": "TimesFM 3 median for each week, split by this product's weekday pattern (last 12 weeks, shrunk toward flat); lots consumed first-expiry-first-out.",
             "targets": tgt, "lots": at_risk_lots,
         }
         out.append(Proposal(NAME, dstr(as_of), "product", pid,

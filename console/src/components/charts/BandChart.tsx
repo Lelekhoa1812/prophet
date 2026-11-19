@@ -13,7 +13,9 @@ export interface BandSeries {
 
 /** Hand-built SVG chart: history line, forecast median, 10-90 band, baselines, actuals, truth, event shading.
  *  Dates are positioned on a real time axis, hover shows every series at that date. */
-export function BandChart({ s, height = 280, label }: { s: BandSeries; height?: number; label?: string }) {
+/** Hand-built SVG chart. `clip` scales to the 97th percentile so one lumpy order cannot flatten the forecast;
+ *  taller points are capped at the top edge and the real peak is printed. Off by default for the Explorer. */
+export function BandChart({ s, height = 280, label, clip = false }: { s: BandSeries; height?: number; label?: string; clip?: boolean }) {
   const W = 760, H = height, m = { l: 48, r: 14, t: 12, b: 26 };
   const [hover, setHover] = useState<number | null>(null);
   const t = (iso: string) => new Date(iso + "T00:00:00").getTime();
@@ -21,11 +23,17 @@ export function BandChart({ s, height = 280, label }: { s: BandSeries; height?: 
     const xs = [...s.history.x, ...(s.forecast?.x ?? []), ...(s.truth?.x ?? [])].map(t);
     const x0 = Math.min(...xs), x1 = Math.max(...xs);
     const ys = [...s.history.y, ...(s.forecast?.q90 ?? []), ...(s.forecast?.q10 ?? []), ...(s.truth?.y ?? []), ...((s.actual?.y.filter((v) => v != null) as number[]) ?? [])];
-    const y1 = Math.max(1, ...ys) * 1.08;
-    return { x0, x1: x1 === x0 ? x0 + 1 : x1, y1 };
+    const peak = Math.max(1, ...ys);
+    let y1 = peak * 1.08;
+    if (clip) {
+      const sorted = [...ys].sort((a, b) => a - b);
+      const p97 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.97))];
+      y1 = Math.max(1, p97, ...(s.forecast?.q90 ?? []), 1) * 1.12;
+    }
+    return { x0, x1: x1 === x0 ? x0 + 1 : x1, y1, peak };
   }, [s]);
   const X = (iso: string) => m.l + ((t(iso) - model.x0) / (model.x1 - model.x0)) * (W - m.l - m.r);
-  const Y = (v: number) => H - m.b - (v / model.y1) * (H - m.t - m.b);
+  const Y = (v: number) => H - m.b - (Math.min(v, model.y1) / model.y1) * (H - m.t - m.b);
   const line = (xs: string[], ys: (number | null)[]) => xs.map((x, i) => (ys[i] == null ? "" : `${i && ys[i - 1] != null ? "L" : "M"}${X(x).toFixed(1)},${Y(ys[i] as number).toFixed(1)}`)).join(" ");
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * model.y1);
   const all = useMemo(() => {
@@ -40,6 +48,7 @@ export function BandChart({ s, height = 280, label }: { s: BandSeries; height?: 
     : null;
   return (
     <figure className="w-full" aria-label={label ?? "Demand history and forecast"}>
+      {clip && model.peak > model.y1 && <p className="mb-1 text-right text-[10px] text-muted-foreground">Peak {fmt(model.peak)} (scale capped so the forecast stays readable)</p>}
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full select-none" role="img"
         onMouseLeave={() => setHover(null)}
         onMouseMove={(e) => {
