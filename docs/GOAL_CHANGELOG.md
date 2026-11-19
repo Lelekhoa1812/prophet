@@ -68,3 +68,8 @@
 ## Loop 11, 19 Nov 2026
 - User approved raising the freshness ranking cost. Default is now shortfall $1,500 and freshness $1,500 (ranking only; the what-if still values at $200). Held-out expected net +28% vs the old default. Suite run below.
 - Full twin replay under the new defaults persisted; stored scorecard now matches the policy. Shortfall now catches fewer stockouts (41% of events, 59.9% of dollars) in exchange for fewer wrong alerts; freshness improves on every measure.
+
+## Loop 12, 19 Nov 2026
+- Gap (S4): read-only staging was a client promise. Audit found the login can write everywhere.
+- Change: `check_select` (raises, single statement, write words refused), READ ONLY transactions, `role_audit` stored in dataset meta, exposed in `/api/meta`, console warning. Tests: 9 new, suite passes.
+- Residual: the role itself is unchanged (needs a reader login, B12). Existing safeguards limit the lab, not a mistaken or malicious caller with these credentials.

@@ -25,6 +25,13 @@ export function Developer() {
     <>
       <PageHeader eyebrow="Developer" title="Models, runs and the API"
         description="Everything the other pages show is produced here. Backtests and replays run as background jobs; results are stored, so reloading never loses work." />
+      {meta?.datasets.staging?.role_audit?.can_write && (
+        <div className="mb-6"><InlineAlert tone="warning" title="The staging connection role can write">
+          Staging is read from a database role with write rights on {meta.datasets.staging.role_audit.writable_relations} of {meta.datasets.staging.role_audit.total_relations} tables
+          {meta.datasets.staging.role_audit.superuser_like ? " (superuser-like)" : ""}. The lab only runs fixed SELECT statements in a read-only session, but that is the lab's own discipline, not a database limit.
+          A dedicated read-only login is needed before any shared use.
+        </InlineAlert></div>
+      )}
       <section className="mb-6 grid gap-4 md:grid-cols-4" aria-label="Model status">
         <Card><CardContent className="p-5"><Stat label="Model" value="TimesFM 3.0" sub={meta?.model.backend} /></CardContent></Card>
         <Card><CardContent className="p-5"><Stat label="Weights" value={meta?.model.loaded ? "Loaded" : "On first use"} sub={meta?.model.checkpoint} /></CardContent></Card>

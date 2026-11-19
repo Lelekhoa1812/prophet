@@ -6,6 +6,7 @@ code-to-name map lives in a separate local file used only when the console's rev
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 
@@ -21,7 +22,44 @@ from .pseudo import CodeBook, stable_hash
 def short(kind: str, real_id) -> str:
     return stable_hash(kind, real_id)[:8].upper()
 
-SELECT_ONLY = re.compile(r"^\s*select\b", re.I)
+SELECT_ONLY = re.compile(r"^\s*(select|with)\b", re.I)
+_WRITE_WORDS = re.compile(r"\b(insert|update|delete|merge|truncate|create|alter|drop|grant|revoke|copy|call|do|set|reset|vacuum|lock)\b|\binto\b", re.I)
+
+
+def check_select(sql: str) -> None:
+    """Refuse anything that is not one plain read. A second line of defence only: the database role is the real limit.
+
+    Bugs vs Fixes
+    Bug: the guard was an `assert`, which Python removes under `-O`, and it only checked the first word, so
+    'select 1; drop table x' or 'select ... into t' would have passed.
+    Fix: raise PermissionError, require a single statement, and reject write keywords outside string literals.
+    """
+    body = re.sub(r"'(?:[^']|'')*'", "''", sql).strip().rstrip(";")
+    if not SELECT_ONLY.match(body) or ";" in body or _WRITE_WORDS.search(body):
+        raise PermissionError(f"non-read query refused: {sql[:60]!r}")
+
+
+def role_audit(cur) -> dict:
+    """What the connected database role could do, from catalog reads only. Printed without any connection detail.
+
+    Motivation vs Logic
+    Motivation: read-only was enforced by a client-side session setting. A role that can write plus a client that
+    behaves is protection by convention. 19 Nov 2026 audit: the role was a member of neon_superuser, owned 1,463
+    relations and could write to all 209 visible relations.
+    Logic: record superuser-like flags, role memberships and how many relations the role may INSERT/UPDATE/DELETE.
+    """
+    cur.execute("select rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, rolreplication from pg_roles where rolname=current_user")
+    flags = cur.fetchone()
+    cur.execute("select r.rolname from pg_auth_members m join pg_roles r on r.oid=m.roleid join pg_roles u on u.oid=m.member where u.rolname=current_user")
+    member_of = sorted(x[0] for x in cur.fetchall())
+    cur.execute("""select count(*) filter (where has_table_privilege(current_user, c.oid,'INSERT') or has_table_privilege(current_user, c.oid,'UPDATE')
+                                              or has_table_privilege(current_user, c.oid,'DELETE') or has_table_privilege(current_user, c.oid,'TRUNCATE')), count(*)
+                   from pg_class c join pg_namespace n on n.oid=c.relnamespace
+                   where c.relkind in ('r','p','v','m') and n.nspname not in ('pg_catalog','information_schema')""")
+    writable, total = cur.fetchone()
+    return {"superuser_like": bool(any(flags) or "neon_superuser" in member_of), "member_of": member_of, "writable_relations": int(writable),
+            "total_relations": int(total), "can_write": int(writable) > 0,
+            "note": "Read-only is enforced by the client session only." if int(writable) > 0 else "Role has no write privileges."}
 
 QUERIES = {
     "lines": """
@@ -63,7 +101,7 @@ QUERIES = {
 
 def _fetch(cur, name: str) -> pd.DataFrame:
     sql = QUERIES[name]
-    assert SELECT_ONLY.match(sql), f"non-select query refused: {name}"
+    check_select(sql)
     cur.execute(sql)
     cols = [d.name for d in cur.description]
     df = pd.DataFrame(cur.fetchall(), columns=cols)
@@ -76,7 +114,9 @@ def _fetch(cur, name: str) -> pd.DataFrame:
 def extract() -> dict:
     url = read_env_value("STAGING_TENANT_DATABASE_URL")
     conn = psycopg.connect(url, connect_timeout=20, options="-c default_transaction_read_only=on")
+    conn.read_only = True                          # every transaction starts READ ONLY, besides the session option
     cur = conn.cursor()
+    audit = role_audit(cur)
     raw = {k: _fetch(cur, k) for k in QUERIES}
     conn.rollback()
     conn.close()
@@ -151,8 +191,8 @@ def extract() -> dict:
         con.unregister("df_in")
 
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    con.execute("INSERT INTO meta VALUES ('source','FoodFlow staging tenant (read-only, pseudonymised)'),"
-                f"('extracted_at','{stamp}')")
+    con.execute("INSERT INTO meta VALUES ('source','FoodFlow staging tenant (read-only session, pseudonymised)'),"
+                f"('extracted_at','{stamp}'),('role_audit','{json.dumps(audit)}')")
     lo, hi = con.execute("select min(delivery_date), max(delivery_date) from order_lines").fetchone()
     con.execute(f"INSERT INTO meta VALUES ('first_date','{lo}'),('last_date','{hi}')")
 

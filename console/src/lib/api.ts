@@ -24,7 +24,7 @@ export interface AgentInfo {
 }
 export interface Meta {
   model: { name: string; checkpoint: string; backend: string; loaded: boolean; licence: string; licence_status: string };
-  datasets: Record<string, { key: string; source: string; first: string; last: string; counts: Record<string, number>; revenue: number; has_truth: boolean; extracted_at?: string }>;
+  datasets: Record<string, { key: string; source: string; first: string; last: string; counts: Record<string, number>; revenue: number; has_truth: boolean; extracted_at?: string; role_audit?: { can_write: boolean; writable_relations: number; total_relations: number; superuser_like: boolean; note: string } | null }>;
   agents: Record<string, { title: string; owner: string; cadence: string; summary: string }>;
   bedrock: { model: string; spent_usd: number; cap_usd: number };
   ladder: { key: string; label: string }[];

@@ -120,7 +120,8 @@ def _dataset_card(ds: str) -> dict:
     rev = con.execute("select coalesce(sum(qty*coalesce(unit_price,0)),0) from order_lines where not coalesce(cancelled,false)").fetchone()[0]
     con.close()
     return {"key": ds, "source": meta.get("source"), "first": meta.get("first_date"), "last": meta.get("last_date"), "counts": n, "revenue": float(rev),
-            "has_truth": n["truth_events"] > 0, "extracted_at": meta.get("extracted_at")}
+            "has_truth": n["truth_events"] > 0, "extracted_at": meta.get("extracted_at"),
+            "role_audit": json.loads(meta["role_audit"]) if meta.get("role_audit") else None}
 
 
 @app.get("/api/datasets/{ds}/summary")
