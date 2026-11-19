@@ -88,3 +88,6 @@
 ## Loop 15, 19 Nov 2026
 - Gap (lens H): no accessibility audit. Automated route scan found target sizes below 24 px and heading skips. Fixed in the console (links, switches, h2/h3 levels). Re-scan: no skips except none remaining on 7 routes, small targets only the native slider.
 - Residual: manual keyboard, screen-reader and dark-mode contrast checks not done.
+
+## Loop 16, 19 Nov 2026
+- Gap: contrast never measured. Measured, found light and dark failures, fixed with colour tokens, re-measured clean (text only). Methodological note: measure with transitions disabled in the background browser pane.

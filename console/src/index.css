@@ -22,10 +22,11 @@
   --accent-foreground: #132a3b;
   --foreground: #132a3b;
   --background: #ffffff;
-  --destructive: #ef4444;
-  --status-success: #22c55e;
-  --status-warning: #f59e0b;
-  --status-error: #ef4444;
+  /* Text-safe status colours (WCAG AA 4.5:1 on white). The old #22c55e, #f59e0b and #ef4444 measured 2.3, 2.1 and 3.8. */
+  --destructive: #dc2626;
+  --status-success: #15803d;
+  --status-warning: #b45309;
+  --status-error: #dc2626;
   --status-info: #123de8;
   --status-neutral: #6b7280;
   --fresh: #22c55e;
@@ -41,7 +42,7 @@
   --card: #ffffff;
   --card-foreground: #132a3b;
   --muted: #f1f5f9;
-  --muted-foreground: #64748b;
+  --muted-foreground: #475569;
   --menu-hover: #f5f7fb;
   --menu-shadow: 0 8px 24px rgba(19, 42, 59, 0.12);
   --row-hover: #fffbeb;
@@ -65,11 +66,16 @@
   --accent-foreground: #f8fafc;
   --muted: #1e293b;
   --muted-foreground: #94a3b8;
+  --destructive: #f87171;
+  --status-success: #4ade80;
+  --status-warning: #fbbf24;
+  --status-error: #f87171;
   --input: #334155;
   --border: #334155;
   --menu-hover: #243349;
   --row-hover: #3a2a0f;
   --primary: #2fae7c;
+  --primary-foreground: #0f172a;   /* white on this green measured 2.8:1; navy measures 6.4:1 */
   --chart-history: #e2e8f0;
   --chart-forecast: #34d1cd;
   --chart-band: rgba(52, 209, 205, 0.22);
