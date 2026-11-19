@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "timesfm-erp",
+      "runtimeExecutable": "/Users/liamle/Downloads/Axion/timesfm-erp/.venv/bin/uvicorn",
+      "runtimeArgs": ["lab.api.main:app", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}
