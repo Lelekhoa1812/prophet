@@ -52,6 +52,7 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
         sev_false = int(sum(1 for f, s in zip(flags, sub.severity) if (not f) and s == "high"))
         sev_total = int((sub.severity == "high").sum())
         caught = [e for e in events if e["caught"]]
+        res.setdefault("flags", {})[agent] = dict(zip(sub.proposal_id.tolist(), [bool(f) for f in flags])) if "proposal_id" in sub else {}
         res["agents"][agent] = {
             "proposals": len(sub), "useful": tp, "precision": (tp / len(sub)) if len(sub) else None,
             "severe_false_rate": (sev_false / sev_total) if sev_total else 0.0,

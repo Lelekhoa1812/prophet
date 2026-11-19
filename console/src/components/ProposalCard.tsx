@@ -61,7 +61,8 @@ export function ProposalCard({ p, onDecided, compact = false }: { p: Proposal; o
           <div className="text-right">
             <p className="eyebrow">At stake</p>
             <p className="text-xl font-semibold tabular">{money(p.dollars_at_stake)}</p>
-            <p className="text-xs text-muted-foreground">Confidence {pct(p.confidence)}</p>
+            {p.useful_rate == null && <p className="text-xs text-muted-foreground">Confidence {pct(p.confidence)}</p>}
+            {p.useful_rate != null && <p className="text-xs text-muted-foreground">Alerts scored like this were useful {pct(p.useful_rate, 0)} of the time on this client's history</p>}
           </div>
         </div>
 

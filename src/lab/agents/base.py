@@ -37,6 +37,7 @@ class Proposal:
     owner: str = "buyer"
     autonomy_level: str = "prepares"   # explains / suggests / prepares / acts / runs
     proposal_id: str = ""
+    segment: str | None = None         # what the alert is about, for learning (product category)
     p_event: float | None = None       # chance the thing the alert warns about really happens (None when not modelled)
 
     def finalise(self) -> "Proposal":

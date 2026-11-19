@@ -4,12 +4,31 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..engine.profile import margin_for, qty_at_percentile, spend_at_percentile, tenant_profile
 from ..engine.state import customer_fc, week_start
 from .base import AgentContext, Proposal, dstr, series_evidence, severity_for
 
 NAME = "customer"
-DEFAULTS = {"min_weekly_spend": 400.0, "slowdown_ratio": 0.5, "min_active_weeks": 9, "lapse_min_days": 21, "lapse_gap_multiple": 4.0,
-            "lapse_min_orders": 12, "keying_multiple": 8.0, "keying_min_qty": 25.0, "gross_margin": 0.18}
+# Tenant-relative: None means "measure it from this client's own history" (percentiles and actual margins).
+# A number overrides the measurement, for tests and for clients who want a fixed rule.
+DEFAULTS = {"min_spend_percentile": 10, "min_weekly_spend": None, "slowdown_ratio": 0.5, "min_active_weeks": 9, "lapse_min_days": 21, "lapse_gap_multiple": 4.0,
+            "lapse_min_orders": 12, "keying_multiple": 8.0, "keying_qty_percentile": 89, "keying_min_qty": None, "gross_margin": None}
+
+
+def _resolve(ctx: AgentContext, P: dict) -> dict:
+    """Fill the tenant-relative settings from the client's trailing 12 weeks."""
+    prof = tenant_profile(ctx.world, ctx.as_of)
+    R = dict(P)
+    if R["min_weekly_spend"] is None:
+        R["min_weekly_spend"] = spend_at_percentile(prof, R["min_spend_percentile"], 400.0)
+    if R["keying_min_qty"] is None:
+        R["keying_min_qty"] = qty_at_percentile(prof, R["keying_qty_percentile"], 25.0)
+    R["_profile"] = prof
+    return R
+
+
+def _margin(P: dict, customer_id: str) -> float:
+    return P["gross_margin"] if P["gross_margin"] is not None else margin_for(P["_profile"], customer_id)
 
 
 def _slowdown(ctx: AgentContext, P: dict) -> list[Proposal]:
@@ -41,7 +60,7 @@ def _slowdown(ctx: AgentContext, P: dict) -> list[Proposal]:
             continue
         cid = now["cids"][ci]
         gap = max(q50 - last, 0) * 2
-        dollars = gap * P["gross_margin"]
+        dollars = gap * _margin(P, cid)
         conf = float(np.clip(1 - ratio, 0.4, 0.95))
         fx = [dstr(now["future_start"] + pd.Timedelta(days=7 * i)) for i in range(2)]
         ev = {
@@ -78,7 +97,8 @@ def _lapse(ctx: AgentContext, P: dict) -> list[Proposal]:
         weekly = float(rev.get(cid, 0)) / 13
         if since < threshold or since > 120 or weekly < P["min_weekly_spend"] * 0.5:
             continue
-        dollars = weekly * (since / 7) * P["gross_margin"] * 0.5 + weekly * 4 * P["gross_margin"]
+        gm = _margin(P, cid)
+        dollars = weekly * (since / 7) * gm * 0.5 + weekly * 4 * gm
         conf = float(np.clip(0.5 + 0.1 * (since / max(threshold, 1) - 1), 0.45, 0.92))
         ev = {"facts": [{"label": "Days since last order", "value": since, "unit": "days"},
                         {"label": "Usual gap between orders", "value": med, "unit": "days"},
@@ -136,7 +156,7 @@ def _keying(ctx: AgentContext, P: dict) -> list[Proposal]:
 
 
 def run(ctx: AgentContext) -> list[Proposal]:
-    P = {**DEFAULTS, **ctx.params}
+    P = _resolve(ctx, {**DEFAULTS, **ctx.params})
     out = _keying(ctx, P)
     if ctx.as_of.dayofweek == 0:                      # cadence and volume checks run on Mondays
         out += _slowdown(ctx, P) + _lapse(ctx, P)

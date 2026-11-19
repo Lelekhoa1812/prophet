@@ -16,12 +16,12 @@ def test_phase_demo_shadow_live(tmp_path, monkeypatch):
 def test_learning_is_bounded_logged_and_needs_enough_decisions(tmp_path, monkeypatch):
     monkeypatch.setattr(rollout, "DATA", tmp_path)
     cfg = rollout.load("t")
-    few = [("shortfall", "approve", None)] * 5
+    few = [("shortfall", "approve", None, "P-1")] * 5
     assert rollout.learn("t", few, cfg) == []
     # 30 useful, 0 wrong: precision 1.0, so a step up capped at +10% per call
-    good = [("shortfall", "approve", None)] * 30
+    good = [("shortfall", "approve", None, "P-1")] * 30
     ch = rollout.learn("t", good, rollout.load("t"))
-    assert ch and ch[0]["new"] == 1.1
+    assert ch and [c for c in ch if c["kind"] == "agent"][0]["new"] == 1.1
     for _ in range(20):
         rollout.learn("t", good, rollout.load("t"))
     assert rollout.economics_of(rollout.load("t")).agent_weight["shortfall"] == Economics().weight_bounds[1]
@@ -30,5 +30,5 @@ def test_learning_is_bounded_logged_and_needs_enough_decisions(tmp_path, monkeyp
 
 def test_operator_context_dismissals_do_not_count_against_an_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(rollout, "DATA", tmp_path)
-    rows = [("freshness", "approve", None)] * 10 + [("freshness", "dismiss", "one_off")] * 40
+    rows = [("freshness", "approve", None, "P-1")] * 10 + [("freshness", "dismiss", "one_off", "P-1")] * 40
     assert rollout.learn("t", rows, rollout.load("t")) == [] or rollout.learn("t", rows, rollout.load("t"))[0]["basis"]["not_useful"] == 0

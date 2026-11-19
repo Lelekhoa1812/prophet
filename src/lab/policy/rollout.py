@@ -29,6 +29,7 @@ SEASONAL_WEEKS = 52               # below this no seasonal claims are made
 MIN_PRECISION = 0.30              # below this an agent stays in shadow
 MIN_DECISIONS_TO_LEARN = 20
 TARGET_PRECISION = 0.50
+SEGMENT_MIN_DECISIONS = 8       # a segment needs this many reviewed alerts before its weight moves
 MAX_STEP = 0.10                   # one learning step moves a weight by at most 10%
 
 
@@ -53,7 +54,7 @@ def save(ds: str, cfg: dict) -> None:
 
 def economics_of(cfg: dict) -> alerts.Economics:
     e = cfg["economics"]
-    return alerts.from_dict({k: e[k] for k in ("review_cost", "effectiveness", "budget_per_owner", "false_alarm_cost", "agent_weight") if k in e})
+    return alerts.from_dict({k: e[k] for k in ("review_cost", "effectiveness", "budget_per_owner", "false_alarm_cost", "agent_weight", "segment_weight") if k in e})
 
 
 def phase(cfg: dict, as_of: date | str) -> dict:
@@ -72,20 +73,34 @@ def phase(cfg: dict, as_of: date | str) -> dict:
 
 
 def learn(ds: str, rows: list[tuple], cfg: dict | None = None) -> list[dict]:
-    """rows: (agent, decision, reason) from approvals and dismissals. Returns the weight changes made (also logged).
+    """rows: (agent, decision, reason, entity_id) from approvals and dismissals. Returns the weight changes made (also logged).
 
-    Only 'wrong alert' and 'not useful' dismissals count against an agent; 'one-off' and 'known promo' are the
-    operator's context, not a bad alert. Weights move at most MAX_STEP per call and stay inside the tenant's bounds.
+    Only 'wrong alert' and 'not useful' dismissals count against an agent; 'one-off' and 'known promo' are the operator's
+    context, not a bad alert. Two things are learned: a priority per agent (needs MIN_DECISIONS_TO_LEARN) and a priority per
+    segment, here the product category (policy/learning.py). Each call moves a weight by at most MAX_STEP and weights stay
+    inside the tenant's bounds.
     """
+    from .learning import SegmentLearner
     cfg = cfg or load(ds)
     econ = economics_of(cfg)
+    seg_of: dict = {}
+    try:
+        w = get_world(ds)
+        seg_of = {pid: str(c) for pid, c in w.products.set_index("product_id").category.items()}
+    except Exception:                                    # no world loaded: agent-level learning still works
+        pass
     by: dict[str, list[int]] = {}
-    for agent, decision, reason in rows:
-        c = by.setdefault(agent, [0, 0])                     # [good, bad]
-        if decision in ("approve", "adjust"):
-            c[0] += 1
-        elif decision == "dismiss" and reason in ("wrong_alert", "not_useful"):
-            c[1] += 1
+    learner = SegmentLearner(bounds=econ.weight_bounds)
+    for row in rows:
+        agent, decision, reason = row[0], row[1], row[2]
+        entity = row[3] if len(row) > 3 else None
+        useful = decision in ("approve", "adjust")
+        if not useful and not (decision == "dismiss" and reason in ("wrong_alert", "not_useful")):
+            continue
+        c = by.setdefault(agent, [0, 0])                 # [good, bad]
+        c[0 if useful else 1] += 1
+        learner.observe(agent, seg_of.get(entity), useful)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     changes = []
     for agent, (good, bad) in by.items():
         n = good + bad
@@ -96,13 +111,54 @@ def learn(ds: str, rows: list[tuple], cfg: dict | None = None) -> list[dict]:
         step = float(np.clip(prec / TARGET_PRECISION, 1 - MAX_STEP, 1 + MAX_STEP))
         new = alerts.bounded_weight(econ, agent, old * step)
         if abs(new - old) > 1e-9:
-            changes.append({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "agent": agent, "old": round(old, 3),
-                            "new": round(new, 3), "basis": {"useful": good, "not_useful": bad, "precision": round(prec, 3), "target": TARGET_PRECISION}})
+            changes.append({"at": now, "kind": "agent", "key": agent, "agent": agent, "old": round(old, 3), "new": round(new, 3),
+                            "basis": {"useful": good, "not_useful": bad, "precision": round(prec, 3), "target": TARGET_PRECISION}})
+    lo, hi = econ.weight_bounds
+    for key, target in learner.weights().items():
+        n = learner.total[key]
+        if n < SEGMENT_MIN_DECISIONS:
+            continue
+        old = econ.segment_weight.get(key, 1.0)
+        new = round(float(np.clip(target, max(lo, old * (1 - MAX_STEP)), min(hi, old * (1 + MAX_STEP)))), 3)
+        if abs(new - old) > 1e-9:
+            econ.segment_weight[key] = new
+            changes.append({"at": now, "kind": "segment", "key": key, "agent": key.split("|")[0], "old": round(old, 3), "new": new,
+                            "basis": {"useful": learner.good.get(key, 0), "not_useful": n - learner.good.get(key, 0),
+                                      "precision": round(learner.good.get(key, 0) / n, 3), "target": round(target, 3)}})
     if changes:
         cfg["economics"] = econ.describe()
-        cfg["learning_log"] = (cfg["learning_log"] + changes)[-200:]
+        cfg["learning_log"] = (cfg["learning_log"] + changes)[-400:]
         save(ds, cfg)
     return changes
+
+
+def calibrate(ds: str, cand_name: str | None = None) -> dict:
+    """Fit, per agent, how often alerts at each stated chance proved useful on this client's recorded history."""
+    import numpy as np
+    from ..sim.policy_sim import flag_candidates, load_candidates
+    from ..sim.replay import scored_window
+    from . import calibration
+    w = get_world(ds)
+    cands = load_candidates(cand_name or f"cand_{ds}.pkl")
+    flags = flag_candidates(cands, ds, scored_window(w))
+    cfg = load(ds)
+    out = {}
+    for ag in sorted({c["agent"] for c in cands}):
+        t = [c for c in cands if c["agent"] == ag and c.get("p_event") is not None]
+        m = calibration.fit(np.array([c["p_event"] for c in t]), np.array([flags.get(c["proposal_id"], False) for c in t]))
+        if m:
+            out[ag] = m
+    cfg["calibration"] = out
+    cfg["calibrated_on"] = {"alerts": len(cands), "window": [str(x.date()) for x in scored_window(w)]}
+    save(ds, cfg)
+    return out
+
+
+def useful_rate(cfg: dict, agent: str, p_event) -> float | None:
+    """How often alerts like this proved useful on this client's history, or None when not calibrated."""
+    from . import calibration
+    m = (cfg.get("calibration") or {}).get(agent)
+    return None if (m is None or p_event is None) else round(calibration.apply(m, float(p_event)), 3)
 
 
 def readiness(ds: str, agent: str, weeks: int = 13, econ: alerts.Economics | None = None) -> dict:

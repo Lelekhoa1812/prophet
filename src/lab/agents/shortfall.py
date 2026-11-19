@@ -91,17 +91,18 @@ def run(ctx: AgentContext) -> list[Proposal]:
                 {"label": "On hand", "value": round(oh, 1), "unit": "units"},
                 {"label": "Inbound before window ends", "value": round(inbound, 1), "unit": "units"},
                 {"label": f"Demand next {window}d (typical / high)", "value": f"{p50:.0f} / {p90:.0f}", "unit": "units"},
-                {"label": "Chance of running short", "value": f"{p_short * 100:.0f}%", "unit": ""},
+                {"label": "Model chance demand exceeds stock", "value": f"{p_short * 100:.0f}%", "unit": ""},
                 {"label": "Expected units short", "value": round(exp_short, 1), "unit": "units"},
                 {"label": "Supplier lead time (recent POs)", "value": lead, "unit": "days"},
                 {"label": "Margin per unit", "value": round(margin, 2), "unit": "$"},
             ],
             "why": f"Stock plus inbound ({position:.0f} units) is below demand in {p_short * 100:.0f}% of the forecast range over the next {window} days; expected shortfall {exp_short:.0f} units.",
+            "p_event": round(p_short, 4),
             "method": "TimesFM 3 weekly forecast range, split by this product's weekday pattern and summed over the window; shortfall and chance computed over the whole range.",
         }
         out.append(Proposal(NAME, dstr(as_of), "product", pid, title, severity_for(dollars, conf), round(dollars, 2), round(conf, 2),
                             ev, {"type": "raise_purchase_order", "product_id": pid, "qty": qty, "supplier": _last_supplier(w, pid, as_of),
                                  "needed_by": dstr(as_of + pd.Timedelta(days=window)), "est_cost": round(qty * c, 2)},
-                            f"shortfall|{pid}", owner="buyer", p_event=round(p_short, 4)).finalise())
+                            f"shortfall|{pid}", owner="buyer", segment=str(prod.category.get(pid, "")) or None, p_event=round(p_short, 4)).finalise())
     out.sort(key=lambda p: -p.dollars_at_stake)
     return out

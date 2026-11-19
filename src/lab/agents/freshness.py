@@ -92,6 +92,7 @@ def run(ctx: AgentContext) -> list[Proposal]:
             ],
             "why": f"{at_risk_total:.0f} of {on_hand_total:.0f} units are expected to still be on the shelf at use-by, averaged over the forecast range with first-expiry-first-out.",
             "method": "TimesFM 3 forecast range for each week, split by this product's weekday pattern (last 12 weeks, shrunk toward flat); lots consumed first-expiry-first-out on each of 1,000 sampled demand paths, then averaged.",
+            "p_event": round(p_expire, 4),
             "targets": tgt, "lots": at_risk_lots,
         }
         out.append(Proposal(NAME, dstr(as_of), "product", pid,
@@ -100,6 +101,6 @@ def run(ctx: AgentContext) -> list[Proposal]:
                             {"type": "sell_down_offer", "product_id": pid, "qty": round(at_risk_total, 1),
                              "suggested_discount_pct": discount, "valid_until": dstr(as_of + pd.Timedelta(days=max(soonest, 1))),
                              "lots": at_risk_lots, "target_customers": tgt},
-                            f"freshness|{pid}", owner="sales", p_event=round(p_expire, 4)).finalise())
+                            f"freshness|{pid}", owner="sales", segment=str(prod.category.get(pid, "")) or None, p_event=round(p_expire, 4)).finalise())
     out.sort(key=lambda p: -p.dollars_at_stake)
     return out

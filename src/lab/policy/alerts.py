@@ -28,6 +28,7 @@ class Economics:
     false_alarm_cost: float = 200.0      # dollars lost when an alert that did not happen is acted on (wasted order, wasted call)
     weight_bounds: tuple = (0.5, 2.0)    # learning may scale an agent's score only within these
     agent_weight: dict = field(default_factory=dict)
+    segment_weight: dict = field(default_factory=dict)      # 'agent|segment' -> learned multiplier, bounded like agent_weight
 
     @property
     def floor(self) -> float:
@@ -35,7 +36,7 @@ class Economics:
 
     def describe(self) -> dict:
         return {"review_cost": self.review_cost, "effectiveness": self.effectiveness, "budget_per_owner": self.budget_per_owner, "false_alarm_cost": self.false_alarm_cost,
-                "score_floor": round(self.floor, 2), "agent_weight": dict(self.agent_weight)}
+                "score_floor": round(self.floor, 2), "agent_weight": dict(self.agent_weight), "segment_weight": dict(self.segment_weight)}
 
 
 def from_dict(d: dict | None) -> Economics:
@@ -57,8 +58,13 @@ def _get(p, k, default=None):
 
 
 def value_of(p, econ: Economics) -> float:
-    """Expected dollars at stake, scaled by the agent's bounded learned weight. This is what the floor tests."""
-    return float(_get(p, "dollars_at_stake", 0.0)) * econ.agent_weight.get(_get(p, "agent"), 1.0)
+    """Expected dollars at stake, scaled by the learned weights for its agent and its segment (both bounded).
+    This is what the floor tests."""
+    w = econ.agent_weight.get(_get(p, "agent"), 1.0)
+    seg = _get(p, "segment")
+    if seg is not None:
+        w *= econ.segment_weight.get(f"{_get(p, 'agent')}|{seg}", 1.0)
+    return float(_get(p, "dollars_at_stake", 0.0)) * w
 
 
 def net_value(p, econ: Economics) -> float:

@@ -10,7 +10,7 @@ export interface SeriesEvidence {
 }
 export interface Proposal {
   proposal_id: string; agent: string; as_of: string; entity_type: string; entity_id: string; title: string;
-  severity: Severity; dollars_at_stake: number; confidence: number; autonomy_level: string; owner: string; status: string;
+  useful_rate?: number | null; severity: Severity; dollars_at_stake: number; confidence: number; autonomy_level: string; owner: string; status: string;
   evidence: { series?: SeriesEvidence | null; facts?: Fact[]; why?: string; method?: string; targets?: any[]; lots?: any[] };
   action: Record<string, any>; narration_templated?: string; narration_model?: string | null;
   decisions?: { at: string; by: string; decision: string; reason?: string; note?: string }[];

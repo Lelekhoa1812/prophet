@@ -132,8 +132,8 @@ export function Rollout() {
             <div>
               <h4 className="mb-1 text-sm font-semibold">What the system has learned</h4>
               {t.learning_log.length === 0
-                ? <p className="text-xs text-muted-foreground">Nothing yet. After about 20 approvals or dismissals per agent, priorities may shift by up to 10% a step, never outside 0.5 to 2 times, and every change is listed here.</p>
-                : <ul className="text-xs">{t.learning_log.map((l: any) => <li key={l.at + l.agent}>{l.at.slice(0, 10)}: {l.agent} priority {l.old} to {l.new} ({pct(l.basis.precision, 0)} of {l.basis.useful + l.basis.not_useful} reviewed were useful)</li>)}</ul>}
+                ? <p className="text-xs text-muted-foreground">Nothing yet. As operators approve or dismiss alerts, the system learns which kinds (for example a product category) it can trust. Priorities move by at most 10% a step, never outside 0.5 to 2 times, and every change is listed here. Nothing disappears: a distrusted kind drops down the list into the digest.</p>
+                : <ul className="text-xs">{t.learning_log.map((l: any) => <li key={l.at + (l.key ?? l.agent)}>{l.at.slice(0, 10)}: {(l.key ?? l.agent).replace("|", " · ")} priority {l.old} to {l.new} ({pct(l.basis.precision, 0)} of {l.basis.useful + l.basis.not_useful} reviewed were useful)</li>)}</ul>}
             </div>
           </>
         )}

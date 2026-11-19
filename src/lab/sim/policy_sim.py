@@ -16,6 +16,7 @@ import pandas as pd
 
 from ..config import DATA
 from ..policy import alerts
+from ..policy.learning import SegmentLearner
 from ..policy.governor import Governor
 from .scorer import score
 
@@ -24,7 +25,21 @@ def load_candidates(name: str = "cand_twin.pkl") -> list[dict]:
     return pickle.loads((DATA / name).read_bytes())
 
 
-def simulate(candidates: list[dict], econ: alerts.Economics, dataset: str, window: tuple[pd.Timestamp, pd.Timestamp]) -> dict:
+def flag_candidates(candidates: list[dict], dataset: str, window: tuple[pd.Timestamp, pd.Timestamp]) -> dict[str, bool]:
+    """Whether each candidate would have been useful (matches a recorded problem), independent of what gets shown."""
+    res = score(dataset, [{k: c[k] for k in ("agent", "entity_type", "entity_id", "as_of", "dollars_at_stake", "severity", "dedupe_key", "action", "proposal_id")}
+                          for c in candidates], window)
+    out: dict[str, bool] = {}
+    for d in (res.get("flags") or {}).values():
+        out.update(d)
+    return out
+
+
+def simulate(candidates: list[dict], econ: alerts.Economics, dataset: str, window: tuple[pd.Timestamp, pd.Timestamp],
+             flags: dict | None = None, learn_delay: int | None = None, segments: dict | None = None) -> dict:
+    """learn_delay: days until an operator's verdict on a shown alert reaches the learner (None = no learning)."""
+    learner = SegmentLearner(bounds=econ.weight_bounds) if learn_delay is not None else None
+    pending: dict[str, list] = {}
     by_day: dict[str, list[dict]] = {}
     for c in candidates:
         by_day.setdefault(c["as_of"], []).append(c)
@@ -33,11 +48,22 @@ def simulate(candidates: list[dict], econ: alerts.Economics, dataset: str, windo
     digest_n = 0
     days = sorted(by_day)
     for d in days:
+        if learner is not None:
+            for item in pending.pop(d, []):
+                learner.observe(item[0], item[1], flags[item[2]])
+            econ.segment_weight = learner.weights()
         objs = [SimpleNamespace(**c) for c in by_day[d]]
+        if segments:
+            for o in objs:
+                if getattr(o, "segment", None) is None:
+                    o.segment = segments.get(o.entity_id)
         dt = date.fromisoformat(d)
         kept = gov.filter(objs, dt, commit=False)
         shown, digest, _ = alerts.select(kept, econ)
         gov.commit(shown, dt)
+        if learner is not None:
+            due = str((pd.Timestamp(d) + pd.Timedelta(days=learn_delay)).date())
+            pending.setdefault(due, []).extend((o.agent, getattr(o, "segment", None), o.proposal_id) for o in shown)
         digest_n += len(digest)
         shown_rows += [{k: v for k, v in vars(o).items() if k in ("agent", "entity_type", "entity_id", "as_of", "dollars_at_stake", "severity", "dedupe_key", "action", "proposal_id")} for o in shown]
     n_days = max((window[1] - window[0]).days + 1, 1)

@@ -185,6 +185,11 @@ def proposals(dataset: str = "twin", agent: str | None = None, status: str | Non
     return [_prop_row(r) for r in rows]
 
 
+def lab_ds(pid: str) -> str | None:
+    lab = _lab(); r = lab.execute("select dataset from proposals where proposal_id=?", [pid]).fetchone(); lab.close()
+    return r[0] if r else None
+
+
 @app.get("/api/proposals/{pid}")
 def proposal(pid: str):
     lab = _lab(); r = lab.execute(f"select {COLS} from proposals where proposal_id=?", [pid]).fetchone()
@@ -193,6 +198,8 @@ def proposal(pid: str):
     if not r:
         raise HTTPException(404, "proposal not found")
     d = _prop_row(r)
+    ds = lab_ds(pid)
+    d["useful_rate"] = rollout.useful_rate(rollout.load(ds), d["agent"], (d.get("evidence") or {}).get("p_event")) if ds else None
     d["decisions"] = [{"at": str(a), "by": b, "decision": c, "reason": e, "note": f} for a, b, c, e, f in decs]
     return d
 
@@ -498,7 +505,14 @@ def briefing(dataset: str = "twin", as_of: str | None = None, owner: str | None 
     props = [_prop_row(r) for r in rows]
     if owner:
         props = [p for p in props if owner in p["owner"]]
+    cats = {pid: str(c) for pid, c in w.products.set_index("product_id").category.items()}
+    for p in props:                                        # the segment an alert belongs to, for learned priorities
+        if p["entity_type"] == "product":
+            p["segment"] = cats.get(p["entity_id"])
     cfg = rollout.load(dataset)
+    for p in props:
+        pe = (p.get("evidence") or {}).get("p_event")
+        p["useful_rate"] = rollout.useful_rate(cfg, p["agent"], pe)
     econ = rollout.economics_of(cfg)
     ph = rollout.phase(cfg, d)
     shown, digest_items, below = alert_policy.select(props, econ)
@@ -635,11 +649,20 @@ def drift(dataset: str = "twin", as_of: str | None = None):
     return rollout.drift_report(dataset, as_of)
 
 
+@app.post("/api/tenant/calibrate")
+def tenant_calibrate(dataset: str = "twin"):
+    _ds(dataset)
+    try:
+        return {"calibration": rollout.calibrate(dataset)}
+    except FileNotFoundError:
+        raise HTTPException(404, "No recorded candidates for this dataset yet. Run a candidate replay first.")
+
+
 @app.post("/api/tenant/learn")
 def tenant_learn(dataset: str = "twin"):
     _ds(dataset)
     lab = _lab()
-    rows = lab.execute("select p.agent, d.decision, d.reason from decisions d join proposals p using(proposal_id) where p.dataset=?", [dataset]).fetchall()
+    rows = lab.execute("select p.agent, d.decision, d.reason, p.entity_id from decisions d join proposals p using(proposal_id) where p.dataset=?", [dataset]).fetchall()
     lab.close()
     return {"changes": rollout.learn(dataset, rows), "decisions_seen": len(rows)}
 

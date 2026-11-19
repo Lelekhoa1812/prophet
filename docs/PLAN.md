@@ -75,6 +75,18 @@ Policy results (four-year twin, about 650 days, shortfall and freshness; method 
 - Candidate recording plus `sim/policy_sim.py` lets a setting be re-scored in seconds, so the trade-off table in the console is live.
 - Not yet: customer and margin agents still use their own fixed rules; the learning loop has no operator decisions to learn from on the twin.
 
+## Round 5: closing gaps (19 Nov, later)
+
+Liam kept 8 alerts per owner and asked for the remaining gaps to be closed.
+
+- **Customer and margin rules are now client-relative** (`engine/profile.py`). The 'too small to judge' spend is the 10th percentile of this client's weekly customer spend (about $400 on the twin, but it moves), the large-line floor is the 89th percentile of line size, each customer's dollars use their own measured margin instead of a flat 18% (the twin's average fell from 19.5% to 14.6% over the period, so 18% was wrong late on), and the margin agent restores to the client's 25th-percentile product margin instead of a fixed 12%. On the twin the alerts and catch rate are unchanged (customer 213 alerts, 55.8% of planted events; margin 36 alerts, 79.2%), as expected on the data the old numbers were tuned to.
+- **Segment learning works** (`policy/learning.py`). Shortfall alerts were useful 17 to 18% of the time for pork and sausages against 68 to 77% for seafood and produce. Learning a per-category priority from delayed operator verdicts raised shortfall precision from 50.3% to 53.5% at the same volume, with catch rate unchanged (47.1% to 47.5%) and 0.7 points less of the dollars. It moved pork and sausages to the 0.5 floor and seafood to 1.27. This is an upper bound: the simulated operator judges by the true outcome. A per-agent weight alone cannot do this, because each owner already receives one agent's alerts.
+- **Stated chance versus reality.** Freshness is close (stated 97%, useful 89%). Shortfall is not (stated 85 to 97%, useful 47 to 56%), because the model's chance is 'demand exceeds position' and a useful alert needs a costly stockout. Pricing false alarms with a calibrated chance did not help at matched volume (it only made the system stricter and cut the catch rate), so ranking keeps the stated chance. The calibration is used for honesty instead: cards say how often alerts scored like this were useful on this client's history, and the shortfall fact is relabelled 'Model chance demand exceeds stock'.
+- **The missed stockouts are an attention story.** With an unlimited budget 83% of stockouts are caught (805 of 974); at 8 per owner it is 47%. The 17% never caught are small (median $221 against $290 for those caught, 10% of the dollars). Nothing cheap closes that. The budget is the lever and the trade-off table shows its price.
+- Developer runbook added (`docs/RUNBOOK.md`). Phone layouts fixed on Developer, Explorer and Scorecard.
+
+Still open: calendar uplift (the covariate gave no gain), an executive findings report, what-if 'dollars protected', staging has about eight weeks, TimesFM licence.
+
 ## Open questions
 
 - **O1 (resolved 19 Nov). Staging database** is STAGING_TENANT_DATABASE_URL in foodflow/axis/env3.local. Data depth: about 8 weeks of orders (delivery 14 Sep to 6 Nov 2026), so seasonality cannot be tested yet. Connection uses the owner role with a read-only session. Liam chose not to create a dedicated read-only role. Original note: The `.env` files hold `REPORTING_DATABASE_URL` and `TENANT_DATABASE_URL`. Their hosts are not labelled staging or production, so the lab will not read them until confirmed.

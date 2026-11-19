@@ -4,11 +4,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..engine.profile import tenant_profile
 from ..engine.state import cost_fc, week_start
 from .base import AgentContext, Proposal, dstr, series_evidence, severity_for
 
 NAME = "margin"
-DEFAULTS = {"min_cost_rise": 0.06, "margin_drop_pts": 3.0, "margin_floor_pct": 8.0, "price_floor_ratio": 0.85, "product_floor_ratio": 0.75, "min_dollars": 120.0, "price_min_dollars": 15.0}
+DEFAULTS = {"min_cost_rise": 0.06, "margin_drop_pts": 3.0, "margin_floor_pct": 8.0, "target_margin_pct": None, "price_floor_ratio": 0.85, "product_floor_ratio": 0.75, "min_dollars": 120.0, "price_min_dollars": 15.0}
 
 
 def _cost_drift(ctx: AgentContext, P: dict) -> list[Proposal]:
@@ -43,7 +44,7 @@ def _cost_drift(ctx: AgentContext, P: dict) -> list[Proposal]:
         dollars = units * (last - base) * 4          # four weeks of exposure at current volumes
         if dollars < P["min_dollars"]:
             continue
-        target_m = max(old_m, 12.0)           # never recommend restoring a negative or tiny margin
+        target_m = max(old_m, P["target_margin_pct"])   # never recommend restoring a negative or tiny margin
         restore = last / (1 - target_m / 100)
         conf = float(np.clip(0.55 + min(rise, 0.3), 0.55, 0.95))
         fx = [dstr(now["future_start"] + pd.Timedelta(days=7 * i)) for i in range(2)]
@@ -112,6 +113,9 @@ def _price_floor(ctx: AgentContext, P: dict) -> list[Proposal]:
 
 def run(ctx: AgentContext) -> list[Proposal]:
     P = {**DEFAULTS, **ctx.params}
+    if P["target_margin_pct"] is None:       # the margin worth restoring: this client's own 25th-percentile product margin
+        m = tenant_profile(ctx.world, ctx.as_of).get("product_margin_p25")
+        P["target_margin_pct"] = 100 * m if m else 12.0
     out = _price_floor(ctx, P)
     if ctx.as_of.dayofweek == 0:
         out += _cost_drift(ctx, P)
