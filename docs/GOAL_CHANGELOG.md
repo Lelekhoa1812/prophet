@@ -67,3 +67,4 @@
 
 ## Loop 11, 19 Nov 2026
 - User approved raising the freshness ranking cost. Default is now shortfall $1,500 and freshness $1,500 (ranking only; the what-if still values at $200). Held-out expected net +28% vs the old default. Suite run below.
+- Full twin replay under the new defaults persisted; stored scorecard now matches the policy. Shortfall now catches fewer stockouts (41% of events, 59.9% of dollars) in exchange for fewer wrong alerts; freshness improves on every measure.
