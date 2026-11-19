@@ -1,0 +1,64 @@
+"""Dollars-protected what-if: what the alerts shown in a replay could be worth, under stated assumptions.
+
+Motivation vs Logic
+Motivation: executives ask 'what is it worth'. The replay knows which problems an alert matched (flagged), not what a
+person then did. Reporting flagged dollars as saved would overclaim.
+Logic: expected net = acceptance x effectiveness x dollars of recorded problems the alerts matched
+                      - review cost for every alert shown
+                      - acceptance x false-alarm cost for every shown alert that matched nothing.
+Only agents with a recorded dollar truth are valued; the others are listed as unmeasured, with their review cost shown but
+not netted. The alert's own claimed dollars are shown beside the matched truth, because summing claimed dollars overstates
+(one stockout can be alerted on several days).
+Acceptance (a person acts on a shown alert) and effectiveness (share of the problem's dollars recovered when they do)
+are assumptions the reader sets; nothing here is observed. It also ignores that an alert can arrive after the loss
+(median alert delay is days for shortfall), so it leans optimistic. A live shadow period replaces the assumptions.
+"""
+from __future__ import annotations
+
+GRID_ACCEPTANCE = (0.25, 0.5, 0.75, 1.0)
+GRID_EFFECTIVENESS = (0.25, 0.5, 0.75)
+
+CAVEAT = ("Expected value under stated assumptions on a synthetic replay. Not observed savings. Alerts that arrive after the "
+          "loss are still counted, so it leans optimistic.")
+
+
+def measured(s: dict) -> bool:
+    """Whether the replay has a dollar truth for this agent. Customer and margin events carry no recorded dollars."""
+    return float(s.get("dollars_truth_total", 0.0) or 0.0) > 0.0
+
+
+def _net(agents: dict, econ, a: float, e: float) -> tuple[list[dict], dict]:
+    rows = []
+    for name, s in agents.items():
+        if not measured(s):
+            rows.append({"agent": name, "shown": int(s.get("proposals", 0)), "useful": int(s.get("useful", 0)), "value_measured": False,
+                         "review_cost": round(int(s.get("proposals", 0)) * econ.review_cost, 2)})
+            continue
+        shown, useful = int(s.get("proposals", 0)), int(s.get("useful", 0))
+        gross = float(s.get("dollars_truth_caught", 0.0)) * a * e
+        review = shown * econ.review_cost
+        false = max(shown - useful, 0) * a * econ.false_alarm_cost
+        rows.append({"agent": name, "shown": shown, "useful": useful, "value_measured": True,
+                     "claimed_dollars": round(float(s.get("dollars_at_stake_total", 0.0)), 2),
+                     "truth_dollars_total": round(float(s.get("dollars_truth_total", 0.0)), 2), "truth_dollars_matched": round(float(s.get("dollars_truth_caught", 0.0)), 2),
+                     "gross": round(gross, 2), "review_cost": round(review, 2), "false_alarm_cost": round(false, 2), "net": round(gross - review - false, 2)})
+    m = [r for r in rows if r["value_measured"]]
+    tot = {k: round(sum(r[k] for r in m), 2) for k in ("gross", "review_cost", "false_alarm_cost", "net")}
+    return rows, tot
+
+
+def whatif(agents: dict, econ, acceptance: float = 0.5, effectiveness: float | None = None) -> dict:
+    e = econ.effectiveness if effectiveness is None else effectiveness
+    rows, tot = _net(agents, econ, acceptance, e)
+    # net(a) = a * (e*T - F) - R is linear in acceptance, so break-even is closed form
+    ms = [s for s in agents.values() if measured(s)]
+    T = sum(float(s.get("dollars_truth_caught", 0.0)) for s in ms)
+    F = sum(max(int(s.get("proposals", 0)) - int(s.get("useful", 0)), 0) for s in ms) * econ.false_alarm_cost
+    R = sum(int(s.get("proposals", 0)) for s in ms) * econ.review_cost
+    slope = e * T - F
+    be = R / slope if slope > 0 else None
+    grid = [{"acceptance": a, "effectiveness": ee, "net": _net(agents, econ, a, ee)[1]["net"]} for ee in GRID_EFFECTIVENESS for a in GRID_ACCEPTANCE]
+    return {"acceptance": acceptance, "effectiveness": e, "agents": rows, "total": tot,
+            "break_even_acceptance": round(be, 4) if be is not None else None, "grid": grid,
+            "unmeasured_agents": [r["agent"] for r in rows if not r["value_measured"]],
+            "evidence": "Synthetic replay", "caveat": CAVEAT}

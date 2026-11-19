@@ -5,6 +5,7 @@ import { Badge, Button, Card, CardContent, CardHeader, CardTitle, CardDescriptio
 import { HBars } from "@/components/charts/Bars";
 import { pct } from "@/lib/utils";
 import { Rollout } from "@/components/Rollout";
+import { WhatIf } from "@/components/WhatIf";
 
 /** Developer view: model status, licence, runs, backtests, jobs, cost ledger, and the API surface. */
 export function Developer() {
@@ -32,6 +33,7 @@ export function Developer() {
       </section>
 
       <Rollout />
+      <WhatIf />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="min-w-0">

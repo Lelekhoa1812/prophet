@@ -678,6 +678,20 @@ def policy_frontier(dataset: str = "twin", budgets: str = "3,5,8,12,20"):
             "caveat": "Scored against stockouts and write-offs recorded in the data. Flagged is not the same as prevented."}
 
 
+@app.get("/api/policy/whatif")
+def policy_whatif(dataset: str = "twin", acceptance: float = 0.5, effectiveness: float | None = None):
+    """What the alerts of the stored replay could be worth if people act on a share of them. Expected, not observed."""
+    from ..policy.whatif import whatif
+    _ds(dataset)
+    if not 0.0 <= acceptance <= 1.0 or (effectiveness is not None and not 0.0 <= effectiveness <= 1.0):
+        raise HTTPException(400, "acceptance and effectiveness are shares between 0 and 1")
+    sc = _scorecard(dataset)
+    if not sc.get("agents"):
+        raise HTTPException(404, "No replay stored for this dataset yet.")
+    econ = rollout.economics_of(rollout.load(dataset))
+    return {"dataset": dataset, "window": sc.get("window"), **whatif(sc["agents"], econ, acceptance, effectiveness)}
+
+
 @app.get("/api/readiness")
 def readiness(agent: str, dataset: str = "twin", weeks: int = 13):
     _ds(dataset)

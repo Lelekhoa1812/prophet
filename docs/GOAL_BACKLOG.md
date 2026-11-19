@@ -14,3 +14,6 @@
 
 ## Resume instruction
 Start at B9 or the B2 generator option. Run `.venv/bin/python -m pytest -q` (66 pass after loop 5, 17 s). Write the failing test first.
+
+| B10 | Shortfall is net negative under the default economics. Raise its score floor or lower its alert volume until expected net is positive without losing more than 5 points of dollar recall | Policy simulator sweep with whatif() net as the objective, chronological split (tune first 60% of window, test on last 40%) | Next |
+| B11 | Decision audit identity (free-text decided_by) | Named operator header, validated; decisions record it | Next |

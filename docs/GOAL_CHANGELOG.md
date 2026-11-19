@@ -48,3 +48,8 @@
 - Change: `twin/censor.py`, `build.py` option, dataset `twin_censored` (python -m lab.twin.build censored). Base twin untouched.
 - Result: censoring at an assumed p=0.4 lowers recorded orders 2.7% and the median forecast a further 4.8 points in the worst-stockout fifth; replay on `twin_censored` pending (see below).
 - Gap (B9 part 2): CI could not run agents. Change: `tests/test_no_future_leak_mini.py` builds a 60-product seeded twin in the test with a cheap router (no TimesFM), plus a planted-leak negative control. Clean checkout with empty `data/`: 71 passed, 1 skipped. Full local 72 passed.
+
+## Loop 8, 19 Nov 2026
+- Gap (B5): no honest answer to 'what is it worth'.
+- Change: `policy/whatif.py`, `GET /api/policy/whatif`, console card on the Developer page (phone checked, no overflow). Customer and margin listed as unmeasured, not netted.
+- Test: 7 new tests; measured at defaults: see evidence. Finding: claimed dollars overstate real problem dollars 2.3-2.5x; shortfall is net negative at 50% acceptance (B10).

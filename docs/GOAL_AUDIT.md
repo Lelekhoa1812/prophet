@@ -45,3 +45,6 @@ Accepted, recorded: fingerprint ignores model parameters (names, routing, licenc
 
 ## 5. Evidence limits that stay in force
 Twin results are method demos. Staging has about eight weeks. The ship bar (15% better than the best baseline) was not met earlier (about 17% only against one baseline on the twin, none on real data). TimesFM weights are non-commercial. No dollar here is an observed saving.
+
+## 6. Loop 8 finding: claimed dollars overstate (executive risk)
+Summing `dollars_at_stake` over alerts overstates the real problem 2.5x (shortfall $1.25M claimed vs $510k real stockout dollars in the window) and 2.3x for freshness ($9.7M vs $4.2M). One problem can be alerted on several days, and the per-alert dollar formulas are uncalibrated. The what-if card shows both figures side by side. Under the default assumptions the shortfall agent is net negative at 50% acceptance, so its false-alarm cost, not its recall, is what to tune next (backlog B10).
