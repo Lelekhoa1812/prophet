@@ -64,3 +64,6 @@
 - Change: `Economics.ranking_false_alarm_cost` (ranking and gating only; the what-if still values with the stated $200); default {"shortfall": 1500}; old tenant files inherit it. Tests: 2 new, 2 existing made independent of the override; suite 84 passed.
 - Result: held-out expected net +17%, shortfall alerts -41%, shortfall dollar recall -7.3 pts (see evidence).
 - Residual: stored scorecard stale until a full twin replay is rerun; twin-tuned default must be re-checked per client in readiness.
+
+## Loop 11, 19 Nov 2026
+- User approved raising the freshness ranking cost. Default is now shortfall $1,500 and freshness $1,500 (ranking only; the what-if still values at $200). Held-out expected net +28% vs the old default. Suite run below.

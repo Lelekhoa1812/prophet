@@ -26,7 +26,7 @@ class Economics:
     effectiveness: float = 0.5           # share of expected loss a reviewed alert typically recovers
     budget_per_owner: int = 8            # alerts one owner sees per morning
     false_alarm_cost: float = 200.0      # dollars lost when an alert that did not happen is acted on (wasted order, wasted call)
-    ranking_false_alarm_cost: dict = field(default_factory=lambda: {"shortfall": 1500.0})   # agent -> cost used ONLY to rank and gate that agent's alerts. Twin-tuned default (19 Nov 2026, held-out +17% expected net); review per client
+    ranking_false_alarm_cost: dict = field(default_factory=lambda: {"shortfall": 1500.0, "freshness": 1500.0})   # agent -> cost used ONLY to rank and gate that agent's alerts. Twin-tuned default (19 Nov 2026, held-out +30% expected net with both); review per client
     weight_bounds: tuple = (0.5, 2.0)    # learning may scale an agent's score only within these
     agent_weight: dict = field(default_factory=dict)
     segment_weight: dict = field(default_factory=dict)      # 'agent|segment' -> learned multiplier, bounded like agent_weight
