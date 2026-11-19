@@ -72,5 +72,6 @@ def simulate(candidates: list[dict], econ: alerts.Economics, dataset: str, windo
            "digest_per_day": round(digest_n / n_days, 2), "agents": {}}
     for k, a in (res.get("agents") or {}).items():
         out["agents"][k] = {"alerts": a["proposals"], "precision": a["precision"], "recall": a["recall"], "events": a["events"], "caught": a["caught"],
-                            "dollar_recall": (a["dollars_truth_caught"] / a["dollars_truth_total"]) if a.get("dollars_truth_total") else None}
+                            "dollar_recall": (a["dollars_truth_caught"] / a["dollars_truth_total"]) if a.get("dollars_truth_total") else None,
+                            "stats": {k: a.get(k) for k in ("proposals", "useful", "dollars_truth_caught", "dollars_truth_total", "dollars_at_stake_total")}}
     return out
