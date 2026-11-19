@@ -113,3 +113,4 @@
 - Loop 30: searched the two unsourced quotes. Both are Rillet vendor material; no independent source. Recorded.
 - Loop 31: orientation reads completed (goal document in full; HTML rule, capability and move data checked against the audit). No code change.
 - Loop 32: value paper interactions clicked in a browser (about 128 of 213 controls): no JavaScript errors. Partial coverage. Recorded in GOAL_AUDIT section 15.
+- Loop 33: re-checked CI. Still blocked: the runner says account payments failed or the spending limit must be raised (run 23:03 UTC on c76a80c, 0 steps). Re-ran the CI steps on a fresh clone of c76a80c: 108 passed, 1 skipped. Account billing cannot be changed from the repo.
