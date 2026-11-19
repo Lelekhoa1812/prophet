@@ -1,0 +1,69 @@
+"""Time-travel replay: step the business day by day, run the agents, govern, store, score."""
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from datetime import datetime, timezone
+
+import pandas as pd
+
+from ..agents import REGISTRY
+from ..agents.base import AgentContext
+from ..engine.state import ForecastService, get_world
+from ..policy.governor import Governor, Lesson
+from ..store import open_lab
+from .scorer import score
+
+
+def scored_window(w) -> tuple[pd.Timestamp, pd.Timestamp]:
+    n = len(w.days)
+    return w.days[int(n * 0.55)], w.days[-1] - pd.Timedelta(days=14)
+
+
+def replay(dataset: str, start: str | None = None, end: str | None = None, agents: list[str] | None = None,
+           params: dict | None = None, learn: bool = False, persist: bool = True, progress=None) -> dict:
+    t0 = time.time()
+    w = get_world(dataset)
+    fs = ForecastService(w)
+    lo, hi = scored_window(w)
+    lo = pd.Timestamp(start) if start else lo
+    hi = pd.Timestamp(end) if end else hi
+    agents = agents or list(REGISTRY)
+    params = params or {}
+    gov = Governor()
+    days = [d for d in pd.date_range(lo, hi, freq="D") if d.dayofweek < 5]
+    raised: list = []
+    lessons_made = 0
+    for k, d in enumerate(days):
+        for name in agents:
+            ctx = AgentContext(w, d, fs, params.get(name, {}), gov.lessons)
+            ps = REGISTRY[name].run(ctx)
+            kept = gov.filter(ps, d.date())
+            raised += kept
+            if learn:                                  # simulated operator: dismiss false alarms with a reason
+                from .scorer import score as _s     # noqa: F401  (kept local to avoid cycles)
+        if progress and (k % 10 == 0 or k == len(days) - 1):
+            progress(k + 1, len(days))
+    rows = [dict(agent=p.agent, entity_type=p.entity_type, entity_id=p.entity_id, as_of=p.as_of, dollars_at_stake=p.dollars_at_stake,
+                 severity=p.severity, dedupe_key=p.dedupe_key, action=p.action, proposal_id=p.proposal_id) for p in raised]
+    result = score(dataset, rows, (lo, hi))
+    result.update({"dataset": dataset, "days": len(days), "proposals_total": len(raised),
+                   "held_back": len(gov.suppressed), "seconds": round(time.time() - t0, 1)})
+    if persist:
+        lab = open_lab()
+        rid = f"RP-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
+        lab.execute("insert into runs values (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [rid, "replay", dataset, ",".join(agents), hi.date(), datetime.now(timezone.utc), datetime.now(timezone.utc),
+                     "done", "dev", "timesfm-3.0", json.dumps({"start": str(lo.date()), "end": str(hi.date()), "params": params}),
+                     json.dumps({k: v for k, v in result.items() if k != "events"})])
+        lab.execute("delete from proposals where dataset=? and run_id like 'RP-%'", [dataset])
+        for p in raised:
+            lab.execute("""insert into proposals values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [p.proposal_id, rid, dataset, p.agent, p.as_of, p.entity_type, p.entity_id, p.title, p.severity,
+                         p.dollars_at_stake, p.confidence, p.autonomy_level, p.owner, json.dumps(p.evidence, default=str),
+                         json.dumps(p.action, default=str), "open", p.dedupe_key, None, None, datetime.now(timezone.utc)])
+        lab.close()
+        result["run_id"] = rid
+    result["suppressed_sample"] = gov.suppressed[:50]
+    return result
