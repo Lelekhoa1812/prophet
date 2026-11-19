@@ -103,3 +103,4 @@
 - Loop 23: staging feasibility for 'acts before asked'. 31 delivery days, 14 Sep to 6 Nov 2026. A replay can run as a smoke test but cannot support a performance claim. Recorded; no code change.
 - Loop 23 decision (user): acts-before-asked marked unmeasurable; next is B14, customer and margin dollar truth on the twin. Not started.
 - Loop 24 (B14): customer and margin dollars from order lines (estimate basis). Unvalued events excluded from dollar totals. Customer dollar recall 84% of $593k estimate; margin 100% of $198k, concentrated in three cost spikes. Estimates kept out of the what-if headline. 109 tests pass.
+- Loop 25: CI for 0948e9a and 2631976 failed with zero steps run; a clean clone of origin/main passes the same commands (108 pass, 1 skipped), so the failure is at the runner. Re-run requested. Scorer now reports dollar_recall in every replay result. Earlier claim of 'missing replay dollar stats' was my script reading the wrong key; corrected.

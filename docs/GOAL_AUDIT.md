@@ -83,4 +83,4 @@ Code-checked: a global `:focus-visible` outline exists (`index.css`), `prefers-r
 - Change: `sim/event_dollars.py` values each event from order lines against a pre-event baseline. Unvalued events (no baseline) get None and are left out of dollar totals (they were summed as 0 before). Customer and margin carry `dollar_basis: estimate`, which keeps them out of the headline what-if.
 - Verified: 109 tests pass, including 7 dollar-definition tests and a what-if exclusion test. Candidate rescore on the twin (see evidence).
 - Doubt: margin dollar recall is concentrated in three cost spikes; the 6 missed margin events total about $95. Customer and margin dollars are estimates over a fixed 56-day horizon.
-- Residual defect: the replay output's per-agent `stats` is null, so `/api` replay results carry no dollar truth. Not fixed here.
+- Correction (loop 25): an earlier note said replay output had no dollar stats. That was wrong. The scorer writes flat `dollars_truth_*` fields into every replay agent result. Only the ratio `dollar_recall` was missing from replay (it existed only in policy_sim); the scorer now reports it.

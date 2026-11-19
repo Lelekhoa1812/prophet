@@ -71,6 +71,12 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
             "dollars_truth_caught": float(sum(e["dollars"] for e in caught if e["dollars"] is not None)),
             "dollars_truth_total": float(sum(e["dollars"] for e in events if e["dollars"] is not None)),
             "dollars_unvalued": int(sum(1 for e in events if e["dollars"] is None)),
+            # Bugs vs Fixes
+            # Bug: replay() returned dollar truth as totals only; the dollar recall ratio existed only in policy_sim.simulate.
+            # Fix: the scorer reports the ratio itself, so every replay result carries it.
+            "dollar_recall": (float(sum(e["dollars"] for e in caught if e["dollars"] is not None)) /
+                              float(sum(e["dollars"] for e in events if e["dollars"] is not None)))
+                              if sum(e["dollars"] for e in events if e["dollars"] is not None) else None,
             # Customer and margin dollars are estimates from a pre-event baseline, not recorded losses (see sim/event_dollars.py).
             "dollar_basis": "estimate" if agent in ("customer", "margin") else "recorded",
             **(extra or {}),
