@@ -15,7 +15,8 @@ DATASETS = {
     "twin": DATA / "twin.duckdb",
     "twin_censored": DATA / "twin_censored.duckdb",   # same world as twin, orders drop after stockouts (twin/censor.py)
 }
-LAB_DB = DATA / "lab.duckdb"          # runs, proposals, decisions, lessons, ledgers
+# Motivation vs Logic: a throwaway lab database lets the console be tested end to end without touching the real one.
+LAB_DB = Path(os.environ.get("TIMESFM_ERP_LAB_DB", DATA / "lab.duckdb"))   # runs, proposals, decisions, lessons, ledgers
 REVEAL_DB = DATA / "reveal.duckdb"    # local-only map from codes back to real names
 
 # Liam, 19 Nov 2026: staging connection lives in foodflow/axis/env3.local.
