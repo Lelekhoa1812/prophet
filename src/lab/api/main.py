@@ -708,7 +708,16 @@ def policy_whatif(dataset: str = "twin", acceptance: float = 0.5, effectiveness:
     if not sc.get("agents"):
         raise HTTPException(404, "No replay stored for this dataset yet.")
     econ = rollout.economics_of(rollout.load(dataset))
-    return {"dataset": dataset, "window": sc.get("window"), **whatif(sc["agents"], econ, acceptance, effectiveness)}
+    out = whatif(sc["agents"], econ, acceptance, effectiveness)
+    from ..policy.whatif import problem_level
+    lab = _lab()
+    rows = lab.execute("select agent, entity_id, cast(as_of as varchar), dollars_at_stake from proposals where dataset=?", [dataset]).fetchall()
+    lab.close()
+    pl = problem_level(rows)
+    for a in out["agents"]:                      # distinct problems and their claimed dollars, beside the alert-level sum
+        if a["agent"] in pl:
+            a["problems_alerted"], a["claimed_dollars_per_problem"] = pl[a["agent"]]["problems"], pl[a["agent"]]["claimed_dollars"]
+    return {"dataset": dataset, "window": sc.get("window"), **out}
 
 
 @app.get("/api/readiness")

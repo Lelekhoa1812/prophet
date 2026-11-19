@@ -26,17 +26,18 @@ export function WhatIf() {
           <>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[34rem] text-sm">
-                <thead className="text-xs text-muted-foreground"><tr><th className="py-1 text-left font-medium">Agent</th><th className="text-right font-medium">Alerts shown</th><th className="text-right font-medium">Dollars the alerts claim</th><th className="text-right font-medium">Real problem dollars (all)</th><th className="text-right font-medium">Expected net</th></tr></thead>
+                <thead className="text-xs text-muted-foreground"><tr><th className="py-1 text-left font-medium">Agent</th><th className="text-right font-medium">Alerts shown</th><th className="text-right font-medium">Alert-level claim (counts repeats)</th><th className="text-right font-medium">One claim per problem</th><th className="text-right font-medium">Real problem dollars (all)</th><th className="text-right font-medium">Expected net</th></tr></thead>
                 <tbody>{data.agents.map((a: any) => (
                   <tr key={a.agent} className="border-t">
                     <td className="py-1.5 capitalize">{a.agent}</td>
                     <td className="tabular text-right">{a.shown.toLocaleString()}</td>
                     {a.value_measured
-                      ? <><td className="tabular text-right">{money(a.claimed_dollars, true)}</td><td className="tabular text-right">{money(a.truth_dollars_total, true)}</td>
+                      ? <><td className="tabular text-right">{money(a.claimed_dollars, true)}</td>
+                        <td className="tabular text-right">{a.claimed_dollars_per_problem != null ? `${money(a.claimed_dollars_per_problem, true)} (${a.problems_alerted.toLocaleString()})` : "–"}</td><td className="tabular text-right">{money(a.truth_dollars_total, true)}</td>
                         <td className={`tabular text-right font-medium ${a.net < 0 ? "text-destructive" : ""}`}>{money(a.net, true)}</td></>
-                      : <td colSpan={3} className="text-right text-muted-foreground">Value not measured: no recorded dollars for this agent</td>}
+                      : <td colSpan={4} className="text-right text-muted-foreground">Value not measured: no recorded dollars for this agent{a.claimed_dollars_per_problem != null ? ` (claims ${money(a.claimed_dollars_per_problem, true)} across ${a.problems_alerted} problems)` : ""}</td>}
                   </tr>))}
-                  <tr className="border-t font-semibold"><td className="py-1.5">Measured agents</td><td /><td /><td /><td className="tabular text-right">{money(data.total.net, true)}</td></tr>
+                  <tr className="border-t font-semibold"><td className="py-1.5">Measured agents</td><td /><td /><td /><td /><td className="tabular text-right">{money(data.total.net, true)}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -44,7 +45,7 @@ export function WhatIf() {
               {data.break_even_acceptance != null
                 ? <>Across the measured agents the alerts pay for themselves once people act on <b>{pct(data.break_even_acceptance, 0)}</b> of them. </>
                 : <>Under these costs the measured alerts do not pay for themselves at any acceptance. </>}
-              Alerts claim more dollars than the real problems amount to because one problem can be alerted on several days: never add up claimed dollars.
+              The alert-level claim counts one problem again on every day it is alerted, so it overstates; the per-problem claim keeps the largest alert for each problem (alerts on the same item within 10 days). Never add up alert-level dollars.
             </p>
             <Badge variant="outline">Evidence: {data.evidence}</Badge>
             <p className="text-xs text-muted-foreground">{data.caveat}</p>

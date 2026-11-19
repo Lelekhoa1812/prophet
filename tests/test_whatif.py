@@ -58,3 +58,13 @@ def test_agents_without_dollar_truth_are_listed_as_unmeasured_not_netted():
 def test_claimed_dollars_are_shown_next_to_matched_truth():
     s = {a["agent"]: a for a in whatif(AG, ECON, 0.5, 0.5)["agents"]}["shortfall"]
     assert s["claimed_dollars"] == 70_000.0 and s["truth_dollars_total"] == 20_000.0
+
+
+def test_problem_level_collapses_repeat_alerts_on_one_problem():
+    from lab.policy.whatif import problem_level
+    rows = [("shortfall", "P1", "2026-01-01", 100.0), ("shortfall", "P1", "2026-01-03", 300.0), ("shortfall", "P1", "2026-01-09", 200.0),   # one problem, 3 alerts
+            ("shortfall", "P1", "2026-02-20", 50.0),                                                                                      # a new problem
+            ("shortfall", "P2", "2026-01-02", 40.0), ("freshness", "L1", "2026-01-02", 500.0)]
+    r = problem_level(rows, gap_days=10)
+    assert r["shortfall"] == {"alerts": 5, "problems": 3, "claimed_dollars": 300.0 + 50.0 + 40.0}
+    assert r["freshness"]["problems"] == 1

@@ -62,3 +62,34 @@ def whatif(agents: dict, econ, acceptance: float = 0.5, effectiveness: float | N
             "break_even_acceptance": round(be, 4) if be is not None else None, "grid": grid,
             "unmeasured_agents": [r["agent"] for r in rows if not r["value_measured"]],
             "evidence": "Synthetic replay", "caveat": CAVEAT}
+
+
+def problem_level(rows: list, gap_days: int = 10) -> dict:
+    """Collapse alerts on the same thing into problems: alerts for one entity less than `gap_days` apart are one problem,
+    claimed at the largest single alert. rows: (agent, entity_id, as_of 'YYYY-MM-DD', dollars_at_stake).
+
+    Motivation: one stockout is alerted on several days, so summing alert dollars counts it several times (alert-level sums
+    were 2.3-2.5x the real problem dollars on the twin). The gap matches the scorer's matching window.
+    """
+    from datetime import date
+    by: dict[tuple, list] = {}
+    for agent, ent, d, dollars in rows:
+        by.setdefault((agent, ent), []).append((date.fromisoformat(str(d)[:10]), float(dollars)))
+    out: dict[str, dict] = {}
+    for (agent, _), items in by.items():
+        items.sort()
+        a = out.setdefault(agent, {"alerts": 0, "problems": 0, "claimed_dollars": 0.0})
+        last, best = None, 0.0
+        for d, dollars in items:
+            a["alerts"] += 1
+            if last is None or (d - last).days > gap_days:
+                a["claimed_dollars"] += best
+                a["problems"] += 1
+                best = dollars
+            else:
+                best = max(best, dollars)
+            last = d
+        a["claimed_dollars"] += best
+    for a in out.values():
+        a["claimed_dollars"] = round(a["claimed_dollars"], 2)
+    return out
