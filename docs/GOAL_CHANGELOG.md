@@ -78,3 +78,8 @@
 - Hypothesis: alert dollar claims are miscalibrated and recalibrating helps. Result: per-alert claims are close; shown-alert shortfall gap is selection; recalibration gives -0.1% held-out net. Rejected, no code change. Next lever: problem-level (de-duplicated) dollars for executive totals.
 - Loop 12 decision recorded: Liam accepted the staging role risk for now (B12).
 - Loop 13b: what-if card now shows one claim per problem beside the alert-level sum (`problem_level`, 1 new test; suite passes; browser check, no overflow). Executives should quote the per-problem figure.
+
+## Loop 14, 19 Nov 2026
+- Gap: rule 7 (prove it continuously): CI checked correctness, not decision quality; a change that halved what the agents catch would pass.
+- Change: shared `mini` fixture in `tests/conftest.py`; `tests/test_eval_gate.py` replays 90 days on the mini twin and fails below recorded precision, recall and volume floors, with a control that silences shortfall.
+- Rule: if a deliberate change moves a number, re-measure, change the floor in the same commit and say why here.

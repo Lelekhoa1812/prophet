@@ -12,22 +12,6 @@ from lab.twin.generator import TwinConfig
 from test_no_future_leak import key, truncated
 
 
-@pytest.fixture(scope="module")
-def mini(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("mini")
-    mp = pytest.MonkeyPatch()
-    mp.setattr(store, "DATASETS", {"mini": tmp / "mini.duckdb"})
-    (tmp / "cache").mkdir()
-    mp.setattr(state, "CACHE_DIR", tmp / "cache")
-    state._WORLDS.pop("mini", None)
-    models.set_router(Router(registry={"ma8": Baseline("ma8"), "ma4": Baseline("ma4"), "tsb": TSB()}, default="ma8", route={"intermittent": "tsb"}))
-    build.main(name="mini", cfg=TwinConfig(seed=11, start="2024-01-01", end="2025-09-30", n_products=60, n_customers=40, n_suppliers=5))
-    yield state.get_world("mini")
-    models.set_router(None)
-    state._WORLDS.pop("mini", None)
-    mp.undo()
-
-
 def test_agents_do_not_use_data_after_the_as_of_day_mini(mini):
     from lab.agents import REGISTRY
     from lab.agents.base import AgentContext
