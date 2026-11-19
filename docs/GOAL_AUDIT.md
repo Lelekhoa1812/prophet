@@ -17,11 +17,24 @@ Hidden in the HTML and not reviewed as functionality: the interactive autonomy d
 | Thinks in food | Partial/prototype | per-sample FEFO `agents/freshness.py`, shelf-life classes, pack sizes `agents/shortfall.py` | `test_distribution.py` | S | Catch-weight, substitutes, contract prices, delivery runs not modelled. |
 | Trustworthy by design | Partial/prototype | pseudonymisation `source/pseudo.py`, read-only session `source/staging.py`, number check on narration `narration/bedrock.py` | narration number check only | C | See section 3: no API auth, free-text `decided_by`, read-only not proven at DB role level. |
 
-## 2. Three moves and seven rules (challenge criteria)
-- Living model of the business: typed local tables only; no event stream; `proposals` are the only machine-readable object. Partial.
-- Agents that do and learn: proposals + decisions + lessons exist; corrections become suppressions, not lessons with evidence. Partial.
-- Autonomy under control: three-layer limits, demotion and undo are not implemented; only a ladder display. Vision-only.
-- Rules (contract-first actions, events, per-action policy, replayable identity/audit, scoped reversible lessons, composed views, evaluation gates): the repo has evaluation gates (readiness, drift, scorer) and reversible lessons (`/api/lessons/{id}/undo`); it has no action contracts, no agent identity and no per-action policy.
+## 2. Seven design rules vs this repo (rule text read from the HTML's own `PR` data)
+
+| # | Rule (HTML) | What the repo has | Status | Missing, and where it belongs |
+|---|---|---|---|---|
+| 1 | Design the action before the screen: each action defined once with inputs, limits, evidence, undo | `Proposal.action` dict (`type`, lots, etc.) with evidence; `/api/proposals/{id}/decision`; lessons undo | Partial | No action schema, limits or undo for the action itself (lab never acts). Contracts belong in AXIS governed actions; the lab can only emit proposals shaped like them |
+| 2 | Describe the business so a machine can read it | `store.py` canonical tables (shelf life, catch-weight flag, lots, use-by), `engine/profile.py` tenant profile | Partial | No contract floors, units conversion, delivery runs. Upstream FoodFlow model |
+| 3 | Autonomy is policy, not code (3 layers) | `agent_config.autonomy_level` stored per agent; `ladder_status` promotion/demotion criteria | Partial | Ladder is display only; no hard limit/business/person layers; nothing is enforced because the lab cannot act |
+| 4 | A trace that can be replayed | `runs`, `proposals.evidence`, `decisions`, deterministic `as_of` replay; loop 1 made cached forecasts keyed by model and history; leakage tests | Partial, strengthened | No event stream; decision identity is `unverified:`; model weights not versioned in the fingerprint |
+| 5 | Learning is a product feature (scope, owner, approval, test) | scoped suppression lessons with undo; bounded, logged weight learning with watermark (loop 4) | Partial | No owner approval for wide lessons, no per-lesson regression test; verdicts only from simulated operators |
+| 6 | The screen is a view (composed per business and role) | One console with Executive / Operator / Developer / Client demo lenses over the same API | Partial | No composition from approved parts; belongs in AXIS |
+| 7 | Prove it continuously (evaluations gate every change) | readiness backtest, drift check, scorer, CI for fast tests (loop 6) | Partial | CI gates correctness but not decision quality: no evaluation regression gate (loop 14 target) |
+
+## 2b. Eight questions (HTML chapter 3) answered for the lab
+1 Built for people or AI first: lab outputs are machine-readable proposals; the console is a view (Partial). 2 What happens when nobody asks: agents run on a daily replay clock, never live (Prototype). 3 How AI acts: it does not act, it proposes (by design). 4 Knowledge of the business: tenant profile and canonical tables (Partial). 5 Correction: becomes a suppression lesson or a bounded weight (Partial). 6 Limits: ladder display only (Prototype). 7 Fit per business: tenant economics and percentile thresholds, not composed screens (Partial). 8 Gets smarter: monthly drift/re-tune planned, not run live (Prototype).
+The HTML says to claim AI Native only per capability once it passes the eight questions; nothing in this lab passes all eight, so no lab output may be described as AI Native.
+
+## 2c. Three moves
+Living model of the business: tables only, no events (Partial). Agents that do and learn: propose and learn from simulated verdicts (Partial). Autonomy under control: Vision-only here.
 
 ## 3. Security and operations findings
 | ID | Finding | Evidence | Severity | Status |
