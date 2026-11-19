@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from ..engine.forecast import TimesFMEngine
 from ..engine.state import ForecastService, get_world, week_start, weekly_matrix
 from ..narration import bedrock, templated
 from ..policy import alerts as alert_policy, rollout
-from ..policy.governor import LADDER, LADDER_LABEL, Governor, Lesson, ladder_status
+from ..policy.governor import LADDER, LADDER_LABEL, Governor, Lesson, audit_lesson, ladder_status
 from ..sim.replay import replay, scored_window
 from ..store import open_dataset, open_lab
 from . import jobs
@@ -247,6 +248,7 @@ class DecisionIn(BaseModel):
     reason: str | None = None  # for dismiss: one_off | known_promo | wrong_alert | not_useful
     note: str | None = None
     decided_by: str = "liam"
+    scope: str = "entity"    # entity | agent: an agent-wide lesson waits for a different person to approve it
 
 
 _OPERATOR = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@'-]{0,63}$")
@@ -270,6 +272,8 @@ def _operator(header: str | None, body_name: str) -> str:
 def decide(pid: str, body: DecisionIn, x_operator: str | None = Header(default=None)):
     if body.decision not in ("approve", "adjust", "dismiss"):
         raise HTTPException(400, "decision must be approve, adjust or dismiss")
+    if body.scope not in ("entity", "agent"):
+        raise HTTPException(400, "scope must be entity or agent")
     operator = _operator(x_operator, body.decided_by)
     with _lock:
         lab = _lab()
@@ -282,7 +286,7 @@ def decide(pid: str, body: DecisionIn, x_operator: str | None = Header(default=N
         # Bug: a second decision on the same proposal left the first dismissal's lesson active (or stacked a duplicate), so a
         # reviewer changing their mind kept suppressing the entity.
         # Fix: the latest decision wins. Active lessons born from earlier decisions on this proposal are retired first.
-        lab.execute("""update lessons set active=false, undone_at=? where active and source_decision_id in
+        lab.execute("""update lessons set active=false, undone_at=? where undone_at is null and source_decision_id in
                        (select decision_id from decisions where proposal_id=?)""", [datetime.now(timezone.utc), pid])
         lab.execute("insert into decisions values (?,?,?,?,?,?,?)", [did, pid, datetime.now(timezone.utc), operator, body.decision, body.reason, body.note])
         lab.execute("update proposals set status=? where proposal_id=?", [{"approve": "approved", "adjust": "adjusted", "dismiss": "dismissed"}[body.decision], pid])
@@ -290,9 +294,17 @@ def decide(pid: str, body: DecisionIn, x_operator: str | None = Header(default=N
         if body.decision == "dismiss" and body.reason in ("one_off", "known_promo", "wrong_alert", "not_useful"):
             days = {"one_off": 14, "known_promo": 28, "wrong_alert": 45, "not_useful": 30}[body.reason]
             lid = f"LS-{uuid.uuid4().hex[:6]}"
+            eff = {"suppress_days": days, "reason": body.reason, "from": str(as_of)[:10]}
+            wide = body.scope == "agent"
+            if wide:
+                # Motivation vs Logic: a lesson for a whole agent is a policy change, so it starts inactive ("pending") and
+                # only runs after a different named person approves it (POST /api/lessons/{id}/approve) and its audit is clean.
+                dollars = lab.execute("select dollars_at_stake from proposals where proposal_id=?", [pid]).fetchone()[0] or 0.0
+                eff.update({"max_dollars": float(dollars), "approval": {"status": "pending", "requested_by": operator}})
             lab.execute("insert into lessons values (?,?,?,?,?,?,?,?,?,?)",
-                        [lid, ds, agent, "entity", entity, json.dumps({"suppress_days": days, "reason": body.reason, "from": str(as_of)[:10]}), did, True, datetime.now(timezone.utc), None])
-            lesson = {"lesson_id": lid, "agent": agent, "scope": entity, "suppress_days": days, "reason": body.reason}
+                        [lid, ds, agent, "agent" if wide else "entity", "*" if wide else entity, json.dumps(eff), did, not wide, datetime.now(timezone.utc), None])
+            lesson = {"lesson_id": lid, "agent": agent, "scope": "*" if wide else entity, "suppress_days": days, "reason": body.reason,
+                      "pending_approval": wide}
         _governors.pop(ds, None)               # lessons may have changed (added or retired): rebuild governor on next use
         lab.close()
     return {"decision_id": did, "lesson": lesson}
@@ -305,6 +317,34 @@ def lessons(dataset: str = "twin"):
     lab.close()
     return [{"lesson_id": a, "agent": b, "scope_type": c, "scope_id": d, "effect": json.loads(e), "source_decision_id": f, "active": g, "created_at": str(h), "undone_at": None if i is None else str(i)}
             for a, b, c, d, e, f, g, h, i in rows]
+
+
+@app.post("/api/lessons/{lid}/approve")
+def approve_lesson(lid: str, x_operator: str | None = Header(default=None)):
+    """Owner approval for an agent-wide lesson: a different person from the requester, and a clean audit against stored proposals."""
+    approver = _operator(x_operator, "")
+    with _lock:
+        lab = _lab()
+        r = lab.execute("select dataset, agent, scope_type, scope_id, effect, created_at, undone_at from lessons where lesson_id=?", [lid]).fetchone()
+        if not r:
+            lab.close(); raise HTTPException(404, "lesson not found")
+        ds, agent, st, sid, e, created, undone = r
+        eff = json.loads(e)
+        ap = eff.get("approval") or {}
+        if undone is not None or ap.get("status") != "pending":
+            lab.close(); raise HTTPException(409, "lesson is not waiting for approval")
+        if ap.get("requested_by") == approver:
+            lab.close(); raise HTTPException(403, "a different person must approve a lesson that applies to a whole agent")
+        rows = lab.execute("select proposal_id, agent, entity_id, dedupe_key, as_of, dollars_at_stake from proposals where dataset=? and agent=?", [ds, agent]).fetchall()
+        props = [SimpleNamespace(proposal_id=a, agent=b, entity_id=c, dedupe_key=d, as_of=pd.Timestamp(f).date(), dollars_at_stake=g or 0.0) for a, b, c, d, f, g in rows]
+        audit = audit_lesson(Lesson(lid, agent, st, sid, eff, pd.Timestamp(eff["from"]).date()), props)
+        if audit["violations"]:
+            lab.close(); raise HTTPException(409, {"error": "audit found violations", "audit": audit})
+        eff["approval"] = {**ap, "status": "approved", "approved_by": approver, "audit": {k: audit[k] for k in ("checked", "would_suppress")}}
+        lab.execute("update lessons set active=true, effect=? where lesson_id=?", [json.dumps(eff), lid])
+        _governors.pop(ds, None)
+        lab.close()
+    return {"lesson_id": lid, "approved_by": approver, "audit": audit}
 
 
 @app.post("/api/lessons/{lid}/undo")

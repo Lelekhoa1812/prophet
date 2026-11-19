@@ -96,3 +96,4 @@
 ## Loop 17, 20 Nov 2026
 - B2 follow-up: censoring sweep finished. Shortfall recall degrades gradually (41.0% base to 37.2% at the harshest tested), no cliff; precision flat. Synthetic only.
 - Loop 18: audit of the value paper's 'learns' capability found lessons matched days before they were created and used the wall clock. Fixed with two tests (98 pass). Still not built from the paper: lesson scope choice (this order / customer / everyone) and owner approval for wide lessons (B7).
+- Loop 19: design rule 5. Agent-wide lessons are pending until another person approves and `audit_lesson` is clean; capped at the dismissed alert's dollars. 100 tests pass; mutation check fails the tests as intended.

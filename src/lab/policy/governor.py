@@ -48,7 +48,10 @@ class Governor:
         for ls in self.lessons:
             if not ls.active or ls.agent != p.agent:
                 continue
-            if ls.scope_id in (p.entity_id, p.dedupe_key):
+            # Motivation vs Logic: design rule 5 wants lessons scoped. An agent-wide lesson ("*") only holds back proposals at or
+            # below the dollars of the alert that was dismissed (max_dollars), so it can never hide a bigger problem.
+            wide = ls.scope_type == "agent" and ls.scope_id == "*" and p.dollars_at_stake <= ls.effect.get("max_dollars", 0.0)
+            if wide or (ls.scope_type != "agent" and ls.scope_id in (p.entity_id, p.dedupe_key)):
                 # Bugs vs Fixes
                 # Bug: the window test was only "<= suppress_days", so a lesson created AFTER as_of (negative age) matched.
                 # A replay of past days then obeyed a dismissal that had not happened yet (future knowledge).
@@ -108,3 +111,29 @@ def ladder_status(agent: str, current: str, stats: dict) -> dict:
     if prec is not None and stats.get("recent_precision") is not None and stats["recent_precision"] < PROMOTION["demote_below_precision"] and i > 0:
         out["demote"] = True
     return out
+
+
+def audit_lesson(lesson: "Lesson", proposals: list) -> dict:
+    """Check a lesson against recorded proposals with an independent oracle written out here.
+
+    Motivation vs Logic
+    Motivation: design rule 5 asks for a regression test per lesson, so approving one cannot silently hide more than it said.
+    Logic: replay the lesson alone over stored proposals; compare each suppress/keep decision with a plain statement of the
+    rule (same agent, inside the window from its first day, entity match or at/below max_dollars). Any difference is a
+    violation. This checks the code against the stated rule; it does not say the alerts it holds back were useless.
+    """
+    g = Governor(lessons=[lesson])
+    days = lesson.effect.get("suppress_days", 0)
+    suppressed, violations = [], []
+    for p in proposals:
+        kept = g.filter([p], p.as_of, commit=False)
+        sup = not kept
+        age = (p.as_of - lesson.created_on).days
+        want = (p.agent == lesson.agent and 0 <= age <= days and
+                ((lesson.scope_type == "agent" and p.dollars_at_stake <= lesson.effect.get("max_dollars", 0.0)) or
+                 (lesson.scope_type != "agent" and lesson.scope_id in (p.entity_id, p.dedupe_key))))
+        if sup:
+            suppressed.append(p.proposal_id)
+        if sup != want:
+            violations.append(p.proposal_id)
+    return {"checked": len(proposals), "would_suppress": len(suppressed), "violations": violations}
