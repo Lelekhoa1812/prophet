@@ -129,3 +129,8 @@ Built from sections 1, 2, 2b, 2c and the loop 18 to 26 checks. Every code path w
 - `docs/CONTINUOUS_GOAL.md`: read in full (sections 0 to 8, including lines 28 to 42 that were missing).
 - `docs/ai-native-value.html`: the script's data arrays read directly. Seven rules (names match section 2), eight capabilities (names match section 1 in the same order) and three moves (match section 2c). Visible prose read in full (section 12).
 - Interactive behaviour (the limits dial, the market filter, the layer and capability selectors) is demo UI with example data, labelled as such on the page. It was not exercised in a browser in this loop.
+
+## 15. Loop 32: value paper interactions exercised in a browser
+- Served `docs/` on 127.0.0.1 (local only, stopped afterwards) and opened `ai-native-value.html`.
+- Clicked about 128 of the 213 visible controls in two passes (the rest became hidden as earlier clicks changed state). No JavaScript errors were raised, and the browser's error log was empty.
+- Coverage is partial. This check finds crashes, not whether each demo gives the right answer or whether its wording is accurate. The demo labels ('concept demo', 'example figures for discussion') were seen on the page.

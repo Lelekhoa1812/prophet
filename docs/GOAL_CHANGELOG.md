@@ -112,3 +112,4 @@
 - Loop 29: checked the 16 cited articles for their key figures. All 16 carry them. Two quotations (Anil Thawani, OnlineMedEd) remain unsourced. Recorded in GOAL_EVIDENCE and GOAL_AUDIT section 13.
 - Loop 30: searched the two unsourced quotes. Both are Rillet vendor material; no independent source. Recorded.
 - Loop 31: orientation reads completed (goal document in full; HTML rule, capability and move data checked against the audit). No code change.
+- Loop 32: value paper interactions clicked in a browser (about 128 of 213 controls): no JavaScript errors. Partial coverage. Recorded in GOAL_AUDIT section 15.
