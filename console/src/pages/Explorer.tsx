@@ -99,10 +99,10 @@ export function Explorer() {
                   events: ev.map((e: any) => ({ start: e.start_date, end: e.end_date, label: `${e.kind}: ${e.note}`, kind: e.kind })),
                   unit: freq === "W" ? "units / week" : "units / day",
                 }} />
-                <div className="grid gap-5 md:grid-cols-2">
+                <div className="grid gap-5 2xl:grid-cols-2">
                   <div>
                     <p className="mb-2 text-sm font-medium">Next {freq === "W" ? "weeks" : "days"}: TimesFM against baselines</p>
-                    <table className="w-full text-sm tabular">
+                    <div className="overflow-x-auto"><table className="w-full min-w-[30rem] text-sm tabular">
                       <thead className="text-xs text-muted-foreground"><tr><th className="text-left font-medium">Period</th><th className="text-right font-medium">TimesFM median</th><th className="text-right font-medium">10–90%</th><th className="text-right font-medium">Moving avg</th><th className="text-right font-medium">Actual</th></tr></thead>
                       <tbody>
                         {data.forecast.x.map((x: string, i: number) => (
@@ -112,7 +112,7 @@ export function Explorer() {
                             <td className="whitespace-nowrap text-right font-medium">{actualAfter?.[i] != null ? Math.round(actualAfter[i]).toLocaleString("en-AU") : "–"}</td></tr>
                         ))}
                       </tbody>
-                    </table>
+                    </table></div>
                   </div>
                   <div>
                     <p className="mb-2 text-sm font-medium">How the forecast compares</p>
@@ -159,6 +159,9 @@ function ModelSaw({ saw, freq, hor, results }: { saw: any; freq: "W" | "D"; hor:
       <div className="space-y-2 text-sm">
         <p className="font-semibold">What the model saw</p>
         <p>{saw.periods} {unit}, {saw.from} to {saw.to}{saw.seasonal_years ? ` (${saw.seasonal_years} of a year)` : ""}.</p>
+        {saw.one_year_sensitivity != null && (
+          <p className="text-xs">If the window were cut to the last year, the next weeks would move by about <span className="font-semibold tabular">{pct(saw.one_year_sensitivity)}</span> on average. {saw.one_year_sensitivity > 0.05 ? "That is large enough to question the forecast." : "The answer is stable to the window."}</p>
+        )}
         {saw.derived && <p className="text-xs text-muted-foreground">Daily values are the weekly forecast split by this product's weekday pattern, so they agree with the briefing.</p>}
         {freq === "W" && !saw.full_year && (
           <p className="rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">

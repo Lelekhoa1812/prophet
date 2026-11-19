@@ -394,8 +394,16 @@ def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: i
         partial = {"week_start": str(known_from.date()), "known_days": int(len(known)), "known_units": round(float(known.sum()), 2)}
         hist_x = [str(x.date()) for x in idx]
         hist_y = series
+        # Motivation vs Logic
+        # Motivation: the model's answer depends on how much history it sees, and users need to know how much.
+        # Logic: forecast again on the last 52 weeks and report the average percentage change in the next weeks.
+        sensitivity = None
+        if len(series) > 52:
+            alt = TimesFMEngine.get().predict([series[-52:]], horizon).point[0]
+            sensitivity = round(float(np.mean(np.abs(alt - point) / np.maximum(point, 1e-6))), 3)
         model_saw = {"periods": int(len(series)), "from": str(idx[0].date()), "to": str(idx[-1].date()), "unit": "weeks",
-                     "full_year": bool(len(series) >= 52), "seasonal_years": round(len(series) / 52, 2), "derived": False}
+                     "full_year": bool(len(series) >= 52), "seasonal_years": round(len(series) / 52, 2), "derived": False,
+                     "one_year_sensitivity": sensitivity}
         actual_future = [None if d not in actual_weekly.index else round(float(actual_weekly[d]), 2) for d in fut_days]
     else:
         # Daily derived: the weekly forecast for the window, split by the product's weekday pattern.
@@ -422,7 +430,8 @@ def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: i
         hist_x = [str(x.date()) for x in didx]
         hist_y = dser
         model_saw = {"periods": int(len(wseries)), "from": str(widx[0].date()), "to": str(widx[-1].date()), "unit": "weeks",
-                     "full_year": bool(len(wseries) >= 52), "seasonal_years": round(len(wseries) / 52, 2), "derived": True}
+                     "full_year": bool(len(wseries) >= 52), "seasonal_years": round(len(wseries) / 52, 2), "derived": True,
+                     "one_year_sensitivity": None}
         actual_future = [None if d not in actual_daily.index else round(float(actual_daily[d]), 2) for d in fut_days]
     fut = [str(d.date()) for d in fut_days]
     expected = _expected_series(dataset, product, freq)

@@ -61,7 +61,7 @@ export function Scorecard() {
                 <table className="w-full min-w-[640px] text-sm tabular">
                   <thead className="text-xs text-muted-foreground"><tr>
                     <th className="py-2 text-left font-medium">Agent</th><th className="text-right font-medium">Alerts</th><th className="text-right font-medium">Useful</th>
-                    <th className="text-right font-medium">Known events caught</th><th className="text-right font-medium">Median lead</th><th className="text-right font-medium">Dollars caught</th><th className="text-right font-medium">Dollars at stake</th></tr></thead>
+                    <th className="text-right font-medium">Known events caught</th><th className="text-right font-medium">Median lead</th><th className="text-right font-medium">Dollars of known losses caught</th><th className="text-right font-medium">All known losses</th></tr></thead>
                   <tbody>
                     {rows.map(([k, a]) => (
                       <tr key={k} className="border-t">
@@ -70,8 +70,8 @@ export function Scorecard() {
                         <td className="text-right">{pct(a.precision)}</td>
                         <td className="text-right">{a.caught} of {a.events} ({pct(a.recall)})</td>
                         <td className="text-right">{a.median_delay_days != null ? `${Math.round(a.median_delay_days)} days` : "–"}</td>
-                        <td className="text-right">{money(a.dollars_truth_caught, true)}</td>
-                        <td className="text-right">{money(a.dollars_truth_total, true)}</td>
+                        <td className="text-right">{a.dollars_truth_total ? money(a.dollars_truth_caught, true) : <span className="text-muted-foreground" title="This agent does not put a dollar value on its events in the test">not measured</span>}</td>
+                        <td className="text-right">{a.dollars_truth_total ? money(a.dollars_truth_total, true) : <span className="text-muted-foreground">–</span>}</td>
                       </tr>
                     ))}
                   </tbody>

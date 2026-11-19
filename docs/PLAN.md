@@ -35,6 +35,23 @@ Results:
 - Ship-bar margin vs best baseline: 7.3% on 52 origins, 9.5% on 26 origins. Both are below the 15% bar.
 - The twin's calendar effects are generated from the same calendar module as the covariate. Any covariate gain on the twin is therefore an upper bound, and the twin cannot tell us real effect sizes.
 
+## Round 3 decisions and audit (19 Nov, later)
+
+Decided with Liam (AskUserQuestion):
+- **Default history window:** all history on every page (briefing and Explorer agree). The roller still shortens it, and the panel says what the model saw.
+- **Expected sales for expiry maths:** keep the median. It under-forecasts weekly units by 6.7% on the twin, but it is the most accurate basis (WAPE 27.5%). The 60th percentile over-forecasts by 2.2% (WAPE 28.1%). Corrected after I first mislabelled the quantiles.
+- **Explorer Daily:** derived from the weekly forecast and the weekday pattern, the same as the briefing. Direct daily TimesFM is not used: for P-0079 it gives 0.6 to 1.2 units a day, against 3.4 from the weekly view.
+- **Partly known week:** weekly forecasts start at the next full week. The partly known days are shown as a note.
+- **Shortfall look-ahead:** review gap 4 days (was 2). On the four-year twin: 49% count recall and 67% dollar recall, 5.5 alerts a day, 46% precision.
+
+Audit findings:
+- Same product, same date: the Explorer (52-week default) and the briefing (all history) differed by about 10% a week. Fixed by the shared default.
+- The Explorer's "how the forecast compares" bar summed signed errors, so over- and under-forecasts cancelled. Now absolute error.
+- Known-events list showed the twin's planted shocks as if known in advance. Now labelled as checking-only.
+- Shortfall stockouts: a repeat cooldown was not the cause. Removing it (shortfall cooldown 0) added 20% more alerts for 2 extra catches, so it was reverted.
+- Shortfall misses are mostly routine stockouts: planted shocks explain less than half, and the catch rate is 26% without a nearby shock. Margin is not the driver (10 to 30% margins catch at similar rates).
+- Residual: the weekly charts on shortfall and freshness cards still start at the partly known week. Needs the same fix as the Explorer.
+
 ## Open questions
 
 - **O1 (resolved 19 Nov). Staging database** is STAGING_TENANT_DATABASE_URL in foodflow/axis/env3.local. Data depth: about 8 weeks of orders (delivery 14 Sep to 6 Nov 2026), so seasonality cannot be tested yet. Connection uses the owner role with a read-only session. Liam chose not to create a dedicated read-only role. Original note: The `.env` files hold `REPORTING_DATABASE_URL` and `TENANT_DATABASE_URL`. Their hosts are not labelled staging or production, so the lab will not read them until confirmed.

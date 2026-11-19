@@ -8,7 +8,7 @@ from ..engine.state import pipeline_at, stock_at, unit_cost_at, weekly_matrix
 from .base import AgentContext, Proposal, dstr, inv_cdf, interp_cdf, series_evidence, severity_for
 
 NAME = "shortfall"
-DEFAULTS = {"min_history_weeks": 6, "risk_threshold": 0.55, "min_dollars": 150.0, "review_gap_days": 2,
+DEFAULTS = {"min_history_weeks": 6, "risk_threshold": 0.55, "min_dollars": 150.0, "review_gap_days": 4,
             "default_lead": 3, "cover_percentile": 0.80}
 
 
@@ -63,14 +63,19 @@ def run(ctx: AgentContext) -> list[Proposal]:
         target = inv_cdf(P["cover_percentile"], dt["q10"], dt["q50"], dt["q90"]) if dt else d["q90"]
         pack = 6.0 if shelf > 21 else 1.0
         qty = float(np.ceil(max(target - position, 0.0) / pack) * pack)
-        hist_x = [dstr(x) for x in weeks[-12:]]
-        fx = [dstr(res["future_start"] + pd.Timedelta(days=7 * i)) for i in range(4)]
         fc = res["fc"]
         conf = float(np.clip(1.0 - (fc.q[k, 0, 8] - fc.q[k, 0, 0]) / (2 * max(fc.q[k, 0, 4], 1.0)), 0.25, 0.95))
         title = f"{prod.display_name[pid]}: likely to run short within {window} days"
+        # Motivation vs Logic
+        # Motivation: the weekly card started at the week containing as_of, which is only partly known, so its first point
+        # mixed known and unknown days. Logic: chart the same derived daily path the sell-down and freshness cards use.
+        path = ctx.fs.daily_path(as_of, int(pi), 14)
+        dem_end = int(w.days.searchsorted(as_of))
+        day_hist = list(w.demand[pi, max(0, dem_end - 28):dem_end])
+        day_x = [dstr(x) for x in w.days[max(0, dem_end - 28):dem_end]]
         ev = {
-            "series": series_evidence(hist_x, mat[pi, -12:], fx, fc.q[k, :, 0], fc.q[k, :, 4], fc.q[k, :, 8], "units / week",
-                                      "Weekly demand and TimesFM forecast band"),
+            "series": series_evidence(day_x, day_hist, [dstr(x) for x in path["dates"]], path["q10"], path["q50"], path["q90"],
+                                      "units / day", "Daily demand and forecast band") if path else None,
             "facts": [
                 {"label": "On hand", "value": round(oh, 1), "unit": "units"},
                 {"label": "Inbound before window ends", "value": round(inbound, 1), "unit": "units"},
@@ -80,7 +85,7 @@ def run(ctx: AgentContext) -> list[Proposal]:
                 {"label": "Margin per unit", "value": round(margin, 2), "unit": "$"},
             ],
             "why": f"Stock plus inbound ({position:.0f} units) sits below the forecast median demand over the next {window} days ({d['q50']:.0f} units).",
-            "method": "Weekly TimesFM 3 forecast scaled to the window; position = on hand + inbound by window end.",
+            "method": "TimesFM 3 median for each week, split by this product's weekday pattern; position = on hand + inbound by window end.",
         }
         out.append(Proposal(NAME, dstr(as_of), "product", pid, title, severity_for(dollars, conf), round(dollars, 2), round(conf, 2),
                             ev, {"type": "raise_purchase_order", "product_id": pid, "qty": qty, "supplier": _last_supplier(w, pid, as_of),
