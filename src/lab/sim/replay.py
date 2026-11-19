@@ -66,6 +66,9 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
         lab.close()
         result["run_id"] = rid
     result["suppressed_sample"] = gov.suppressed[:50]
+    if persist:
+        from ..config import DATA
+        (DATA / f"scorecard_{dataset}.json").write_text(json.dumps({k: v for k, v in result.items() if k != "_rows"}, default=str))
     if keep_rows:
         result["_rows"] = rows
     return result

@@ -10,6 +10,7 @@ dependencies = [
   "fastapi",
   "uvicorn",
   "psycopg[binary]",
+  "boto3",
 ]
 
 [build-system]

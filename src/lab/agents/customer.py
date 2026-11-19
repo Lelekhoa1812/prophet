@@ -84,7 +84,7 @@ def _lapse(ctx: AgentContext, P: dict) -> list[Proposal]:
                         {"label": "Usual gap between orders", "value": med, "unit": "days"},
                         {"label": "Typical weekly spend (13w)", "value": round(weekly), "unit": "$"},
                         {"label": "Last order", "value": dstr(dates[-1]), "unit": ""}],
-              "why": f"{since} days without an order is {since / max(med, 1):.1f}x their usual gap of {med:.0f} days.",
+              "why": f"{since} days without an order, against a usual gap of {med:.0f} {'day' if med == 1 else 'days'} between orders.",
               "method": "Order cadence from the customer's own history; flagged beyond 3x the usual gap."}
         out.append(Proposal(NAME, dstr(as_of), "customer", cid, f"{names.get(cid, cid)}: may have stopped ordering",
                             severity_for(dollars, conf, 3000, 800), round(dollars, 2), round(conf, 2), ev,

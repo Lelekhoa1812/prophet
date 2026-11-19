@@ -43,7 +43,8 @@ def _cost_drift(ctx: AgentContext, P: dict) -> list[Proposal]:
         dollars = units * (last - base) * 4          # four weeks of exposure at current volumes
         if dollars < P["min_dollars"]:
             continue
-        restore = last / (1 - old_m / 100)
+        target_m = max(old_m, 12.0)           # never recommend restoring a negative or tiny margin
+        restore = last / (1 - target_m / 100)
         conf = float(np.clip(0.55 + min(rise, 0.3), 0.55, 0.95))
         fx = [dstr(now["future_start"] + pd.Timedelta(days=7 * i)) for i in range(2)]
         ev = {
@@ -61,7 +62,7 @@ def _cost_drift(ctx: AgentContext, P: dict) -> list[Proposal]:
         out.append(Proposal(NAME, dstr(as_of), "product", pid, f"{prod.display_name[pid]}: cost up {rise * 100:.0f}%, margin shrinking",
                             severity_for(dollars, conf, 2500, 600), round(dollars, 2), round(conf, 2), ev,
                             {"type": "review_price", "product_id": pid, "current_price": round(price, 2),
-                             "suggested_price": round(restore, 2), "restores_margin_pct": round(old_m, 1)},
+                             "suggested_price": round(restore, 2), "target_margin_pct": round(target_m, 1), "previous_margin_pct": round(old_m, 1)},
                             f"margin-cost|{pid}", owner="pricing").finalise())
     return out
 

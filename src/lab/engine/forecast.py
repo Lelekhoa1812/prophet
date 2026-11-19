@@ -36,14 +36,17 @@ class TimesFMEngine:
                 cls._inst = TimesFMEngine()
             return cls._inst
 
+    _infer = threading.Lock()
+
     def predict(self, contexts: list[np.ndarray], horizon: int, max_context: int = 512,
                 chunk: int = 128) -> Forecast:
         pts, qs = [], []
         ctx = [np.asarray(c[-max_context:], dtype=np.float32) for c in contexts]
-        for i in range(0, len(ctx), chunk):
-            for out in self.model.predict_batch(ctx[i:i + chunk], horizon=horizon, return_quantiles=True):
-                pts.append(np.asarray(out.forecast, dtype=np.float32))
-                qs.append(np.asarray(out.quantiles, dtype=np.float32))
+        with self._infer:
+            for i in range(0, len(ctx), chunk):
+                for out in self.model.predict_batch(ctx[i:i + chunk], horizon=horizon, return_quantiles=True):
+                    pts.append(np.asarray(out.forecast, dtype=np.float32))
+                    qs.append(np.asarray(out.quantiles, dtype=np.float32))
         point = np.clip(np.stack(pts), 0, None)
         q = np.clip(np.stack(qs), 0, None)
         q = np.sort(q, axis=-1)           # guard against quantile crossing
@@ -55,10 +58,11 @@ class TimesFMEngine:
         pts, qs = [], []
         ctx = [np.asarray(c[-max_context:], dtype=np.float32)[None, :] for c in contexts]
         cov = [np.asarray(f[:, -(c.shape[1] + horizon):], dtype=np.float32) for f, c in zip(future_covs, ctx)]
-        for i in range(0, len(ctx), chunk):
-            for out in self.model.predict_batch(ctx[i:i + chunk], horizon=horizon, past_future_covariates=cov[i:i + chunk],
-                                                return_quantiles=True):
-                pts.append(np.asarray(out.forecast, dtype=np.float32)[0])
-                qs.append(np.asarray(out.quantiles, dtype=np.float32)[0])
+        with self._infer:
+            for i in range(0, len(ctx), chunk):
+                for out in self.model.predict_batch(ctx[i:i + chunk], horizon=horizon, past_future_covariates=cov[i:i + chunk],
+                                                    return_quantiles=True):
+                    pts.append(np.asarray(out.forecast, dtype=np.float32)[0])
+                    qs.append(np.asarray(out.quantiles, dtype=np.float32)[0])
         q = np.sort(np.clip(np.stack(qs), 0, None), axis=-1)
         return Forecast(np.clip(np.stack(pts), 0, None), q)

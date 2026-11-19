@@ -79,7 +79,7 @@ def run(ctx: AgentContext) -> list[Proposal]:
                 {"label": "Supplier lead time (recent POs)", "value": lead, "unit": "days"},
                 {"label": "Margin per unit", "value": round(margin, 2), "unit": "$"},
             ],
-            "why": f"Stock plus inbound ({position:.0f}) sits below the forecast median demand over the next {window} days ({d['q50']:.0f}).",
+            "why": f"Stock plus inbound ({position:.0f} units) sits below the forecast median demand over the next {window} days ({d['q50']:.0f} units).",
             "method": "Weekly TimesFM 3 forecast scaled to the window; position = on hand + inbound by window end.",
         }
         out.append(Proposal(NAME, dstr(as_of), "product", pid, title, severity_for(dollars, conf), round(dollars, 2), round(conf, 2),
