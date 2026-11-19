@@ -41,3 +41,4 @@
 - Change: `.github/workflows/tests.yml` (installs everything except `timesfm[mlx]`, package with `--no-deps`); `httpx` in dev extras; one test no longer needs the twin.
 - Test: clean venv with an empty `data/`: 65 passed, 1 skipped (the twin leakage test). Full local: 66 passed.
 - Residual: CI cannot exercise agents or the leakage guard until a small seeded twin fixture exists.
+- Remote: GitHub Actions run 44517852886 on 408956e passed (fast job, Ubuntu, no model, no data).
