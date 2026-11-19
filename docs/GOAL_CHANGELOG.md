@@ -53,3 +53,7 @@
 - Gap (B5): no honest answer to 'what is it worth'.
 - Change: `policy/whatif.py`, `GET /api/policy/whatif`, console card on the Developer page (phone checked, no overflow). Customer and margin listed as unmeasured, not netted.
 - Test: 7 new tests; measured at defaults: see evidence. Finding: claimed dollars overstate real problem dollars 2.3-2.5x; shortfall is net negative at 50% acceptance (B10).
+
+## Loop 9, 19 Nov 2026
+- Gap (S3, B11): audit identity was free text. Change: validated name, `X-Operator` header, `unverified:` prefix. Tests: 3 new, suite 82 passed.
+- Residual: identity is asserted not authenticated.

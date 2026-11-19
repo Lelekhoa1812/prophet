@@ -10,7 +10,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -248,10 +248,28 @@ class DecisionIn(BaseModel):
     decided_by: str = "liam"
 
 
+_OPERATOR = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@'-]{0,63}$")
+
+
+def _operator(header: str | None, body_name: str) -> str:
+    """Who is recorded as deciding. There is no login, so this is asserted, never verified: it is stored as 'unverified:<name>'.
+
+    Motivation vs Logic
+    Motivation: decided_by was any string from the request body, including markup and unbounded text, shown later in the
+    decision history. Logic: the X-Operator header (set by whatever fronts the lab) beats the body; the name must be 1 to 64
+    plain characters; the stored value says plainly that it was not authenticated.
+    """
+    name = (header or body_name or "").strip()
+    if not _OPERATOR.match(name):
+        raise HTTPException(400, "operator name must be 1 to 64 letters, digits, spaces or . _ @ ' -")
+    return f"unverified:{name}"
+
+
 @app.post("/api/proposals/{pid}/decision")
-def decide(pid: str, body: DecisionIn):
+def decide(pid: str, body: DecisionIn, x_operator: str | None = Header(default=None)):
     if body.decision not in ("approve", "adjust", "dismiss"):
         raise HTTPException(400, "decision must be approve, adjust or dismiss")
+    operator = _operator(x_operator, body.decided_by)
     with _lock:
         lab = _lab()
         r = lab.execute("select dataset, agent, entity_id, dedupe_key, as_of from proposals where proposal_id=?", [pid]).fetchone()
@@ -265,7 +283,7 @@ def decide(pid: str, body: DecisionIn):
         # Fix: the latest decision wins. Active lessons born from earlier decisions on this proposal are retired first.
         lab.execute("""update lessons set active=false, undone_at=? where active and source_decision_id in
                        (select decision_id from decisions where proposal_id=?)""", [datetime.now(timezone.utc), pid])
-        lab.execute("insert into decisions values (?,?,?,?,?,?,?)", [did, pid, datetime.now(timezone.utc), body.decided_by, body.decision, body.reason, body.note])
+        lab.execute("insert into decisions values (?,?,?,?,?,?,?)", [did, pid, datetime.now(timezone.utc), operator, body.decision, body.reason, body.note])
         lab.execute("update proposals set status=? where proposal_id=?", [{"approve": "approved", "adjust": "adjusted", "dismiss": "dismissed"}[body.decision], pid])
         lesson = None
         if body.decision == "dismiss" and body.reason in ("one_off", "known_promo", "wrong_alert", "not_useful"):

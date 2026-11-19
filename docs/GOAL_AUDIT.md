@@ -48,3 +48,5 @@ Twin results are method demos. Staging has about eight weeks. The ship bar (15% 
 
 ## 6. Loop 8 finding: claimed dollars overstate (executive risk)
 Summing `dollars_at_stake` over alerts overstates the real problem 2.5x (shortfall $1.25M claimed vs $510k real stockout dollars in the window) and 2.3x for freshness ($9.7M vs $4.2M). One problem can be alerted on several days, and the per-alert dollar formulas are uncalibrated. The what-if card shows both figures side by side. Under the default assumptions the shortfall agent is net negative at 50% acceptance, so its false-alarm cost, not its recall, is what to tune next (backlog B10).
+
+Loop 9 (S3): `decided_by` is now validated (1 to 64 plain characters), an `X-Operator` header beats the body, and the stored value reads `unverified:<name>`. This labels the identity, it does not prove it: without a login anyone can claim any name. Real identity needs authentication in front of the lab or in FoodFlow.

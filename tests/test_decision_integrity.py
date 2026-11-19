@@ -47,3 +47,28 @@ def test_agent_stats_count_latest_decision_once(lab):
         c.post("/api/proposals/PR-1/decision", json={"decision": d, "reason": "wrong_alert" if d == "dismiss" else None})
     sf = [a for a in c.get("/api/agents", params={"dataset": "twin"}).json() if a["key"] == "shortfall"][0]
     assert sf["operator_decisions"] == {"approve": 1}
+
+
+def who():
+    con = store.open_lab()
+    r = con.execute("select decided_by from decisions order by decided_at desc").fetchone()[0]
+    con.close()
+    return r
+
+
+def test_operator_header_names_who_decided_and_beats_the_body(lab):
+    c.post("/api/proposals/PR-1/decision", json={"decision": "approve", "decided_by": "reviewer"}, headers={"X-Operator": "Sam Nguyen"})
+    assert who() == "unverified:Sam Nguyen"
+
+
+def test_operator_name_is_validated(lab):
+    for bad in ("x" * 100, "name;drop", "<script>"):
+        r = c.post("/api/proposals/PR-1/decision", json={"decision": "approve"}, headers={"X-Operator": bad})
+        assert r.status_code == 400
+    r = c.post("/api/proposals/PR-1/decision", json={"decision": "approve", "decided_by": "<b>x</b>"})
+    assert r.status_code == 400
+
+
+def test_default_identity_is_labelled_unverified(lab):
+    c.post("/api/proposals/PR-1/decision", json={"decision": "approve"})
+    assert who().startswith("unverified:")
