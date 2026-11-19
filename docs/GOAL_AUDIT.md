@@ -123,3 +123,4 @@ Built from sections 1, 2, 2b, 2c and the loop 18 to 26 checks. Every code path w
 ## 13. Loop 29: value-paper figures checked against the cited articles
 - All 16 cited articles carry the key figure or fact the paper gives them. The paper's own caveats (company-reported, undated, no baseline, 'company claims') match what the articles say.
 - Limits: presence of figures and facts, not a line-by-line reading of every quotation. The Anil Thawani NetSuite quote and the OnlineMedEd case study are not among the cited links and remain unsourced.
+- Loop 30: the Thawani quote and the OnlineMedEd case study are vendor-published (Rillet). No independent source found. The HTML's label ('Rillet case study') is accurate. Do not use the quote as independent evidence.
