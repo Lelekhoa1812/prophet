@@ -23,7 +23,7 @@ def scored_window(w) -> tuple[pd.Timestamp, pd.Timestamp]:
 
 
 def replay(dataset: str, start: str | None = None, end: str | None = None, agents: list[str] | None = None,
-           params: dict | None = None, policy: dict | None = None, learn: bool = False, persist: bool = True, progress=None, keep_rows: bool = False) -> dict:
+           params: dict | None = None, policy: dict | None = None, learn: bool = False, persist: bool = True, progress=None, keep_rows: bool = False, keep_candidates: str | None = None) -> dict:
     t0 = time.time()
     w = get_world(dataset)
     fs = ForecastService(w)
@@ -35,11 +35,10 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
     gov = Governor()
     econ = alert_policy.from_dict(policy) if policy is not None else None
     if econ is not None:
-        # Under a score-plus-budget policy the agents emit every candidate above the score floor and the policy decides
-        # what is shown, so the old probability and share gates are opened up (customer and margin keep their own).
-        params = {**params, "shortfall": {"risk_threshold": 0.0, "min_dollars": econ.floor, **params.get("shortfall", {})},
-                  "freshness": {"min_dollars": econ.floor, "min_share_at_risk": 0.05, **params.get("freshness", {})}}
+        params = alert_policy.agent_params(econ, params)
     digested: list = []
+    candidates: list = []
+    digest_by_day: dict = {}
     days = list(pd.date_range(lo, hi, freq="D"))      # restaurants and caterers order on weekends too
     raised: list = []
     lessons_made = 0
@@ -53,6 +52,8 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
             else:
                 kept = gov.filter(ps, d.date(), commit=False)
                 day_all.extend(kept)
+                if keep_candidates:
+                    candidates.extend(dict(agent=q.agent, entity_type=q.entity_type, entity_id=q.entity_id, as_of=q.as_of, dollars_at_stake=q.dollars_at_stake, severity=q.severity, dedupe_key=q.dedupe_key, action=q.action, proposal_id=q.proposal_id, owner=q.owner, p_event=q.p_event, confidence=q.confidence) for q in kept)
                 continue
             raised += kept
             if learn:                                  # simulated operator: dismiss false alarms with a reason
@@ -62,6 +63,8 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
             gov.commit(shown, d.date())
             raised += shown
             digested += digest
+            if digest:
+                digest_by_day[str(d.date())] = alert_policy.digest_groups(digest)
         if progress and (k % 10 == 0 or k == len(days) - 1):
             progress(k + 1, len(days))
     rows = [dict(agent=p.agent, entity_type=p.entity_type, entity_id=p.entity_id, as_of=p.as_of, dollars_at_stake=p.dollars_at_stake,
@@ -94,6 +97,13 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
                          json.dumps(p.action, default=str), "open", p.dedupe_key, None, None, datetime.now(timezone.utc)])
         lab.close()
         result["run_id"] = rid
+    if persist and econ is not None:
+        from ..config import DATA as _DD
+        (_DD / f"digest_{dataset}.json").write_text(json.dumps(digest_by_day))
+    if keep_candidates:
+        import pickle
+        from ..config import DATA as _D
+        (_D / keep_candidates).write_bytes(pickle.dumps(candidates))
     result["suppressed_sample"] = gov.suppressed[:50]
     if persist:
         from ..config import DATA

@@ -4,6 +4,7 @@ import { useApp } from "@/lib/context";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, CardDescription, EmptyState, InlineAlert, PageHeader, Select, Stat, Skeleton } from "@/components/ui";
 import { HBars } from "@/components/charts/Bars";
 import { pct } from "@/lib/utils";
+import { Rollout } from "@/components/Rollout";
 
 /** Developer view: model status, licence, runs, backtests, jobs, cost ledger, and the API surface. */
 export function Developer() {
@@ -29,6 +30,8 @@ export function Developer() {
         <Card><CardContent className="p-5"><Stat label="Narration spend" value={`$${(meta?.bedrock.spent_usd ?? 0).toFixed(3)}`} sub={`Hard cap $${meta?.bedrock.cap_usd ?? 30} (${meta?.bedrock.model})`} /></CardContent></Card>
         <Card><CardContent className="p-5"><Stat label="Licence" value={<Badge variant="warning">Unresolved</Badge>} sub="Non-commercial weights: no client production" /></CardContent></Card>
       </section>
+
+      <Rollout />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -104,5 +107,11 @@ const API: [string, string, string][] = [
   ["POST", "/api/time/step", "Advance the time machine up to 14 days"],
   ["GET", "/api/briefing?dataset=&owner=", "The morning briefing for a date and owner"],
   ["GET", "/api/scorecard?dataset=", "Latest replay scorecard"],
+  ["GET", "/api/tenant?dataset=", "Client economics (review cost, effectiveness, alerts per owner), go-live date, rollout phase, learning log"],
+  ["POST", "/api/tenant?dataset=", "Change the economics, go-live date or shadow length"],
+  ["GET", "/api/policy/frontier?dataset=", "What each alerts-per-owner budget buys under the client's economics"],
+  ["GET", "/api/readiness?agent=&dataset=", "Replay one agent on this client's recent history and say if it is safe to switch on"],
+  ["GET", "/api/drift?dataset=", "Forecast calibration by volume class over the latest eight weeks"],
+  ["POST", "/api/tenant/learn?dataset=", "Turn approvals and dismissals into bounded priority weights"],
   ["GET", "/api/jobs/{id}", "Progress and result of a background job"],
 ];

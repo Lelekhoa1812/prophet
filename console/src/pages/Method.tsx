@@ -14,9 +14,9 @@ export function Method() {
           <FlowRow>
             <FlowNode step={1} title="Read the business" sub="Orders, stock and use-by dates, purchase orders, prices. Read-only." />
             <FlowNode step={2} title="Make weekly series" sub="Units per product, spend per customer, cost per unit. Only complete weeks." />
-            <FlowNode step={3} title="TimesFM 3 forecasts" sub="A median and a range (10% to 90%) for each series." tone="accent" />
+            <FlowNode step={3} title="TimesFM 3 forecasts" sub="The typical case (median) and a range (10% to 90%) for each series." tone="accent" />
             <FlowNode step={4} title="Compare with simple rules" sub="Moving averages are the bar to beat. If TimesFM is no better, it says so." />
-            <FlowNode step={5} title="An agent decides" sub="Turns a forecast into a proposal worth a number of dollars." />
+            <FlowNode step={5} title="An agent decides" sub="Works out the expected loss over the whole range, in dollars, and drafts what to do." />
           </FlowRow>
           <Example>
             <p><span className="font-semibold">Seafood P-0120, Friday 3 April.</span> 185 units on hand and 477 inbound, so 662 in total. The forecast says about 2,125 units will sell in the next 5 days (range up to 2,481).</p>
@@ -39,6 +39,7 @@ export function Method() {
           <div className="mt-3">
             <FlowRow>
               <FlowNode title="Checks first" sub="Same issue already raised? Inside its cooldown? Quiet hours? Has the business taught us to ignore it?" tone="warn" />
+              <FlowNode title="Worth a person's time?" sub="Expected loss recovered, less review time and the cost of a false alarm. Each owner sees their best few; the rest wait in a digest." tone="warn" />
               <FlowNode title="Owner is told" sub="One short message with the evidence, in the morning briefing or straight away if it can stop a mistake." />
             </FlowRow>
           </div>

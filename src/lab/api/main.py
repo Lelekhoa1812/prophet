@@ -321,8 +321,9 @@ class ReplayIn(BaseModel):
 @app.post("/api/replay/run")
 def run_replay(body: ReplayIn):
     _ds(body.dataset)
+    pol = rollout.economics_of(rollout.load(body.dataset)).describe()      # replays run under the client's own policy
     return {"job": jobs.submit("replay", lambda progress, **kw: {k: v for k, v in replay(progress=progress, **kw).items() if k not in ("_rows", "events")},
-                               dataset=body.dataset, start=body.start, end=body.end, agents=body.agents, params=body.params)}
+                               dataset=body.dataset, start=body.start, end=body.end, agents=body.agents, params=body.params, policy=pol)}
 
 
 @app.get("/api/jobs")
@@ -503,7 +504,7 @@ def briefing(dataset: str = "twin", as_of: str | None = None, owner: str | None 
     shown, digest_items, below = alert_policy.select(props, econ)
     digest_items = digest_items + shown[limit:]          # a screen limit moves overflow into the digest, never drops it
     shown = shown[:limit]
-    digest = _digest_groups(digest_items)
+    digest = _digest_groups(digest_items) or _stored_digest(dataset, d, owner)
     if ph["phase"] in ("shadow", "setup"):
         hidden = len(shown)
         return {"as_of": d, "headline": f"Shadow mode: {hidden} alert{'s' if hidden != 1 else ''} recorded but not shown.", "needs_you": [],
@@ -515,14 +516,18 @@ def briefing(dataset: str = "twin", as_of: str | None = None, owner: str | None 
             "phase": ph, "policy": econ.describe(), "below_floor": len(below)}
 
 
+def _stored_digest(dataset: str, d: str, owner: str | None) -> list[dict]:
+    """Digest recorded by the replay for a past day (the digested alerts themselves are not stored)."""
+    f = DATA / f"digest_{dataset}.json"
+    if not f.exists():
+        return []
+    rows = json.loads(f.read_text()).get(d, [])
+    return [r for r in rows if not owner or owner in r["owner"]]
+
+
 def _digest_groups(rest: list[dict]) -> list[dict]:
     """Group alerts that are above the score floor but over the owner's budget, by owner and agent."""
-    groups: dict[tuple, dict] = {}
-    for p in rest:
-        g = groups.setdefault((p["owner"], p["agent"]), {"owner": p["owner"], "agent": p["agent"], "count": 0, "dollars": 0.0})
-        g["count"] += 1
-        g["dollars"] = round(g["dollars"] + p["dollars_at_stake"], 2)
-    return sorted(groups.values(), key=lambda g: -g["dollars"])
+    return alert_policy.digest_groups(rest)
 
 
 def _headline(props: list[dict]) -> str:
@@ -553,6 +558,7 @@ class TenantIn(BaseModel):
     review_cost: float | None = None
     effectiveness: float | None = None
     budget_per_owner: int | None = None
+    false_alarm_cost: float | None = None
     go_live: str | None = None
     shadow_days: int | None = None
 
@@ -562,7 +568,7 @@ def tenant(dataset: str = "twin", as_of: str | None = None):
     _ds(dataset)
     cfg = rollout.load(dataset)
     d = as_of or str(w_default_date(dataset))
-    return {"dataset": dataset, "economics": alert_policy.Economics(**{k: v for k, v in cfg["economics"].items() if k in ("review_cost", "effectiveness", "budget_per_owner", "agent_weight")}).describe(),
+    return {"dataset": dataset, "economics": rollout.economics_of(cfg).describe(),
             "go_live": cfg["go_live"], "shadow_days": cfg["shadow_days"], "phase": rollout.phase(cfg, d), "learning_log": cfg["learning_log"][-20:],
             "retune_log": cfg["retune_log"][-20:]}
 
@@ -577,7 +583,7 @@ def tenant_update(body: TenantIn, dataset: str = "twin"):
     _ds(dataset)
     cfg = rollout.load(dataset)
     e = cfg["economics"]
-    for k in ("review_cost", "effectiveness", "budget_per_owner"):
+    for k in ("review_cost", "effectiveness", "budget_per_owner", "false_alarm_cost"):
         v = getattr(body, k)
         if v is not None:
             e[k] = v
@@ -588,6 +594,31 @@ def tenant_update(body: TenantIn, dataset: str = "twin"):
     cfg["economics"] = rollout.economics_of(cfg).describe()
     rollout.save(dataset, cfg)
     return tenant(dataset)
+
+
+_CANDS: dict = {}
+
+
+@app.get("/api/policy/frontier")
+def policy_frontier(dataset: str = "twin", budgets: str = "3,5,8,12,20"):
+    """What each alerts-per-owner budget buys, under the client's economics, on recorded candidates (no forecasting)."""
+    _ds(dataset)
+    from ..sim.policy_sim import load_candidates, simulate
+    if dataset not in _CANDS:
+        try:
+            _CANDS[dataset] = load_candidates(f"cand_{dataset}.pkl")
+        except FileNotFoundError:
+            raise HTTPException(404, "No recorded candidates for this dataset yet. Run a candidate replay first.")
+    econ = rollout.economics_of(rollout.load(dataset))
+    w = get_world(dataset)
+    rows = []
+    for b in [int(x) for x in budgets.split(",") if x.strip()][:8]:
+        e = alert_policy.Economics(review_cost=econ.review_cost, effectiveness=econ.effectiveness, budget_per_owner=b,
+                                   false_alarm_cost=econ.false_alarm_cost, agent_weight=econ.agent_weight)
+        r = simulate(_CANDS[dataset], e, dataset, scored_window(w))
+        rows.append({"budget_per_owner": b, "shown_per_day": r["shown_per_day"], "digest_per_day": r["digest_per_day"], "agents": r["agents"]})
+    return {"dataset": dataset, "policy": econ.describe(), "rows": rows,
+            "caveat": "Scored against stockouts and write-offs recorded in the data. Flagged is not the same as prevented."}
 
 
 @app.get("/api/readiness")
@@ -629,16 +660,23 @@ def time_step(body: StepIn):
         raise HTTPException(400, "step at most 14 days at a time")
     with _lock:
         gov = _governor(body.dataset)
+        econ = rollout.economics_of(rollout.load(body.dataset))
         new = []
         for d in pd.date_range(start, to, freq="D"):
+            day: list = []
+            opened = alert_policy.agent_params(econ)
             for name in REGISTRY:
                 cfg = _config(body.dataset, name)
                 if not cfg["enabled"]:
                     continue
-                ps = gov.filter(REGISTRY[name].run(AgentContext(w, d, fs, cfg["params"], gov.lessons)), d.date())
+                params = {**cfg["params"], **opened.get(name, {})} if name in opened else cfg["params"]
+                ps = gov.filter(REGISTRY[name].run(AgentContext(w, d, fs, params, gov.lessons)), d.date(), commit=False)
                 for p in ps:
                     p.autonomy_level, p.owner = cfg["autonomy_level"], cfg["owner"] or p.owner
-                new += ps
+                day += ps
+            shown, digest, below = alert_policy.select(day, econ)
+            gov.commit(shown, d.date())
+            new += shown + digest             # digested alerts are stored too: the briefing re-applies the budget when it reads
         lab = _lab()
         for p in new:
             lab.execute("delete from proposals where proposal_id=?", [p.proposal_id])

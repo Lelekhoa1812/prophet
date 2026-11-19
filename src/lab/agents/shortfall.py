@@ -102,6 +102,6 @@ def run(ctx: AgentContext) -> list[Proposal]:
         out.append(Proposal(NAME, dstr(as_of), "product", pid, title, severity_for(dollars, conf), round(dollars, 2), round(conf, 2),
                             ev, {"type": "raise_purchase_order", "product_id": pid, "qty": qty, "supplier": _last_supplier(w, pid, as_of),
                                  "needed_by": dstr(as_of + pd.Timedelta(days=window)), "est_cost": round(qty * c, 2)},
-                            f"shortfall|{pid}", owner="buyer").finalise())
+                            f"shortfall|{pid}", owner="buyer", p_event=round(p_short, 4)).finalise())
     out.sort(key=lambda p: -p.dollars_at_stake)
     return out

@@ -61,6 +61,7 @@ def run(ctx: AgentContext) -> list[Proposal]:
         on_hand_total = float(lots.qty.sum())
         share = at_risk_total / on_hand_total if on_hand_total else 0
         soonest = min(l["days_left"] for l in at_risk_lots)
+        p_expire = float((range_samples >= P["min_share_at_risk"] * on_hand_total).mean())   # chance a meaningful share expires unsold
         buyers = (recent[recent.product_id == pid].groupby("customer_id")
                   .agg(qty=("qty", "sum"), last=("delivery_date", "max"), orders=("order_id", "nunique"))
                   .sort_values("qty", ascending=False).head(P["top_buyers"]))
@@ -99,6 +100,6 @@ def run(ctx: AgentContext) -> list[Proposal]:
                             {"type": "sell_down_offer", "product_id": pid, "qty": round(at_risk_total, 1),
                              "suggested_discount_pct": discount, "valid_until": dstr(as_of + pd.Timedelta(days=max(soonest, 1))),
                              "lots": at_risk_lots, "target_customers": tgt},
-                            f"freshness|{pid}", owner="sales").finalise())
+                            f"freshness|{pid}", owner="sales", p_event=round(p_expire, 4)).finalise())
     out.sort(key=lambda p: -p.dollars_at_stake)
     return out

@@ -32,12 +32,16 @@ export function Briefing() {
               <Stat label="In play" value={money(data.dollars_in_play, true)} />
               <Stat label="Briefing date" value={data.as_of} />
             </div>
-            {data.needs_you.length === 0 && <EmptyState title="Nothing needs you on this date">Pick another date with the time machine, or check the open items on the right.</EmptyState>}
+            {data.phase?.phase === "shadow" && <InlineAlert tone="info" title="Shadow mode">{data.phase.label}. {data.shadow_hidden} alert{data.shadow_hidden === 1 ? " was" : "s were"} recorded for scoring only.</InlineAlert>}
+            {data.policy && data.needs_you.length > 0 && (
+              <p className="text-xs text-muted-foreground">Shown because each is worth at least {money(data.policy.score_floor)} in expected loss (more when less likely), within {data.policy.budget_per_owner} per owner.{data.below_floor > 0 ? ` ${data.below_floor} smaller one${data.below_floor === 1 ? " was" : "s were"} kept out.` : ""}</p>
+            )}
+            {data.needs_you.length === 0 && data.phase?.phase !== "shadow" && <EmptyState title="Nothing needs you on this date">Pick another date with the time machine, or check the open items on the right.</EmptyState>}
             {data.needs_you.map((p: any) => <ProposalCard key={p.proposal_id} p={p} onDecided={reload} />)}
             {data.digest?.length > 0 && (
               <Card aria-label="Digest of items not shown"><CardContent className="space-y-2 p-4 text-sm">
                 <p className="font-semibold">Digest: {data.digest.reduce((a: number, g: any) => a + g.count, 0)} more, not shown this morning</p>
-                <p className="text-xs text-muted-foreground">Each owner sees their top 5 by dollars. Order-entry stops are never digested. Everything here stays open in Proposals.</p>
+                <p className="text-xs text-muted-foreground">Each owner sees their top {data.policy?.budget_per_owner ?? 5} by expected dollars. Order-entry stops are never digested. Everything here stays open in Proposals.</p>
                 <ul className="space-y-1 text-xs">
                   {data.digest.map((g: any) => (
                     <li key={g.owner + g.agent} className="flex justify-between gap-3 border-t pt-1">

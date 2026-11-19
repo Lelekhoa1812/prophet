@@ -67,6 +67,14 @@ Results on the four-year twin (method demo, not client results):
 - Drift check on the latest eight origins: 10-90 range covers 78 to 81% of actuals in every volume class; 47 to 55% of actuals fall at or below the median. A first version flagged small sellers on unit bias and was wrong (lumpy demand has mean above median), so the check now tests calibration.
 - Shortfall with the new maths and the old gates ($150, 55%): 2,462 alerts, 38.8% of stockouts caught, 47.4% precision. The spread of a window sum is narrower than the old scaling assumed, so the old thresholds are now too strict. With $50 and 85%: 3,197 alerts, 54.9% caught, 70.0% of dollars, 52.6% precision (old maths: 2,661 alerts, 52.6%, 66.9%, 56.9%).
 
+Policy results (four-year twin, about 650 days, shortfall and freshness; method demo, not client results):
+- Ranking by expected dollars alone fills the budget with weak alerts on quiet days, and loses to the old "at least 85% likely" gate at equal volume (about 5 a day: 64% of stockout dollars flagged against 70%). So the one score also prices false alarms: net value = share saved x expected loss, minus review time, minus (1 - chance it happens) x cost of acting on a false alarm.
+- With a generous budget the net-value rule matches the old gates (fine point: false-alarm cost 400: 54.6% of stockouts flagged, 53.7% useful, about 4.8 a day). It does so with three dials a client understands instead of two interacting gates.
+- The budget is the big lever. Per owner a day, stockout dollars flagged / stockouts flagged: 3: 55% / 30%; 5: 60% / 38%; 8: 65% / 47%; 12: 69% / 53%; 20: 72% / 59%. Share of stockout alerts useful stays near 50%. Expiry dollars flagged: 66%, 75%, 84%, 90%, 96%.
+- Defaults chosen: review cost $12.50, 50% saved, false-alarm cost $200, 8 alerts per owner. Full replay under these: shortfall 3,069 alerts (was 3,591), 47.6% of stockouts and 65.8% of dollars flagged (was 49.2% and 67.4%), 49.9% useful (was 45.5%). Freshness 5,176 alerts (was 12,626), 84.4% of expiry dollars flagged (was 94.7%), 82.6% useful (was 79.0%). Customer and margin unchanged.
+- Candidate recording plus `sim/policy_sim.py` lets a setting be re-scored in seconds, so the trade-off table in the console is live.
+- Not yet: customer and margin agents still use their own fixed rules; the learning loop has no operator decisions to learn from on the twin.
+
 ## Open questions
 
 - **O1 (resolved 19 Nov). Staging database** is STAGING_TENANT_DATABASE_URL in foodflow/axis/env3.local. Data depth: about 8 weeks of orders (delivery 14 Sep to 6 Nov 2026), so seasonality cannot be tested yet. Connection uses the owner role with a read-only session. Liam chose not to create a dedicated read-only role. Original note: The `.env` files hold `REPORTING_DATABASE_URL` and `TENANT_DATABASE_URL`. Their hosts are not labelled staging or production, so the lab will not read them until confirmed.

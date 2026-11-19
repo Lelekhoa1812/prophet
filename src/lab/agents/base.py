@@ -37,6 +37,7 @@ class Proposal:
     owner: str = "buyer"
     autonomy_level: str = "prepares"   # explains / suggests / prepares / acts / runs
     proposal_id: str = ""
+    p_event: float | None = None       # chance the thing the alert warns about really happens (None when not modelled)
 
     def finalise(self) -> "Proposal":
         raw = f"{self.agent}|{self.dedupe_key}|{self.as_of}"

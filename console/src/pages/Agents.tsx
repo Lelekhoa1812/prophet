@@ -15,6 +15,9 @@ const TRIGGERS: Record<string, string> = {
 const LADDER_ORDER = ["explains", "suggests", "prepares", "acts", "runs"];
 
 /** Agent control: enable, owner, quiet hours, trigger, thresholds, autonomy ladder, and what it has learned. */
+const POLICY_AGENTS = ["shortfall", "freshness"];
+const POLICY_KEYS = ["risk_threshold", "min_dollars", "min_share_at_risk"];
+
 export function Agents() {
   const { dataset } = useApp();
   const { data, error, loading, reload } = useApi<AgentInfo[]>(`/agents?dataset=${dataset}`);
@@ -100,8 +103,9 @@ function AgentCard({ a, dataset, onSaved }: { a: AgentInfo; dataset: string; onS
 
         <details className="text-xs">
           <summary className="cursor-pointer font-medium">Thresholds (advanced)</summary>
+          {POLICY_AGENTS.includes(a.key) && <p className="mt-2 text-muted-foreground">How many alerts this agent raises is set once for the client under Developer, "Client set-up and rollout". The chance and dollar gates were removed on purpose.</p>}
           <div className="mt-2 grid grid-cols-2 gap-2">
-            {Object.entries(a.defaults).map(([k, v]) => (
+            {Object.entries(a.defaults).filter(([k]) => !(POLICY_AGENTS.includes(a.key) && POLICY_KEYS.includes(k))).map(([k, v]) => (
               <label key={k} className="space-y-1"><span className="text-muted-foreground">{k.replace(/_/g, " ")}</span>
                 <Input type="number" step="any" value={cfg.params[k] ?? v} onChange={(e) => setCfg({ ...cfg, params: { ...cfg.params, [k]: Number(e.target.value) } })} /></label>
             ))}
