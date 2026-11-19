@@ -351,59 +351,90 @@ def products(dataset: str = "twin", q: str | None = None, limit: int = 50):
 
 
 @app.get("/api/forecast")
-def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: int = 4, history: int = 52):
-    """History, TimesFM forecast with bands, baselines, what really happened, and the true underlying demand (twin)."""
+def forecast(dataset: str, product: str, as_of: str, freq: str = "W", horizon: int = 4, history: int = 400):
+    """History, TimesFM forecast with bands, baselines, what really happened, and the true underlying demand (twin).
+
+    history is in weeks for freq=W and in days for freq=D. Daily values are derived from the weekly forecast, the
+    same way the briefing does it, so the two views agree.
+    """
     _ds(dataset)
     w = get_world(dataset)
     if product not in w.pidx:
         raise HTTPException(404, "unknown product")
-    pi = w.pidx[product]
-    a = pd.Timestamp(as_of)
-    if freq == "W":
-        mat, weeks = weekly_matrix(w, a)
-        series, idx = mat[pi], weeks
-        step = pd.Timedelta(days=7)
-        fut_start = week_start(a)
-        actual_full = _weekly_full(w, pi)
-    else:
-        end = (a - w.first).days
-        series = w.demand[pi, :max(end, 0)]
-        idx = w.days[:max(end, 0)]
-        step = pd.Timedelta(days=1)
-        fut_start = a
-        actual_full = pd.Series(w.demand[pi], index=w.days)
-    # Motivation vs Logic
-    # Motivation: the history slider must change what the model sees, not only what the chart shows.
-    # Logic: cut the series to the requested window first, then forecast and run baselines on that cut only.
+    if freq not in ("W", "D"):
+        raise HTTPException(400, "freq must be W or D")
     if not 1 <= horizon <= (12 if freq == "W" else 28):
         raise HTTPException(400, "horizon out of range (weekly 1 to 12, daily 1 to 28)")
-    history = max(8, min(int(history), len(series)))
-    series = series[-history:]
-    idx = idx[-history:]
-    if len(series) < 8:
-        raise HTTPException(400, "not enough history before this date")
-    fc = TimesFMEngine.get().predict([series], horizon)
-    fut = [str((fut_start + step * i).date()) for i in range(horizon)]
+    pi = w.pidx[product]
+    a = pd.Timestamp(as_of)
     season = 52 if freq == "W" else 7
-    base = {}
-    for m in (["ma4", "ma8", "seasonal_year"] if freq == "W" else ["ma8", "seasonal_naive"]):
-        b = baselines.run(m, [series], horizon, season)
-        base[m] = {"point": [round(float(x), 2) for x in b.point[0]], "q10": [round(float(x), 2) for x in b.q[0, :, 0]], "q90": [round(float(x), 2) for x in b.q[0, :, 8]]}
-    tail = slice(-history, None)  # history was already cut above, so this keeps the same window for the chart
-    actual_future = [None if (fut_start + step * i) not in actual_full.index else round(float(actual_full[fut_start + step * i]), 2) for i in range(horizon)]
+    actual_weekly = _weekly_full(w, pi)
+    actual_daily = pd.Series(w.demand[pi], index=w.days)
+    base: dict = {}
+    if freq == "W":
+        # Motivation vs Logic
+        # Motivation: the week containing as_of is only partly known, so a forecast starting there mixes known and
+        # unknown days, and the first point is not comparable with the history.
+        # Logic: forecast one extra week, then drop it, so the forecast starts at the next full week.
+        mat, weeks = weekly_matrix(w, a)
+        series, idx = mat[pi][-history:], weeks[-history:]
+        if len(series) < 8:
+            raise HTTPException(400, "not enough history before this date")
+        fc = TimesFMEngine.get().predict([series], horizon + 1)
+        fut_start = week_start(a) + pd.Timedelta(days=7)
+        fut_days = [fut_start + pd.Timedelta(days=7 * i) for i in range(horizon)]
+        point = fc.point[0, 1:]
+        qmap = {f"q{int(q * 100)}": fc.q[0, 1:, j] for j, q in enumerate(np.arange(1, 10) / 10)}
+        for m in ["ma4", "ma8", "seasonal_year"]:
+            b = baselines.run(m, [series], horizon + 1, season)
+            base[m] = {"point": [round(float(x), 2) for x in b.point[0, 1:]], "q10": [round(float(x), 2) for x in b.q[0, 1:, 0]],
+                       "q90": [round(float(x), 2) for x in b.q[0, 1:, 8]]}
+        known_from = week_start(a)
+        known = w.demand[pi, w.days.searchsorted(known_from):w.days.searchsorted(a)]
+        partial = {"week_start": str(known_from.date()), "known_days": int(len(known)), "known_units": round(float(known.sum()), 2)}
+        hist_x = [str(x.date()) for x in idx]
+        hist_y = series
+        model_saw = {"periods": int(len(series)), "from": str(idx[0].date()), "to": str(idx[-1].date()), "unit": "weeks",
+                     "full_year": bool(len(series) >= 52), "seasonal_years": round(len(series) / 52, 2), "derived": False}
+        actual_future = [None if d not in actual_weekly.index else round(float(actual_weekly[d]), 2) for d in fut_days]
+    else:
+        # Daily derived: the weekly forecast for the window, split by the product's weekday pattern.
+        mat, weeks = weekly_matrix(w, a)
+        wseries, widx = mat[pi][-max(8, history // 7):], weeks[-max(8, history // 7):]
+        if len(wseries) < 8:
+            raise HTTPException(400, "not enough history before this date")
+        fc = TimesFMEngine.get().predict([wseries], 5)  # 28 days from a Sunday touch five week-starts
+        shape = ForecastService(w).weekday_profile(a, pi)
+        ws = week_start(a)
+        fut_days = [a + pd.Timedelta(days=j) for j in range(horizon)]
+
+        def per_day(row: np.ndarray) -> list[float]:
+            return [round(float(row[(d - ws).days // 7] * shape[d.dayofweek] / 7.0), 2) for d in fut_days]
+
+        point = np.array(per_day(fc.point[0]))
+        qmap = {f"q{int(q * 100)}": np.array(per_day(fc.q[0, :, j])) for j, q in enumerate(np.arange(1, 10) / 10)}
+        dser = w.demand[pi, :w.days.searchsorted(a)][-history:]
+        didx = w.days[:w.days.searchsorted(a)][-history:]
+        b = baselines.run("ma8", [dser], horizon, season)
+        base["ma8"] = {"point": [round(float(x), 2) for x in b.point[0]], "q10": [round(float(x), 2) for x in b.q[0, :, 0]],
+                       "q90": [round(float(x), 2) for x in b.q[0, :, 8]]}
+        partial = None
+        hist_x = [str(x.date()) for x in didx]
+        hist_y = dser
+        model_saw = {"periods": int(len(wseries)), "from": str(widx[0].date()), "to": str(widx[-1].date()), "unit": "weeks",
+                     "full_year": bool(len(wseries) >= 52), "seasonal_years": round(len(wseries) / 52, 2), "derived": True}
+        actual_future = [None if d not in actual_daily.index else round(float(actual_daily[d]), 2) for d in fut_days]
+    fut = [str(d.date()) for d in fut_days]
     expected = _expected_series(dataset, product, freq)
     return {
         "product": product, "name": w.products.set_index("product_id").display_name[product], "freq": freq, "as_of": as_of,
-        "history": {"x": [str(x.date()) for x in idx[tail]], "y": [round(float(v), 2) for v in series[tail]]},
-        "forecast": {"x": fut, "point": [round(float(v), 2) for v in fc.point[0]], "q": {f"q{int(q * 100)}": [round(float(v), 2) for v in fc.q[0, :, j]]
-                                                                                          for j, q in enumerate(np.arange(1, 10) / 10)}},
-        "baselines": base, "actual_future": actual_future,
+        "history": {"x": hist_x, "y": [round(float(v), 2) for v in hist_y]},
+        "forecast": {"x": fut, "point": [round(float(v), 2) for v in point],
+                     "q": {k: [round(float(v), 2) for v in arr] for k, arr in qmap.items()}},
+        "baselines": base, "actual_future": actual_future, "partial_week": partial,
         "truth_expected": None if expected is None else {"x": [str(x) for x in expected.index], "y": [round(float(v), 2) for v in expected.values]},
         "events": _product_events(dataset, product),
-        "model_saw": {"periods": int(len(series)), "from": str(idx[0].date()) if len(idx) else None,
-                      "to": str(idx[-1].date()) if len(idx) else None, "unit": "weeks" if freq == "W" else "days",
-                      "full_year": bool(len(series) >= (52 if freq == "W" else 365)),
-                      "seasonal_years": round(len(series) / (52 if freq == "W" else 365), 2)},
+        "model_saw": model_saw,
     }
 
 

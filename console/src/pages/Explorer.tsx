@@ -9,7 +9,7 @@ import { money, pct } from "@/lib/utils";
 // Presets for the history the model sees (periods = weeks or days). "All" caps at the context the model uses.
 const HIST_PRESETS: Record<"W" | "D", { v: number; l: string }[]> = {
   W: [{ v: 13, l: "3 months" }, { v: 26, l: "6 months" }, { v: 52, l: "1 year" }, { v: 104, l: "2 years" }, { v: 208, l: "4 years" }, { v: 400, l: "All" }],
-  D: [{ v: 28, l: "4 weeks" }, { v: 56, l: "8 weeks" }, { v: 90, l: "3 months" }, { v: 180, l: "6 months" }, { v: 365, l: "1 year" }],
+  D: [{ v: 56, l: "8 weeks" }, { v: 91, l: "13 weeks" }, { v: 182, l: "6 months" }, { v: 364, l: "1 year" }, { v: 2000, l: "All" }],
 };
 const HORIZON_MAX = { W: 12, D: 28 } as const;
 
@@ -23,7 +23,7 @@ export function Explorer() {
   const { data: card } = useApi<any>(`/datasets/${dataset}/summary`);
   const first = card?.card?.first ?? "2025-01-01", last = card?.card?.last ?? "2026-10-01";
   const [freq, setFreq] = useState<"W" | "D">("W");
-  const [histW, setHistW] = useState(52), [histD, setHistD] = useState(90);
+  const [histW, setHistW] = useState(400), [histD, setHistD] = useState(2000);
   const [horW, setHorW] = useState(4), [horD, setHorD] = useState(14);
   const hist = freq === "W" ? histW : histD;
   const hor = freq === "W" ? horW : horD;
@@ -116,13 +116,22 @@ export function Explorer() {
                   </div>
                   <div>
                     <p className="mb-2 text-sm font-medium">How the forecast compares</p>
-                    <HBars better="lower" format={(v) => v.toFixed(1)} rows={[{ label: "TimesFM 3", value: Math.abs(sumDiff(actualAfter, data.forecast.point)) }, { label: "Moving avg", value: Math.abs(sumDiff(actualAfter, data.baselines.ma8?.point ?? [])) }]} />
-                    <p className="mt-2 text-xs text-muted-foreground">Gap in units over the horizon, where actuals exist (lower is better).</p>
+                    {/* Motivation vs Logic
+                        Motivation: a signed sum lets over- and under-forecasts cancel, so a bad forecast can look good.
+                        Logic: compare the sum of absolute weekly errors, then express it as a share of actual units. */}
+                    <HBars better="lower" format={(v) => `${v.toLocaleString("en-AU", { maximumFractionDigits: 0 })} units`}
+                      rows={[{ label: "TimesFM 3", value: absErr(actualAfter, data.forecast.point) }, { label: "Moving avg (8 wk)", value: absErr(actualAfter, data.baselines.ma8?.point ?? []) }]} />
+                    <p className="mt-2 text-xs text-muted-foreground">Sum of absolute weekly errors over the horizon, where actuals exist. Lower is better. {(() => { const a = actualAfter?.filter((v) => v != null) as number[] | undefined; const tot = a?.reduce((x, y) => x + y, 0) ?? 0; return tot ? `TimesFM is ${pct(absErr(actualAfter, data.forecast.point) / tot)} of actual units off; moving average ${pct(absErr(actualAfter, data.baselines.ma8?.point ?? []) / tot)}.` : "No actuals yet for this window."; })()}</p>
                     {ev.length > 0 && <div className="mt-4 rounded-md border border-dashed p-2"><p className="text-xs font-medium">Labelled events in the twin, for checking</p>
                       <p className="text-[11px] text-muted-foreground">These are the twin's planted shocks. The forecast cannot see them in advance, so they show where it should react, not what it knew.</p>
                       <ul className="mt-1 space-y-1 text-xs">{ev.map((e: any) => <li key={e.event_id}><span className="tabular">{String(e.start_date).slice(0, 10)}</span> · {e.note}</li>)}</ul></div>}
                   </div>
                 </div>
+                {data.partial_week && (
+                  <p className="rounded-md border p-3 text-xs text-muted-foreground">
+                    The week of {data.partial_week.week_start} is only partly known ({data.partial_week.known_days} days, {Math.round(data.partial_week.known_units).toLocaleString("en-AU")} units so far). The forecast starts the following Monday, so the history stops at the last full week.
+                  </p>
+                )}
                 {data.model_saw && <ModelSaw saw={data.model_saw} freq={freq} hor={hor} results={testResults} />}
                 <p className="text-xs text-muted-foreground">Price and stock are not part of the forecast; it uses order history only. Planned promotions are known in advance and can be added as a covariate (see the developer page).</p>
               </CardContent>
@@ -134,9 +143,9 @@ export function Explorer() {
   );
 }
 
-function sumDiff(actual: (number | null)[] | undefined, pred: number[]) {
+function absErr(actual: (number | null)[] | undefined, pred: number[]) {
   if (!actual) return 0;
-  return actual.reduce<number>((a, v, i) => a + (v == null ? 0 : (v - (pred[i] ?? 0))), 0);
+  return actual.reduce<number>((a, v, i) => a + (v == null ? 0 : Math.abs(v - (pred[i] ?? 0))), 0);
 }
 
 /** Explains what the forecast was built from, and what it cannot see. Plain language first, numbers second. */
@@ -150,6 +159,7 @@ function ModelSaw({ saw, freq, hor, results }: { saw: any; freq: "W" | "D"; hor:
       <div className="space-y-2 text-sm">
         <p className="font-semibold">What the model saw</p>
         <p>{saw.periods} {unit}, {saw.from} to {saw.to}{saw.seasonal_years ? ` (${saw.seasonal_years} of a year)` : ""}.</p>
+        {saw.derived && <p className="text-xs text-muted-foreground">Daily values are the weekly forecast split by this product's weekday pattern, so they agree with the briefing.</p>}
         {freq === "W" && !saw.full_year && (
           <p className="rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">
             Less than a full year. The model cannot learn yearly peaks such as Christmas or Easter, so expect a flatter forecast. Widen the history to see whether the peak is in the data.
