@@ -7,14 +7,23 @@ import uuid
 from datetime import datetime, timezone
 
 import numpy as np
+import pandas as pd
 
 from ..store import open_lab
 from . import baselines, metrics
 from .data import Demand, load_demand, load_expected, load_promo_covariate
+from ..calendar_vic import calendar_channel
+
+
+def calendar_future(dem: Demand, horizon: int) -> np.ndarray:
+    """Calendar covariate over the history plus the horizon, one row (periods + horizon)."""
+    step = 7 if dem.freq == "W" else 1
+    starts = list(dem.periods) + [dem.periods[-1] + pd.Timedelta(days=step * (i + 1)) for i in range(horizon)]
+    return calendar_channel(pd.DatetimeIndex(starts), step)
 from .forecast import Forecast, TimesFMEngine
 
-MODELS_W = ["timesfm", "timesfm_cov", "ensemble", "ma4", "ma8", "seasonal_year"]
-MODELS_D = ["timesfm", "timesfm_cov", "ensemble", "ma8", "seasonal_naive"]
+MODELS_W = ["timesfm", "timesfm_cov", "timesfm_cal", "ensemble", "ma4", "ma8", "seasonal_year"]
+MODELS_D = ["timesfm", "timesfm_cov", "timesfm_cal", "ensemble", "ma8", "seasonal_naive"]
 
 
 def _score(actual, fc: Forecast, scale):
@@ -44,6 +53,7 @@ def run_backtest(dataset: str, freq: str = "W", horizon: int = 4, n_origins: int
 
     engine = TimesFMEngine.get() if any(m.startswith("timesfm") or m == "ensemble" for m in models) else None
     promo = load_promo_covariate(dataset, dem, extra=horizon) if "timesfm_cov" in models else None
+    cal = calendar_future(dem, horizon) if "timesfm_cal" in models else None
     expected = load_expected(dataset, dem)
     if "noise_floor" not in models and expected is not None:
         models = models + ["noise_floor"]
@@ -62,6 +72,10 @@ def run_backtest(dataset: str, freq: str = "W", horizon: int = 4, n_origins: int
                 fc = cache["timesfm"] = engine.predict(ctxs, horizon)
             elif m == "timesfm_cov":
                 covs = [promo[i, max(0, o - 512):o + horizon][None, :] for i in active]
+                fc = engine.predict_cov(ctxs, horizon, covs)
+            elif m == "timesfm_cal":
+                # Known calendar days (holidays, run-ups, school holidays): the same for every series.
+                covs = [cal[max(0, o - 512):o + horizon][None, :] for i in active]
                 fc = engine.predict_cov(ctxs, horizon, covs)
             elif m == "ensemble":
                 tf = cache.get("timesfm") or engine.predict(ctxs, horizon)

@@ -16,7 +16,7 @@ export function Scorecard() {
   const agents = sc?.agents ?? {};
   const rows = Object.entries(agents) as [string, any][];
   const bestBt = bt?.models;
-  const forecastBars = bestBt ? Object.entries(bestBt).filter(([k]) => ["timesfm", "timesfm_cov", "ensemble", "ma4", "ma8", "seasonal_year", "noise_floor"].includes(k))
+  const forecastBars = bestBt ? Object.entries(bestBt).filter(([k]) => ["timesfm", "timesfm_cov", "timesfm_cal", "ensemble", "ma4", "ma8", "seasonal_year", "noise_floor"].includes(k))
     .map(([k, v]: any) => ({ label: LABEL[k] ?? k, value: v.head.wape })) : [];
   const v = bt?.verdict;
   return (
@@ -87,7 +87,7 @@ export function Scorecard() {
   );
 }
 
-const LABEL: Record<string, string> = { timesfm: "TimesFM 3", timesfm_cov: "TimesFM 3 + promotions", ensemble: "TimesFM + moving avg", ma4: "Moving average (4 wks)", ma8: "Moving average (8 wks)", seasonal_year: "Same time last year", noise_floor: "Perfect knowledge (floor)", seasonal_naive: "Same weekday last weeks" };
+const LABEL: Record<string, string> = { timesfm: "TimesFM 3", timesfm_cov: "TimesFM 3 + promotions", timesfm_cal: "TimesFM 3 + Victorian calendar", ensemble: "TimesFM + moving avg", ma4: "Moving average (4 wks)", ma8: "Moving average (8 wks)", seasonal_year: "Same time last year", noise_floor: "Perfect knowledge (floor)", seasonal_naive: "Same weekday last weeks" };
 function overallPrecision(rows: [string, any][]) {
   const n = rows.reduce((a, [, v]) => a + (v.proposals ?? 0), 0);
   const u = rows.reduce((a, [, v]) => a + (v.useful ?? 0), 0);

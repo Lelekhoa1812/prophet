@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import numpy as np
+
+from ..calendar_vic import flags as cal_flags
 import pandas as pd
 
 # category: (weight, median price $/unit, margin, shelf_life_days, annual season amplitude, peak day-of-year)
@@ -35,11 +37,17 @@ SEGMENTS = {
     "Caterer": (0.12, (3, 12), 0.040, [0.6, 0.8, 1.0, 1.1, 1.4, 1.4, 0.4], 0.0),
 }
 
-VIC_SCHOOL_HOLIDAYS = [  # approximate windows, used for the institution dip
-    ("2024-12-21", "2025-01-28"), ("2025-04-05", "2025-04-21"), ("2025-07-05", "2025-07-20"),
-    ("2025-09-20", "2025-10-05"), ("2025-12-20", "2026-01-27"), ("2026-04-04", "2026-04-19"),
-    ("2026-07-04", "2026-07-19"), ("2026-09-19", "2026-10-04"),
-]
+# Calendar effects by segment: multiplier on demand on each kind of day (1.0 = no effect).
+# Logic: applied as prod(1 + (effect - 1) * flag), so overlapping days (Cup day is also a public holiday) stack.
+CAL_EFFECTS = {
+    #              public  xmas_run_up  easter_run_up  cup_day
+    "Restaurant":  (0.55,   1.10,        1.00,          0.80),
+    "Butcher":     (0.35,   1.45,        1.50,          1.00),
+    "Supermarket": (0.60,   1.30,        1.25,          1.00),
+    "Institution": (0.20,   1.00,        1.00,          1.00),
+    "Caterer":     (0.70,   1.30,        1.00,          1.80),
+}
+CAL_KEYS = ["public", "xmas_run_up", "easter_run_up", "cup_day"]
 
 
 @dataclass
@@ -143,11 +151,12 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
     dow_f = seg_dow[:, dow]                                                           # (pairs, days)
     season = np.stack([_season(pc[pi], doy) for pi in pairs.pi.values])               # (pairs, days)
     trend = 1.0 + 0.10 * np.linspace(0, 2, nd)[None, :]                                # +10% a year
-    hol = np.zeros(nd)
-    for a, b in VIC_SCHOOL_HOLIDAYS:
-        hol[(days >= a) & (days <= b)] = 1.0
+    cf = cal_flags(days)
     seg_hol = np.array([SEGMENTS[customers.segment[ci]][4] for ci in pairs.ci])[:, None]
-    school = 1.0 - seg_hol * hol[None, :]
+    school = 1.0 - seg_hol * cf["school"][None, :]
+    F = np.stack([cf[k] for k in CAL_KEYS])                                             # (4, days)
+    E = np.array([CAL_EFFECTS[customers.segment[ci]] for ci in pairs.ci])                # (pairs, 4)
+    cal_mult = np.prod(1.0 + (E[:, :, None] - 1.0) * F[None, :, :], axis=1)             # (pairs, days)
 
     # promotions: ~6% of SKUs get 2-week price cut + uplift, a few times a year
     promo = np.ones((cfg.n_products, nd))
@@ -166,7 +175,7 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
     promo_pairs = promo[pairs.pi.values]
     pp_pairs = promo_price[pairs.pi.values]
 
-    mean = pairs.rate.values[:, None] * dow_f * season * trend * school * promo_pairs
+    mean = pairs.rate.values[:, None] * dow_f * season * trend * school * cal_mult * promo_pairs
     cost_mult = np.ones((cfg.n_products, nd))
     lead_extra = np.zeros((cfg.n_suppliers, nd))
     price_arr = pairs.price.values[:, None] * pp_pairs * np.ones((1, nd))

@@ -444,10 +444,39 @@ def briefing(dataset: str = "twin", as_of: str | None = None, owner: str | None 
     props = [_prop_row(r) for r in rows]
     if owner:
         props = [p for p in props if owner in p["owner"]]
-    props = props[:limit]
-    return {"as_of": d, "headline": _headline(props), "needs_you": props, "still_open": [_prop_row(r) for r in open_older][:6],
-            "by_agent": {k: sum(1 for p in props if p["agent"] == k) for k in REGISTRY},
-            "dollars_in_play": round(sum(p["dollars_at_stake"] for p in props), 2)}
+    shown, digest = _apply_digest(props, limit)
+    return {"as_of": d, "headline": _headline(shown), "needs_you": shown, "digest": digest, "still_open": [_prop_row(r) for r in open_older][:6],
+            "by_agent": {k: sum(1 for p in shown if p["agent"] == k) for k in REGISTRY},
+            "dollars_in_play": round(sum(p["dollars_at_stake"] for p in shown), 2)}
+
+
+# Motivation vs Logic
+# Motivation: a morning list of 20 or more alerts gets ignored by day 3, so the most valuable items are lost.
+# Logic: each owner sees at most PER_OWNER items a morning, ranked by dollars. Order-entry stops (hold_order_line)
+# are never held back, because they only work if they are seen before picking.
+PER_OWNER = 5
+DIGEST_EXEMPT_ACTIONS = {"hold_order_line"}
+
+
+def _apply_digest(props: list[dict], limit: int) -> tuple[list[dict], list[dict]]:
+    """Split ranked proposals into the items shown and a digest of the rest, grouped by owner and agent."""
+    shown, rest, per_owner = [], [], {}
+    for p in props:
+        o = p["owner"]
+        per_owner[o] = per_owner.get(o, 0) + 1
+        if p.get("action", {}).get("type") in DIGEST_EXEMPT_ACTIONS or per_owner[o] <= PER_OWNER:
+            shown.append(p)
+        else:
+            rest.append(p)
+    shown = shown[:limit]
+    shown_ids = {p["proposal_id"] for p in shown}
+    rest = rest + [p for p in props if p["proposal_id"] not in shown_ids and p not in rest]
+    groups: dict[tuple, dict] = {}
+    for p in rest:
+        g = groups.setdefault((p["owner"], p["agent"]), {"owner": p["owner"], "agent": p["agent"], "count": 0, "dollars": 0.0})
+        g["count"] += 1
+        g["dollars"] = round(g["dollars"] + p["dollars_at_stake"], 2)
+    return shown, sorted(groups.values(), key=lambda g: -g["dollars"])
 
 
 def _headline(props: list[dict]) -> str:

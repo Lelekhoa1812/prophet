@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApi } from "@/lib/api";
 import { useApp } from "@/lib/context";
-import { ProposalCard } from "@/components/ProposalCard";
+import { ProposalCard, AGENT_LABEL } from "@/components/ProposalCard";
 import { Card, CardContent, EmptyState, InlineAlert, PageHeader, Select, Skeleton, Stat } from "@/components/ui";
 import { money } from "@/lib/utils";
 
@@ -34,6 +34,20 @@ export function Briefing() {
             </div>
             {data.needs_you.length === 0 && <EmptyState title="Nothing needs you on this date">Pick another date with the time machine, or check the open items on the right.</EmptyState>}
             {data.needs_you.map((p: any) => <ProposalCard key={p.proposal_id} p={p} onDecided={reload} />)}
+            {data.digest?.length > 0 && (
+              <Card aria-label="Digest of items not shown"><CardContent className="space-y-2 p-4 text-sm">
+                <p className="font-semibold">Digest: {data.digest.reduce((a: number, g: any) => a + g.count, 0)} more, not shown this morning</p>
+                <p className="text-xs text-muted-foreground">Each owner sees their top 5 by dollars. Order-entry stops are never digested. Everything here stays open in Proposals.</p>
+                <ul className="space-y-1 text-xs">
+                  {data.digest.map((g: any) => (
+                    <li key={g.owner + g.agent} className="flex justify-between gap-3 border-t pt-1">
+                      <span>{g.owner.replace("_", " ")} · {AGENT_LABEL[g.agent] ?? g.agent}: {g.count}</span>
+                      <span className="tabular-nums">{money(g.dollars, true)} at stake</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent></Card>
+            )}
           </section>
           <aside className="space-y-3 lg:col-span-1" aria-label="Still open">
             <h2 className="text-sm font-semibold">Still open from the last week</h2>

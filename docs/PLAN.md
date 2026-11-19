@@ -20,6 +20,21 @@ Separate from the FoodFlow repo. Read-only against FoodFlow data. Never writes t
 | Console | Agent and trigger control; forecast explorer; proposals review queue; scorecard and dollars | Liam |
 | Test login | Liam authorised a universal staging test account for any agent to use in the FoodFlow staging app. Credentials are not stored in this repo | Liam, 19 Nov |
 
+## Round 2 decisions and results (19 Nov 2026)
+
+Decided with Liam (AskUserQuestion):
+- **TimesFM value bar:** not met yet. Stay on the 15% improvement bar; try to close the gap first.
+- **Alert volume:** daily budget plus digest. Each owner sees up to 5 items a morning, ranked by dollars. The rest roll into one digest line per owner and agent. Order-entry stops (`hold_order_line`) are never digested.
+- **Anomaly scope:** order-entry checks and nightly business checks in scope now. Weekly pattern checks and supplier delivery checks later, because the staging data is only partly there.
+- **Holidays:** Victorian calendar tested first, weather later.
+
+Results:
+- Calendar covariate (`timesfm_cal`, `src/lab/calendar_vic.py`) does not help on the twin. Over 52 weekly origins, WAPE is 21.5% vs 21.0% for plain TimesFM. On the 28 origins whose horizon includes a public holiday or run-up, it is 22.2% vs 21.6%. Plain TimesFM still beats moving averages on those weeks (21.6% vs 23.1% for the 8-week average). The noise floor is 18.5%.
+- Why it likely fails: the twin's calendar effects are real but segment-specific, and the weekly covariate is diluted (one or two events a year). A single covariate channel cannot learn per-segment magnitudes from two years of history. Next candidate: a calendar uplift layer per segment, estimated on the history and applied to the forecast. Not built yet.
+- Scope caveat: the scored window only covers forecasts whose horizon includes Christmas 2025 when `n_origins` is 52. The 26-origin default starts in April 2026, so it misses Christmas entirely.
+- Ship-bar margin vs best baseline: 7.3% on 52 origins, 9.5% on 26 origins. Both are below the 15% bar.
+- The twin's calendar effects are generated from the same calendar module as the covariate. Any covariate gain on the twin is therefore an upper bound, and the twin cannot tell us real effect sizes.
+
 ## Open questions
 
 - **O1 (resolved 19 Nov). Staging database** is STAGING_TENANT_DATABASE_URL in foodflow/axis/env3.local. Data depth: about 8 weeks of orders (delivery 14 Sep to 6 Nov 2026), so seasonality cannot be tested yet. Connection uses the owner role with a read-only session. Liam chose not to create a dedicated read-only role. Original note: The `.env` files hold `REPORTING_DATABASE_URL` and `TENANT_DATABASE_URL`. Their hosts are not labelled staging or production, so the lab will not read them until confirmed.
