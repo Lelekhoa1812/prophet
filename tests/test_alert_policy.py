@@ -42,3 +42,20 @@ def test_governor_commit_false_does_not_start_cooldown():
     assert len(g.filter([p], date(2026, 1, 2), commit=False)) == 1      # not recorded, so no cooldown
     g.commit([p], date(2026, 1, 2))
     assert g.filter([p], date(2026, 1, 3), commit=False) == []
+
+
+def test_false_alarm_cost_demotes_uncertain_alerts_of_equal_size():
+    econ = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=1, false_alarm_cost=200)
+    sure = prop(1, 300); sure.p_event = 0.95
+    unsure = prop(2, 300); unsure.p_event = 0.55
+    shown, digest, below = select([unsure, sure], econ)
+    assert [p.entity_id for p in shown] == ["P1"]
+    # 0.5 x 300 - 10 - 0.45 x 200 = 50 > 0, so the unsure one is above water but over budget
+    assert [p.entity_id for p in digest] == ["P2"] and below == []
+
+
+def test_false_alarm_cost_can_push_an_alert_below_zero():
+    econ = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=5, false_alarm_cost=400)
+    weak = prop(3, 150); weak.p_event = 0.6          # 75 - 10 - 160 < 0
+    shown, digest, below = select([weak], econ)
+    assert shown == [] and digest == [] and len(below) == 1

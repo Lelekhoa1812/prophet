@@ -130,6 +130,8 @@ def readiness(ds: str, agent: str, weeks: int = 13, econ: alerts.Economics | Non
         if (a.get("precision") or 0) < MIN_PRECISION:
             verdict = "shadow_first" if verdict == "ready" else verdict
             reasons.append(f"Precision {100 * (a.get('precision') or 0):.0f}% is under {100 * MIN_PRECISION:.0f}%: keep in shadow until it improves.")
+    if 0 < (a.get("events") or 0) < 10:
+        notes.append(f"Only {a.get('events')} recorded problems in the window, so recall is not reliable. Use a longer window.")
     return {"dataset": ds, "agent": agent, "history_weeks": history_weeks, "window": [str(start.date()), str(hi.date())],
             "verdict": verdict, "reasons": reasons, "notes": notes,
             "alerts_shown_per_day": pol.get("shown_per_day"), "digest_per_day": pol.get("digest_per_day"),
