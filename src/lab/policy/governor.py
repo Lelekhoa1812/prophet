@@ -49,7 +49,11 @@ class Governor:
             if not ls.active or ls.agent != p.agent:
                 continue
             if ls.scope_id in (p.entity_id, p.dedupe_key):
-                if "suppress_days" in ls.effect and (as_of - ls.created_on).days <= ls.effect["suppress_days"]:
+                # Bugs vs Fixes
+                # Bug: the window test was only "<= suppress_days", so a lesson created AFTER as_of (negative age) matched.
+                # A replay of past days then obeyed a dismissal that had not happened yet (future knowledge).
+                # Fix: a lesson applies only from its creation day forward, for suppress_days.
+                if "suppress_days" in ls.effect and 0 <= (as_of - ls.created_on).days <= ls.effect["suppress_days"]:
                     return ls
                 if "min_dollars_mult" in ls.effect:
                     return ls

@@ -291,7 +291,7 @@ def decide(pid: str, body: DecisionIn, x_operator: str | None = Header(default=N
             days = {"one_off": 14, "known_promo": 28, "wrong_alert": 45, "not_useful": 30}[body.reason]
             lid = f"LS-{uuid.uuid4().hex[:6]}"
             lab.execute("insert into lessons values (?,?,?,?,?,?,?,?,?,?)",
-                        [lid, ds, agent, "entity", entity, json.dumps({"suppress_days": days, "reason": body.reason}), did, True, datetime.now(timezone.utc), None])
+                        [lid, ds, agent, "entity", entity, json.dumps({"suppress_days": days, "reason": body.reason, "from": str(as_of)[:10]}), did, True, datetime.now(timezone.utc), None])
             lesson = {"lesson_id": lid, "agent": agent, "scope": entity, "suppress_days": days, "reason": body.reason}
         _governors.pop(ds, None)               # lessons may have changed (added or retired): rebuild governor on next use
         lab.close()
@@ -618,8 +618,15 @@ def _governor(ds: str) -> Governor:
     if ds not in _governors:
         g = Governor()
         lab = _lab()
-        for a, b, c, d, e, f in lab.execute("select lesson_id, agent, scope_type, scope_id, effect, created_at from lessons where dataset=? and active", [ds]).fetchall():
-            g.lessons.append(Lesson(a, b, c, d, json.loads(e), pd.Timestamp(f).date()))
+        for a, b, c, d, e, f in lab.execute("""select l.lesson_id, l.agent, l.scope_type, l.scope_id, l.effect,
+                       coalesce(p.as_of, l.created_at) from lessons l
+                       left join decisions d on d.decision_id=l.source_decision_id
+                       left join proposals p on p.proposal_id=d.proposal_id
+                       where l.dataset=? and l.active""", [ds]).fetchall():
+            eff = json.loads(e)
+            # Motivation vs Logic: the window runs on the data's clock (the proposal's as_of), not the wall clock, so a twin
+            # dismissal made today still suppresses in the twin's simulated days and never in earlier replayed days.
+            g.lessons.append(Lesson(a, b, c, d, eff, pd.Timestamp(eff.get("from") or f).date()))
         lab.close()
         _governors[ds] = g
     return _governors[ds]

@@ -118,3 +118,12 @@ def test_twin_is_deterministic_for_a_seed():
     b = build_world(TwinConfig(seed=3, n_products=40, n_customers=30))
     assert np.array_equal(a.demand, b.demand)
     assert [t["kind"] for t in a.truth] == [t["kind"] for t in b.truth]
+
+
+def test_lesson_does_not_apply_before_it_was_created():
+    # Bugs vs Fixes: a replay of an earlier day must not obey a dismissal made later.
+    g = Governor()
+    g.lessons.append(Lesson("LS-9", "shortfall", "entity", "P-1", {"suppress_days": 14}, date(2026, 10, 20)))
+    p = _p()
+    assert len(g.filter([p], date(2026, 10, 10), commit=False)) == 1
+    assert len(g.filter([p], date(2026, 10, 25), commit=False)) == 0

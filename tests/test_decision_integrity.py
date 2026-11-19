@@ -72,3 +72,11 @@ def test_operator_name_is_validated(lab):
 def test_default_identity_is_labelled_unverified(lab):
     c.post("/api/proposals/PR-1/decision", json={"decision": "approve"})
     assert who().startswith("unverified:")
+
+
+def test_dismissal_lesson_runs_on_the_data_clock(lab):
+    # Motivation vs Logic: a dismissal on a proposal dated 2026-01-05 must suppress from that day, not from today's wall clock.
+    from datetime import date
+    c.post("/api/proposals/PR-1/decision", json={"decision": "dismiss", "reason": "one_off"})
+    ls = main._governor("twin").lessons
+    assert len(ls) == 1 and ls[0].created_on == date(2026, 1, 5)
