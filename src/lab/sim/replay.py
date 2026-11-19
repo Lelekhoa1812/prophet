@@ -22,7 +22,7 @@ def scored_window(w) -> tuple[pd.Timestamp, pd.Timestamp]:
 
 
 def replay(dataset: str, start: str | None = None, end: str | None = None, agents: list[str] | None = None,
-           params: dict | None = None, learn: bool = False, persist: bool = True, progress=None) -> dict:
+           params: dict | None = None, learn: bool = False, persist: bool = True, progress=None, keep_rows: bool = False) -> dict:
     t0 = time.time()
     w = get_world(dataset)
     fs = ForecastService(w)
@@ -32,7 +32,7 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
     agents = agents or list(REGISTRY)
     params = params or {}
     gov = Governor()
-    days = [d for d in pd.date_range(lo, hi, freq="D") if d.dayofweek < 5]
+    days = list(pd.date_range(lo, hi, freq="D"))      # restaurants and caterers order on weekends too
     raised: list = []
     lessons_made = 0
     for k, d in enumerate(days):
@@ -66,4 +66,6 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
         lab.close()
         result["run_id"] = rid
     result["suppressed_sample"] = gov.suppressed[:50]
+    if keep_rows:
+        result["_rows"] = rows
     return result

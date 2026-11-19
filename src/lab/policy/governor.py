@@ -13,7 +13,7 @@ LADDER_LABEL = {"explains": "Explains", "suggests": "Suggests", "prepares": "Pre
 
 DEFAULT_COOLDOWN_DAYS = {
     "shortfall": 3, "freshness": 2, "customer-slowdown": 14, "customer-lapse": 14, "keying": 0,
-    "margin-cost": 14, "price": 0,
+    "margin-cost": 14, "price": 5,
 }
 
 # Promotion needs evidence; demotion follows a miss. Used by the console's autonomy view.

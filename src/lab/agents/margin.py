@@ -8,7 +8,7 @@ from ..engine.state import cost_fc, week_start
 from .base import AgentContext, Proposal, dstr, series_evidence, severity_for
 
 NAME = "margin"
-DEFAULTS = {"min_cost_rise": 0.06, "margin_drop_pts": 3.0, "margin_floor_pct": 8.0, "price_floor_ratio": 0.85, "min_dollars": 120.0}
+DEFAULTS = {"min_cost_rise": 0.06, "margin_drop_pts": 3.0, "margin_floor_pct": 8.0, "price_floor_ratio": 0.85, "product_floor_ratio": 0.75, "min_dollars": 120.0, "price_min_dollars": 15.0}
 
 
 def _cost_drift(ctx: AgentContext, P: dict) -> list[Proposal]:
@@ -67,37 +67,45 @@ def _cost_drift(ctx: AgentContext, P: dict) -> list[Proposal]:
 
 
 def _price_floor(ctx: AgentContext, P: dict) -> list[Proposal]:
+    """Sell price far below this customer's usual, or (no pair history) far below the product's usual across customers."""
     w, as_of = ctx.world, ctx.as_of
     today = w.lines[w.lines.delivery_date == as_of]
     if today.empty:
         return []
     hist = w.lines[(w.lines.delivery_date < as_of) & (w.lines.delivery_date >= as_of - pd.Timedelta(days=180))]
     pair = hist.groupby(["customer_id", "product_id"]).unit_price.agg(["median", "count"])
+    prodp = hist[hist.delivery_date >= as_of - pd.Timedelta(days=90)].groupby("product_id").unit_price.agg(["median", "count"])
     names = w.customers.set_index("customer_id").display_name
     prod = w.products.set_index("product_id")
     out = []
     for r in today.itertuples():
-        key = (r.customer_id, r.product_id)
-        if key not in pair.index or pair.loc[key, "count"] < 3 or not r.unit_price:
+        if not r.unit_price:
             continue
-        typical = float(pair.loc[key, "median"])
-        if r.unit_price < P["price_floor_ratio"] * typical:
-            dollars = (typical - r.unit_price) * r.qty
-            if dollars < P["min_dollars"] * 0.5:
-                continue
-            conf = float(np.clip(0.55 + (1 - r.unit_price / typical), 0.55, 0.95))
-            ev = {"facts": [{"label": "Price on order", "value": round(r.unit_price, 2), "unit": "$"},
-                            {"label": "Their usual price (median)", "value": round(typical, 2), "unit": "$"},
-                            {"label": "Below usual by", "value": f"{(1 - r.unit_price / typical) * 100:.0f}%", "unit": ""},
-                            {"label": "Margin given away on this line", "value": round(dollars), "unit": "$"},
-                            {"label": "Order", "value": r.order_id, "unit": ""}],
-                  "why": f"The price is {(1 - r.unit_price / typical) * 100:.0f}% below what this customer normally pays for this product.",
-                  "method": "Compared with this customer's own price history for this product; flagged below 85% of usual."}
-            out.append(Proposal(NAME, dstr(as_of), "pair", f"{r.customer_id}|{r.product_id}",
-                                f"{names.get(r.customer_id, r.customer_id)}: {prod.display_name[r.product_id]} priced far below usual",
-                                severity_for(dollars, conf, 1200, 300), round(dollars, 2), round(conf, 2), ev,
-                                {"type": "hold_order_line", "order_id": r.order_id, "line_no": int(r.line_no), "usual_price": typical, "ordered_price": float(r.unit_price)},
-                                f"price|{r.order_id}|{r.line_no}", owner="order_desk").finalise())
+        key = (r.customer_id, r.product_id)
+        if key in pair.index and pair.loc[key, "count"] >= 3:
+            typical = float(pair.loc[key, "median"]); floor = P["price_floor_ratio"]; basis = "this customer's usual price"
+        elif r.product_id in prodp.index and prodp.loc[r.product_id, "count"] >= 5:
+            typical = float(prodp.loc[r.product_id, "median"]); floor = P["product_floor_ratio"]; basis = "the product's usual price across customers"
+        else:
+            continue
+        if r.unit_price >= floor * typical:
+            continue
+        dollars = (typical - r.unit_price) * r.qty
+        if dollars < P["price_min_dollars"]:
+            continue
+        conf = float(np.clip(0.55 + (1 - r.unit_price / typical), 0.55, 0.95))
+        ev = {"facts": [{"label": "Price on order", "value": round(r.unit_price, 2), "unit": "$"},
+                        {"label": "Usual price (median)", "value": round(typical, 2), "unit": "$"},
+                        {"label": "Below usual by", "value": f"{(1 - r.unit_price / typical) * 100:.0f}%", "unit": ""},
+                        {"label": "Margin given away on this line", "value": round(dollars), "unit": "$"},
+                        {"label": "Order", "value": r.order_id, "unit": ""}],
+              "why": f"The price is {(1 - r.unit_price / typical) * 100:.0f}% below {basis}.",
+              "method": "Compared with price history; flagged below 85% of the customer's usual, or 75% of the product's usual when the pair is new."}
+        out.append(Proposal(NAME, dstr(as_of), "pair", f"{r.customer_id}|{r.product_id}",
+                            f"{names.get(r.customer_id, r.customer_id)}: {prod.display_name[r.product_id]} priced far below usual",
+                            severity_for(dollars, conf, 1200, 300), round(dollars, 2), round(conf, 2), ev,
+                            {"type": "hold_order_line", "order_id": r.order_id, "line_no": int(r.line_no), "usual_price": typical, "ordered_price": float(r.unit_price)},
+                            f"price|{r.customer_id}|{r.product_id}", owner="order_desk").finalise())
     return out
 
 

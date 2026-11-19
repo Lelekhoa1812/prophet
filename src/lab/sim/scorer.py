@@ -35,6 +35,9 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
     exp = con.execute("""select m.lot_id, m.product_id, m.moved_on, -m.qty_change as qty, l.unit_cost
                          from stock_movements m join lots l using(lot_id) where m.movement_type='Expired write-off'""").df()
     exp["moved_on"] = pd.to_datetime(exp.moved_on)
+    ol = con.execute("""select l.customer_id, l.product_id, l.delivery_date, l.qty, l.unit_price from order_lines l
+                        where (l.customer_id || '|' || l.product_id) in (select entity_id from truth_events where kind in ('KEYING_ERROR','PRICE_BELOW_FLOOR'))""").df()
+    ol["delivery_date"] = pd.to_datetime(ol.delivery_date)
     con.close()
     lo, hi = window
     P = pd.DataFrame(proposals)
@@ -83,7 +86,7 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
                                "delay_days": float((a - m.as_of.min()).days) if len(m) else None, "event_id": f"SO-{pid}-{a:%m%d}"})
         finish("shortfall", flags, events)
 
-    # ---------- freshness: lots that really expired
+    # ---------- freshness: lots that really expired (proposals are per product, listing the lots at risk)
     sub = P[P.agent == "freshness"]
     if len(sub):
         ex = exp.groupby("lot_id").agg(qty=("qty", "sum"), on=("moved_on", "max"), cost=("unit_cost", "first"), product_id=("product_id", "first")).reset_index()
@@ -91,16 +94,23 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
         exmap = ex.set_index("lot_id")
         flags = []
         for r in sub.itertuples():
-            at_risk = r.action.get("qty", 0)
-            flags.append(r.entity_id in exmap.index and exmap.loc[r.entity_id, "qty"] >= 0.25 * at_risk)
+            lots = r.action.get("lots", [])
+            hit = any(l["lot_id"] in exmap.index and exmap.loc[l["lot_id"], "qty"] >= 0.25 * l["at_risk_qty"] for l in lots)
+            flags.append(hit)
+        first_flag = {}
+        for r in sub.itertuples():
+            for l in r.action.get("lots", []):
+                first_flag.setdefault(l["lot_id"], r.as_of)
+                first_flag[l["lot_id"]] = min(first_flag[l["lot_id"]], r.as_of)
         events = []
         for r in ex.itertuples():
             dollars = float(r.qty * (r.cost or 0))
             if dollars < 80:
                 continue
-            m = sub[(sub.entity_id == r.lot_id) & (sub.as_of < r.on)]
+            ff = first_flag.get(r.lot_id)
+            caught = ff is not None and ff < r.on
             events.append({"agent": "freshness", "kind": "EXPIRY", "entity_id": r.lot_id, "start": str(r.on.date()), "end": str(r.on.date()),
-                           "dollars": dollars, "caught": len(m) > 0, "delay_days": float((r.on - m.as_of.min()).days) if len(m) else None,
+                           "dollars": dollars, "caught": bool(caught), "delay_days": float((r.on - ff).days) if caught else None,
                            "event_id": f"EX-{r.lot_id}"})
         finish("freshness", flags, events)
 
@@ -119,6 +129,10 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
         events = []
         for e in truth[truth.kind.isin(["CUSTOMER_LOST", "CUSTOMER_SLOWDOWN", "KEYING_ERROR"]) & (truth.start_date >= lo) & (truth.start_date <= hi)].itertuples():
             if e.kind == "KEYING_ERROR":
+                c_, p_ = e.entity_id.split("|")
+                ln = ol[(ol.customer_id == c_) & (ol.product_id == p_) & (ol.delivery_date == e.start_date)]
+                if ln.empty or (ln.qty.iloc[0] * (1 - 1 / max(e.magnitude, 1)) * (ln.unit_price.iloc[0] or 0)) < 100:
+                    continue            # unobservable or immaterial: nobody could or should flag it
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of == e.start_date) & sub.dedupe_key.str.startswith("keying")]
             else:
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of >= e.start_date) & (sub.as_of <= e.end_date + pd.Timedelta(days=7))]
@@ -140,6 +154,10 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
         events = []
         for e in truth[truth.kind.isin(["COST_SPIKE", "PRICE_BELOW_FLOOR"]) & (truth.start_date >= lo) & (truth.start_date <= hi)].itertuples():
             if e.kind == "PRICE_BELOW_FLOOR":
+                c_, p_ = e.entity_id.split("|")
+                ln = ol[(ol.customer_id == c_) & (ol.product_id == p_) & (ol.delivery_date >= e.start_date) & (ol.delivery_date <= e.end_date)]
+                if ln.empty or ((ln.qty * ln.unit_price * (1 / 0.7 - 1)).sum()) < 15:
+                    continue            # no order placed during the event, or too small to matter
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of >= e.start_date) & (sub.as_of <= e.end_date) & sub.dedupe_key.str.startswith("price")]
             else:
                 m = sub[(sub.entity_id == e.entity_id) & (sub.as_of >= e.start_date) & sub.dedupe_key.str.startswith("margin-cost")]
