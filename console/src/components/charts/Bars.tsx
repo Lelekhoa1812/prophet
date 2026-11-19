@@ -8,8 +8,8 @@ export function HBars({ rows, format = (v: number) => v.toFixed(2), better = "lo
   return (
     <ul className="space-y-2">
       {rows.map((r) => (
-        <li key={r.label} className="grid grid-cols-[8.5rem_1fr_4.5rem] items-center gap-3 text-sm">
-          <span className={cn("truncate", r.label === highlight && "font-semibold")}>{r.label}</span>
+        <li key={r.label} className="grid grid-cols-[minmax(9rem,38%)_1fr_4rem] items-center gap-3 text-sm">
+          <span className={cn("leading-snug", r.label === highlight && "font-semibold")}>{r.label}</span>
           <div className="h-5 rounded-sm bg-muted" role="img" aria-label={`${r.label} ${format(r.value)}`}>
             <div className={cn("h-full rounded-sm", r.value === best ? "bg-primary" : r.label === highlight ? "bg-teal" : "bg-slate-400 dark:bg-slate-500")} style={{ width: `${Math.max(2, (r.value / max) * 100)}%` }} />
           </div>

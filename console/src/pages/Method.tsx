@@ -1,93 +1,88 @@
 import { PageHeader, Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui";
+import { Example, FlowMerge, FlowNode, FlowRow } from "@/components/Flow";
 
-/** How it works: the data path, the trigger path, the proposal lifecycle, and the production design on AWS. Diagrams are hand-built SVG. */
+/** How it works, as four short flows. Each has a plain example, so a non-technical reader can follow the logic. */
 export function Method() {
   return (
     <>
-      <PageHeader eyebrow="Method" title="How the agents work, end to end"
-        description="A question first, then the machinery. Each diagram shows one part of the flow, from data to a decision." />
+      <PageHeader eyebrow="How it works" title="From the business, to a forecast, to a decision"
+        description="Four short flows. Each one answers a question a manager would ask, and ends with a worked example." />
 
-      <svg width="0" height="0" className="absolute" aria-hidden>
-        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted-foreground)" /></marker></defs>
-      </svg>
       <Card className="mb-6">
-        <CardHeader><CardTitle>1 · From the business to a forecast</CardTitle><CardDescription>Only data that existed on the decision day is used.</CardDescription></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <svg viewBox="0 0 960 170" className="w-full min-w-[720px]" role="img" aria-label="Data flows from orders, stock and purchases into weekly series, then TimesFM, then bands">
-            <Box x={10} y={40} w={170} h={70} t="Orders, stock, lots, POs" s="Read-only snapshot" />
-            <Arrow x1={180} x2={214} y={75} />
-            <Box x={214} y={40} w={170} h={70} t="Weekly series" s="Per product and customer, complete weeks only" />
-            <Arrow x1={384} x2={418} y={75} />
-            <Box x={418} y={40} w={170} h={70} t="TimesFM 3" s="Quantiles 10 to 90" accent />
-            <Arrow x1={588} x2={622} y={75} />
-            <Box x={622} y={40} w={170} h={70} t="Bands and baselines" s="Compared with moving averages" />
-            <Arrow x1={792} x2={826} y={75} />
-            <Box x={826} y={40} w={124} h={70} t="Agent" s="Money at stake" />
-          </svg>
+        <CardHeader><CardTitle>1 · How does it know what is coming?</CardTitle><CardDescription>It reads the business's own history, up to the morning of the decision. Nothing from the future.</CardDescription></CardHeader>
+        <CardContent>
+          <FlowRow>
+            <FlowNode step={1} title="Read the business" sub="Orders, stock and use-by dates, purchase orders, prices. Read-only." />
+            <FlowNode step={2} title="Make weekly series" sub="Units per product, spend per customer, cost per unit. Only complete weeks." />
+            <FlowNode step={3} title="TimesFM 3 forecasts" sub="A median and a range (10% to 90%) for each series." tone="accent" />
+            <FlowNode step={4} title="Compare with simple rules" sub="Moving averages are the bar to beat. If TimesFM is no better, it says so." />
+            <FlowNode step={5} title="An agent decides" sub="Turns a forecast into a proposal worth a number of dollars." />
+          </FlowRow>
+          <Example>
+            <p><span className="font-semibold">Seafood P-0120, Friday 3 April.</span> 185 units on hand and 477 inbound, so 662 in total. The forecast says about 2,125 units will sell in the next 5 days (range up to 2,481).</p>
+            <p>The agent compares the two and raises: "Likely to run short. Raise a purchase order for about 2,206 units, needed by 8 April." The same case is in Proposals when the lab date is 3 April.</p>
+          </Example>
         </CardContent>
       </Card>
 
       <Card className="mb-6">
-        <CardHeader><CardTitle>2 · When an agent wakes up</CardTitle><CardDescription>Scheduled, event-driven and on request. Quiet hours and cooldowns apply to all three.</CardDescription></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <svg viewBox="0 0 960 230" className="w-full min-w-[720px]" role="img" aria-label="Triggers: schedule, events and requests feed the governor, which gates proposals">
-            <Box x={10} y={20} w={200} h={52} t="Schedule" s="05:00 daily; Mondays for patterns" />
-            <Box x={10} y={89} w={200} h={52} t="Events" s="PO raised, received, late; price changed" />
-            <Box x={10} y={158} w={200} h={52} t="Request" s="Asked from the briefing or explorer" />
-            <Arrow x1={210} x2={260} y={46} /><Arrow x1={210} x2={260} y={115} /><Arrow x1={210} x2={260} y={184} />
-            <Box x={260} y={70} w={210} h={90} t="Agent run" s="Reads only what was known on that day" accent />
-            <Arrow x1={470} x2={520} y={115} />
-            <Box x={520} y={70} w={200} h={90} t="Governor" s="Dedupe · cooldown · lessons · quiet hours" />
-            <Arrow x1={720} x2={770} y={115} />
-            <Box x={770} y={70} w={180} h={90} t="Briefing" s="Owner gets one decision, with evidence" />
-          </svg>
+        <CardHeader><CardTitle>2 · When does an agent look?</CardTitle><CardDescription>Three ways to wake up. All three go through the same checks, so nobody gets the same alert twice.</CardDescription></CardHeader>
+        <CardContent>
+          <FlowMerge
+            inputs={[
+              <FlowNode key="s" title="On a schedule" sub="Every morning before the briefing. Mondays for customer patterns and supplier costs." />,
+              <FlowNode key="e" title="When something happens" sub="An order is entered, a purchase order is received or runs late, a price changes." />,
+              <FlowNode key="r" title="When someone asks" sub="From the briefing or the forecast explorer." />,
+            ]}>
+            <FlowNode title="The agent looks" sub="Sees only what was known at that moment." tone="accent" />
+          </FlowMerge>
+          <div className="mt-3">
+            <FlowRow>
+              <FlowNode title="Checks first" sub="Same issue already raised? Inside its cooldown? Quiet hours? Has the business taught us to ignore it?" tone="warn" />
+              <FlowNode title="Owner is told" sub="One short message with the evidence, in the morning briefing or straight away if it can stop a mistake." />
+            </FlowRow>
+          </div>
+          <Example>
+            <p><span className="font-semibold">An order is entered at 2 pm:</span> 800 units of a line a customer normally orders 9 at a time. The check runs the moment the order is saved, not the next morning, so the line can be held before anyone picks it.</p>
+            <p><span className="font-semibold">A lot of seafood has 4 days left:</span> that is a morning job. It does not need an instant alert, it needs the sales team to see it with a suggested offer.</p>
+          </Example>
         </CardContent>
       </Card>
 
       <Card className="mb-6">
-        <CardHeader><CardTitle>3 · What happens to a proposal</CardTitle><CardDescription>Nothing leaves the lab. In FoodFlow, each state maps to a draft that a person confirms.</CardDescription></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <svg viewBox="0 0 960 150" className="w-full min-w-[720px]" role="img" aria-label="Proposal states: open, then approved, adjusted or dismissed; a dismissal can become a lesson that can be undone">
-            <Box x={10} y={55} w={150} h={50} t="Open" s="Waiting for an owner" accent />
-            <Arrow x1={160} x2={220} y={80} />
-            <Box x={220} y={10} w={170} h={44} t="Approved" s="Draft confirmed" />
-            <Box x={220} y={68} w={170} h={44} t="Adjusted" s="Changed, then confirmed" />
-            <Box x={220} y={126} w={170} h={44} t="Dismissed" s="With a reason" />
-            <Arrow x1={390} x2={450} y={126} />
-            <Box x={450} y={100} w={220} h={44} t="Lesson" s="Stops repeats for a set period" />
-            <Arrow x1={670} x2={730} y={122} />
-            <Box x={730} y={100} w={220} h={44} t="Undo" s="Removes the lesson at once" />
-          </svg>
+        <CardHeader><CardTitle>3 · What happens to a proposal?</CardTitle><CardDescription>Nothing leaves the lab. In FoodFlow each outcome would be a draft that a person confirms.</CardDescription></CardHeader>
+        <CardContent>
+          <FlowRow>
+            <FlowNode title="Open" sub="Waiting for its owner, with the evidence attached." tone="accent" />
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <FlowNode title="Approved" sub="Becomes a draft: a purchase order, an offer, a held order line." />
+              <FlowNode title="Adjusted" sub="The owner changes it, then it becomes a draft." />
+              <FlowNode title="Dismissed, with a reason" sub={`"One-off", "known promotion", "wrong alert" or "not useful now".`} tone="muted" />
+            </div>
+          </FlowRow>
+          <p className="eyebrow my-3">Only a dismissal teaches the lab</p>
+          <FlowRow>
+            <FlowNode title="A lesson is created" sub="Stops the same alert for that customer or product for a set period. Visible on the Agents page." />
+            <FlowNode title="Undo, any time" sub="Removes the lesson at once. The alert can come back." tone="muted" />
+          </FlowRow>
+          <Example title="A real example">
+            <p>The sales manager dismisses a seafood sell-down with "known promotion". The agent will not raise that product again for 28 days. If it was the wrong call, one click on <span className="font-semibold">Undo</span> restores it.</p>
+          </Example>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>4 · Production shape on AWS (proposed)</CardTitle><CardDescription>Ap-southeast-2 only, behind the Axis model gateway. Not built yet; this lab proves the method first.</CardDescription></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <svg viewBox="0 0 960 200" className="w-full min-w-[720px]" role="img" aria-label="Production: FoodFlow emits events, a forecast service runs TimesFM, Axis governs proposals">
-            <Box x={10} y={60} w={170} h={64} t="FoodFlow" s="Orders, stock, POs, prices" />
-            <Arrow x1={180} x2={230} y={92} />
-            <Box x={230} y={60} w={180} h={64} t="Event feed" s="Read models, no direct writes" />
-            <Arrow x1={410} x2={460} y={92} />
-            <Box x={460} y={40} w={190} h={104} t="Forecast service" s="ECS, batch-first, TimesFM 3 (licence first)" accent />
-            <Arrow x1={650} x2={700} y={92} />
-            <Box x={700} y={60} w={250} h={64} t="Axis proposals" s="Governed, evidence, undo, human OK" />
-          </svg>
+        <CardHeader><CardTitle>4 · What it would look like in production</CardTitle><CardDescription>Proposed, not built. AWS Sydney only, so client data stays in Australia. This lab proves the method before any of it is built.</CardDescription></CardHeader>
+        <CardContent>
+          <FlowRow>
+            <FlowNode title="FoodFlow" sub="Orders, stock, purchases, prices." />
+            <FlowNode title="Event feed" sub="Read-only copies of what changed. No writes back." />
+            <FlowNode title="Forecast service" sub="A separate service running the model, in batches, behind the Axis model gateway." tone="accent" />
+            <FlowNode title="Axis proposals" sub="Evidence, undo, and a person's OK before anything changes." />
+          </FlowRow>
+          <p className="mt-3 text-xs text-muted-foreground">Gate: TimesFM 3.0 weights are licensed for non-commercial use only. This production shape cannot start until that is resolved (or another model passes the same tests).</p>
         </CardContent>
       </Card>
     </>
   );
-}
-
-function Box({ x, y, w, h, t, s, accent }: { x: number; y: number; w: number; h: number; t: string; s: string; accent?: boolean }) {
-  return (
-    <g>
-      <rect x={x} y={y} width={w} height={h} rx={8} fill={accent ? "var(--accent)" : "var(--card)"} stroke={accent ? "var(--primary)" : "var(--border)"} strokeWidth={accent ? 1.5 : 1} />
-      <text x={x + 12} y={y + 24} fontSize="13" fontWeight="600" fill="var(--foreground)">{t}</text>
-      <text x={x + 12} y={y + 42} fontSize="11" fill="var(--muted-foreground)">{s}</text>
-    </g>
-  );
-}
-function Arrow({ x1, x2, y }: { x1: number; x2: number; y: number }) {
-  return <line x1={x1} x2={x2} y1={y} y2={y} stroke="var(--muted-foreground)" strokeWidth="1.5" markerEnd="url(#arr)" />;
 }
