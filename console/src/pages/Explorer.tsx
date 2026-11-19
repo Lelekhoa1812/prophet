@@ -42,7 +42,7 @@ export function Explorer() {
     <>
       <PageHeader eyebrow="Developer and operator" title="Forecast explorer"
         description="Choose a product and a date. The chart uses only data before that date for the forecast, then shows what really happened. The shaded areas are known events on the twin." />
-      <div className="grid gap-5 lg:grid-cols-[18rem_1fr]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
         <Card className="h-fit">
           <CardHeader><CardTitle className="text-sm">Product</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -60,7 +60,7 @@ export function Explorer() {
             </ul>
           </CardContent>
         </Card>
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           <div className="flex flex-wrap items-end gap-3">
             <Tabs value={freq} onValueChange={(v) => setFreq(v as "W" | "D")}>
               <TabsList><TabsTrigger value="W">Weekly</TabsTrigger><TabsTrigger value="D">Daily</TabsTrigger></TabsList>
@@ -99,7 +99,7 @@ export function Explorer() {
                   events: ev.map((e: any) => ({ start: e.start_date, end: e.end_date, label: `${e.kind}: ${e.note}`, kind: e.kind })),
                   unit: freq === "W" ? "units / week" : "units / day",
                 }} />
-                <div className="grid gap-5 2xl:grid-cols-2">
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-5 2xl:grid-cols-2">
                   <div>
                     <p className="mb-2 text-sm font-medium">Next {freq === "W" ? "weeks" : "days"}: TimesFM against baselines</p>
                     <div className="overflow-x-auto"><table className="w-full min-w-[30rem] text-sm tabular">

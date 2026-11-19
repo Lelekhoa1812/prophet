@@ -34,7 +34,7 @@ export function Developer() {
       <Rollout />
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
+        <Card className="min-w-0">
           <CardHeader><CardTitle>Walk-forward backtest</CardTitle>
             <CardDescription>Forecast each past origin using only data before it, then score against what happened. Compares TimesFM 3 with the baselines and with perfect knowledge.</CardDescription></CardHeader>
           <CardContent className="space-y-4">
@@ -55,7 +55,7 @@ export function Developer() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader><CardTitle>Background jobs</CardTitle><CardDescription>Latest first. Jobs survive page changes; results are stored.</CardDescription></CardHeader>
           <CardContent>
             {!jobs && <Skeleton className="h-32" />}
@@ -75,10 +75,10 @@ export function Developer() {
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-2">
+        <Card className="min-w-0 lg:col-span-2">
           <CardHeader><CardTitle>API</CardTitle><CardDescription>The console is a thin client. Every number can be pulled programmatically.</CardDescription></CardHeader>
-          <CardContent>
-            <table className="w-full text-sm">
+          <CardContent className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
               <thead className="text-xs text-muted-foreground"><tr><th className="py-1.5 text-left font-medium">Method and path</th><th className="text-left font-medium">What it does</th></tr></thead>
               <tbody className="font-mono text-xs">
                 {API.map(([m, p, d]) => <tr key={p + m} className="border-t"><td className="py-1.5"><span className="mr-2 rounded bg-accent px-1.5 py-0.5 font-semibold">{m}</span>{p}</td><td className="font-sans text-sm text-muted-foreground">{d}</td></tr>)}

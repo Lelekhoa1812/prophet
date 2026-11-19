@@ -56,7 +56,7 @@ export const Badge = ({ className, variant, ...p }: React.HTMLAttributes<HTMLSpa
 );
 
 export const Card = ({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("rounded-lg border bg-card text-card-foreground shadow-[0_1px_2px_rgba(19,42,59,0.06)]", className)} {...p} />
+  <div className={cn("min-w-0 rounded-lg border bg-card text-card-foreground shadow-[0_1px_2px_rgba(19,42,59,0.06)]", className)} {...p} />
 );
 export const CardHeader = ({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) => <div className={cn("flex flex-col gap-1 p-4 pb-2", className)} {...p} />;
 export const CardTitle = ({ className, ...p }: React.HTMLAttributes<HTMLHeadingElement>) => <h3 className={cn("text-base font-semibold leading-tight", className)} {...p} />;
