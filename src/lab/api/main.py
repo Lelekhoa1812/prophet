@@ -30,6 +30,34 @@ from ..store import open_dataset, open_lab
 from . import jobs
 
 app = FastAPI(title="TimesFM ERP lab", version="0.1.0")
+
+# Motivation vs Logic
+# Motivation: the API has no login, and `/api/reveal` returns real customer names. Any web page open in the same browser
+# could POST to localhost (decisions, tenant settings, replays), and a rebound hostname could read the reveal map.
+# Logic: refuse requests whose Host is not a loopback name (blocks DNS rebinding), and refuse writes that a browser marks
+# as coming from another site (Origin not loopback, or Sec-Fetch-Site cross-site). Requests with no Origin (curl, tests,
+# the same-origin console) pass. TIMESFM_ERP_ALLOWED_HOSTS adds hostnames for a deliberate shared deployment, which
+# still needs real authentication before it holds client data.
+_LOOPBACK = {"localhost", "127.0.0.1", "[::1]", "::1", "testserver"}
+
+
+def _hostname(value: str) -> str:
+    from urllib.parse import urlsplit
+    return (urlsplit(value if "//" in value else f"//{value}").hostname or "").lower()
+
+
+@app.middleware("http")
+async def _same_origin_guard(request, call_next):
+    from fastapi.responses import JSONResponse
+    import os
+    allowed = _LOOPBACK | {h.strip().lower() for h in os.environ.get("TIMESFM_ERP_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    if _hostname(request.headers.get("host", "")) not in allowed:
+        return JSONResponse({"detail": "host not allowed"}, status_code=400)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if (origin and _hostname(origin) not in allowed) or request.headers.get("sec-fetch-site") == "cross-site":
+            return JSONResponse({"detail": "cross-site write refused"}, status_code=403)
+    return await call_next(request)
 _lock = threading.Lock()
 _governors: dict[str, Governor] = {}
 

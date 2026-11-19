@@ -9,3 +9,5 @@
 | Earlier headline numbers affected? | Code-derived | No code path called `set_router`; routing was evaluated only in `fit_routing` backtests that call models directly | Not affected | The first tenant routing install would have been |
 
 Datasets: twin = 4-year synthetic (seeded generator); staging = about 8 weeks real, pseudonymised, not in Git.
+
+| Cross-site write and rebound host | Test-derived + live probe | `tests/test_api_guard.py` (3 of 7 failed before), curl against restarted API | Evil Origin POST 403, Host attacker.example 400, console origins and no-Origin pass, browser same-origin POST 200 | Local checks only; no login added; a non-browser attacker on the machine is out of scope |

@@ -27,7 +27,7 @@ Hidden in the HTML and not reviewed as functionality: the interactive autonomy d
 | ID | Finding | Evidence | Severity | Status |
 |---|---|---|---|---|
 | S1 | Forecast cache keyed by date only: a model or route change, or a corrected history, served the old forecast | T: `tests/test_forecast_cache.py` failed 2 of 3 before the fix | High for any model comparison | Fixed in loop 1 |
-| S2 | API has no authentication; `GET /api/reveal` returns real names; every route is open to any local page (CSRF on POST, DNS rebinding on GET) | C: `api/main.py` has no middleware, no Origin or Host check | High before any shared deployment, low on a single-user laptop | Open (backlog B1) |
+| S2 | API has no authentication; `GET /api/reveal` returns real names; every route is open to any local page (CSRF on POST, DNS rebinding on GET) | C: `api/main.py` has no middleware, no Origin or Host check | High before any shared deployment, low on a single-user laptop | Fixed in loop 2 for cross-site and rebound-host attacks; still no login, so not for a shared deployment |
 | S3 | `decided_by` is client-supplied text, so decision audit identity is spoofable | C: `decide()` | Medium | Open |
 | S4 | Read-only staging relies on a session option plus hard-coded SELECT; `assert` is stripped under `python -O`; no proof the DB role itself lacks write rights | C: `source/staging.py` | Medium | Open (needs DB role check; staging access is Liam's decision) |
 | S5 | Jobs live in process memory: a restart loses progress and results; no cancel | C: `api/jobs.py` | Medium (lab convenience) | Open |
