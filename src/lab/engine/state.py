@@ -11,7 +11,9 @@ import pandas as pd
 
 from ..config import DATA
 from ..store import open_dataset
+from . import distribution
 from .forecast import Forecast, TimesFMEngine
+from .models import get_forecaster
 
 CACHE_DIR = DATA / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -120,7 +122,7 @@ class ForecastService:
         active = np.where(mat[:, -min(26, mat.shape[1]):].sum(axis=1) > 0)[0] if mat.shape[1] else np.array([], dtype=int)
         res = {"weeks": weeks, "active": active, "mat": mat, "future_start": week_start(as_of)}
         if len(active) and mat.shape[1] >= 4:
-            fc = TimesFMEngine.get().predict([mat[i] for i in active], horizon)
+            fc = get_forecaster().predict([mat[i] for i in active], horizon)
             res["fc"] = fc
         else:
             res["fc"] = None
@@ -174,6 +176,37 @@ class ForecastService:
             out["q90"].append(float(fc.q[k, wk, 8] * f))
         return out
 
+    def demand_samples(self, as_of: pd.Timestamp, product: int, days_ahead: int, rho: float = 0.1, n: int = 1000) -> np.ndarray | None:
+        """Samples (n, days) of daily demand from the weekly forecast distribution and the weekday pattern.
+
+        Motivation vs Logic
+        Motivation: decisions that add up demand (shortfall over a window, leftover at expiry) need the whole range,
+        not a median. Logic: draw weekly demand from each week's quantile function with weeks lightly correlated
+        (rho, measured about 0.09 on the twin), then split each draw by the product's weekday share. Days inside
+        one week move together. Returns None when the product has no forecast.
+        """
+        res = self.weekly(as_of, 4)
+        fc: Forecast | None = res["fc"]
+        if fc is None:
+            return None
+        pos = np.where(res["active"] == product)[0]
+        if len(pos) == 0:
+            return None
+        k = pos[0]
+        shape = self.weekday_profile(as_of, product)
+        wk_idx, share = [], []
+        for j in range(days_ahead):
+            day = as_of + pd.Timedelta(days=j)
+            wk = int((day - res["future_start"]).days // 7)
+            if wk < 0 or wk >= fc.q.shape[1]:
+                break
+            wk_idx.append(wk)
+            share.append(shape[day.dayofweek] / 7.0)
+        if not wk_idx:
+            return None
+        d = distribution.draws(n=n, weeks=fc.q.shape[1], rho=rho)
+        return distribution.daily_samples(fc.q[k], np.array(wk_idx), np.array(share), d)
+
     def daily_demand_quantiles(self, as_of: pd.Timestamp, product: int, days_ahead: int) -> dict | None:
         """Projected demand over the next days_ahead days (point, q10, q50, q90), summed from daily_path."""
         path = self.daily_path(as_of, product, days_ahead)
@@ -208,7 +241,7 @@ def customer_fc(fs: "ForecastService", as_of: pd.Timestamp, horizon: int = 2) ->
         active = np.where(((mat[:, -12:] > 0).sum(axis=1) >= 3))[0]
         if len(active):
             res["active"] = active
-            res["fc"] = TimesFMEngine.get().predict([mat[i] for i in active], horizon)
+            res["fc"] = get_forecaster().predict([mat[i] for i in active], horizon)
     path.write_bytes(pickle.dumps(res))
     return res
 
@@ -246,6 +279,6 @@ def cost_fc(fs: "ForecastService", as_of: pd.Timestamp, horizon: int = 2) -> dic
         active = np.where(~np.isnan(mat[:, -10:]).any(axis=1))[0]
         if len(active):
             res["active"] = active
-            res["fc"] = TimesFMEngine.get().predict([np.nan_to_num(mat[i]) for i in active], horizon)
+            res["fc"] = get_forecaster().predict([np.nan_to_num(mat[i]) for i in active], horizon)
     path.write_bytes(pickle.dumps(res))
     return res

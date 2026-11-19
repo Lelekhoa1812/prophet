@@ -23,6 +23,7 @@ from ..engine.backtest import run_backtest
 from ..engine.forecast import TimesFMEngine
 from ..engine.state import ForecastService, get_world, week_start, weekly_matrix
 from ..narration import bedrock, templated
+from ..policy import alerts as alert_policy, rollout
 from ..policy.governor import LADDER, LADDER_LABEL, Governor, Lesson, ladder_status
 from ..sim.replay import replay, scored_window
 from ..store import open_dataset, open_lab
@@ -496,39 +497,32 @@ def briefing(dataset: str = "twin", as_of: str | None = None, owner: str | None 
     props = [_prop_row(r) for r in rows]
     if owner:
         props = [p for p in props if owner in p["owner"]]
-    shown, digest = _apply_digest(props, limit)
+    cfg = rollout.load(dataset)
+    econ = rollout.economics_of(cfg)
+    ph = rollout.phase(cfg, d)
+    shown, digest_items, below = alert_policy.select(props, econ)
+    digest_items = digest_items + shown[limit:]          # a screen limit moves overflow into the digest, never drops it
+    shown = shown[:limit]
+    digest = _digest_groups(digest_items)
+    if ph["phase"] in ("shadow", "setup"):
+        hidden = len(shown)
+        return {"as_of": d, "headline": f"Shadow mode: {hidden} alert{'s' if hidden != 1 else ''} recorded but not shown.", "needs_you": [],
+                "digest": [], "still_open": [], "by_agent": {}, "dollars_in_play": 0.0, "phase": ph, "policy": econ.describe(),
+                "shadow_hidden": hidden, "below_floor": len(below)}
     return {"as_of": d, "headline": _headline(shown), "needs_you": shown, "digest": digest, "still_open": [_prop_row(r) for r in open_older][:6],
             "by_agent": {k: sum(1 for p in shown if p["agent"] == k) for k in REGISTRY},
-            "dollars_in_play": round(sum(p["dollars_at_stake"] for p in shown), 2)}
+            "dollars_in_play": round(sum(p["dollars_at_stake"] for p in shown), 2),
+            "phase": ph, "policy": econ.describe(), "below_floor": len(below)}
 
 
-# Motivation vs Logic
-# Motivation: a morning list of 20 or more alerts gets ignored by day 3, so the most valuable items are lost.
-# Logic: each owner sees at most PER_OWNER items a morning, ranked by dollars. Order-entry stops (hold_order_line)
-# are never held back, because they only work if they are seen before picking.
-PER_OWNER = 5
-DIGEST_EXEMPT_ACTIONS = {"hold_order_line"}
-
-
-def _apply_digest(props: list[dict], limit: int) -> tuple[list[dict], list[dict]]:
-    """Split ranked proposals into the items shown and a digest of the rest, grouped by owner and agent."""
-    shown, rest, per_owner = [], [], {}
-    for p in props:
-        o = p["owner"]
-        per_owner[o] = per_owner.get(o, 0) + 1
-        if p.get("action", {}).get("type") in DIGEST_EXEMPT_ACTIONS or per_owner[o] <= PER_OWNER:
-            shown.append(p)
-        else:
-            rest.append(p)
-    shown = shown[:limit]
-    shown_ids = {p["proposal_id"] for p in shown}
-    rest = rest + [p for p in props if p["proposal_id"] not in shown_ids and p not in rest]
+def _digest_groups(rest: list[dict]) -> list[dict]:
+    """Group alerts that are above the score floor but over the owner's budget, by owner and agent."""
     groups: dict[tuple, dict] = {}
     for p in rest:
         g = groups.setdefault((p["owner"], p["agent"]), {"owner": p["owner"], "agent": p["agent"], "count": 0, "dollars": 0.0})
         g["count"] += 1
         g["dollars"] = round(g["dollars"] + p["dollars_at_stake"], 2)
-    return shown, sorted(groups.values(), key=lambda g: -g["dollars"])
+    return sorted(groups.values(), key=lambda g: -g["dollars"])
 
 
 def _headline(props: list[dict]) -> str:
@@ -553,6 +547,70 @@ def _governor(ds: str) -> Governor:
 class StepIn(BaseModel):
     dataset: str = "twin"
     to: str
+
+
+class TenantIn(BaseModel):
+    review_cost: float | None = None
+    effectiveness: float | None = None
+    budget_per_owner: int | None = None
+    go_live: str | None = None
+    shadow_days: int | None = None
+
+
+@app.get("/api/tenant")
+def tenant(dataset: str = "twin", as_of: str | None = None):
+    _ds(dataset)
+    cfg = rollout.load(dataset)
+    d = as_of or str(w_default_date(dataset))
+    return {"dataset": dataset, "economics": alert_policy.Economics(**{k: v for k, v in cfg["economics"].items() if k in ("review_cost", "effectiveness", "budget_per_owner", "agent_weight")}).describe(),
+            "go_live": cfg["go_live"], "shadow_days": cfg["shadow_days"], "phase": rollout.phase(cfg, d), "learning_log": cfg["learning_log"][-20:],
+            "retune_log": cfg["retune_log"][-20:]}
+
+
+def w_default_date(dataset: str):
+    lo, hi = scored_window(get_world(dataset))
+    return (lo + (hi - lo) / 2).date()
+
+
+@app.post("/api/tenant")
+def tenant_update(body: TenantIn, dataset: str = "twin"):
+    _ds(dataset)
+    cfg = rollout.load(dataset)
+    e = cfg["economics"]
+    for k in ("review_cost", "effectiveness", "budget_per_owner"):
+        v = getattr(body, k)
+        if v is not None:
+            e[k] = v
+    if body.go_live is not None:
+        cfg["go_live"] = body.go_live or None
+    if body.shadow_days is not None:
+        cfg["shadow_days"] = body.shadow_days
+    cfg["economics"] = rollout.economics_of(cfg).describe()
+    rollout.save(dataset, cfg)
+    return tenant(dataset)
+
+
+@app.get("/api/readiness")
+def readiness(agent: str, dataset: str = "twin", weeks: int = 13):
+    _ds(dataset)
+    if agent not in REGISTRY:
+        raise HTTPException(404, "unknown agent")
+    return rollout.readiness(dataset, agent, weeks)
+
+
+@app.get("/api/drift")
+def drift(dataset: str = "twin", as_of: str | None = None):
+    _ds(dataset)
+    return rollout.drift_report(dataset, as_of)
+
+
+@app.post("/api/tenant/learn")
+def tenant_learn(dataset: str = "twin"):
+    _ds(dataset)
+    lab = _lab()
+    rows = lab.execute("select p.agent, d.decision, d.reason from decisions d join proposals p using(proposal_id) where p.dataset=?", [dataset]).fetchall()
+    lab.close()
+    return {"changes": rollout.learn(dataset, rows), "decisions_seen": len(rows)}
 
 
 @app.post("/api/time/step")

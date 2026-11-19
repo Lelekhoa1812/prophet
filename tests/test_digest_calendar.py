@@ -6,7 +6,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from lab.api.main import PER_OWNER, _apply_digest  # noqa: E402
+from lab.api.main import _digest_groups  # noqa: E402
+from lab.policy.alerts import Economics, select  # noqa: E402
 from lab.calendar_vic import calendar_channel, flags  # noqa: E402
 
 
@@ -14,26 +15,28 @@ def _p(i, owner, agent, dollars, action="sell_down_offer"):
     return {"proposal_id": f"P{i}", "owner": owner, "agent": agent, "dollars_at_stake": dollars, "action": {"type": action}}
 
 
+ECON = Economics(review_cost=10, effectiveness=0.5, budget_per_owner=5)
+
+
 def test_each_owner_sees_top_n_and_rest_is_digested():
     props = [_p(i, "sales", "freshness", 1000 - i) for i in range(8)]
-    shown, digest = _apply_digest(props, limit=50)
-    assert len(shown) == PER_OWNER
-    assert [p["proposal_id"] for p in shown] == [f"P{i}" for i in range(PER_OWNER)]
-    assert digest == [{"owner": "sales", "agent": "freshness", "count": 3,
-                       "dollars": round(sum(1000 - i for i in range(PER_OWNER, 8)), 2)}]
+    shown, digest, below = select(props, ECON)
+    assert len(shown) == 5 and below == []
+    assert [p["proposal_id"] for p in shown] == [f"P{i}" for i in range(5)]
+    assert _digest_groups(digest) == [{"owner": "sales", "agent": "freshness", "count": 3,
+                                       "dollars": round(sum(1000 - i for i in range(5, 8)), 2)}]
 
 
 def test_order_entry_stops_are_never_digested():
     props = [_p(i, "order_desk", "customer", 500 - i, "hold_order_line") for i in range(9)]
-    shown, digest = _apply_digest(props, limit=50)
+    shown, digest, _ = select(props, ECON)
     assert len(shown) == 9 and digest == []
 
 
-def test_limit_moves_overflow_into_digest_without_losing_items():
-    props = [_p(i, "buyer", "shortfall", 100 - i) for i in range(4)]
-    shown, digest = _apply_digest(props, limit=2)
-    assert len(shown) == 2
-    assert sum(g["count"] for g in digest) == 2
+def test_alerts_under_the_score_floor_are_counted_not_shown():
+    props = [_p(1, "buyer", "shortfall", 500), _p(2, "buyer", "shortfall", 5)]
+    shown, digest, below = select(props, ECON)
+    assert len(shown) == 1 and digest == [] and len(below) == 1
 
 
 def test_calendar_flags_cover_christmas_run_up_and_easter():

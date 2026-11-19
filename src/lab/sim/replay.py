@@ -11,6 +11,7 @@ import pandas as pd
 from ..agents import REGISTRY
 from ..agents.base import AgentContext
 from ..engine.state import ForecastService, get_world
+from ..policy import alerts as alert_policy
 from ..policy.governor import Governor, Lesson
 from ..store import open_lab
 from .scorer import score
@@ -22,7 +23,7 @@ def scored_window(w) -> tuple[pd.Timestamp, pd.Timestamp]:
 
 
 def replay(dataset: str, start: str | None = None, end: str | None = None, agents: list[str] | None = None,
-           params: dict | None = None, learn: bool = False, persist: bool = True, progress=None, keep_rows: bool = False) -> dict:
+           params: dict | None = None, policy: dict | None = None, learn: bool = False, persist: bool = True, progress=None, keep_rows: bool = False) -> dict:
     t0 = time.time()
     w = get_world(dataset)
     fs = ForecastService(w)
@@ -32,22 +33,47 @@ def replay(dataset: str, start: str | None = None, end: str | None = None, agent
     agents = agents or list(REGISTRY)
     params = params or {}
     gov = Governor()
+    econ = alert_policy.from_dict(policy) if policy is not None else None
+    if econ is not None:
+        # Under a score-plus-budget policy the agents emit every candidate above the score floor and the policy decides
+        # what is shown, so the old probability and share gates are opened up (customer and margin keep their own).
+        params = {**params, "shortfall": {"risk_threshold": 0.0, "min_dollars": econ.floor, **params.get("shortfall", {})},
+                  "freshness": {"min_dollars": econ.floor, "min_share_at_risk": 0.05, **params.get("freshness", {})}}
+    digested: list = []
     days = list(pd.date_range(lo, hi, freq="D"))      # restaurants and caterers order on weekends too
     raised: list = []
     lessons_made = 0
     for k, d in enumerate(days):
+        day_all: list = []
         for name in agents:
             ctx = AgentContext(w, d, fs, params.get(name, {}), gov.lessons)
             ps = REGISTRY[name].run(ctx)
-            kept = gov.filter(ps, d.date())
+            if econ is None:
+                kept = gov.filter(ps, d.date())
+            else:
+                kept = gov.filter(ps, d.date(), commit=False)
+                day_all.extend(kept)
+                continue
             raised += kept
             if learn:                                  # simulated operator: dismiss false alarms with a reason
                 from .scorer import score as _s     # noqa: F401  (kept local to avoid cycles)
+        if econ is not None:
+            shown, digest, _below = alert_policy.select(day_all, econ)
+            gov.commit(shown, d.date())
+            raised += shown
+            digested += digest
         if progress and (k % 10 == 0 or k == len(days) - 1):
             progress(k + 1, len(days))
     rows = [dict(agent=p.agent, entity_type=p.entity_type, entity_id=p.entity_id, as_of=p.as_of, dollars_at_stake=p.dollars_at_stake,
                  severity=p.severity, dedupe_key=p.dedupe_key, action=p.action, proposal_id=p.proposal_id) for p in raised]
     result = score(dataset, rows, (lo, hi))
+    if econ is not None:
+        result["policy"] = {**econ.describe(), "digested": len(digested), "shown": len(raised),
+                            "shown_per_day": round(len(raised) / max(len(days), 1), 2),
+                            "digest_per_day": round(len(digested) / max(len(days), 1), 2)}
+        result["digest_score"] = score(dataset, [dict(agent=p.agent, entity_type=p.entity_type, entity_id=p.entity_id, as_of=p.as_of,
+                                                      dollars_at_stake=p.dollars_at_stake, severity=p.severity, dedupe_key=p.dedupe_key,
+                                                      action=p.action, proposal_id=p.proposal_id) for p in raised + digested], (lo, hi))["agents"]
     result.update({"dataset": dataset, "days": len(days), "proposals_total": len(raised),
                    "held_back": len(gov.suppressed), "seconds": round(time.time() - t0, 1)})
     if persist:

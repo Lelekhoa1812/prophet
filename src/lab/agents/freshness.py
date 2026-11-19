@@ -8,7 +8,7 @@ from ..engine.state import stock_at, unit_cost_at
 from .base import AgentContext, Proposal, dstr, series_evidence, severity_for
 
 NAME = "freshness"
-DEFAULTS = {"horizon_days": 21, "min_dollars": 200.0, "min_share_at_risk": 0.25, "demand_percentile": "q50", "top_buyers": 5}
+DEFAULTS = {"horizon_days": 21, "min_dollars": 200.0, "min_share_at_risk": 0.25, "top_buyers": 5}
 
 
 def run(ctx: AgentContext) -> list[Proposal]:
@@ -28,22 +28,32 @@ def run(ctx: AgentContext) -> list[Proposal]:
         pi = w.pidx[pid]
         lots = lots.sort_values("use_by_date")
         horizon = int(lots.dte.max()) + 1
+        # Motivation vs Logic
+        # Motivation: first-expiry-first-out against the median demand ignores that demand is uncertain and skewed,
+        # so it under-counts stock that is only likely (not certain) to expire.
+        # Logic: sample cumulative daily demand from the forecast range, run first-expiry-first-out on every sample,
+        # and take the expected unsold quantity per lot (plus a 10th-90th percentile range for the evidence).
+        S = ctx.fs.demand_samples(as_of, pi, horizon)
         path = ctx.fs.daily_path(as_of, pi, horizon)
-        if not path or not path[P["demand_percentile"]]:
+        if S is None or not path:
             continue
-        cum_demand = np.cumsum(path[P["demand_percentile"]])           # expected units sold through each day
+        cum = np.cumsum(S, axis=1)                                      # (n, days) units sold through each day
         cum_before = 0.0
         at_risk_lots = []
+        range_samples = np.zeros(S.shape[0])
         for lot in lots.itertuples():
-            through = cum_demand[min(int(lot.dte), len(cum_demand) - 1)]
-            consumable = through - cum_before                          # demand available to this lot before expiry
-            used = float(np.clip(consumable, 0, lot.qty))
+            through = cum[:, min(int(lot.dte), cum.shape[1] - 1)]
+            used = np.clip(through - cum_before, 0, lot.qty)            # demand available to this lot before expiry
             cum_before += lot.qty
-            at_risk = lot.qty - used
+            left = lot.qty - used
+            at_risk = float(left.mean())
             c = float(lot.unit_cost if pd.notna(lot.unit_cost) else cost.get(pid, 0) or 0)
             if at_risk > 0 and at_risk / lot.qty >= P["min_share_at_risk"]:
+                range_samples += left
                 at_risk_lots.append({"lot_id": lot.lot_id, "qty": round(lot.qty, 1), "use_by": dstr(lot.use_by_date), "days_left": int(lot.dte),
-                                     "sells_before_use_by": round(used, 1), "at_risk_qty": round(at_risk, 1), "at_risk_value": round(at_risk * c, 2)})
+                                     "sells_before_use_by": round(lot.qty - at_risk, 1), "at_risk_qty": round(at_risk, 1),
+                                     "at_risk_p10": round(float(np.quantile(left, 0.1)), 1), "at_risk_p90": round(float(np.quantile(left, 0.9)), 1),
+                                     "at_risk_value": round(at_risk * c, 2)})
         dollars = sum(l["at_risk_value"] for l in at_risk_lots)
         if dollars < P["min_dollars"]:
             continue
@@ -76,10 +86,11 @@ def run(ctx: AgentContext) -> list[Proposal]:
                 {"label": "Lots at risk", "value": len(at_risk_lots), "unit": f"of {len(lots)}"},
                 {"label": "Soonest use-by", "value": f"{soonest} days", "unit": ""},
                 {"label": "Expected to expire unsold", "value": round(at_risk_total, 1), "unit": "units"},
+                {"label": "Plausible range (10th-90th)", "value": f"{np.quantile(range_samples, 0.1):.0f}-{np.quantile(range_samples, 0.9):.0f}", "unit": "units"},
                 {"label": "Cost at risk", "value": round(dollars, 2), "unit": "$"},
             ],
-            "why": f"{at_risk_total:.0f} of {on_hand_total:.0f} units are expected to still be on the shelf at use-by, after first-expiry-first-out against the forecast.",
-            "method": "TimesFM 3 median for each week, split by this product's weekday pattern (last 12 weeks, shrunk toward flat); lots consumed first-expiry-first-out.",
+            "why": f"{at_risk_total:.0f} of {on_hand_total:.0f} units are expected to still be on the shelf at use-by, averaged over the forecast range with first-expiry-first-out.",
+            "method": "TimesFM 3 forecast range for each week, split by this product's weekday pattern (last 12 weeks, shrunk toward flat); lots consumed first-expiry-first-out on each of 1,000 sampled demand paths, then averaged.",
             "targets": tgt, "lots": at_risk_lots,
         }
         out.append(Proposal(NAME, dstr(as_of), "product", pid,

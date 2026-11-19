@@ -55,7 +55,12 @@ class Governor:
                     return ls
         return None
 
-    def filter(self, proposals: list, as_of: date) -> list:
+    def commit(self, proposals: list, as_of: date) -> None:
+        """Record proposals as raised, so cooldown applies from now on. Used when a budget decides what is really shown."""
+        for p in proposals:
+            self.last_raised[p.dedupe_key] = (as_of, p.dollars_at_stake)
+
+    def filter(self, proposals: list, as_of: date, commit: bool = True) -> list:
         kept = []
         for p in proposals:
             ls = self._lesson_for(p, as_of)
@@ -73,7 +78,8 @@ class Governor:
                 if p.dollars_at_stake < last[1] * 1.5:
                     self.suppressed.append({"proposal_id": p.proposal_id, "reason": "cooldown", "as_of": str(as_of), "key": p.dedupe_key})
                     continue
-            self.last_raised[p.dedupe_key] = (as_of, p.dollars_at_stake)
+            if commit:
+                self.last_raised[p.dedupe_key] = (as_of, p.dollars_at_stake)
             kept.append(p)
         return kept
 
