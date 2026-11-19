@@ -106,3 +106,4 @@
 - Loop 25: CI for 0948e9a and 2631976 failed with zero steps run; a clean clone of origin/main passes the same commands (108 pass, 1 skipped), so the failure is at the runner. Re-run requested. Scorer now reports dollar_recall in every replay result. Earlier claim of 'missing replay dollar stats' was my script reading the wrong key; corrected.
 - Loop 25 (CI): 0948e9a and 2631976 never started. The runner annotation says 'recent account payments have failed or your spending limit needs to be increased'. Code is fine: clean clone passes 108 and 1 skipped. Needs the account owner to fix billing; not something the loop can change.
 - Loop 25 (B14 follow-up): shown-alert dollar recall under the default policy recorded in GOAL_EVIDENCE.md.
+- Loop 26: read the value paper's script and checked its 16 cited URLs (13 resolve, 3 blocked). Claims in the page are not verified against the sources. Recorded in GOAL_AUDIT section 10.

@@ -84,3 +84,9 @@ Code-checked: a global `:focus-visible` outline exists (`index.css`), `prefers-r
 - Verified: 109 tests pass, including 7 dollar-definition tests and a what-if exclusion test. Candidate rescore on the twin (see evidence).
 - Doubt: margin dollar recall is concentrated in three cost spikes; the 6 missed margin events total about $95. Customer and margin dollars are estimates over a fixed 56-day horizon.
 - Correction (loop 25): an earlier note said replay output had no dollar stats. That was wrong. The scorer writes flat `dollars_truth_*` fields into every replay agent result. Only the ratio `dollar_recall` was missing from replay (it existed only in policy_sim); the scorer now reports it.
+
+## 10. Loop 26: value-paper provenance (HTML script and cited sources)
+- Read: the HTML's single script block (about 147 KB of JavaScript). Competitor and market ratings, quotes and the 'what we build' and decisions data are inline. The page states its ratings are AXION's reading, not product trials.
+- Cited sources: 16 unique external URLs appear in the script. A plain GET returned 13 HTTP 200, 3 HTTP 403 (blocked to automated clients, status unknown). Live links were not checked against the quoted figures or quotes, so no claim in the page is verified from its sources.
+- Not verifiable from this repo: FoodFlow 'live today' capability status (cites an AXION SharePoint document) and the 'FoodFlow starting scores' (AXION review, not in the repo).
+- Handling: the page's own caveat stays. Nothing from the page is treated as shipped behaviour. This repo implements none of the eight capabilities end to end (see section 1).
