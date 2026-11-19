@@ -119,3 +119,7 @@ Built from sections 1, 2, 2b, 2c and the loop 18 to 26 checks. Every code path w
 - Claim with no behaviour: 'AXION sets a hard limit for each action' and 'some actions never go above level 2'. The lab has only the `MAX_LAB_LEVEL` ceiling (prepares). There is no per-action limit table.
 - Not in this repo, so not checkable here: AXIS doctrine, FoodFlow product status and starting scores (AXION SharePoint and code outside this repo).
 - Orientation status: complete for the visible prose and script data. The strategic matrix is section 11.
+
+## 13. Loop 29: value-paper figures checked against the cited articles
+- All 16 cited articles carry the key figure or fact the paper gives them. The paper's own caveats (company-reported, undated, no baseline, 'company claims') match what the articles say.
+- Limits: presence of figures and facts, not a line-by-line reading of every quotation. The Anil Thawani NetSuite quote and the OnlineMedEd case study are not among the cited links and remain unsourced.

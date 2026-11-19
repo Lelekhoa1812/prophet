@@ -109,3 +109,4 @@
 - Loop 26: read the value paper's script and checked its 16 cited URLs (13 resolve, 3 blocked). Claims in the page are not verified against the sources. Recorded in GOAL_AUDIT section 10.
 - Loop 27: consolidated the strategic-promise matrix into GOAL_AUDIT section 11; every referenced code path confirmed present. No code change.
 - Loop 28: full visible prose of the value paper read. Two claims with no behaviour recorded (automatic demotion; per-action hard limits). No code change.
+- Loop 29: checked the 16 cited articles for their key figures. All 16 carry them. Two quotations (Anil Thawani, OnlineMedEd) remain unsourced. Recorded in GOAL_EVIDENCE and GOAL_AUDIT section 13.
