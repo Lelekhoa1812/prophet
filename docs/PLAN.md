@@ -52,6 +52,21 @@ Audit findings:
 - Shortfall misses are mostly routine stockouts: planted shocks explain less than half, and the catch rate is 26% without a nearby shock. Margin is not the driver (10 to 30% margins catch at similar rates).
 - Residual: the weekly charts on shortfall and freshness cards still start at the partly known week. Needs the same fix as the Explorer.
 
+## Round 4: tenant-ready redesign (19 Nov, later)
+
+Liam's brief: this will be deployed to any Axion client, so review the whole flow, forecasting pipeline and logic; be advanced and AI-native, not rigid, not inaccurate. Evidence and target design are in `docs/DESIGN_REVIEW.md`.
+
+Decisions:
+- **Alert policy: one score, one budget.** Alerts are ranked by expected dollars. A tenant states the cost of reviewing an alert, the share of at-risk dollars a reviewed alert usually saves, and alerts per owner per morning. The score floor is review cost divided by effectiveness; the rest goes to a digest. Order-entry stops are exempt. Built in `src/lab/policy/alerts.py`.
+- **Demand basis: expectation from the whole forecast range.** Expiry and shortfall use sampled demand paths (weeks lightly correlated, weekday pattern applied), not the median. The median stays as the typical value shown. Built in `src/lab/engine/distribution.py`, used by the shortfall and freshness agents.
+- **Model strategy: model-agnostic adapter with per-series routing.** `src/lab/engine/models.py`: TimesFM, TSB (lumpy demand), moving average, seasonal, ensemble, and a router by series class (short, intermittent, steady). A challenger replaces the default only on a clear backtest win. A licence fallback exists for production tenants.
+- **Rollout guardrails (all four).** Readiness backtest before an agent turns on; shadow mode for the first 14 days; learning loop that adjusts agent weights within bounds with a visible log; drift check on coverage and calibration by volume class. Built in `src/lab/policy/rollout.py`, with API endpoints `/api/tenant`, `/api/readiness`, `/api/drift`, `/api/tenant/learn`.
+
+Results on the four-year twin (method demo, not client results):
+- Routing: TimesFM wins both classes. Pinball loss, steady series: TimesFM 0.114, TSB 0.130, ma8 0.136. Lumpy series: TimesFM 0.341, TSB 0.348. The best free model costs about 14% accuracy on steady series and 2% on lumpy ones. That is the price of removing the licence risk.
+- Drift check on the latest eight origins: 10-90 range covers 78 to 81% of actuals in every volume class; 47 to 55% of actuals fall at or below the median. A first version flagged small sellers on unit bias and was wrong (lumpy demand has mean above median), so the check now tests calibration.
+- Shortfall with the new maths and the old gates ($150, 55%): 2,462 alerts, 38.8% of stockouts caught, 47.4% precision. The spread of a window sum is narrower than the old scaling assumed, so the old thresholds are now too strict. With $50 and 85%: 3,197 alerts, 54.9% caught, 70.0% of dollars, 52.6% precision (old maths: 2,661 alerts, 52.6%, 66.9%, 56.9%).
+
 ## Open questions
 
 - **O1 (resolved 19 Nov). Staging database** is STAGING_TENANT_DATABASE_URL in foodflow/axis/env3.local. Data depth: about 8 weeks of orders (delivery 14 Sep to 6 Nov 2026), so seasonality cannot be tested yet. Connection uses the owner role with a read-only session. Liam chose not to create a dedicated read-only role. Original note: The `.env` files hold `REPORTING_DATABASE_URL` and `TENANT_DATABASE_URL`. Their hosts are not labelled staging or production, so the lab will not read them until confirmed.

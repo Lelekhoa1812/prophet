@@ -170,12 +170,17 @@ def drift_report(ds: str, as_of: str | None = None, origins: int = 8, horizon: i
             continue
         a = np.stack(d["a"]); q = np.stack(d["q"])
         cov = metrics.coverage(a, q); b = metrics.bias(a, q[..., 4]); pb = metrics.pinball(a, q)
+        # Bugs vs Fixes. Bug: flagging a median that sits below total units called small sellers drifted, but lumpy
+        # demand always has mean above median, so a unit-bias test fires on a healthy model. Fix: test calibration
+        # (share of actuals at or below the median, and 10-90 coverage); keep unit bias as information only.
+        below = float((a <= q[..., 4]).mean())
         flags = []
         if cov < 0.70 or cov > 0.90:
             flags.append(f"10-90 range covered {100 * cov:.0f}% of actuals (target 80%)")
-        if abs(b) > 0.15:
-            flags.append(f"median is {100 * b:+.0f}% off")
-        table[c] = {"series_origins": int(len(a)), "coverage_10_90": round(cov, 3), "median_bias": round(b, 3), "pinball": round(pb, 3),
+        if below < 0.40 or below > 0.60:
+            flags.append(f"{100 * below:.0f}% of actuals fell at or below the median (target 50%)")
+        table[c] = {"series_origins": int(len(a)), "coverage_10_90": round(cov, 3), "share_below_median": round(below, 3),
+                    "median_bias": round(b, 3), "pinball": round(pb, 3),
                     "status": "drift" if flags else "ok", "flags": flags}
     status = "drift" if any(v["status"] == "drift" for v in table.values()) else "ok"
     return {"dataset": ds, "origins": used, "horizon_weeks": horizon, "status": status, "by_volume_class": table,
