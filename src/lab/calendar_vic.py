@@ -15,6 +15,12 @@ import pandas as pd
 
 # Victorian public holidays (approximate, 2024 to 2026).
 PUBLIC_HOLIDAYS = {
+    "2022-11-01": "Melbourne Cup", "2022-12-26": "Boxing Day", "2022-12-27": "Christmas Day (observed)",
+    "2023-01-01": "New Year's Day", "2023-01-02": "New Year's Day (observed)", "2023-01-26": "Australia Day",
+    "2023-03-13": "Labour Day", "2023-04-07": "Good Friday", "2023-04-10": "Easter Monday", "2023-04-25": "Anzac Day",
+    "2023-06-12": "King's Birthday", "2023-11-07": "Melbourne Cup", "2023-12-25": "Christmas Day", "2023-12-26": "Boxing Day",
+    "2022-01-01": "New Year's Day", "2022-01-26": "Australia Day", "2022-03-14": "Labour Day", "2022-04-15": "Good Friday",
+    "2022-04-18": "Easter Monday", "2022-04-25": "Anzac Day", "2022-06-13": "King's Birthday",
     "2024-11-05": "Melbourne Cup", "2024-12-25": "Christmas Day", "2024-12-26": "Boxing Day",
     "2025-01-01": "New Year's Day", "2025-01-27": "Australia Day (observed)", "2025-03-10": "Labour Day",
     "2025-04-18": "Good Friday", "2025-04-21": "Easter Monday", "2025-04-25": "Anzac Day",
@@ -24,10 +30,12 @@ PUBLIC_HOLIDAYS = {
     "2026-04-25": "Anzac Day", "2026-06-08": "King's Birthday", "2026-11-03": "Melbourne Cup",
     "2026-12-25": "Christmas Day", "2026-12-28": "Boxing Day (observed)",
 }
-EASTER_SUNDAY = {2024: "2024-03-31", 2025: "2025-04-20", 2026: "2026-04-05", 2027: "2027-03-28"}
+EASTER_SUNDAY = {2022: "2022-04-17", 2023: "2023-04-09", 2024: "2024-03-31", 2025: "2025-04-20", 2026: "2026-04-05", 2027: "2027-03-28"}
 
 # Victorian school holidays (approximate windows).
-SCHOOL_HOLIDAYS = [
+SCHOOL_HOLIDAYS = [  # 2022 and 2023 windows are approximate, as are the rest
+    ("2022-04-02", "2022-04-17"), ("2022-07-02", "2022-07-17"), ("2022-09-24", "2022-10-09"), ("2022-12-17", "2023-01-29"),
+    ("2023-04-01", "2023-04-16"), ("2023-06-24", "2023-07-09"), ("2023-09-23", "2023-10-08"), ("2023-12-23", "2024-01-28"),
     ("2024-12-21", "2025-01-28"), ("2025-04-05", "2025-04-21"), ("2025-07-05", "2025-07-20"),
     ("2025-09-20", "2025-10-05"), ("2025-12-20", "2026-01-27"), ("2026-04-04", "2026-04-19"),
     ("2026-07-04", "2026-07-19"), ("2026-09-19", "2026-10-04"),

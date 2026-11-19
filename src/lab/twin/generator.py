@@ -1,4 +1,4 @@
-"""Synthetic twin: a calibrated meat-and-fresh wholesaler with 24 months of history and labelled shocks.
+"""Synthetic twin: a calibrated meat-and-fresh wholesaler with four years of history and labelled shocks.
 
 Why: staging holds ~8 weeks, so seasonality, promotions and 'did the alert catch a real problem'
 cannot be tested on it. The twin's demand is drawn from a known process, shocks are injected on
@@ -38,14 +38,16 @@ SEGMENTS = {
 }
 
 # Calendar effects by segment: multiplier on demand on each kind of day (1.0 = no effect).
+# SYNTHETIC ASSUMPTIONS, not measured trade data. Round 3 (19 Nov) raised the Christmas, Easter and Cup effects so
+# that a known event is visible in a 4-week forecast window. Replace with real history before any client use.
 # Logic: applied as prod(1 + (effect - 1) * flag), so overlapping days (Cup day is also a public holiday) stack.
 CAL_EFFECTS = {
     #              public  xmas_run_up  easter_run_up  cup_day
-    "Restaurant":  (0.55,   1.10,        1.00,          0.80),
-    "Butcher":     (0.35,   1.45,        1.50,          1.00),
-    "Supermarket": (0.60,   1.30,        1.25,          1.00),
+    "Restaurant":  (0.40,   1.20,        1.05,          0.70),
+    "Butcher":     (0.30,   1.90,        1.80,          1.00),
+    "Supermarket": (0.50,   1.60,        1.50,          1.00),
     "Institution": (0.20,   1.00,        1.00,          1.00),
-    "Caterer":     (0.70,   1.30,        1.00,          1.80),
+    "Caterer":     (0.60,   1.50,        1.00,          2.00),
 }
 CAL_KEYS = ["public", "xmas_run_up", "easter_run_up", "cup_day"]
 
@@ -53,7 +55,7 @@ CAL_KEYS = ["public", "xmas_run_up", "easter_run_up", "cup_day"]
 @dataclass
 class TwinConfig:
     seed: int = 7
-    start: str = "2024-11-07"
+    start: str = "2022-11-01"
     end: str = "2026-11-06"
     n_products: int = 300
     n_customers: int = 250
@@ -123,7 +125,31 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
     })
     customers["code"] = customers.customer_id
     customers["display_name"] = customers.segment + " account " + customers.code
-    customers["created_on"] = pd.Timestamp(cfg.start).date()
+    # Accounts join over time: 30% start after the first ~2 months, spread over the first three years.
+    created_idx = np.zeros(cfg.n_customers, dtype=int)
+    late = rng.choice(cfg.n_customers, int(cfg.n_customers * 0.30), replace=False)
+    created_idx[late] = rng.integers(60, int(nd * 0.75), len(late))
+    customers["created_on"] = [days[i].date() for i in created_idx]
+
+    # Product lifecycle: 8% launch during the first 60% of the span, 4% are discontinued in the last 30%.
+    launch_idx = np.zeros(cfg.n_products, dtype=int)
+    retire_idx = np.full(cfg.n_products, nd)
+    new = rng.choice(cfg.n_products, int(cfg.n_products * 0.08), replace=False)
+    launch_idx[new] = rng.integers(60, int(nd * 0.6), len(new))
+    old = rng.choice(np.setdiff1d(np.arange(cfg.n_products), new), int(cfg.n_products * 0.04), replace=False)
+    retire_idx[old] = rng.integers(int(nd * 0.7), nd - 30, len(old))
+    day_ix = np.arange(nd)[None, :]
+    pmask = ((day_ix >= launch_idx[:, None]) & (day_ix < retire_idx[:, None])).astype(float)
+
+    # Cost drift: monthly random walk, mild inflation, clipped to a band of 0.85x to 1.35x of the starting cost.
+    months = nd // 30 + 2
+    logd = np.cumsum(rng.normal(0.004, 0.012, (cfg.n_products, months)), axis=1)
+    drift_m = np.clip(np.exp(logd), 0.85, 1.35)
+    month_ix = np.minimum(((days - days[0]).days // 30).values, months - 1)
+    drift = drift_m[:, month_ix]                                          # (products, days)
+
+    # Shock counts scale with the span, so events per year stay the same as the 2-year twin.
+    kscale = max(1.0, nd / 730.0)
 
     suppliers = pd.DataFrame({"supplier_id": [f"S-{i + 1:04d}" for i in range(cfg.n_suppliers)]})
     suppliers["code"] = suppliers.supplier_id
@@ -175,10 +201,23 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
     promo_pairs = promo[pairs.pi.values]
     pp_pairs = promo_price[pairs.pi.values]
 
-    mean = pairs.rate.values[:, None] * dow_f * season * trend * school * cal_mult * promo_pairs
-    cost_mult = np.ones((cfg.n_products, nd))
+    # Category calendar: which holidays move which lines (Easter lamb and seafood, Christmas pork, Australia Day sausages).
+    CAT_CAL = {"SEAFOOD": {"easter_run_up": 1.5, "xmas_run_up": 1.3}, "LAMB": {"easter_run_up": 1.6},
+               "PORK": {"xmas_run_up": 1.5}, "BOX MEAT": {"xmas_run_up": 1.2}, "SAUSAGES": {"public": 1.3},
+               "BEEF": {"public": 1.2}, "PRODUCE": {"xmas_run_up": 1.2}}
+    cat_cal = np.ones((cfg.n_products, nd))
+    for pi_, cat_ in enumerate(pc):
+        for key, f_ in CAT_CAL.get(cat_, {}).items():
+            cat_cal[pi_] *= 1.0 + (f_ - 1.0) * cf[key]
+    # Accounts only buy after they join.
+    joined = (np.arange(nd)[None, :] >= created_idx[pairs.ci.values][:, None]).astype(float)
+
+    mean = (pairs.rate.values[:, None] * dow_f * season * trend * school * cal_mult * promo_pairs
+            * pmask[pairs.pi.values] * cat_cal[pairs.pi.values] * joined)
+    cost_mult = drift.copy()
     lead_extra = np.zeros((cfg.n_suppliers, nd))
-    price_arr = pairs.price.values[:, None] * pp_pairs * np.ones((1, nd))
+    # Sell price follows 70% of the cost drift (pass-through), so margins move but do not collapse.
+    price_arr = pairs.price.values[:, None] * pp_pairs * (1.0 + 0.7 * (drift[pairs.pi.values] - 1.0))
     forced_orders: list[dict] = []
 
     def D(i):
@@ -193,14 +232,14 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
             return int(rng.integers(lo, nd - span - 14))
 
         # demand surge
-        for _ in range(10):
+        for _ in range(int(round(10 * kscale))):
             pi = int(rng.choice(cfg.n_products, p=pw)); s0 = pick_day(span=8); ln = int(rng.integers(4, 9))
             mult = float(rng.uniform(1.8, 3.2))
             mean[pairs.pi.values == pi, s0:s0 + ln] *= mult
             truth.append(dict(kind="DEMAND_SURGE", entity_type="product", entity_id=products.product_id[pi],
                               start=D(s0), end=D(s0 + ln), magnitude=mult, note=f"Unplanned surge x{mult:.1f}"))
         # demand collapse
-        for _ in range(5):
+        for _ in range(int(round(5 * kscale))):
             pi = int(rng.choice(cfg.n_products, p=pw)); s0 = pick_day(span=14); ln = int(rng.integers(7, 15))
             mult = float(rng.uniform(0.15, 0.4))
             mean[pairs.pi.values == pi, s0:s0 + ln] *= mult
@@ -208,33 +247,33 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
                               start=D(s0), end=D(s0 + ln), magnitude=mult, note=f"Demand falls to x{mult:.2f}"))
         # lost customer: stops ordering entirely
         big = customers.sort_values("scale", ascending=False).index[:40].values
-        for ci in rng.choice(big, 6, replace=False):
+        for ci in rng.choice(big, min(len(big), int(round(6 * kscale))), replace=False):
             s0 = pick_day(span=0)
             mean[pairs.ci.values == ci, s0:] *= 0.0
             truth.append(dict(kind="CUSTOMER_LOST", entity_type="customer", entity_id=customers.customer_id[ci],
                               start=D(s0), end=D(nd - 1), magnitude=0.0, note="Customer stops ordering"))
         # customer slowdown (churn signal before loss)
-        for ci in rng.choice(big, 6, replace=False):
+        for ci in rng.choice(big, min(len(big), int(round(6 * kscale))), replace=False):
             s0 = pick_day(span=21); ln = int(rng.integers(14, 28))
             mean[pairs.ci.values == ci, s0:s0 + ln] *= 0.35
             truth.append(dict(kind="CUSTOMER_SLOWDOWN", entity_type="customer", entity_id=customers.customer_id[ci],
                               start=D(s0), end=D(s0 + ln), magnitude=0.35, note="Orders drop to ~35% for weeks"))
         # supplier delay
-        for _ in range(6):
+        for _ in range(int(round(6 * kscale))):
             si = int(rng.integers(0, cfg.n_suppliers)); s0 = pick_day(span=8); ln = int(rng.integers(3, 8))
             extra = int(rng.integers(3, 7))
             lead_extra[si, s0:s0 + ln] += extra
             truth.append(dict(kind="SUPPLIER_DELAY", entity_type="supplier", entity_id=suppliers.supplier_id[si],
                               start=D(s0), end=D(s0 + ln), magnitude=extra, note=f"Deliveries {extra} days late"))
         # supplier price spike, sell price not updated -> margin erosion
-        for _ in range(8):
+        for _ in range(int(round(8 * kscale))):
             pi = int(rng.choice(cfg.n_products, p=pw)); s0 = pick_day(span=30); ln = int(rng.integers(14, 45))
             pct = float(rng.uniform(0.10, 0.28))
             cost_mult[pi, s0:] *= (1 + pct)       # persists, like a real price rise
             truth.append(dict(kind="COST_SPIKE", entity_type="product", entity_id=products.product_id[pi],
                               start=D(s0), end=D(nd - 1), magnitude=pct, note=f"Supplier cost +{pct * 100:.0f}%, sell price unchanged"))
         # sell price below floor for one customer-product (keying/contract error)
-        for _ in range(8):
+        for _ in range(int(round(8 * kscale))):
             r = int(rng.integers(0, npairs)); s0 = pick_day(span=20); ln = int(rng.integers(5, 20))
             price_arr[r, s0:s0 + ln] *= float(rng.uniform(0.62, 0.8))
             truth.append(dict(kind="PRICE_BELOW_FLOOR", entity_type="pair",
@@ -242,7 +281,7 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
                               start=D(s0), end=D(s0 + ln), magnitude=0.7, note="Sell price keyed far below normal"))
         # over-buy: a PO of ~3x normal cover arrives for a perishable line -> expiry risk
         perish = np.where(shelf <= 14)[0]
-        for _ in range(8):
+        for _ in range(int(round(8 * kscale))):
             pi = int(rng.choice(perish)); s0 = pick_day(span=3)
             forced_orders.append(dict(day=s0, product_idx=int(pi), mult=float(rng.uniform(3.0, 5.0))))
             truth.append(dict(kind="OVERBUY", entity_type="product", entity_id=products.product_id[pi],
@@ -262,13 +301,16 @@ def build_world(cfg: TwinConfig | None = None) -> TwinWorld:
     if cfg.shocks:
         scored_from = int(nd * 0.55)
         hits = np.argwhere(demand[:, scored_from:] > 0)
-        for r, c in hits[rng.choice(len(hits), 10, replace=False)]:
+        for r, c in hits[rng.choice(len(hits), min(len(hits), int(round(10 * kscale))), replace=False)]:
             c += scored_from
             f = float(rng.choice([10, 10, 100]))
             demand[r, c] *= f
             truth.append(dict(kind="KEYING_ERROR", entity_type="pair",
                               entity_id=f"{customers.customer_id[pairs.ci[r]]}|{products.product_id[pairs.pi[r]]}",
                               start=D(c), end=D(c), magnitude=f, note=f"Quantity keyed x{int(f)}"))
+
+    # Bounds: stacked cost spikes on top of drift are capped so no product's cost leaves 0.85x to 1.45x of its start.
+    cost_mult = np.clip(cost_mult, 0.85, 1.45)
 
     for i, t in enumerate(sorted(truth, key=lambda t: t["start"])):
         t["event_id"] = f"E-{i + 1:03d}"

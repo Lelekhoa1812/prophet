@@ -8,7 +8,7 @@ import { money, pct } from "@/lib/utils";
 
 // Presets for the history the model sees (periods = weeks or days). "All" caps at the context the model uses.
 const HIST_PRESETS: Record<"W" | "D", { v: number; l: string }[]> = {
-  W: [{ v: 13, l: "3 months" }, { v: 26, l: "6 months" }, { v: 52, l: "1 year" }, { v: 104, l: "2 years" }, { v: 400, l: "All" }],
+  W: [{ v: 13, l: "3 months" }, { v: 26, l: "6 months" }, { v: 52, l: "1 year" }, { v: 104, l: "2 years" }, { v: 208, l: "4 years" }, { v: 400, l: "All" }],
   D: [{ v: 28, l: "4 weeks" }, { v: 56, l: "8 weeks" }, { v: 90, l: "3 months" }, { v: 180, l: "6 months" }, { v: 365, l: "1 year" }],
 };
 const HORIZON_MAX = { W: 12, D: 28 } as const;

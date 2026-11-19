@@ -54,7 +54,7 @@ export function Overview() {
             <h2 className="text-base font-semibold">What this rests on</h2>
             <ul className="space-y-2 text-sm">
               <li><span className="font-medium">Model:</span> TimesFM 3.0 with quantile bands, run on Apple silicon (MLX).</li>
-              <li><span className="font-medium">Test data:</span> {isTwin ? "a synthetic twin of a meat wholesaler, 24 months, with known shocks labelled. Its results show whether the method catches real problems." : "real staging orders, about eight weeks. Good for plumbing, too short to prove seasonality."}</li>
+              <li><span className="font-medium">Test data:</span> {isTwin ? "a synthetic twin of a meat wholesaler, four years (Nov 2022 to Nov 2026), with accounts and products joining and leaving, known shocks labelled. Its results show whether the method catches real problems." : "real staging orders, about eight weeks. Good for plumbing, too short to prove seasonality."}</li>
               <li><span className="font-medium">Against the basics:</span> forecasts are scored against simple moving averages on the Proof page, so you can see where TimesFM does and does not help.</li>
               <li><span className="font-medium">Licence:</span> TimesFM 3.0 weights are non-commercial. No client production use until that is resolved.</li>
             </ul>
