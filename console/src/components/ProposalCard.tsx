@@ -117,7 +117,7 @@ export function ProposalCard({ p, onDecided, compact = false }: { p: Proposal; o
             <Button variant="cta" size="sm" onClick={() => decide("approve")} loading={busy === "approve"} disabled={!!busy}><Check className="h-3.5 w-3.5" />Approve</Button>
             <Button variant="outline" size="sm" onClick={() => decide("adjust")} loading={busy === "adjust"} disabled={!!busy}><Pencil className="h-3.5 w-3.5" />Adjust</Button>
             <DismissMenu onPick={(r) => decide("dismiss", r)} disabled={!!busy} />
-            <Link to={`/proposals/${p.proposal_id}`} className="ml-auto inline-flex min-h-6 min-w-6 items-center gap-1 py-0.5 text-sm text-primary hover:underline">Open <ChevronRight className="h-3.5 w-3.5" /></Link>
+            <Link to={`/proposals/${p.proposal_id}`} aria-label={`Open proposal: ${text(p.title)}`} className="ml-auto inline-flex min-h-6 min-w-6 items-center gap-1 py-0.5 text-sm text-primary hover:underline">Open <ChevronRight className="h-3.5 w-3.5" /></Link>
           </div>
         )}
         {err && <p role="alert" className="text-xs text-red-600">{err}</p>}

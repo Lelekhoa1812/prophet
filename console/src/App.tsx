@@ -39,6 +39,8 @@ export default function App() {
   const pickLens = (k: Lens) => { setLens(k); navigate(DEFAULT_PATH[k]); };
   return (
     <div className="min-h-screen">
+      {/* Skip link: without it a keyboard user passes 11 header stops before the first alert (WCAG 2.4.1). */}
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground">Skip to content</a>
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 lg:px-6">
           <div className="flex items-center gap-2.5">
@@ -82,7 +84,7 @@ export default function App() {
           ))}
         </div>
       </header>
-      <main className="mx-auto max-w-[1400px] px-4 py-6 lg:px-6">
+      <main id="main" tabIndex={-1} className="mx-auto max-w-[1400px] px-4 py-6 outline-none lg:px-6">
         {metaError && <div className="mb-4"><InlineAlert title="The lab API is not reachable">Start it with <code className="font-mono">uvicorn lab.api.main:app --port 8000</code> from the project folder. ({metaError})</InlineAlert></div>}
         {meta && !meta.model.loaded && <p className="mb-4 text-xs text-muted-foreground">The TimesFM model loads on first forecast (about 80 seconds). Pages that only read stored results are unaffected.</p>}
         {meta && <LicenceBanner licence={meta.model.licence} />}
