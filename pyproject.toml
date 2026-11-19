@@ -21,7 +21,7 @@ build-backend = "hatchling.build"
 packages = ["src/lab"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -14,6 +14,8 @@ c = TestClient(main.app, base_url="http://localhost:8000")
 @pytest.fixture
 def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "LAB_DB", tmp_path / "lab.duckdb")
+    monkeypatch.setattr(main, "_available", lambda: ["twin"])      # no dataset files needed (CI has none)
+    monkeypatch.setattr(main, "_scorecard", lambda ds: {})
     con = store.open_lab()
     con.execute("insert into proposals (proposal_id, dataset, agent, as_of, entity_id, status, dedupe_key, created_at) values ('PR-1','twin','shortfall','2026-01-05','P-1','open','k',?)", [datetime.now(timezone.utc)])
     con.close()

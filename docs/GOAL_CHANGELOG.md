@@ -35,3 +35,9 @@
 - Test: suite 66 passed (was 60). Live: browser same-origin POST 200.
 - Note: the Learn endpoint has no console button (loop 4 residual about UI copy withdrawn).
 - Next: B9 CI, or B2 generator censoring option.
+
+## Loop 6, 19 Nov 2026
+- Gap: no CI; tests silently depended on local `data/`.
+- Change: `.github/workflows/tests.yml` (installs everything except `timesfm[mlx]`, package with `--no-deps`); `httpx` in dev extras; one test no longer needs the twin.
+- Test: clean venv with an empty `data/`: 65 passed, 1 skipped (the twin leakage test). Full local: 66 passed.
+- Residual: CI cannot exercise agents or the leakage guard until a small seeded twin fixture exists.
