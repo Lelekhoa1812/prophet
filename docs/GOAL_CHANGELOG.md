@@ -73,3 +73,7 @@
 - Gap (S4): read-only staging was a client promise. Audit found the login can write everywhere.
 - Change: `check_select` (raises, single statement, write words refused), READ ONLY transactions, `role_audit` stored in dataset meta, exposed in `/api/meta`, console warning. Tests: 9 new, suite passes.
 - Residual: the role itself is unchanged (needs a reader login, B12). Existing safeguards limit the lab, not a mistaken or malicious caller with these credentials.
+
+## Loop 13, 19 Nov 2026
+- Hypothesis: alert dollar claims are miscalibrated and recalibrating helps. Result: per-alert claims are close; shown-alert shortfall gap is selection; recalibration gives -0.1% held-out net. Rejected, no code change. Next lever: problem-level (de-duplicated) dollars for executive totals.
+- Loop 12 decision recorded: Liam accepted the staging role risk for now (B12).
