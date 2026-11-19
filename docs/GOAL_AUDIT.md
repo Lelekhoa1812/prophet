@@ -30,10 +30,14 @@ Hidden in the HTML and not reviewed as functionality: the interactive autonomy d
 | S2 | API has no authentication; `GET /api/reveal` returns real names; every route is open to any local page (CSRF on POST, DNS rebinding on GET) | C: `api/main.py` has no middleware, no Origin or Host check | High before any shared deployment, low on a single-user laptop | Fixed in loop 2 for cross-site and rebound-host attacks; still no login, so not for a shared deployment |
 | S3 | `decided_by` is client-supplied text, so decision audit identity is spoofable | C: `decide()` | Medium | Open |
 | S4 | Read-only staging relies on a session option plus hard-coded SELECT; `assert` is stripped under `python -O`; no proof the DB role itself lacks write rights | C: `source/staging.py` | Medium | Open (needs DB role check; staging access is Liam's decision) |
-| S5 | Jobs live in process memory: a restart loses progress and results; no cancel | C: `api/jobs.py` | Medium (lab convenience) | Open |
+| S5 | Jobs lived in process memory: a restart lost progress and results | C | Medium | Fixed in loop 5 (file per job, interrupted marking); still no cancel, no resume |
 | S6 | Pickle caches under `data/` are loaded without integrity checks | C | Low (local, git-ignored); high if the directory is ever shared | Open |
 | S8 | Learning re-applied the full decision history on every call (weights ratcheted to bound with no new evidence); a changed decision left a stale suppression; stats double-counted | T: 2 of 5 learning tests failed before; 3 integrity tests | High for the 'learns from corrections' claim | Fixed in loop 4 |
 | S7 | Unknown dataset names return 500 on several routes instead of 404 | C | Low | Open |
+
+## 3b. Haiku adversarial review of loops 1-3 (reconciled, loop 5)
+Fixed: non-atomic cache write and corrupt-file crash (now temp file + rename, bad file recomputed); guard treated every local port as same origin (now Origin must equal the request's own host:port, and same-site fetches are refused); env host list ignored ports and schemes (normalised); `testserver` removed from the allow-list; weak guard tests tightened.
+Accepted, recorded: fingerprint ignores model parameters (names, routing, licences only; a tuned model needs a new name); customer cache does not compare customer ids; `GET /api/forecast` writes cache files so a cross-site image could trigger work; the leakage test skips where `data/` is absent and the repo has no CI at all (B9); a concurrent `set_router` could mislabel one entry (no caller exists).
 
 ## 4. Falsified hypotheses and validity limits
 - Twin demand censoring (loop 4, haiku sub-agent, reconciled with the code): history = order qty = true demand on the twin (5,465,171 both; fulfilled is 7.3% lower); top-stockout products ratio 0.998 of truth. This is because the generator never suppresses orders during stockouts, so the twin CANNOT test censoring. Whether real customers stop ordering when out of stock is unknown; staging (about 8 weeks) cannot tell either.

@@ -38,7 +38,7 @@ app = FastAPI(title="TimesFM ERP lab", version="0.1.0")
 # as coming from another site (Origin not loopback, or Sec-Fetch-Site cross-site). Requests with no Origin (curl, tests,
 # the same-origin console) pass. TIMESFM_ERP_ALLOWED_HOSTS adds hostnames for a deliberate shared deployment, which
 # still needs real authentication before it holds client data.
-_LOOPBACK = {"localhost", "127.0.0.1", "[::1]", "::1", "testserver"}
+_LOOPBACK = {"localhost", "127.0.0.1", "[::1]", "::1"}
 
 
 def _hostname(value: str) -> str:
@@ -46,16 +46,24 @@ def _hostname(value: str) -> str:
     return (urlsplit(value if "//" in value else f"//{value}").hostname or "").lower()
 
 
+def _netloc(value: str) -> str:
+    from urllib.parse import urlsplit
+    return urlsplit(value if "//" in value else f"//{value}").netloc.lower()
+
+
 @app.middleware("http")
 async def _same_origin_guard(request, call_next):
     from fastapi.responses import JSONResponse
     import os
-    allowed = _LOOPBACK | {h.strip().lower() for h in os.environ.get("TIMESFM_ERP_ALLOWED_HOSTS", "").split(",") if h.strip()}
-    if _hostname(request.headers.get("host", "")) not in allowed:
+    extra = {_hostname(h) for h in os.environ.get("TIMESFM_ERP_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    allowed = _LOOPBACK | extra
+    host = request.headers.get("host", "")
+    if _hostname(host) not in allowed:
         return JSONResponse({"detail": "host not allowed"}, status_code=400)
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         origin = request.headers.get("origin")
-        if (origin and _hostname(origin) not in allowed) or request.headers.get("sec-fetch-site") == "cross-site":
+        # Same origin means same host AND port as the request itself. Another page on another local port is another site.
+        if (origin and _netloc(origin) != _netloc(host)) or request.headers.get("sec-fetch-site") in ("cross-site", "same-site"):
             return JSONResponse({"detail": "cross-site write refused"}, status_code=403)
     return await call_next(request)
 _lock = threading.Lock()

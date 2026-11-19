@@ -7,9 +7,10 @@
 | B3 | Leakage in daily paths | End-to-end truncation test across agents | Done loop 3: no leak found; open caveats: same-day order entry time, staging cost fallback |
 | B4 | Repeat decisions / repeated learning | tests | Done loop 4 |
 | B5 | Dollars-protected what-if (Liam's open decision) with honest labels: expected, not observed | Replay with a stated action-acceptance rate; output marked Synthetic replay | Awaiting decision |
-| B6 | Durable jobs (persist to lab DB, mark interrupted on restart) | Kill-and-restart test shows status `interrupted` | Not started |
+| B6 | Durable jobs | restart test | Done loop 5 (file per job) |
+| B9 | No CI exists: tests that need the twin never run off this laptop; add a CI workflow for the fast suite and a tiny seeded twin fixture | Workflow runs 66 tests green on a clean checkout | Not started |
 | B7 | Dismissal lessons with per-lesson regression test and owner approval for wide scope | Lesson create/undo/replay test | Not started |
 | B8 | Calendar uplift | no gain on twin earlier; needs real multi-year history | Blocked on data |
 
 ## Resume instruction
-Start at B2 generator option, then B6. Run `.venv/bin/python -m pytest -q` (60 pass after loop 4, 17 s). Write the failing test first.
+Start at B9 or the B2 generator option. Run `.venv/bin/python -m pytest -q` (66 pass after loop 5, 17 s). Write the failing test first.

@@ -71,3 +71,12 @@ def test_future_data_does_not_change_the_forecast():
     b = ForecastService(world(weeks=40, bump_from="2026-09-07")).weekly(AS_OF, 4)   # everything from as_of on differs
     assert np.array_equal(a["mat"], b["mat"])
     assert np.array_equal(a["fc"].q, b["fc"].q)
+
+
+def test_corrupt_or_truncated_cache_file_is_recomputed(tmp_path):
+    models.set_router(router(10))
+    fs = ForecastService(world()); median(fs)
+    f = next(tmp_path.glob("t_wk_*.pkl"))
+    f.write_bytes(f.read_bytes()[:20])                        # a write that died half way
+    assert median(ForecastService(world())) == pytest.approx(10.0)
+    assert not list(tmp_path.glob(".*.tmp"))

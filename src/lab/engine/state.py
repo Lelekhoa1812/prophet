@@ -1,6 +1,7 @@
 """Business state at a point in time: demand history, stock, pipeline, prices. Cached per dataset."""
 from __future__ import annotations
 
+import os
 import pickle
 from dataclasses import dataclass
 from datetime import date
@@ -122,14 +123,21 @@ def cached(path: Path, mat: np.ndarray, compute) -> dict:
     existed), and are still accepted when their history matches, so the existing cache stays usable.
     """
     fp = get_forecaster().fingerprint()
+    res = None
     if path.exists():
-        res = pickle.loads(path.read_bytes())
+        try:
+            res = pickle.loads(path.read_bytes())
+        except Exception:                      # truncated or corrupt file from an interrupted write: recompute
+            res = None
+    if res is not None:
         same_model = res.get("fp", _legacy_fp()) == fp
         if same_model and np.array_equal(res.get("mat"), mat, equal_nan=True):
             return res
     res = compute()
     res["fp"] = fp
-    path.write_bytes(pickle.dumps(res))
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")      # write then rename, so a killed process leaves no partial file
+    tmp.write_bytes(pickle.dumps(res))
+    os.replace(tmp, path)
     return res
 
 

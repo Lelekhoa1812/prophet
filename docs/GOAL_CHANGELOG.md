@@ -28,3 +28,10 @@
 - Test: suite 60 passed (was 55). Old test that looped on identical rows and called hitting the bound correct was rewritten.
 - Residual: the console's Learn button now often returns no changes; the UI text does not yet say why (candidate for a copy fix). Reviewer verdicts are still free-form `decided_by`.
 - Next: B2 generator option, B6 durable jobs.
+
+## Loop 5, 19 Nov 2026
+- Gaps: S5 jobs lost on restart; haiku adversarial review findings (non-atomic cache write, guard accepted other local ports, env host parsing).
+- Change: `api/jobs.py` persists jobs to `data/jobs`, marks running ones interrupted on start, writes the final state to disk before exposing it; cache writes atomic and corrupt files recomputed; guard tightened.
+- Test: suite 66 passed (was 60). Live: browser same-origin POST 200.
+- Note: the Learn endpoint has no console button (loop 4 residual about UI copy withdrawn).
+- Next: B9 CI, or B2 generator censoring option.
