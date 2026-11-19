@@ -9,9 +9,13 @@ from .generator import TwinConfig, TwinWorld, build_world
 from .supply import SimResult, simulate
 
 
-def order_lines_frame(world: TwinWorld, fill: np.ndarray) -> pd.DataFrame:
+def order_lines_frame(world: TwinWorld, fill: np.ndarray, censor: dict | None = None, outcomes: pd.DataFrame | None = None) -> pd.DataFrame:
     r, c = np.nonzero(world.demand)
     p = world.pairs
+    if censor:                                   # customers order less right after a stockout (twin/censor.py)
+        from .censor import censoring_mask
+        keep = censoring_mask(outcomes, list(world.products.product_id), world.days, p.pi.values[r], c, **censor)
+        r, c = r[keep], c[keep]
     pi = p.pi.values[r]; ci = p.ci.values[r]
     qty = world.demand[r, c]
     f = fill[pi, c]
@@ -34,7 +38,7 @@ def order_lines_frame(world: TwinWorld, fill: np.ndarray) -> pd.DataFrame:
                "short_qty", "unit_price", "unit_cost", "cancelled"]]
 
 
-def write_twin(world: TwinWorld, res: SimResult, name: str = "twin") -> dict:
+def write_twin(world: TwinWorld, res: SimResult, name: str = "twin", censor: dict | None = None) -> dict:
     con = open_dataset(name)
     for t in ["products", "customers", "suppliers", "order_lines", "lots", "stock_movements",
               "purchase_lines", "credits", "truth_events", "daily_outcomes", "truth_expected", "meta"]:
@@ -43,7 +47,7 @@ def write_twin(world: TwinWorld, res: SimResult, name: str = "twin") -> dict:
     P = P[["product_id", "code", "display_name", "category", "uom", "is_catch_weight", "shelf_life_days", "unit_cost", "unit_price"]]
     C = world.customers[["customer_id", "code", "display_name", "segment", "zone", "created_on"]]
     S = world.suppliers[["supplier_id", "code", "display_name"]]
-    ol = order_lines_frame(world, res.fill)
+    ol = order_lines_frame(world, res.fill, censor, res.outcomes)
     T = pd.DataFrame(world.truth).rename(columns={"start": "start_date", "end": "end_date"})
     T = T[["event_id", "kind", "entity_type", "entity_id", "start_date", "end_date", "magnitude", "note"]]
     frames = {"products": P, "customers": C, "suppliers": S, "order_lines": ol, "lots": res.lots,
@@ -59,21 +63,25 @@ def write_twin(world: TwinWorld, res: SimResult, name: str = "twin") -> dict:
         con.register("df_in", df)
         con.execute(f"INSERT INTO {tname} SELECT * FROM df_in")
         con.unregister("df_in")
-    con.execute("INSERT INTO meta VALUES ('source','Synthetic twin (calibrated on staging profile)'),"
+    src = "Synthetic twin (calibrated on staging profile)" + (f"; orders censored after stockouts {censor}" if censor else "")
+    con.execute("INSERT INTO meta VALUES ('source','" + src.replace("'", "''") + "'),"
                 f"('seed','{world.cfg.seed}'),('first_date','{world.days[0].date()}'),('last_date','{world.days[-1].date()}')")
     counts = {t: con.execute(f"select count(*) from {t}").fetchone()[0] for t in frames}
     con.close()
     return counts
 
 
-def main(seed: int = 7) -> dict:
-    world = build_world(TwinConfig(seed=seed))
+def main(seed: int = 7, name: str = "twin", censor: dict | None = None, cfg: TwinConfig | None = None) -> dict:
+    world = build_world(cfg or TwinConfig(seed=seed))
     res = simulate(world)
-    counts = write_twin(world, res)
+    counts = write_twin(world, res, name, censor)
     counts["waste_value"] = round(res.waste_value)
     counts["stockout_value"] = round(res.stockout_value)
     return counts
 
 
 if __name__ == "__main__":
-    print(main())
+    import sys
+    # python -m lab.twin.build            -> the base twin
+    # python -m lab.twin.build censored   -> twin_censored: same world and supply, orders drop after stockouts
+    print(main(name="twin_censored", censor={"p_drop": 0.4, "lag_days": 2}) if sys.argv[1:] == ["censored"] else main())

@@ -42,3 +42,9 @@
 - Test: clean venv with an empty `data/`: 65 passed, 1 skipped (the twin leakage test). Full local: 66 passed.
 - Residual: CI cannot exercise agents or the leakage guard until a small seeded twin fixture exists.
 - Remote: GitHub Actions run 44517852886 on 408956e passed (fast job, Ubuntu, no model, no data).
+
+## Loop 7, 19 Nov 2026 (user chose: separate censored twin, then CI mini-twin, what-if, audit identity)
+- Gap (B2): the twin cannot test stockout censoring (orders = latent demand exactly).
+- Change: `twin/censor.py`, `build.py` option, dataset `twin_censored` (python -m lab.twin.build censored). Base twin untouched.
+- Result: censoring at an assumed p=0.4 lowers recorded orders 2.7% and the median forecast a further 4.8 points in the worst-stockout fifth; replay on `twin_censored` pending (see below).
+- Gap (B9 part 2): CI could not run agents. Change: `tests/test_no_future_leak_mini.py` builds a 60-product seeded twin in the test with a cheap router (no TimesFM), plus a planted-leak negative control. Clean checkout with empty `data/`: 71 passed, 1 skipped. Full local 72 passed.

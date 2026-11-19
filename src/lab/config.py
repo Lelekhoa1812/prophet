@@ -13,6 +13,7 @@ DATA.mkdir(exist_ok=True)
 DATASETS = {
     "staging": DATA / "staging.duckdb",
     "twin": DATA / "twin.duckdb",
+    "twin_censored": DATA / "twin_censored.duckdb",   # same world as twin, orders drop after stockouts (twin/censor.py)
 }
 LAB_DB = DATA / "lab.duckdb"          # runs, proposals, decisions, lessons, ledgers
 REVEAL_DB = DATA / "reveal.duckdb"    # local-only map from codes back to real names
