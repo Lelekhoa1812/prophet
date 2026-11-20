@@ -83,7 +83,7 @@ export function Composer({
       >
         {leading}
         <label htmlFor="composer" className="sr-only">
-          Message to Prophet
+          Your question
         </label>
         <textarea
           id="composer"

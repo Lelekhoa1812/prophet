@@ -40,7 +40,7 @@ export function SourcesPanel({
   return (
     <section aria-label="Files in this notebook" className="grid gap-4 rounded-2xl border border-sand-2/20 bg-night-1/70 p-4 sm:p-5">
       <p className="text-[0.9375rem] text-sand-2">
-        {usable} of {sources.length} in use for questions. Only files in use are read.
+        {usable} of {sources.length} included in answers. Files that are not included are never read.
       </p>
 
       {sources.length > 0 && (
@@ -121,7 +121,7 @@ function SourceRow({ source: s, busy, onToggle, onRemove }: { source: Source; bu
             </span>
             {s.duplicate && <span>· already in this notebook</span>}
           </span>
-          {s.status === "needs_attention" && firstIssue && (
+          {s.status === "needs_attention" && firstIssue && firstIssue !== s.error && (
             <span className="text-[0.9375rem] text-sand-1 [overflow-wrap:anywhere]">{truncate(firstIssue, 220)}</span>
           )}
           {(s.status === "failed" || s.status === "needs_attention") && s.error && (
@@ -137,9 +137,9 @@ function SourceRow({ source: s, busy, onToggle, onRemove }: { source: Source; bu
             checked={s.included}
             disabled={busy}
             onChange={onToggle}
-            className="size-5 accent-[var(--color-ember)]"
+            className="size-6 accent-[var(--color-ember)]"
           />
-          Use in questions
+          Include in answers
         </label>
         <Button variant="ghost" size="sm" onClick={onRemove} disabled={busy} aria-label={`Remove ${s.name}`}>
           Remove

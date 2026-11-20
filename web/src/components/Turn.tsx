@@ -175,6 +175,12 @@ function problemFor(mission: Mission): { what: string; why: string; next: string
         why: "Each request has a fixed amount of work so it cannot run forever.",
         next: "Ask again with a narrower question, or break the work into two requests.",
       };
+    case "cancelled":
+      return {
+        what: "You stopped this question.",
+        why: "Nothing more was done after you stopped it. The steps above show what had finished.",
+        next: "Ask it again when you are ready, or change the question.",
+      };
     case "outcome_unknown":
       return {
         what: "Prophet paused because a step may not have finished.",

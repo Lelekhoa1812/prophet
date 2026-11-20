@@ -99,6 +99,18 @@ def test_source_is_stored_once_by_hash_and_profiled(service):
     assert len(service.notebooks.sources(nb["id"])) == 1
 
 
+def test_first_source_names_an_untitled_notebook_only(service):
+    untitled = service.notebooks.create()
+    service.notebooks.add_source(untitled["id"], "Store_sales 2026.csv", CSV, profile_async=False)
+    assert service.notebooks.get(untitled["id"])["title"] == "Store sales 2026"
+    service.notebooks.add_source(untitled["id"], "returns.csv", b"a,b\n1,2\n", profile_async=False)
+    assert service.notebooks.get(untitled["id"])["title"] == "Store sales 2026"
+
+    named = service.notebooks.create("Quarterly review")
+    service.notebooks.add_source(named["id"], "other.csv", CSV, profile_async=False)
+    assert service.notebooks.get(named["id"])["title"] == "Quarterly review"
+
+
 def test_excluded_source_is_left_out_of_the_turn(service):
     nb = service.notebooks.create("Sales")
     src = service.notebooks.add_source(nb["id"], "a.csv", CSV, profile_async=False)

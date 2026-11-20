@@ -285,7 +285,7 @@ export function NotebookView({
             working={working}
             onStop={() => void stop()}
             stopping={stopping}
-            placeholder={notebook.turns.length === 0 ? "Ask about your files" : "Ask a follow-up"}
+            placeholder={notebook.turns.length === 0 ? "Ask a question about your files" : "Ask a follow-up question"}
           />
         </div>
       </div>

@@ -26,11 +26,6 @@ const EXAMPLES: { label: string; text: string }[] = [
   },
 ];
 
-function notebookTitle(): string {
-  const day = new Date().toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-  return `Notebook · ${day}`;
-}
-
 export default function App() {
   const [missions, setMissions] = useState<MissionRow[]>([]);
   const [notebooks, setNotebooks] = useState<NotebookRow[]>([]);
@@ -101,7 +96,7 @@ export default function App() {
 
   const newNotebook = async () => {
     try {
-      const nb = await api.createNotebook(notebookTitle());
+      const nb = await api.createNotebook("New notebook");
       openNotebook(nb.id);
       refreshList();
     } catch (err) {

@@ -56,13 +56,22 @@ def _col_line(c: dict) -> str:
     return f"{c['name']}: " + ", ".join(bits)
 
 
+def _read_as(read: dict) -> str | None:
+    """How the file was parsed, in one phrase the planner can copy: e.g. a semicolon-separated text file. Plain
+    comma CSV and workbook sheets need no note."""
+    delim = read.get("delimiter")
+    if read.get("format") == "delimited text" and delim not in (None, "','"):
+        return f"text read with separator {delim}; use pl.read_table(path) rather than pandas defaults"
+    return None
+
+
 def make_card(profile: dict) -> dict:
     """A small, stable summary of a profiled file: per sheet, the shape, columns, issues and layout hints."""
     sheets = []
     for sh in profile.get("sheets", []):
         read = sh.get("read", {})
         sheets.append({
-            "sheet": sh.get("name"), "rows": sh.get("rows", 0),
+            "sheet": sh.get("name"), "rows": sh.get("rows", 0), "read_as": _read_as(read),
             "header_row": read.get("header_row"), "columns": [_col_line(c) for c in sh.get("columns", [])[:40]],
             "columns_omitted": sh.get("columns_omitted", 0), "issues": sh.get("issues", [])[:6],
             "layout_hints": sh.get("layout_hints", [])[:3],
@@ -146,6 +155,15 @@ class Notebooks:
             return {**self.source(dup["id"]), "duplicate": True}
         meta = self.datasets.add(name, data)
         sid = uuid.uuid4().hex
+        with self.store.lock:
+            first = self.store.conn.execute("SELECT COUNT(*) FROM sources WHERE notebook_id=? AND removed=0", (nid,)).fetchone()[0] == 0
+            title_now = self._row(nid)["title"]
+        if first and title_now == "New notebook":
+            # A notebook is named after its first file, so the sidebar says what it holds.
+            stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", Path(name).name).replace("_", " ").strip()[:120]
+            if stem:
+                with self.store._tx() as c:
+                    c.execute("UPDATE notebooks SET title=? WHERE id=?", (stem, nid))
         with self.store._tx() as c:
             c.execute("INSERT INTO sources (id, notebook_id, dataset_id, name, sha256, bytes, status, created) "
                       "VALUES (?,?,?,?,?,?,?,?)", (sid, nid, meta["id"], meta["name"], digest, meta["bytes"],
@@ -335,7 +353,8 @@ class Notebooks:
                 lines.append(head)
                 for sh in (s["card"] or {}).get("sheets", []):
                     label = f"  sheet {sh['sheet']!r}" if sh["sheet"] else "  table"
-                    lines.append(f"{label}: {sh['rows']} rows" + (f", header on row {sh['header_row']}" if sh["header_row"] else ", no header row"))
+                    lines.append(f"{label}: {sh['rows']} rows" + (f", header on row {sh['header_row']}" if sh["header_row"] else ", no header row")
+                                 + (f"; {sh['read_as']}" if sh.get("read_as") else ""))
                     lines += [f"    {c}" for c in sh["columns"]]
                     if sh["columns_omitted"]:
                         lines.append(f"    ... {sh['columns_omitted']} more columns")
