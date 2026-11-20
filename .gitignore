@@ -6,7 +6,7 @@
 __pycache__/
 console/dist/
 web/dist/
-data/
+/data/
 node_modules/
 .pytest_cache/
 
