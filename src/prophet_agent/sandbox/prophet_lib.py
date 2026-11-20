@@ -423,6 +423,10 @@ def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, 
         if v.between(1800, 2200).all() and (v % 1 == 0).all():
             info["format"] = "year"
             return pd.to_datetime(num.astype("Int64").astype(str), format="%Y", errors="coerce"), info
+    filled = t.dropna()
+    if len(filled) and filled.str.match(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:$|[ T])").mean() >= 0.95:
+        info["format"] = "year first (unambiguous)"      # 2023-03-01 is always year-month-day, whatever order a person writes
+        return pd.to_datetime(t, errors="coerce", dayfirst=False), info
     if dayfirst is not None:
         info["format"] = "day first (stated)" if dayfirst else "month first (stated)"
         return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst), info
