@@ -1,0 +1,229 @@
+"""Goal-loop tests with a scripted brain (GOAL G7) and the ask/pause path (G8), run on the durable runtime.
+
+The brain is a queue of decisions. Each test checks the outcome and, where it matters, how many decisions were asked
+for, so a resumed run is shown not to ask the model again for work it already finished.
+"""
+from __future__ import annotations
+
+import pytest
+
+from prophet_agent.runtime.goal import GoalConfig, goal_program
+from prophet_agent.runtime.questions import validate_questions
+from prophet_agent.runtime.runner import Runtime, Tool
+from prophet_agent.runtime.store import Store
+
+
+class Crash(BaseException):
+    pass
+
+
+class ScriptedBrain:
+    def __init__(self, plans=(), evals=()):
+        self.plans = list(plans)
+        self.evals = list(evals)
+        self.calls = {"plan": 0, "eval": 0}
+
+    def decide(self, messages, schema, name):
+        self.calls[name] += 1
+        queue = self.plans if name == "plan" else self.evals
+        if not queue:
+            raise AssertionError(f"brain asked for {name} but the script is exhausted")
+        return queue.pop(0)
+
+
+def call(tool, args=None, why="gather"):
+    return {"action": "call_tool", "tool": tool, "args": args or {}, "rationale": why}
+
+
+def finish(why="done"):
+    return {"action": "finish", "rationale": why}
+
+
+def met(answer="ok"):
+    return {"verdict": "met", "reason": "enough", "answer": answer}
+
+
+def not_met():
+    return {"verdict": "not_met", "reason": "need more"}
+
+
+@pytest.fixture()
+def store(tmp_path):
+    s = Store(tmp_path / "goal.sqlite")
+    yield s
+    s.close()
+
+
+def _tool(name, fn=None, idempotent=True):
+    return Tool(name, fn or (lambda args, key: {"echo": args}), idempotent=idempotent)
+
+
+def run(store, program, budget=None, owner="r1"):
+    mid = store.create_mission("forecast", budget or {})
+    return mid, Runtime(store, owner=owner).run(mid, program)
+
+
+def test_met_after_one_tool_call(store):
+    brain = ScriptedBrain(plans=[call("ping", {"x": 1})], evals=[met("pong")])
+    program = goal_program("check", {"ping": _tool("ping")}, brain)
+    _, out = run(store, program)
+    assert out["status"] == "completed"
+    assert out["result"]["status"] == "met"
+    assert out["result"]["answer"] == "pong"
+    assert brain.calls == {"plan": 1, "eval": 1}
+
+
+def test_not_met_then_met_after_two_iterations(store):
+    brain = ScriptedBrain(plans=[call("a"), call("b")], evals=[not_met(), met()])
+    program = goal_program("g", {"a": _tool("a"), "b": _tool("b")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    assert out["result"]["iterations"] == 2
+
+
+def test_impossible_verdict_stops_the_loop(store):
+    brain = ScriptedBrain(plans=[call("a")], evals=[{"verdict": "impossible", "reason": "no data for that region"}])
+    program = goal_program("g", {"a": _tool("a")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "impossible"
+    assert out["result"]["reason"] == "no data for that region"
+
+
+def test_stall_detected_when_the_same_call_returns_the_same_result(store):
+    plans = [call("a", {"k": 1})] * 5
+    brain = ScriptedBrain(plans=plans, evals=[not_met()] * 5)
+    program = goal_program("g", {"a": _tool("a", lambda args, key: {"same": True})}, brain,
+                           GoalConfig(max_iterations=8, stall_window=3))
+    _, out = run(store, program)
+    assert out["result"]["status"] == "stalled"
+    assert brain.calls["plan"] == 3, "the loop stops after the stall window, not after the iteration cap"
+
+
+def test_iteration_budget_caps_an_endless_loop(store):
+    counter = {"n": 0}
+
+    def changing(args, key):
+        counter["n"] += 1
+        return {"n": counter["n"]}
+
+    plans = [call("a")] * 4
+    brain = ScriptedBrain(plans=plans, evals=[not_met()] * 4)
+    program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=4))
+    _, out = run(store, program)
+    assert out["result"]["status"] == "iteration_budget"
+    assert out["result"]["iterations"] == 4
+
+
+def test_tool_budget_from_the_runtime_stops_the_mission(store):
+    counter = {"n": 0}
+
+    def changing(args, key):
+        counter["n"] += 1
+        return {"n": counter["n"]}
+
+    brain = ScriptedBrain(plans=[call("a")] * 10, evals=[not_met()] * 10)
+    program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=10))
+    _, out = run(store, program, budget={"max_tool_calls": 2})
+    assert out == {"status": "budget_exhausted", "which": "max_tool_calls"}
+
+
+def test_unknown_tool_is_an_observation_not_a_crash(store):
+    brain = ScriptedBrain(plans=[call("nope"), call("a")], evals=[not_met(), met()])
+    program = goal_program("g", {"a": _tool("a")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    assert "unknown tool" in out["result"]["evidence"][0]["error"]
+
+
+def test_tool_error_is_passed_to_the_planner_as_evidence(store):
+    def broken(args, key):
+        raise RuntimeError("upstream 500 with token nvapi-LEAKED987654321")
+
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[not_met(), met()])
+    program = goal_program("g", {"a": _tool("a", broken, idempotent=False)}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    err = out["result"]["evidence"][0]["error"]
+    assert "upstream 500" in err and "nvapi-LEAKED987654321" not in err
+
+
+def test_invalid_questions_do_not_pause(store):
+    bad = {"action": "ask_user", "rationale": "need horizon", "questions": [
+        {"question": "How far ahead", "header": "This header is far too long", "multiSelect": False,
+         "options": [{"label": "4 weeks", "description": ""}]}]}
+    brain = ScriptedBrain(plans=[bad, finish()], evals=[met()])
+    program = goal_program("g", {}, brain)
+    _, out = run(store, program)
+    assert out["status"] == "completed", "an invalid question is a planner observation, not a pause"
+    assert "invalid questions" in out["result"]["evidence"][0]["error"]
+
+
+def test_ask_pauses_then_resumes_from_the_answer(store):
+    question = {"action": "ask_user", "rationale": "horizon", "questions": [
+        {"question": "How far ahead should I forecast?", "header": "Horizon", "multiSelect": False,
+         "options": [{"label": "4 weeks", "description": "short"}, {"label": "12 weeks", "description": "quarter"}]}]}
+    brain = ScriptedBrain(plans=[question, finish()], evals=[met("12-week forecast")])
+    program = goal_program("forecast demand", {}, brain)
+
+    mid, first = run(store, program)
+    assert first["status"] == "waiting_user"
+    qid = store.open_questions(mid)[0]["id"]
+    store.answer_question(qid, {"Horizon": "12 weeks"})
+
+    done = Runtime(store, owner="r2").run(mid, program)
+    assert done["status"] == "completed"
+    assert done["result"]["status"] == "met"
+    assert brain.calls == {"plan": 1, "eval": 1}, "the planner is not asked again after the answer"
+    assert len(store.open_questions(mid)) == 0
+
+
+def test_crash_mid_loop_resumes_without_repeating_decisions_or_tools(store):
+    ran = {"tool": 0}
+    crash_after = {"armed": True}
+
+    def tool_fn(args, key):
+        ran["tool"] += 1
+        return {"v": args["i"]}
+
+    class CrashingBrain(ScriptedBrain):
+        eval_requests = 0
+
+        def decide(self, messages, schema, name):
+            if name == "eval":
+                self.eval_requests += 1
+                if self.eval_requests == 2 and crash_after["armed"]:
+                    crash_after["armed"] = False
+                    raise Crash()      # die while the second evaluation is in flight, before it is stored
+            return super().decide(messages, schema, name)
+
+    plans = [call("a", {"i": 0}), call("a", {"i": 1}), call("a", {"i": 2})]
+    evals = [not_met(), not_met(), met("three")]
+    brain = CrashingBrain(plans=plans, evals=evals)
+    program = goal_program("g", {"a": _tool("a", tool_fn)}, brain)
+
+    mid = store.create_mission("g", {})
+    with pytest.raises(Crash):
+        Runtime(store, owner="r1").run(mid, program)
+    store.conn.execute("UPDATE missions SET lease_until=0 WHERE id=?", (mid,))
+
+    out = Runtime(store, owner="r2").run(mid, program)
+    assert out["result"]["status"] == "met"
+    assert out["result"]["answer"] == "three"
+    assert ran["tool"] == 3, "each tool ran once across the crash"
+    # Decisions already stored are not requested again: 3 plans and 3 evals in total, not 4 evals.
+    assert brain.calls["plan"] == 3
+    assert brain.calls["eval"] == 3
+
+
+def test_question_validator_rules():
+    good = {"questions": [{"question": "Pick one?", "header": "Pick", "multiSelect": False,
+                           "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""}]}]}
+    assert validate_questions(good) == []
+    assert validate_questions({"questions": []})
+    assert validate_questions({"questions": [{**good["questions"][0], "options": [{"label": "A"}]}]})
+    assert validate_questions({"questions": [{**good["questions"][0], "header": "x" * 13}]})
+    assert validate_questions({"questions": [{**good["questions"][0], "question": "no mark"}]})
+    five = [good["questions"][0]] * 5
+    assert validate_questions({"questions": five})
+    assert validate_questions({"questions": [{**good["questions"][0], "options": [
+        {"label": "A", "description": ""}, {"label": "A", "description": ""}]}]})

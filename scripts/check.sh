@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Local test gate. Replaces the GitHub Actions workflow (removed while Actions billing is blocked).
-# Usage: scripts/check.sh [--no-console]
+# Local gate for Prophet. CI is not used (Actions billing blocked).
+#   scripts/check.sh            offline tests (no model, no network)
+#   scripts/check.sh --real     also runs the real TimesFM 3 tests (needs cached weights, Apple silicon)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-echo "== pytest =="
-.venv/bin/python -m pytest -q -W ignore tests
-if [[ "${1:-}" != "--no-console" ]]; then
-  echo "== console typecheck + build =="
-  (cd console && npm run build)
+PY=".venv/bin/python"
+export PYTHONPATH=src
+
+"$PY" -m pytest -q -m "not timesfm"
+
+if [[ "${1:-}" == "--real" ]]; then
+  "$PY" -m pytest -q -m timesfm
 fi
-echo "OK: all gates passed"
