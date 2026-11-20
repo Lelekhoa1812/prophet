@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -225,11 +225,15 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.post("/api/notebooks/{nid}/sources", status_code=201)
     async def add_source(nid: str, request: Request, name: str = "data") -> dict:
-        """Raw file bytes in the body, the name in ?name=. Profiling runs in the background; poll the source."""
+        """Raw file bytes in the body; the name in the X-File-Name header (or ?name= for scripts). Profiling runs in the
+        background; poll the source."""
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_BYTES:
             raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
         data = await request.body()
+        header_name = request.headers.get("x-file-name")
+        if header_name:
+            name = unquote(header_name)
         try:
             _nb(service.notebooks.get, nid)
             return service.notebooks.add_source(nid, name, data)
