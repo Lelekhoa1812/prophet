@@ -19,8 +19,8 @@ Each criterion is done only when its check passes and its evidence is recorded i
 |---|---|---|---|
 | G1 | NIM transport implements NIM.md §4.2 row by row | `PYTHONPATH=src .venv/bin/python -m pytest tests/prophet_agent -q` (one test per row) | **[TEST]** 46 transport tests pass; [TODO] wire into scripts/check.sh |
 | G2 | Every configured key answers a 1-token chat call | `python -m prophet_agent.nim.probe keys` | **[LIVE]** 6 of 6 slots 200 on 2026-11-20 |
-| G3 | Each chain model answers a schema-bound claim prompt, thinking off | `python -m prophet_agent.nim.probe models` | **[LIVE]** 5 of 5 valid JSON; GLM first call 100 s |
-| G4 | Same, thinking on | `python -m prophet_agent.nim.probe models --thinking` | **[LIVE]** running; result in ARCHITECTURE.md §3 when it lands |
+| G3 | Each chain model answers a schema-bound claim prompt, thinking off | `python -m prophet_agent.nim.probe models` | **[LIVE]** 5 of 5 valid JSON in two runs; GLM 91–100 s |
+| G4 | Same, thinking on | `python -m prophet_agent.nim.probe models --thinking` | **[LIVE]** 5 of 5 valid JSON on a trivial prompt; does not test heavy reasoning (ARCHITECTURE.md §3.1) |
 | G5 | Key failover works against the live API | invalid key first; it must be retired and a real key must serve | **[LIVE]** 403 retired, real key served (2026-11-20) |
 | G6 | Durable runtime: an event log in SQLite (WAL); a crash mid-step resumes from the last completed step with no duplicate side effects | crash-injection test using idempotency keys | **[TODO]** |
 | G7 | Goal loop: planner, tool use, evaluator returns met / not met / impossible; hard budgets; stall detection | scripted-NIM tests for each outcome and each budget | **[TODO]** |

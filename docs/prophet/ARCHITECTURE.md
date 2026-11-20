@@ -37,9 +37,11 @@ LLM summaries lengthened trajectories by up to 15 % [V-docs]. Summarise with a s
 the input budget. The 60–70 % figure is our design proposal, not a sourced threshold [H].
 
 **NIM caching.** NIM.md reports `cached_tokens` of 32 and 48 on Laguna and 0 on Ultra. Our live calls returned
-`cached_tokens: 0` for all five models on a ~50-token prompt [V-live]. NVIDIA's public KV-reuse documentation covers
-self-hosted containers only, so hosted prefix caching, its block size and its TTL are unverified [V-docs]. We will not
-depend on caching for cost until a longer prompt shows a hit on the hosted endpoint [TODO].
+`cached_tokens: 0` for Ultra, Super-VL, Nano-Omni and GLM on a ~50-token prompt, in two runs each. Laguna reported 0 on
+its first call and 48 on the identical repeat [V-live, n=2 per model]. So hosted prefix caching exists on at least
+Laguna and is model dependent. NVIDIA's public KV-reuse documentation covers self-hosted containers only, so the
+hosted block size and TTL are unverified [V-docs]. We will not depend on caching for cost until the primary model
+(Ultra) shows a hit on a longer prompt [TODO].
 
 ## 3. NIM transport and model chain
 
@@ -54,17 +56,21 @@ that did not stop for length (F5); usage is kept (F6).
 |---|---|
 | 1-token call per key | 6 of 6 slots 200 (0.38–0.74 s) |
 | Invalid key first | 403, key retired, real key served (0.85 s) |
-| Claim schema, thinking off | all 5 chain models valid JSON; Ultra 1.18 s, Super-VL 0.79 s, Nano-Omni 1.20 s, Laguna 0.96 s, GLM 100.17 s |
-| GLM first call | 100 s against NIM.md §2's 9–11 s; treat as an outlier until repeated [V-live, n=1] |
-| Thinking on | in progress; see §3.1 |
+| Claim schema, thinking off (two runs) | all 5 chain models valid JSON both times; Ultra 1.18 s then 5.36 s, Super-VL 0.79 s then 0.78 s, Nano-Omni 1.20 s then 0.84 s, Laguna 0.96 s both, GLM 100.17 s then 90.86 s |
+| Claim schema, thinking on (one run) | all 5 valid JSON; Ultra 2.95 s, Super-VL 2.37 s, Nano-Omni 2.06 s, Laguna 0.90 s, GLM 73.72 s; see §3.1 |
+| GLM latency | 74–100 s in three samples against NIM.md §2's 9–11 s; consistent, not an outlier [V-live, n=3] |
 
-GLM's 100 s is the reason it stays last in the chain. Its `reasoning_tokens: 6` shows `reasoning_effort: low` is
-being applied. The NIM.md figure of 9–11 s predates this run.
+GLM's 74–100 s is the reason it stays last in the chain. Its `reasoning_tokens` were 5–6, so the delay is not
+reasoning time; it looks like queueing or time to first token, which NIM.md §2 also flags for gateways. A call that
+reaches GLM can therefore use a large share of the default 240 s budget.
 
 ### 3.1 Thinking-on probe
 
-Pending. The background run writes to the scratchpad. Record its numbers here when it finishes; do not quote them
-before then.
+Run on 2026-11-20 with the same trivial claim prompt, thinking on, `max_tokens` 8192. All five models returned valid
+schema JSON. Reasoning tokens used: Ultra 33, Super-VL 97, Nano-Omni 119, Laguna 0 (no thinking mode), GLM 6.
+**This does not validate NIM.md's 25–60 s thinking-on latency.** The prompt is tiny and the models reasoned for a
+handful of tokens, so thinking-on looked as fast as thinking-off (2–3 s). That latency claim needs a prompt that forces
+real multi-step reasoning, and it is still [TODO].
 
 ## 4. Package name
 
