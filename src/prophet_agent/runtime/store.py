@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS missions (
@@ -78,6 +78,63 @@ CREATE TABLE IF NOT EXISTS questions (
 """
 
 
+# Schema v2 adds notebooks: persistent workspaces whose turns are missions. v1 databases are upgraded in place; their
+# missions keep notebook_id NULL and run exactly as before.
+_DDL_V2 = """
+CREATE TABLE IF NOT EXISTS notebooks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  instructions TEXT NOT NULL DEFAULT '',
+  archived INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sources (
+  id TEXT PRIMARY KEY,
+  notebook_id TEXT NOT NULL REFERENCES notebooks(id),
+  dataset_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  card_json TEXT,
+  error TEXT,
+  included INTEGER NOT NULL DEFAULT 1,
+  removed INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sources_by_notebook ON sources(notebook_id);
+CREATE TABLE IF NOT EXISTS derived_tables (
+  id TEXT PRIMARY KEY,
+  notebook_id TEXT NOT NULL REFERENCES notebooks(id),
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  UNIQUE(notebook_id, name)
+);
+CREATE TABLE IF NOT EXISTS derived_versions (
+  id TEXT PRIMARY KEY,
+  table_id TEXT NOT NULL REFERENCES derived_tables(id),
+  version INTEGER NOT NULL,
+  rows INTEGER NOT NULL,
+  columns_json TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  lineage_json TEXT NOT NULL,
+  turn_id TEXT,
+  created REAL NOT NULL,
+  UNIQUE(table_id, version)
+);
+"""
+_MISSION_COLUMNS_V2 = {
+    "notebook_id": "TEXT",
+    "seq": "INTEGER",
+    "parent_turn_id": "TEXT",
+    "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+}
+ACTIVE = ("created", "running", "waiting_user")
+
+
 def canonical(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 
@@ -89,6 +146,10 @@ def idem_key(mission_id: str, step_idx: int, tool: str, args: Any) -> str:
 
 class LeaseHeld(RuntimeError):
     """Another runtime holds the mission lease and it has not expired."""
+
+
+class NotebookBusy(RuntimeError):
+    """A turn was started in a notebook that already has an active turn."""
 
 
 class OutcomeUnknown(RuntimeError):
@@ -114,7 +175,16 @@ class Store:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
+            found = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+            if found > SCHEMA_VERSION:
+                raise RuntimeError(f"database schema {found} is newer than this version of Prophet ({SCHEMA_VERSION})")
             self.conn.executescript(_DDL)
+            have = {r["name"] for r in self.conn.execute("PRAGMA table_info(missions)")}
+            for col, decl in _MISSION_COLUMNS_V2.items():
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE missions ADD COLUMN {col} {decl}")
+            self.conn.executescript(_DDL_V2)
+            self.conn.execute("CREATE INDEX IF NOT EXISTS missions_by_notebook ON missions(notebook_id, seq)")
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -145,14 +215,41 @@ class Store:
 
     # -- missions and leases -----------------------------------------------------------------------------------
 
-    def create_mission(self, goal: str, budget: dict) -> str:
+    def create_mission(self, goal: str, budget: dict, *, notebook_id: str | None = None,
+                       parent_turn_id: str | None = None) -> str:
+        """A mission is one turn. In a notebook it gets the next sequence number, and only one turn may be active."""
         mission_id = uuid.uuid4().hex
         now = time.time()
         with self._tx() as c:
-            c.execute("INSERT INTO missions (id, goal, status, budget_json, created, updated) VALUES (?,?,?,?,?,?)",
-                      (mission_id, goal, "created", canonical(budget), now, now))
-        self.append_event(mission_id, "mission.created", {"goal": goal, "budget": budget})
+            seq = None
+            if notebook_id is not None:
+                busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND status IN (?,?,?)",
+                                 (notebook_id, *ACTIVE)).fetchone()
+                if busy:
+                    raise NotebookBusy("this notebook is still working on the previous message")
+                seq = int(c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM missions WHERE notebook_id=?",
+                                    (notebook_id,)).fetchone()[0])
+            c.execute("INSERT INTO missions (id, goal, status, budget_json, created, updated, notebook_id, seq, "
+                      "parent_turn_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (mission_id, goal, "created", canonical(budget), now, now, notebook_id, seq, parent_turn_id))
+        self.append_event(mission_id, "mission.created", {"goal": goal, "budget": budget, "notebook_id": notebook_id})
         return mission_id
+
+    def request_cancel(self, mission_id: str) -> bool:
+        """Ask a running mission to stop at its next step. False if it is not active."""
+        with self._tx() as c:
+            cur = c.execute("UPDATE missions SET cancel_requested=1, updated=? WHERE id=? AND status IN (?,?,?)",
+                            (time.time(), mission_id, *ACTIVE))
+            return cur.rowcount == 1
+
+    def is_cancel_requested(self, mission_id: str) -> bool:
+        with self.lock:
+            row = self.conn.execute("SELECT cancel_requested FROM missions WHERE id=?", (mission_id,)).fetchone()
+        return bool(row and row["cancel_requested"])
+
+    def close_open_questions(self, mission_id: str) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE questions SET status='cancelled' WHERE mission_id=? AND status='open'", (mission_id,))
 
     def mission(self, mission_id: str) -> dict:
         with self.lock:

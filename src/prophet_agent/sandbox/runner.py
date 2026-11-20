@@ -158,8 +158,10 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     home.mkdir()
     shutil.copy2(LIB_SOURCE, wd / "lib" / "prophet_lib.py")
     for name, src in (inputs or {}).items():
-        if "/" in name or name.startswith("."):
-            raise ValueError("input names are plain file names")
+        parts = name.split("/")
+        if name.startswith(".") or len(parts) > 2 or (len(parts) == 2 and parts[0] != "derived") or not parts[-1]:
+            raise ValueError("input names are plain file names, or derived/<name> for tables created earlier")
+        (wd / IN_DIR / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, wd / IN_DIR / name)
     for name, data in (files or {}).items():
         target = (wd / name).resolve()

@@ -22,7 +22,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from prophet_agent.config import ROOT
 from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
-from prophet_agent.runtime.store import LeaseHeld
+from prophet_agent.runtime.store import LeaseHeld, NotebookBusy
 from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
 
 from .service import MissionService
@@ -46,6 +46,25 @@ class MissionIn(BaseModel):
 
 class AnswerIn(BaseModel):
     answers: dict[str, Any]
+
+
+class NotebookIn(BaseModel):
+    title: str = Field(default="New notebook", max_length=120)
+
+
+class NotebookPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    instructions: str | None = Field(default=None, max_length=2000)
+    archived: bool | None = None
+
+
+class SourcePatch(BaseModel):
+    included: bool | None = None
+    removed: bool | None = None
+
+
+class TurnIn(BaseModel):
+    goal: str = Field(min_length=3, max_length=2000)
 
 
 def _history(args: dict) -> list[float]:
@@ -176,6 +195,98 @@ def create_app(service: MissionService) -> FastAPI:
         if not str(target).startswith(str(base) + "/") or not target.is_file():
             raise HTTPException(404)
         return FileResponse(target, filename=target.name)
+
+    # -- notebooks ----------------------------------------------------------------------------------------------
+
+    def _nb(fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except KeyError:
+            raise HTTPException(404, "no such notebook item")
+
+    @app.get("/api/notebooks")
+    def list_notebooks() -> list[dict]:
+        return service.notebooks.list()
+
+    @app.post("/api/notebooks", status_code=201)
+    def create_notebook(body: NotebookIn) -> dict:
+        return service.notebooks.create(body.title.strip())
+
+    @app.get("/api/notebooks/{nid}")
+    def get_notebook(nid: str) -> dict:
+        nb = _nb(service.notebooks.get, nid)
+        return {**nb, "sources": service.notebooks.sources(nid), "tables": service.notebooks.tables(nid),
+                "turns": service.notebooks.turns(nid)}
+
+    @app.patch("/api/notebooks/{nid}")
+    def patch_notebook(nid: str, body: NotebookPatch) -> dict:
+        return _nb(service.notebooks.update, nid, title=body.title, instructions=body.instructions,
+                   archived=body.archived)
+
+    @app.post("/api/notebooks/{nid}/sources", status_code=201)
+    async def add_source(nid: str, request: Request, name: str = "data") -> dict:
+        """Raw file bytes in the body, the name in ?name=. Profiling runs in the background; poll the source."""
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BYTES:
+            raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
+        data = await request.body()
+        try:
+            _nb(service.notebooks.get, nid)
+            return service.notebooks.add_source(nid, name, data)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+
+    @app.patch("/api/notebooks/{nid}/sources/{sid}")
+    def patch_source(nid: str, sid: str, body: SourcePatch) -> dict:
+        return _nb(service.notebooks.set_source, nid, sid, included=body.included, removed=body.removed)
+
+    @app.get("/api/notebooks/{nid}/tables")
+    def list_tables(nid: str) -> list[dict]:
+        _nb(service.notebooks.get, nid)
+        return service.notebooks.tables(nid)
+
+    @app.get("/api/notebooks/{nid}/tables/{name}/versions")
+    def table_versions(nid: str, name: str) -> list[dict]:
+        _nb(service.notebooks.get, nid)
+        return service.notebooks.table_versions(nid, name)
+
+    @app.get("/api/notebooks/{nid}/tables/{name}/download")
+    def download_table(nid: str, name: str, version: int | None = None) -> FileResponse:
+        try:
+            path = service.notebooks.table_path(nid, name, version)
+        except KeyError:
+            raise HTTPException(404, "no such table or version")
+        return FileResponse(path, media_type="text/csv", filename=f"{name}{'' if version is None else f'_v{version}'}.csv")
+
+    @app.post("/api/notebooks/{nid}/turns", status_code=201)
+    def create_turn(nid: str, body: TurnIn) -> dict:
+        from prophet_agent.nim.transport import load_keys
+        if service.brain_factory is default_brain_factory and not load_keys():
+            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+        try:
+            mission_id = service.create_turn(nid, body.goal.strip())
+        except KeyError:
+            raise HTTPException(404, "no such notebook")
+        except NotebookBusy as exc:
+            raise HTTPException(409, str(exc))
+        try:
+            service.start(mission_id)
+        except NotConfigured:
+            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+        service.notebooks.touch(nid)
+        return {"id": mission_id, "seq": service.store.mission(mission_id)["seq"]}
+
+    @app.get("/api/notebooks/{nid}/turns")
+    def list_turns(nid: str) -> list[dict]:
+        _nb(service.notebooks.get, nid)
+        return service.notebooks.turns(nid)
+
+    @app.post("/api/missions/{mission_id}/cancel")
+    def cancel_mission(mission_id: str) -> dict:
+        try:
+            return {"status": service.cancel(mission_id)}
+        except KeyError:
+            raise HTTPException(404, "no such mission")
 
     if WEB_DIST.is_dir():
         from fastapi.staticfiles import StaticFiles

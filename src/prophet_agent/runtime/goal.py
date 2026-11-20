@@ -24,7 +24,7 @@ from prophet_agent.nim.errors import redact
 from prophet_agent.nim.transport import DEFAULT_CHAIN
 
 from .questions import QUESTIONS_SCHEMA, validate_questions
-from .runner import BudgetExceeded, Ctx, Paused, Tool
+from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import OutcomeUnknown, canonical
 
 PLAN_SCHEMA: dict[str, Any] = {
@@ -161,7 +161,7 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
 def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
     try:
         result = ctx.call(tool, args)
-    except (BudgetExceeded, OutcomeUnknown, Paused):
+    except (BudgetExceeded, Cancelled, OutcomeUnknown, Paused):
         raise                    # control flow, not evidence: the runtime must see these
     except Exception as exc:  # a tool failure is evidence for the planner; the ledger already recorded it
         return {"kind": "tool", "tool": name, "args": args, "error": redact(str(exc))}

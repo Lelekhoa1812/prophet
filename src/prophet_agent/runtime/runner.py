@@ -34,6 +34,10 @@ class Paused(Exception):
         self.question_id = question_id
 
 
+class Cancelled(Exception):
+    """The person asked this mission to stop."""
+
+
 class BudgetExceeded(Exception):
     def __init__(self, which: str):
         super().__init__(f"budget exhausted: {which}")
@@ -62,6 +66,10 @@ class Ctx:
     def _guard_time(self) -> None:
         if self.deadline is not None and time.time() > self.deadline:
             raise BudgetExceeded("max_seconds")
+        if self.store.is_cancel_requested(self.mission_id):
+            raise Cancelled()
+        # A long mission keeps its lease alive as it works, so another runtime cannot take it over mid-run.
+        self.store.renew_lease(self.mission_id, self.rt.owner, self.rt.lease_s)
 
     def _guard_budget(self) -> None:
         limit = self.rt.budget.get("max_tool_calls")
@@ -129,12 +137,14 @@ class Runtime:
         self.owner = owner or uuid.uuid4().hex
         self.deadline: float | None = None
         self.budget: dict = {}
+        self.lease_s: float = 300.0
 
     def run(self, mission_id: str, program: Callable[[Ctx], Any], *, lease_s: float = 300.0) -> dict:
         mission = self.store.mission(mission_id)
         self.budget = dict(mission["budget"])
         max_s = self.budget.get("max_seconds")
         self.deadline = time.time() + float(max_s) if max_s else None
+        self.lease_s = lease_s
         self.store.acquire_lease(mission_id, self.owner, lease_s)
         self.store.set_status(mission_id, "running")
         ctx = Ctx(self, mission_id)
@@ -144,6 +154,11 @@ class Runtime:
             self.store.set_status(mission_id, "waiting_user")
             self.store.release_lease(mission_id, self.owner)
             return {"status": "waiting_user", "question": p.question_id}
+        except Cancelled:
+            self.store.close_open_questions(mission_id)
+            self.store.set_status(mission_id, "cancelled")
+            self.store.release_lease(mission_id, self.owner)
+            return {"status": "cancelled"}
         except OutcomeUnknown as exc:
             self.store.set_status(mission_id, "outcome_unknown")
             self.store.append_event(mission_id, "mission.outcome_unknown", {"reason": redact(str(exc))})
@@ -170,4 +185,4 @@ class Runtime:
 
 
 
-__all__ = ["Runtime", "Ctx", "Tool", "Paused", "BudgetExceeded", "LeaseHeld"]
+__all__ = ["Runtime", "Ctx", "Tool", "Paused", "BudgetExceeded", "Cancelled", "LeaseHeld"]

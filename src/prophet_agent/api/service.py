@@ -5,7 +5,8 @@ Motivation: a mission can run for minutes. The HTTP request that starts it must 
 question must resume the same mission without the browser holding it open.
 Logic: each start or resume runs ``Runtime.run`` on a daemon thread. The durable store is the source of truth; the
 service keeps no mission state of its own. A second start on a mission that is already running hits the lease and
-returns a conflict rather than running twice.
+returns a conflict rather than running twice. A notebook turn is a mission with a notebook link: its files and context
+come from the notebook at the moment it starts, and it may keep tables for later turns.
 """
 from __future__ import annotations
 
@@ -14,12 +15,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from prophet_agent.datasets import DatasetStore
+from prophet_agent.notebooks import Notebooks
 from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import Runtime, Tool
 from prophet_agent.runtime.store import LeaseHeld, Store
+from prophet_agent.tools.notebook_tools import NotebookBinding
 
 BrainFactory = Callable[[], Any]
-ToolsFactory = Callable[[dict[str, Path]], dict[str, Tool]]
+ToolsFactory = Callable[..., dict[str, Tool]]
+DEFAULT_BUDGET = {"max_tool_calls": 12, "max_seconds": 600}
 
 
 class MissionService:
@@ -31,20 +35,37 @@ class MissionService:
         self.tools = tools                      # the catalogue, for listings
         self.tools_factory = tools_factory      # per-mission tools (they need the mission's files); None: use `tools`
         self.datasets = datasets or DatasetStore(Path(db_path).parent / "datasets")
+        self.notebooks = Notebooks(self.store, self.datasets, Path(db_path).parent / "notebooks")
         self.goal_cfg = goal_cfg or GoalConfig()
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
 
+    # -- one-off missions ----------------------------------------------------------------------------------------
+
     def create(self, goal: str, budget: dict | None = None, dataset_ids: list[str] | None = None) -> str:
-        budget = dict(budget or {"max_tool_calls": 12, "max_seconds": 600})
+        budget = dict(budget or DEFAULT_BUDGET)
         if dataset_ids:
             for did in dataset_ids:
                 self.datasets.get(did)          # KeyError for an unknown id, before any mission row exists
             budget["dataset_ids"] = list(dataset_ids)
         return self.store.create_mission(goal, budget)
 
+    # -- notebook turns ------------------------------------------------------------------------------------------
+
+    def create_turn(self, notebook_id: str, goal: str) -> str:
+        """A new question in a notebook. Raises KeyError for an unknown notebook and NotebookBusy while one runs."""
+        self.notebooks.get(notebook_id)
+        last = self.store.conn.execute(
+            "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
+        return self.store.create_mission(goal, dict(DEFAULT_BUDGET), notebook_id=notebook_id,
+                                         parent_turn_id=last["id"] if last else None)
+
+    # -- what a mission runs with --------------------------------------------------------------------------------
+
     def files_context(self, mission: dict) -> str:
-        """The person's files by the names the tools use, so the planner never has to guess them."""
+        """What the planner is told before it reads the goal: the notebook's context for a turn, or the file names."""
+        if mission.get("notebook_id"):
+            return self.notebooks.context(mission["notebook_id"], before_seq=mission.get("seq"))
         ids = mission["budget"].get("dataset_ids", [])
         if not ids:
             return ""
@@ -55,7 +76,14 @@ class MissionService:
     def tools_for(self, mission: dict) -> dict[str, Tool]:
         if self.tools_factory is None:
             return self.tools
+        nb = mission.get("notebook_id")
+        if nb:
+            mounts = self.notebooks.mounts(nb)
+            mounts.update(self.notebooks.derived_mounts(nb))
+            return self.tools_factory(mounts, NotebookBinding(self.notebooks, nb, mission["id"]))
         return self.tools_factory(self.datasets.mount(mission["budget"].get("dataset_ids", [])))
+
+    # -- running -------------------------------------------------------------------------------------------------
 
     def start(self, mission_id: str) -> None:
         """Run (or resume) the mission on a background thread. Raises LeaseHeld if it is already running."""
@@ -79,6 +107,22 @@ class MissionService:
         except Exception as exc:  # the runtime records its own failures; this guards against bugs in the service
             self.store.append_event(mission_id, "service.error", {"error": type(exc).__name__})
 
+    def cancel(self, mission_id: str) -> str:
+        """Ask a mission to stop. A running mission stops at its next step; one with no live runner (waiting for an
+        answer, or never started) is closed here. Returns the resulting state: cancelled, cancelling, or the status of
+        a mission that is no longer active."""
+        mission = self.store.mission(mission_id)
+        if not self.store.request_cancel(mission_id):
+            return mission["status"]
+        with self._lock:
+            t = self._threads.get(mission_id)
+            live = t is not None and t.is_alive()
+        if live:
+            return "cancelling"
+        self.store.close_open_questions(mission_id)
+        self.store.set_status(mission_id, "cancelled")
+        return "cancelled"
+
     def answer(self, question_id: str, answers: dict) -> str:
         """Record the answer and resume the mission it belongs to. Returns the mission id."""
         info = self.store.answer_question(question_id, answers)
@@ -97,6 +141,8 @@ class MissionService:
             "goal": mission["goal"],
             "status": mission["status"],
             "budget": mission["budget"],
+            "notebook_id": mission.get("notebook_id"),
+            "seq": mission.get("seq"),
             "datasets": [self.datasets.get(d) for d in mission["budget"].get("dataset_ids", []) if self._has(d)],
             "answer": mission["answer"],
             "events": self.store.events(mission_id, after_seq),
@@ -114,6 +160,6 @@ class MissionService:
     def list(self, limit: int = 20) -> list[dict]:
         with self.store.lock:
             rows = self.store.conn.execute(
-                "SELECT id, goal, status, created, updated FROM missions ORDER BY created DESC LIMIT ?",
-                (int(limit),)).fetchall()
+                "SELECT id, goal, status, created, updated FROM missions WHERE notebook_id IS NULL "
+                "ORDER BY created DESC LIMIT ?", (int(limit),)).fetchall()
         return [dict(r) for r in rows]
