@@ -34,9 +34,29 @@ def _parse(token: str) -> tuple[float, int, bool]:
     return float(raw), decimals, pct
 
 
+_ROW_INDEX = re.compile(r"^(\s*\|\s*)(\d{1,3})(\s*\|)", re.M)
+
+
+def _drop_row_indexes(text: str) -> str:
+    """A table whose first column counts 1, 2, 3 ... numbers its rows: that column is a label, not a figure."""
+    rows = list(_ROW_INDEX.finditer(text))
+    keep: list[re.Match] = []
+    run: list[re.Match] = []
+    for m in rows + [None]:                                  # type: ignore[list-item]
+        if m is not None and (not run or (int(m.group(2)) == int(run[-1].group(2)) + 1 and text[run[-1].end():m.start()].count("\n") <= 2)):
+            run.append(m)
+            continue
+        if len(run) >= 3 and int(run[0].group(2)) in (0, 1):
+            keep.extend(run)
+        run = [m] if m is not None else []
+    for m in reversed(keep):
+        text = text[:m.start(2)] + " " * len(m.group(2)) + text[m.end(2):]
+    return text
+
+
 def figures(text: str) -> list[str]:
     """The numeric tokens in a text, in order of appearance."""
-    text = (text or "").translate(_DASHES)
+    text = _drop_row_indexes((text or "").translate(_DASHES))
     text = _DATE.sub("", text or "")
     return [m.group().rstrip(",") for m in _NUM.finditer(text)]
 

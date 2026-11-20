@@ -452,3 +452,14 @@ def test_grounding_ignores_ordinal_labels_but_not_suffixed_figures():
     from prophet_agent.runtime.grounding import figures
     assert figures("10th–90th percentile, 1st and 3rd place") == []
     assert figures("sold 1.2M units, 5k orders") == ["1.2", "5"]
+
+
+def test_grounding_reads_a_counting_first_column_as_row_labels_only():
+    from prophet_agent.runtime.grounding import figures
+    counted = "| Week | Units |\n|---|---|\n| 1 | 0.46 |\n| 2 | 0.44 |\n| 3 | 0.44 |\n| 4 | 0.45 |"
+    assert figures(counted) == ["0.46", "0.44", "0.44", "0.45"]
+    # a first column that is not a plain 1..n count holds real figures and is still checked
+    real = "| Units | Region |\n|---|---|\n| 5 | North |\n| 9 | South |\n| 12 | East |"
+    assert figures(real) == ["5", "9", "12"]
+    # too short to be a numbering: still checked
+    assert figures("| 1 | 10 |\n| 2 | 20 |") == ["1", "10", "2", "20"]
