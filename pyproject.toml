@@ -25,3 +25,4 @@ dev = ["pytest", "httpx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]   # lets tests import prophet_agent without an install
