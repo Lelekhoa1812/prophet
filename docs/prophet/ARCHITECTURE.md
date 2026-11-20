@@ -125,3 +125,33 @@ gate.
 - Synthetic-twin backtest, walk-forward, 26 origins: TimesFM 3 is +6.9 % better than the best baseline on head-set WAPE,
   against a 15 % bar. The bar is **not met**. Evidence in GOAL.md G13. The numbers are synthetic replay, not observed
   results.
+
+## 8. Answer quality, charts, large data and rendering (2026-11-20)
+
+Decisions taken after reading how comparable agents and chat consoles are built. The notes behind them are kept locally
+in `research_notes/` (git-ignored). Source for every claim was public documentation or published source read in this
+session; the reverse-engineering (REA) tools were not connected, so no shipped binary was analysed.
+
+- **Final answers are composed in a free-text call.** Schema-bound decoding drops newlines inside strings (measured live:
+  0 line breaks against 11 in plain text), which produced one-paragraph answers. The evaluator decides whether the goal is
+  met; `composer.v1` writes the Markdown from the evidence. [verified live]
+- **Every figure is checked against the evidence.** `runtime/grounding.py` compares each number in the answer with the
+  tool output at the precision written; one repair pass, then a partial answer that lists what could not be verified.
+- **Streaming and timeouts.** Every NIM request already streamed. What changed: the read timeout is per chunk (idle), and
+  the wall-clock budget is per logical call, so a long answer is not cut while tokens are arriving.
+- **Code generation discipline.** `planner.v3`: one step per cell, typed loaders (`pl.load`), print every transformation's
+  effect, a bounded repair loop with a probe after two failures, a second-route check on numbers that matter, a final
+  `RESULT name: value` cell, and a visible step budget.
+- **Charts.** `pl.chart` is the single route: a title that states the finding, units and period in the subtitle, bars from
+  zero, direct end labels instead of a legend, Okabe-Ito colours, at most six lines or fifteen bars, nested forecast bands
+  with the origin marked. It checks overlap and clipping, and writes the plotted numbers to a CSV beside the image so a
+  quoted figure can be traced. Charts an analysis draws are shown inline in the console.
+- **Large files.** `pl.size_report` and `pl.query` run DuckDB over CSV or Parquet where the file sits, with a 1 GB memory
+  cap, spill to a temp folder, access limited to the named files, and a row cap on what returns. Totals come from the full
+  file; samples are for shape only and must be disclosed. Forecasts are made at the level the decision needs, up to 100
+  named series per TimesFM call.
+- **Rendering.** `react-markdown` with GFM and `rehype-sanitize`: raw HTML is not parsed, links open with
+  `rel="noopener noreferrer"`, tables scroll and right-align numeric columns, snippets have a copy button, and Mermaid
+  loads on demand in its `strict` security level, falling back to its source when it cannot draw. Answers stored as one
+  line are re-broken where list markers are visible.
+- **Not met, stated plainly.** The 15 % improvement bar over the best baseline is still not met on the synthetic twin.
