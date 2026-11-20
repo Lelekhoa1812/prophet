@@ -394,3 +394,15 @@ def test_grounding_matches_figures_at_their_written_precision():
     assert unverified("Units 1,205.", history, "g") == ["1,205"], "a different figure is not a rounding"
     assert unverified("Share 9%.", history, "g") == ["9%"]
     assert unverified("Horizon 8 weeks.", history, "forecast 8 weeks") == [], "figures in the goal are allowed"
+
+
+def test_grounding_does_not_read_dates_or_ranges_as_negative_numbers():
+    from prophet_agent.runtime.grounding import figures
+    assert figures("The week of 2026-01-19 and 12-14 units") == ["2026", "12", "14"]
+    assert figures("Change was -19 and 5%") == ["-19", "5%"]
+
+
+def test_grounding_normalises_unicode_hyphens_and_minus():
+    from prophet_agent.runtime.grounding import figures
+    assert figures("week of 2026‑01‑26 and a 4‑week view") == ["2026", "4"]
+    assert figures("fell by −5 units") == ["-5"]

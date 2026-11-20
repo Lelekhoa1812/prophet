@@ -34,6 +34,7 @@ class Case:
     expect: list[float]                    # every one must appear in the answer
     tol: float = 0.005                     # relative tolerance
     words: list[str] = field(default_factory=list)  # lowercase phrases that must appear
+    chart: bool = False                    # the run must also leave a PNG chart behind
 
 
 def _csv(rows: list[list], delimiter: str = ",") -> bytes:
@@ -125,7 +126,34 @@ def case_trend() -> Case:
                 [100 + 5 * 55], tol=0.06)
 
 
-CASES = {c.__name__[5:]: c for c in (case_regions, case_messy, case_join, case_dupes, case_dates, case_trend)}
+def case_bigfile() -> Case:
+    rng = random.Random(6)
+    n, regions = 650_000, ["North", "South", "East", "West"]
+    tot, lines = {r: 0 for r in regions}, ["day,region,units"]
+    for _ in range(n):
+        r, u, d = rng.choice(regions), rng.randint(1, 9), rng.randint(1, 28)
+        tot[r] += u
+        lines.append(f"2025-03-{d:02d},{r},{u}")
+    best = max(tot, key=tot.get)
+    return Case("bigfile", {"events.csv": ("\n".join(lines) + "\n").encode()},
+                "Which region sold the most units in total, what was that total, and how many rows does the file have?",
+                [float(tot[best]), float(n)], tol=0.0, words=[best.lower()])
+
+
+def case_chart() -> Case:
+    rng = random.Random(7)
+    d0 = date(2025, 1, 6)
+    rows = [["Week", "Online", "Store"]]
+    on, st = 0, 0
+    for i in range(40):
+        a, b = 300 + 4 * i + rng.randint(-15, 15), 500 - 2 * i + rng.randint(-15, 15)
+        on, st = on + a, st + b
+        rows.append([(d0 + timedelta(weeks=i)).isoformat(), a, b])
+    return Case("chart", {"channels.csv": _csv(rows)}, "Draw a chart comparing Online and Store units by week, and tell me the total for each channel.",
+                [float(on), float(st)], chart=True)
+
+
+CASES = {c.__name__[5:]: c for c in (case_regions, case_messy, case_join, case_dupes, case_dates, case_trend, case_bigfile, case_chart)}
 
 
 def call(method: str, path: str, body=None, raw: bytes | None = None, headers: dict | None = None):
@@ -164,13 +192,17 @@ def run_case(c: Case, timeout: float = 420.0) -> dict:
             break
         time.sleep(3)
     ans = m.get("answer") if isinstance(m.get("answer"), dict) else {}
-    text = ans.get("answer", "") if ans.get("status") == "met" else ""
+    text = ans.get("answer", "") if ans.get("status") in ("met", "partial") else ""
     nums, low = numbers_in(text), text.lower()
     missing = [e for e in c.expect if not any(abs(n - e) <= c.tol * max(1.0, abs(e)) for n in nums)]
     missing_words = [w for w in c.words if w not in low]
-    ok = m.get("status") in {"met", "completed"} and bool(text) and not missing and not missing_words
+    charts = 0
+    if c.chart:
+        arts = call("GET", f"/api/missions/{turn['id']}/artifacts")
+        charts = sum(1 for a in arts for f in a["files"] if f["path"].lower().endswith(".png"))
+    ok = m.get("status") in {"met", "completed"} and ans.get("status") == "met" and bool(text) and not missing and not missing_words and (not c.chart or charts > 0)
     return {"case": c.name, "ok": ok, "status": m.get("status"), "seconds": round(time.time() - start),
-            "missing_numbers": missing, "missing_words": missing_words, "notebook": nb["id"], "answer": text[:600]}
+            "missing_numbers": missing, "missing_words": missing_words, "charts": charts if c.chart else None, "notebook": nb["id"], "answer": text[:600]}
 
 
 def main(argv: list[str]) -> int:

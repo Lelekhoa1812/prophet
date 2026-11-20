@@ -354,6 +354,10 @@ def _unique(names: list[str]) -> list[str]:
 
 # --------------------------------------------------------------------------------------------------- parsing --
 
+_UNIT_WORDS = {"aud", "usd", "eur", "gbp", "nzd", "cad", "jpy", "chf", "cny", "inr", "kg", "g", "mg", "t", "mt", "lb", "lbs", "oz", "m", "cm", "mm",
+               "km", "l", "ml", "ea", "pc", "pcs", "units", "unit", "hrs", "hr", "h", "pts", "x"}
+
+
 def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, dict]:
     """Parse text to numbers. Handles decimal commas, thousands separators, currency, percent and (negative).
 
@@ -365,12 +369,20 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     is_na = t.str.lower().isin(na)
     looks_like_date_or_clock = t.str.contains(r"\d[/:]\d|^\d{4}-\d{1,2}(?:-\d{1,2})?(?:[ T]|$)")
     neg = t.str.match(r"^\(.*\)$")
-    t = t.str.replace(r"^\((.*)\)$", r"\1", regex=True).str.replace(r"[^\d,.\-+eE%]", "", regex=True)
+    t = t.str.replace(r"^\((.*)\)$", r"\1", regex=True).str.replace(r"[\s\u00a0$€£¥₹]", "", regex=True)
+    # Letters survive only as a currency code or a unit beside a number ("AUD100", "12kg"). Any other text, such as an
+    # id like "INV-1000", is not a number and must not lose its letters and become -1000.
+    parts = t.str.extract(r"^([A-Za-z]{0,6})([-+]?[\d.,]+(?:[eE][-+]?\d+)?%?)([A-Za-z]{0,6})$")
+    fine = parts[1].notna() & parts[0].fillna("").str.lower().isin(_UNIT_WORDS | {""}) & parts[2].fillna("").str.lower().isin(_UNIT_WORDS | {""})
+    t = parts[1].where(fine, "x").fillna("x")
     pct = t.str.endswith("%")
     t = t.str.rstrip("%")
-    # Decimal comma: "1.234,56" or "12,5". A lone comma followed by 1-2 digits at the end is a decimal; otherwise a thousands mark.
-    both = t.str.contains(",") & t.str.contains(r"\.")
-    t = t.where(~both, t.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
+    # Both marks present: the last one is the decimal point ("1.234,56" is European, "1,234.56" is not). A lone comma
+    # followed by 1-2 digits at the end is a decimal ("12,5"); otherwise a comma is a thousands mark.
+    last_comma, last_dot = t.str.rfind(","), t.str.rfind(".")
+    both = (last_comma >= 0) & (last_dot >= 0)
+    european = both & (last_comma > last_dot)
+    t = t.where(~european, t.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
     only_comma = t.str.contains(",") & ~t.str.contains(r"\.")
     dec = only_comma & t.str.match(r"^-?\d+,\d{1,2}$")
     t = t.where(~dec, t.str.replace(",", ".", regex=False))
@@ -379,7 +391,7 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     num = num.where(~neg, -num.abs())
     num = num.where(~pct, num / 100.0)
     info = {"missing_tokens": int(is_na.sum()), "unparsed": int((num.isna() & ~is_na & ~looks_like_date_or_clock).sum()),
-            "decimal_comma_values": int(dec.sum() + both.sum()), "percent_values": int(pct.sum()),
+            "decimal_comma_values": int(dec.sum() + european.sum()), "percent_values": int(pct.sum()),
             "parenthesised_negatives": int(neg.sum())}
     return num, info
 

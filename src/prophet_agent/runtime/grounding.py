@@ -17,6 +17,12 @@ from .store import canonical
 
 # A number as people write it: optional sign, digits with thousands separators, optional decimals, optional per cent.
 _NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?%?")
+# A date is a label, not a figure: keep its year and drop the month and day ("2026-01-19" -> "2026").
+_DATE = re.compile(r"\b(\d{4})-\d{1,2}(?:-\d{1,2})?\b|\b\d{1,2}/\d{1,2}/(\d{2,4})\b|\b\d{1,2}:\d{2}(?::\d{2})?\b")
+
+
+# Models write dates and minus signs with non-breaking hyphens, en dashes and the true minus sign.
+_DASHES = {ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2212"}
 
 
 def _parse(token: str) -> tuple[float, int, bool]:
@@ -28,7 +34,9 @@ def _parse(token: str) -> tuple[float, int, bool]:
 
 def figures(text: str) -> list[str]:
     """The numeric tokens in a text, in order of appearance."""
-    return [m.group().rstrip(",") for m in _NUM.finditer(text or "")]
+    text = (text or "").translate(_DASHES)
+    text = _DATE.sub(lambda m: m.group(1) or m.group(2) or "", text or "")
+    return [m.group().rstrip(",") for m in _NUM.finditer(text)]
 
 
 def _near(value: float, target: float, decimals: int) -> bool:
