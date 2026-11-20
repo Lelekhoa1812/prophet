@@ -17,12 +17,13 @@ from .store import canonical
 
 # A number as people write it: optional sign, digits with thousands separators, optional decimals, optional per cent.
 _NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?%?")
-# A date is a label, not a figure: keep its year and drop the month and day ("2026-01-19" -> "2026").
+# A date is a label, not a figure: "2026-01-19", "Jan 2026" and "3 June 2027" are dropped whole.
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 _DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_MONTH}\s+\d{{4}}\b|\b(\d{{4}})-\d{{1,2}}(?:-\d{{1,2}})?\b|\b\d{{1,2}}/\d{{1,2}}/(\d{{2,4}})\b|\b\d{{1,2}}:\d{{2}}(?::\d{{2}})?\b")
 
 
 # Models write dates and minus signs with non-breaking hyphens, en dashes and the true minus sign.
+_YEAR = re.compile(r"(?:19|20)\d\d")
 _DASHES = {ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2212"}
 
 
@@ -36,7 +37,7 @@ def _parse(token: str) -> tuple[float, int, bool]:
 def figures(text: str) -> list[str]:
     """The numeric tokens in a text, in order of appearance."""
     text = (text or "").translate(_DASHES)
-    text = _DATE.sub(lambda m: (m.group(1) or m.group(2) or "") if m.lastindex else "", text or "")
+    text = _DATE.sub("", text or "")
     return [m.group().rstrip(",") for m in _NUM.finditer(text)]
 
 
@@ -49,6 +50,8 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
     pool = [_parse(t)[0] for t in figures(canonical(history) + "\n" + goal)]
     missing: list[str] = []
     for token in figures(answer):
+        if _YEAR.fullmatch(token):
+            continue                  # a bare year such as 2026 names a period; a forecast period is not in the evidence
         value, decimals, pct = _parse(token)
         candidates = [value / 100.0] if pct else []
         if any(_near(v, value, decimals) for v in pool) or any(_near(v, c, decimals + 2) for v in pool for c in candidates):

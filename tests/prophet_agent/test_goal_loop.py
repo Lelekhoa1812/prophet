@@ -398,16 +398,22 @@ def test_grounding_matches_figures_at_their_written_precision():
 
 def test_grounding_does_not_read_dates_or_ranges_as_negative_numbers():
     from prophet_agent.runtime.grounding import figures
-    assert figures("The week of 2026-01-19 and 12-14 units") == ["2026", "12", "14"]
+    assert figures("The week of 2026-01-19 and 12-14 units") == ["12", "14"]
     assert figures("Change was -19 and 5%") == ["-19", "5%"]
 
 
 def test_grounding_normalises_unicode_hyphens_and_minus():
     from prophet_agent.runtime.grounding import figures
-    assert figures("week of 2026‑01‑26 and a 4‑week view") == ["2026", "4"]
+    assert figures("week of 2026‑01‑26 and a 4‑week view") == ["4"]
     assert figures("fell by −5 units") == ["-5"]
 
 
 def test_grounding_treats_month_and_year_labels_as_labels():
     from prophet_agent.runtime.grounding import figures
     assert figures("Jan 2026 is 1,409; March 15, 2026 and 3 June 2027 follow") == ["1,409"]
+
+
+def test_grounding_does_not_ask_the_evidence_for_a_bare_year():
+    from prophet_agent.runtime.grounding import unverified
+    assert unverified("Rose each year, 2023 to 2026, to 1,389 units", [{"n": 1389}], "") == []
+    assert unverified("Sold 1,390 units in 2026", [{"n": 1389}], "") == ["1,390"]
