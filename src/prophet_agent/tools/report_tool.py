@@ -46,6 +46,8 @@ def forecast_report_tool() -> Tool:
 
 FORECAST_REPORT_SPEC = {
     "name": "forecast_report",
+    "title": "Forecast pack",
+    "activity": "Building the chart, workbook and report",
     "description": "Forecast a series with TimesFM 3 and produce a chart (PNG, SVG), spreadsheet (XLSX), report "
                    "(DOCX) and PDF, listed in a sha256 manifest. Research use only.",
     "args": {"values": "list of numbers, oldest first", "horizon": "integer, 1 to 512", "title": "short title"},

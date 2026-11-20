@@ -46,6 +46,8 @@ class Tool:
     fn: Callable[[dict, str], Any]     # fn(args, idempotency_key) -> JSON-serialisable result
     idempotent: bool = False
     doc: str = ""                      # one line for the planner: what the tool does and its exact argument names
+    title: str = ""                    # short noun for people, e.g. "Forecast"; the UI never shows the tool's code name
+    activity: str = ""                 # present-tense phrase for a running step, e.g. "Forecasting the series"
 
 
 class Ctx:

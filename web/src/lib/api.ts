@@ -24,11 +24,14 @@ export type Mission = {
 
 export type MissionRow = { id: string; goal: string; status: string; created: number; updated: number };
 
+export type ToolInfo = { name: string; title: string; activity: string; description: string };
+
 export type ArtifactFile = { path: string; sha256: string; bytes: number };
 
 export type ArtifactRun = {
   run_id: string;
   files: ArtifactFile[];
+  history?: number[];
   forecast: {
     config: Record<string, unknown> | null;
     point: number[] | null;
@@ -60,6 +63,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ ok: boolean; nim_keys_configured: boolean }>("/api/health"),
+  tools: () => req<ToolInfo[]>("/api/tools"),
   missions: () => req<MissionRow[]>("/api/missions"),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
   createMission: (goal: string) => req<{ id: string }>("/api/missions", { method: "POST", body: JSON.stringify({ goal }) }),

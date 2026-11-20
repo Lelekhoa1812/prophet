@@ -1,245 +1,235 @@
-import { useCallback, useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Artifacts } from "./components/Artifacts";
-import { Starfield } from "./components/Starfield";
-import { Transcript } from "./components/Transcript";
-import { Button, Card, Label, StatusPill } from "./components/ui";
-import { api, type ArtifactRun, type MissionRow } from "./lib/api";
-import { errorMessage, formatTime, truncate } from "./lib/format";
+import { Menu, Plus, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Composer } from "./components/Composer";
+import { Sidebar } from "./components/Sidebar";
+import { Turn } from "./components/Turn";
+import { Button, Card, Spinner } from "./components/ui";
+import { api, type ArtifactRun, type MissionRow, type ToolInfo } from "./lib/api";
+import { errorMessage } from "./lib/format";
 import { useMission } from "./lib/useMission";
-import { cn } from "./lib/utils";
+import { cn, isWorking } from "./lib/utils";
 
-const GOAL_MIN = 3;
-const GOAL_MAX = 2000;
+// Starting points that carry their own data, so a first-time visitor can see a full run without preparing a file.
+const EXAMPLES: { label: string; text: string }[] = [
+  {
+    label: "Weekly sales, next 8 weeks",
+    text: "Forecast the next 8 weeks from these weekly sales: 120, 132, 128, 141, 150, 147, 160, 171, 168, 180, 176, 190, 185, 198, 204, 199.",
+  },
+  {
+    label: "Monthly revenue, next 6 months",
+    text: "Here is monthly revenue for two years: 310, 295, 330, 352, 371, 365, 380, 402, 388, 410, 455, 520, 335, 322, 349, 375, 396, 391, 405, 428, 415, 439, 486, 551. Forecast the next 6 months and show the likely range.",
+  },
+  {
+    label: "Spare parts with many zeros",
+    text: "Weekly demand for a spare part: 0, 0, 3, 0, 0, 0, 5, 0, 0, 2, 0, 0, 0, 0, 4, 0, 0, 0, 6, 0, 0, 3. Forecast the next 8 weeks and tell me how much stock to hold.",
+  },
+];
 
 export default function App() {
   const [missions, setMissions] = useState<MissionRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [health, setHealth] = useState<{ ok: boolean; nim_keys_configured: boolean } | null>(null);
+  const [tools, setTools] = useState<Record<string, ToolInfo>>({});
   const [navOpen, setNavOpen] = useState(false);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
-  const [goal, setGoal] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | undefined>(undefined);
+  const [sending, setSending] = useState(false);
   const { mission, error: pollError, refresh } = useMission(selectedId);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
 
   useEffect(() => {
+    api.health().then(setHealth).catch(() => setHealth(null));
     api
-      .health()
-      .then(setHealth)
-      .catch(() => setHealth(null));
-  }, []);
-
-  const refreshList = useCallback(() => {
-    api
-      .missions()
-      .then(setMissions)
+      .tools()
+      .then((list) => setTools(Object.fromEntries(list.map((t) => [t.name, t]))))
       .catch(() => {});
   }, []);
 
-  // The list changes when a mission is created or changes status.
+  const refreshList = useCallback(() => {
+    api.missions().then(setMissions).catch(() => {});
+  }, []);
+
   useEffect(() => {
     refreshList();
   }, [refreshList, selectedId, mission?.status]);
 
-  // Artefacts appear as runs finish their tools, so reload when the status or the event count moves.
   const eventCount = mission?.events.length ?? 0;
   useEffect(() => {
     if (!selectedId) {
       setRuns([]);
       return;
     }
-    api
-      .artifacts(selectedId)
-      .then(setRuns)
-      .catch(() => setRuns([]));
+    api.artifacts(selectedId).then(setRuns).catch(() => setRuns([]));
   }, [selectedId, mission?.status, eventCount]);
 
-  const goalLength = goal.trim().length;
-  const canStart = goalLength >= GOAL_MIN && goalLength <= GOAL_MAX && !creating;
+  // Follow the work down the page, unless the person has scrolled up to read.
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current) el.scrollTo({ top: el.scrollHeight });
+  }, [eventCount, mission?.status, runs.length, selectedId]);
 
-  async function startMission(e?: FormEvent) {
-    e?.preventDefault();
-    if (!canStart) return;
-    setCreating(true);
-    setCreateError(null);
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setNavOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
+
+  const start = async (goal: string) => {
+    setSending(true);
     try {
-      const { id } = await api.createMission(goal.trim());
-      setGoal("");
+      const { id } = await api.createMission(goal);
+      stick.current = true;
       setSelectedId(id);
+      setDraft(undefined);
       setNavOpen(false);
       refreshList();
     } catch (err) {
-      setCreateError(errorMessage(err, "Could not start the mission."));
+      throw new Error(errorMessage(err, "Couldn't start the forecast. Try again."));
     } finally {
-      setCreating(false);
+      setSending(false);
     }
-  }
+  };
 
-  function onGoalKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      void startMission();
-    }
-  }
+  const newForecast = () => {
+    setSelectedId(null);
+    setDraft(undefined);
+    setNavOpen(false);
+  };
 
   const noKeys = health !== null && !health.nim_keys_configured;
   const apiDown = health === null && pollError !== null;
+  const current = mission && mission.id === selectedId ? mission : null;
+  const waitingOnYou = current?.status === "waiting_user";
+  const blockedReason = noKeys
+    ? "Prophet needs a model key before it can start."
+    : waitingOnYou
+      ? "Answer the question above to continue."
+      : current && isWorking(current.status)
+        ? "Prophet is working. You can start another forecast once it finishes."
+        : null;
+
+  const sidebar = (
+    <Sidebar
+      missions={missions}
+      selectedId={selectedId}
+      onSelect={(id) => {
+        stick.current = true;
+        setSelectedId(id);
+        setNavOpen(false);
+      }}
+      onNew={newForecast}
+    />
+  );
 
   return (
-    <div className="relative min-h-dvh">
-      <Starfield />
+    <div className="flex h-dvh bg-night-0 text-sand-0">
+      <aside className="hidden w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4 lg:flex">
+        <h1 className="px-2 text-2xl font-bold">Prophet</h1>
+        <div className="min-h-0 flex-1">{sidebar}</div>
+      </aside>
 
-      <header className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-4 px-4 pt-6 sm:px-8">
-        <div className="grid gap-0.5">
-          <h1 className="font-display text-4xl leading-none font-semibold text-sand-0">Prophet</h1>
-          <p className="text-sm text-sand-1">Forecasting agent for R&amp;D · research use only</p>
-        </div>
-        <div className="flex items-center gap-3">
-          {health && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-2 rounded-full border px-2.5 py-0.5 text-xs",
-                health.nim_keys_configured ? "border-ok/50 text-ok" : "border-bad/50 text-bad",
-              )}
-            >
-              <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
-              {health.nim_keys_configured ? "Planner ready" : "Planner not configured"}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => setNavOpen((v) => !v)}
-            aria-expanded={navOpen}
-            aria-controls="missions-nav"
-            className="min-h-10 rounded-md border border-sand-2/60 px-3 text-sm text-sand-0 hover:border-sand-1 lg:hidden"
-          >
-            Missions ({missions.length})
-          </button>
-        </div>
-      </header>
-
-      {(noKeys || apiDown) && (
-        <div className="mx-auto mt-5 max-w-[1400px] px-4 sm:px-8">
-          <Card role="alert" className="border-bad/50 p-4 text-sm text-sand-0">
-            {apiDown
-              ? "The Prophet API is not reachable. Start it, then reload this page."
-              : "NVIDIA NIM keys are not configured on this machine, so missions cannot start. Add them to the git-ignored .env file and restart the API."}
-          </Card>
+      {navOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <button type="button" aria-label="Close menu" onClick={() => setNavOpen(false)} className="absolute inset-0 bg-black/60" />
+          <div className="absolute inset-y-0 left-0 flex w-[86%] max-w-80 flex-col gap-4 bg-night-1 p-4">
+            <div className="flex items-center justify-between">
+              <span className="px-2 text-2xl font-bold">Prophet</span>
+              <Button variant="ghost" size="icon" aria-label="Close menu" onClick={() => setNavOpen(false)}>
+                <X aria-hidden="true" className="size-5" />
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">{sidebar}</div>
+          </div>
         </div>
       )}
 
-      <main className="mx-auto mt-6 grid max-w-[1400px] gap-6 px-4 pb-16 sm:px-8 lg:grid-cols-[240px_minmax(0,1fr)_340px]">
-        <aside
-          id="missions-nav"
-          aria-label="Missions"
-          className={cn("min-w-0 gap-3", navOpen ? "grid" : "hidden", "lg:grid lg:content-start")}
-        >
-          <Button
-            variant="ghost"
-            className="w-full justify-start"
-            onClick={() => {
-              setSelectedId(null);
-              setNavOpen(false);
-            }}
-          >
-            New mission
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between gap-2 border-b border-sand-2/20 px-3 py-2 lg:hidden">
+          <Button variant="ghost" size="icon" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
+            <Menu aria-hidden="true" className="size-5" />
           </Button>
-          <div className="grid gap-2">
-            <Label>Recent</Label>
-            {missions.length === 0 && <p className="text-sm text-sand-2">No missions yet.</p>}
-            <ul className="grid gap-2">
-              {missions.map((m) => (
-                <li key={m.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedId(m.id);
-                      setNavOpen(false);
-                    }}
-                    aria-current={m.id === selectedId ? "true" : undefined}
-                    className={cn(
-                      "grid w-full gap-1.5 rounded-md border p-3 text-left transition-colors",
-                      m.id === selectedId
-                        ? "border-ember/60 bg-ember-soft"
-                        : "border-sand-2/30 bg-night-1/70 hover:border-sand-1",
-                    )}
-                  >
-                    <span className="line-clamp-2 text-sm text-sand-0 [overflow-wrap:anywhere]">
-                      {truncate(m.goal, 90)}
-                    </span>
-                    <span className="flex flex-wrap items-center justify-between gap-2 text-xs text-sand-2">
-                      <span className="tabular-nums">{formatTime(m.created)}</span>
-                      <StatusPill status={m.status} />
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </aside>
+          <span className="text-xl font-bold">Prophet</span>
+          <Button variant="ghost" size="icon" aria-label="New forecast" onClick={newForecast}>
+            <Plus aria-hidden="true" className="size-5" />
+          </Button>
+        </header>
 
-        <section aria-label={selectedId ? "Mission transcript" : "Start a mission"} className="grid min-w-0 content-start gap-6">
-          {selectedId === null ? (
-            <Card className="grid gap-5 p-5 sm:p-7">
-              <div className="grid gap-2">
-                <Label>New mission</Label>
-                <h2 className="font-display text-3xl leading-tight text-sand-0 text-balance">
-                  What should Prophet forecast?
-                </h2>
-                <p className="text-sm text-sand-1">
-                  Describe the series, the horizon and the decision it informs. Prophet plans, runs TimesFM 3 and
-                  sandboxed analytics, asks when it needs you, and writes a forecast pack you can download.
+        <main
+          ref={scroller}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+          }}
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto grid w-full max-w-3xl gap-6 px-4 py-6 sm:px-6">
+            {(noKeys || apiDown) && (
+              <Card role="alert" className="grid gap-1 border-bad/40 p-4">
+                <p className="text-base font-bold">{apiDown ? "Prophet isn't running" : "Prophet needs a model key"}</p>
+                <p className="text-[0.9375rem] text-sand-1">
+                  {apiDown
+                    ? "Start the Prophet server, then reload this page."
+                    : "Add your NVIDIA key to the .env file in the project folder, then restart the server."}
                 </p>
-              </div>
-              <form onSubmit={startMission} className="grid gap-3">
-                <label htmlFor="goal" className="text-sm text-sand-0">
-                  Goal
-                </label>
-                <textarea
-                  id="goal"
-                  value={goal}
-                  onChange={(e) => setGoal(e.target.value)}
-                  onKeyDown={onGoalKey}
-                  rows={4}
-                  maxLength={GOAL_MAX}
-                  placeholder="e.g. Forecast weekly demand for the next 12 weeks and show the P10 to P90 range."
-                  className="min-h-28 w-full resize-y rounded-md border border-sand-2/60 bg-night-0 p-3 text-base text-sand-0 placeholder:text-sand-2 focus:border-ember focus:outline-none"
-                />
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="text-xs text-sand-2 tabular-nums">
-                    {goalLength}/{GOAL_MAX} · Ctrl or ⌘ + Enter to start
-                  </span>
-                  <Button type="submit" disabled={!canStart || noKeys}>
-                    {creating ? "Starting…" : "Start mission"}
-                  </Button>
-                </div>
-                {createError && (
-                  <p role="alert" className="text-sm text-bad">
-                    {createError}
+              </Card>
+            )}
+
+            {selectedId === null ? (
+              <section aria-label="New forecast" className="grid gap-6 pt-6 sm:pt-14">
+                <div className="grid gap-2">
+                  <h2 className="text-3xl leading-tight font-bold text-balance sm:text-4xl">What would you like to forecast?</h2>
+                  <p className="text-lg text-sand-1">
+                    Paste your numbers or describe the series. Prophet plans the work, checks what it can, asks when it needs
+                    you, and gives you a chart and files to download.
                   </p>
+                </div>
+                <div className="grid gap-2">
+                  <p className="text-[0.9375rem] font-semibold text-sand-2">Try an example</p>
+                  <ul className="flex flex-wrap gap-2">
+                    {EXAMPLES.map((ex) => (
+                      <li key={ex.label}>
+                        <button
+                          type="button"
+                          onClick={() => setDraft(ex.text)}
+                          className="min-h-10 rounded-full border border-sand-2/40 px-4 text-base text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
+                        >
+                          {ex.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </section>
+            ) : current ? (
+              <Turn mission={current} tools={tools} runs={runs} onAnswered={refresh} onRetry={(g) => void start(g).catch(() => {})} />
+            ) : (
+              <p role="status" className="flex items-center gap-2 text-base text-sand-1">
+                {pollError ? (
+                  <span className="text-bad">{pollError}</span>
+                ) : (
+                  <>
+                    <Spinner /> Loading
+                  </>
                 )}
-              </form>
-            </Card>
-          ) : mission && mission.id === selectedId ? (
-            <Transcript mission={mission} onAnswered={refresh} />
-          ) : (
-            <Card className="p-5">
-              <p className="text-sm text-sand-1" role="status">
-                {pollError ?? "Loading mission…"}
               </p>
-            </Card>
-          )}
-        </section>
+            )}
+          </div>
+        </main>
 
-        <aside aria-label="Artefacts" className="grid min-w-0 content-start gap-4">
-          <Artifacts runs={runs} />
-        </aside>
-      </main>
-
-      <footer className="mx-auto max-w-[1400px] px-4 pb-10 text-xs text-sand-2 sm:px-8">
-        TimesFM 3 weights are non-commercial: outputs are for research use only, not for commercial decisions, client
-        deliverables or paid services. Numbers from synthetic generators are labelled as synthetic.
-      </footer>
+        <div className={cn("border-t border-sand-2/15 bg-night-0 px-4 pt-3 pb-3 sm:px-6")}>
+          <div className="mx-auto w-full max-w-3xl">
+            <Composer
+              onSend={start}
+              busy={sending}
+              blockedReason={blockedReason}
+              initial={draft}
+              placeholder={selectedId === null ? "Describe what to forecast" : "Describe another forecast"}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

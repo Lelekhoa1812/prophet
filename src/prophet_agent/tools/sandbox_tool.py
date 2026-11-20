@@ -33,6 +33,8 @@ def sandbox_python_tool() -> Tool:
 
 SANDBOX_PYTHON_SPEC = {
     "name": "sandbox_python",
+    "title": "Analysis",
+    "activity": "Running an analysis",
     "description": "Run Python for analytics in a guardrailed sandbox (no network, no secrets, writes only to out/). "
                    "Returns stdout, stderr and hashed output files.",
     "args": {"code": "Python source, at most 20000 characters"},

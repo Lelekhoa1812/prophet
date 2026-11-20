@@ -5,22 +5,29 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
-const STATUS: Record<string, { label: string; tone: "ok" | "bad" | "ember" | "sand" }> = {
-  created: { label: "Queued", tone: "sand" },
+export type Tone = "ok" | "bad" | "ember" | "sand";
+
+// What the person sees for each state. Plain words, no internal status names.
+const STATUS: Record<string, { label: string; tone: Tone }> = {
+  created: { label: "Starting", tone: "ember" },
   running: { label: "Working", tone: "ember" },
   waiting_user: { label: "Needs your answer", tone: "ember" },
   completed: { label: "Done", tone: "ok" },
-  failed: { label: "Failed", tone: "bad" },
-  outcome_unknown: { label: "Outcome unknown", tone: "bad" },
-  budget_exhausted: { label: "Budget reached", tone: "bad" },
   met: { label: "Done", tone: "ok" },
-  stalled: { label: "Stalled: no progress", tone: "bad" },
-  impossible: { label: "Not achievable with these tools", tone: "bad" },
-  iteration_budget: { label: "Iteration budget reached", tone: "bad" },
+  failed: { label: "Couldn't finish", tone: "bad" },
+  outcome_unknown: { label: "Paused for review", tone: "bad" },
+  budget_exhausted: { label: "Reached its limit", tone: "bad" },
+  iteration_budget: { label: "Reached its limit", tone: "bad" },
+  stalled: { label: "Stuck", tone: "bad" },
+  impossible: { label: "Not possible with this data", tone: "bad" },
 };
 
 export function statusInfo(status: string) {
-  return STATUS[status] ?? { label: status, tone: "sand" as const };
+  return STATUS[status] ?? { label: "Unknown", tone: "sand" as Tone };
+}
+
+export function isWorking(status: string): boolean {
+  return status === "created" || status === "running";
 }
 
 export function formatBytes(n: number): string {

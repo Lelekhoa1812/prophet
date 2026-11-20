@@ -18,7 +18,8 @@ def default_tools() -> dict:
         "forecast_report": (forecast_report_tool(), FORECAST_REPORT_SPEC),
         "sandbox_python": (sandbox_python_tool(), SANDBOX_PYTHON_SPEC),
     }
-    return {name: replace(tool, doc=spec_doc(spec)) for name, (tool, spec) in specs.items()}
+    return {name: replace(tool, doc=spec_doc(spec), title=spec["title"], activity=spec["activity"])
+            for name, (tool, spec) in specs.items()}
 
 
 __all__ = ["FORECAST_REPORT_SPEC", "LICENCE_NOTE", "QUANTILE_LEVELS", "SANDBOX_PYTHON_SPEC", "TIMESFM_TOOL_SPEC",

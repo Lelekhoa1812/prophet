@@ -64,6 +64,12 @@ def create_app(service: MissionService) -> FastAPI:
         from prophet_agent.nim.transport import load_keys
         return {"ok": True, "nim_keys_configured": len(load_keys()) > 0}
 
+    @app.get("/api/tools")
+    def list_tools() -> list[dict]:
+        """What the agent can do, in words a person (or another agent) can read. Code names stay out of the UI."""
+        return [{"name": t.name, "title": t.title or t.name, "activity": t.activity or t.title or t.name,
+                 "description": t.doc} for t in service.tools.values()]
+
     @app.get("/api/missions")
     def list_missions() -> list[dict]:
         return service.list()
@@ -107,8 +113,8 @@ def create_app(service: MissionService) -> FastAPI:
     @app.get("/api/missions/{mission_id}/artifacts")
     def list_artifacts(mission_id: str) -> list[dict]:
         rows = service.store.conn.execute(
-            "SELECT result_json FROM tool_calls WHERE mission_id=? AND tool='forecast_report' AND status='done'",
-            (mission_id,)).fetchall()
+            "SELECT result_json, args_json FROM tool_calls "
+            "WHERE mission_id=? AND tool='forecast_report' AND status='done' ORDER BY step_idx", (mission_id,)).fetchall()
         out = []
         for r in rows:
             res = json.loads(r["result_json"] or "null") or {}
@@ -116,7 +122,10 @@ def create_app(service: MissionService) -> FastAPI:
             if run_id:
                 fc = res.get("forecast") or {}
                 q = fc.get("quantiles") or {}
-                out.append({"run_id": run_id, "files": res.get("files", []),
+                args = json.loads(r["args_json"] or "null") or {}
+                values = args.get("values")
+                history = [float(v) for v in values[-400:]] if isinstance(values, list) else []
+                out.append({"run_id": run_id, "files": res.get("files", []), "history": history,
                             "forecast": {"config": fc.get("config"), "point": fc.get("point"),
                                          "q10": q.get("0.1"), "q50": q.get("0.5"), "q90": q.get("0.9")}})
         return out

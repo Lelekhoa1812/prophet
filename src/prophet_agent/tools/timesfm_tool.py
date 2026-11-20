@@ -65,6 +65,8 @@ def timesfm_tool() -> Tool:
 
 TIMESFM_TOOL_SPEC = {
     "name": "timesfm_forecast",
+    "title": "Forecast",
+    "activity": "Forecasting the series",
     "description": "Forecast a univariate series with TimesFM 3. Returns point and quantile forecasts and the "
                    "exact configuration used. Research use only (non-commercial weights). The model is fixed: pass "
                    "only the two arguments below.",

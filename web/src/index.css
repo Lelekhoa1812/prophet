@@ -1,18 +1,20 @@
 @import "tailwindcss";
 
-/* Tokens from DESIGN.md. Dark only: the console is used in dim rooms, and the palette is built for it. */
+/* One typeface everywhere: Times New Roman. Sizes come from one scale so every screen feels like the same product. */
 @theme {
-  --font-display: "Cormorant Garamond", Georgia, serif;
-  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-  --color-night-0: #0b0907;
-  --color-night-1: #15110d;
-  --color-night-2: #201a14;
-  --color-sand-0: #f1e4c8;
-  --color-sand-1: #b9a682;
-  --color-sand-2: #7d6d55;
-  --color-ember: #ef7a3a;
-  --color-ember-soft: #3a2116;
+  --font-sans: "Times New Roman", Times, "Liberation Serif", serif;
+  --font-display: "Times New Roman", Times, "Liberation Serif", serif;
+  --font-mono: "Times New Roman", Times, "Liberation Serif", serif;
+  --color-night-0: #0f0d0b;
+  --color-night-1: #171410;
+  --color-night-2: #211c16;
+  --color-night-3: #2b241c;
+  --color-sand-0: #f3e9d2;
+  --color-sand-1: #c2b392;
+  --color-sand-2: #8d7e65;
+  --color-ember: #e8793a;
+  --color-ember-strong: #f48d51;
+  --color-ember-soft: #34201a;
   --color-ok: #8fbf9a;
   --color-bad: #e0675c;
 }
@@ -24,15 +26,23 @@
     color: var(--color-sand-0);
   }
   html,
-  body {
+  body,
+  #root {
+    height: 100%;
     background: var(--color-night-0);
-    overflow-x: hidden;
   }
   body {
     font-family: var(--font-sans);
-    font-size: 0.9375rem;
-    line-height: 1.55;
+    font-size: 1.0625rem;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
   }
   ::selection {
     background: var(--color-ember);
@@ -40,16 +50,32 @@
   }
   * {
     caret-color: var(--color-ember);
-    scrollbar-color: var(--color-sand-2) var(--color-night-1);
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-night-3) transparent;
   }
   :focus-visible {
     outline: 2px solid var(--color-ember);
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 6px;
   }
   .tabular {
     font-variant-numeric: tabular-nums;
   }
+  details > summary {
+    list-style: none;
+  }
+  details > summary::-webkit-details-marker {
+    display: none;
+  }
+}
+
+@keyframes prophet-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: prophet-spin 0.9s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -57,6 +83,7 @@
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
