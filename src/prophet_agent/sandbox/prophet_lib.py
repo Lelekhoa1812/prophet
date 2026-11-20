@@ -777,12 +777,13 @@ def _end_labels(ax: Any, items: list[tuple[str, float, str]], x_last: Any, unit:
 
 def chart(kind: str, data: Any = None, *, title: str, subtitle: str = "", unit: str = "", x_label: str = "", y_label: str = "",
           source: str = "Source: the uploaded data", path: str = "out/chart.png", order: str = "sort",
-          highlight: str | None = None, x: str | None = None, y: str | None = None, trend: bool = False,
+          highlight: str | None = None, x: str | None = None, y: str | list[str] | None = None, trend: bool = False,
           history: pd.Series | None = None, point: Any = None, bands: list[tuple[float, Any, Any]] | None = None,
           future_index: Any = None, shared_y: bool = True) -> dict:
     """Draw one chart to ``path`` (PNG, with an SVG and the plotted numbers as CSV beside it) and report on it.
 
-    kind: "line" (data: Series, DataFrame or dict of Series, at most 6 series), "bar" (a Series of category to value; sorted
+    kind: "line" (data: Series, DataFrame or dict of Series, at most 6 series; or a table with x="<column>" and y="<column>"
+    or a list of columns), "bar" (a Series of category to value; sorted
     largest first unless order="keep"), "hist" (a sequence of numbers), "scatter" (a DataFrame with x= and y= column names;
     trend=True adds a fitted line), "small_multiples" (a dict or DataFrame, one panel per series, up to 12), and "forecast".
     For "forecast" pass history= (a Series with a date or number index), point= (the forecast values) and bands=[(level,
@@ -799,6 +800,17 @@ def chart(kind: str, data: Any = None, *, title: str, subtitle: str = "", unit: 
 
     if kind not in CHART_KINDS:
         raise ValueError(f"unknown chart kind {kind!r}; use one of {', '.join(CHART_KINDS)}")
+    if isinstance(data, pd.DataFrame) and x and kind in ("line", "bar", "small_multiples"):
+        # A table with its x column named: that column becomes the axis and y= (one name or a list) the measures.
+        if x not in data.columns:
+            raise ValueError(f"x={x!r} is not a column; columns are {list(data.columns)}")
+        cols = [y] if isinstance(y, str) else (list(y) if y else [c for c in data.columns if c != x and pd.api.types.is_numeric_dtype(data[c])])
+        missing = [c for c in cols if c not in data.columns]
+        if missing:
+            raise ValueError(f"y column(s) {missing} not found; columns are {list(data.columns)}")
+        frame = data[[x, *cols]].copy()
+        frame[x] = pd.to_datetime(frame[x]) if pd.api.types.is_datetime64_any_dtype(frame[x]) else frame[x]
+        data = frame.set_index(x)[cols[0] if kind == "bar" else cols]
     if len(title.split()) < 4:
         raise ValueError("the title must state the finding in a sentence of at least four words, for example "
                          "'Sales fell 12% in the second half'. A title that names the chart type is not allowed.")

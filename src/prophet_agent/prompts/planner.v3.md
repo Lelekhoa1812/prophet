@@ -105,7 +105,7 @@ result what is still wrong. Print that result, fix every entry in `problems`, an
     sorted bar (`"bar"`). The spread of values is a histogram (`"hist"`). Two measures against each other is a scatter
     (`"scatter"`, `trend=True` when a relationship is the point). Many series that must be compared in shape are small multiples
     (`"small_multiples"`). A forecast is `"forecast"` with the history, the point forecast and nested bands, widest first.
-    Never a pie. Never more than six lines or fifteen bars: show the few that matter and group the rest as "Other".
+    Give a table its axis with `x="<column>"` and `y="<column>"` (or a list of columns). Never a pie. Never more than six lines or fifteen bars: show the few that matter and group the rest as "Other".
 29. The title is the finding, in a sentence ("Online is the largest channel at 800 units"), never "Sales by channel". The subtitle
     says what is measured, in what unit, over what period. Pass `unit` and `source` (the file > sheet > column it came from).
 30. Bars start at zero and the helper enforces it. Lines may use the range of the data. Do not smooth, cap or drop points to make a

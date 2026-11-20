@@ -115,3 +115,15 @@ def test_small_files_are_told_to_load_whole(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     pd.DataFrame({"a": range(10)}).to_csv(tmp_path / "s.csv", index=False)
     assert "pl.load" in pl.size_report(tmp_path / "s.csv")["strategy"]
+
+
+def test_a_table_with_named_columns_draws_like_a_frame_with_an_index(tmp_path):
+    df = pd.DataFrame({"Week": IDX[:40], "Online": range(40), "Store": range(40, 80)})
+    r = pl.chart("line", df, x="Week", y=["Online", "Store"], title="Store sells more than online every week", subtitle="Units per week",
+                 unit="units", path=str(tmp_path / "t.png"))
+    assert r["problems"] == [] and list(pd.read_csv(tmp_path / "t.csv", index_col=0).columns) == ["Online", "Store"]
+    b = pl.chart("bar", pd.DataFrame({"c": ["a", "b"], "v": [3, 5]}), x="c", y="v", title="Category b is larger than category a",
+                 subtitle="Units", unit="units", path=str(tmp_path / "b2.png"))
+    assert b["checks"]["zero_baseline"]
+    with pytest.raises(ValueError, match="not a column"):
+        pl.chart("line", df, x="Nope", y="Online", title="A title with several words", subtitle="s", path=str(tmp_path / "e.png"))

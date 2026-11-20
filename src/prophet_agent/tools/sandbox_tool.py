@@ -64,7 +64,7 @@ SANDBOX_PYTHON_SPEC = {
                    "gives pl.load(path, sheet) (one typed DataFrame: numbers and dates converted, blanks missing; the "
                    "report is df.attrs['report']), pl.profile(path), pl.as_number(s), pl.as_dates(s, dayfirst=None), "
                    "pl.build_series(...), pl.find_season(values) and pl.save_series(series, 'out/series.json'). "
-                   "pl.read_table, pl.to_number and pl.to_datetime return (value, info) pairs: unpack both. Draw charts with pl.chart(kind, data, title=<the finding>, subtitle=<measure, unit, period>, unit=..., source=..., path=\"out/name.png\") and read the problems it returns. pl.size_report(path) and pl.query(sql, t=path) work on CSV or Parquet files too big to read whole (the query sees only the named files). Write files to out/. "
+                   "pl.read_table, pl.to_number and pl.to_datetime return (value, info) pairs: unpack both. Draw charts with pl.chart(kind, data, [x=<column>, y=<column or list>,] title=<the finding>, subtitle=<measure, unit, period>, unit=..., source=..., path=\"out/name.png\") and read the problems it returns. pl.size_report(path) and pl.query(sql, t=path) work on CSV or Parquet files too big to read whole (the query sees only the named files). Write files to out/. "
                    "Print only what you need: output you do not print, you do not see. A series written with "
                    "pl.save_series can be forecast by passing source {run_id, file}.",
     "args": {"code": "Python source, at most 20000 characters"},
