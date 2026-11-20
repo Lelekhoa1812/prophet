@@ -406,3 +406,8 @@ def test_grounding_normalises_unicode_hyphens_and_minus():
     from prophet_agent.runtime.grounding import figures
     assert figures("week of 2026‑01‑26 and a 4‑week view") == ["2026", "4"]
     assert figures("fell by −5 units") == ["-5"]
+
+
+def test_grounding_treats_month_and_year_labels_as_labels():
+    from prophet_agent.runtime.grounding import figures
+    assert figures("Jan 2026 is 1,409; March 15, 2026 and 3 June 2027 follow") == ["1,409"]
