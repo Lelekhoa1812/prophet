@@ -5,6 +5,7 @@
 .venv/
 __pycache__/
 console/dist/
+web/dist/
 data/
 node_modules/
 .pytest_cache/

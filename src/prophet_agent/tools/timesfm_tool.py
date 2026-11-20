@@ -23,7 +23,15 @@ MAX_HORIZON = 512
 MAX_SERIES = 100_000
 
 
+ALLOWED_ARGS = {"values", "horizon"}
+
+
 def _run(args: dict, _key: str) -> dict[str, Any]:
+    # The checkpoint is fixed to TimesFM 3. Unknown keys are refused, so a planner cannot pass a different model and
+    # believe it was used.
+    extra = sorted(set(args) - ALLOWED_ARGS)
+    if extra:
+        raise ValueError(f"unknown arguments {extra}; the model is fixed to TimesFM 3; allowed: values, horizon")
     values = args.get("values")
     horizon = args.get("horizon")
     if not isinstance(values, list) or not values or len(values) > MAX_SERIES:
@@ -58,6 +66,7 @@ def timesfm_tool() -> Tool:
 TIMESFM_TOOL_SPEC = {
     "name": "timesfm_forecast",
     "description": "Forecast a univariate series with TimesFM 3. Returns point and quantile forecasts and the "
-                   "exact configuration used. Research use only (non-commercial weights).",
+                   "exact configuration used. Research use only (non-commercial weights). The model is fixed: pass "
+                   "only the two arguments below.",
     "args": {"values": "list of numbers, oldest first", "horizon": "integer, 1 to 512"},
 }

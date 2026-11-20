@@ -48,20 +48,31 @@ class TimesFMEngine:
 
     def forecast(self, series: np.ndarray, horizon: int) -> Forecast:
         """Forecast one univariate series. Returns point (horizon,) and q (horizon, 9), clipped at 0 and sorted."""
+        batch = self.forecast_batch([series], horizon)
+        return Forecast(batch.point[0], batch.q[0])
+
+    def forecast_batch(self, series_list, horizon: int) -> Forecast:
+        """Forecast many series in one model call. Returns point (n, horizon) and q (n, horizon, 9)."""
         if horizon < 1:
             raise ValueError("horizon must be at least 1")
-        x = np.asarray(series, dtype=np.float32).reshape(-1)
-        if x.size == 0:
-            raise ValueError("series is empty")
-        if not np.isfinite(x).all():
-            raise ValueError("series contains NaN or infinite values")
-        x = x[-self.global_context:]
+        if len(series_list) == 0:
+            raise ValueError("no series given")
+        batch = []
+        for series in series_list:
+            x = np.asarray(series, dtype=np.float32).reshape(-1)
+            if x.size == 0:
+                raise ValueError("series is empty")
+            if not np.isfinite(x).all():
+                raise ValueError("series contains NaN or infinite values")
+            batch.append(x[-self.global_context:])
         with self._infer_lock:
-            out = list(self.model.predict_batch([x], horizon=horizon, return_quantiles=True))[0]
-        point = np.clip(np.asarray(out.forecast, dtype=np.float32), 0, None)
-        q = np.asarray(out.quantiles, dtype=np.float32)
-        if q.shape != (horizon, N_QUANTILES):
-            raise RuntimeError(f"unexpected quantile shape {q.shape}, expected {(horizon, N_QUANTILES)}")
+            outs = list(self.model.predict_batch(batch, horizon=horizon, return_quantiles=True))
+        if len(outs) != len(batch):
+            raise RuntimeError(f"TimesFM returned {len(outs)} forecasts for {len(batch)} series")
+        point = np.clip(np.stack([np.asarray(o.forecast, dtype=np.float32) for o in outs]), 0, None)
+        q = np.stack([np.asarray(o.quantiles, dtype=np.float32) for o in outs])
+        if q.shape != (len(batch), horizon, N_QUANTILES):
+            raise RuntimeError(f"unexpected quantile shape {q.shape}, expected {(len(batch), horizon, N_QUANTILES)}")
         q = np.sort(np.clip(q, 0, None), axis=-1)  # guard against quantile crossing
         return Forecast(point, q)
 

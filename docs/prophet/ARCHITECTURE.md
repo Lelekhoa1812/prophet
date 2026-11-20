@@ -90,8 +90,8 @@ TimesFM 2.5 (Apache-2.0), or use the statistical baselines. This goes to Bill or
 repo's own rule in CLAUDE.md.
 
 **Model facts (model card, Google blog, PyPI) [V-docs].** 330M parameters; decoder-only; patches of 32 in and 64 out; nine
-quantiles from the 10th to the 90th percentile. Maximum context and horizon are not published. The repo's context cap
-of 512 and the library default of 15,360 are our settings, not model limits. Covariates are supported (past-only and
+quantiles from the 10th to the 90th percentile. Maximum context and horizon are not published. The repo uses the full
+global context of 15,360 (the legacy 512 cap was a lab choice and is removed); that is a setting, not a model limit. Covariates are supported (past-only and
 past-future) but there is no independent evidence of covariate skill, and our own calendar covariate gave no gain on
 the twin [R]. No training hook is in the 3.0 package; a LoRA example exists in the GitHub README with no stated version
 [V-docs, unverified for 3.0].
@@ -99,15 +99,29 @@ the twin [R]. No training hook is in the 3.0 package; a LoRA example exists in t
 **Routing.** Intermittent series go to TSB or Croston, not TimesFM [R]. Test covariates with and without, using a
 rolling-origin backtest scored with MASE, CRPS or WQL, pinball loss and coverage [R].
 
-## 6. Decisions needed from the user
+## 6. Decisions
 
-These block nothing in the foundation work, but they block the moves listed.
+Recorded on 2026-11-20 from the user's instructions. Items marked *open* still need a person's call; none blocks the
+gate.
 
-1. **Legacy `src/lab` and the `timesfm-erp` package.** Keep, move under `legacy/`, or delete? Deleting or moving it
-   changes the test suite (110 tests). I will not change it without a yes.
-2. **Package name:** `prophet_agent` or a new name (§4).
-3. **TimesFM 3 licence** (§5): who signs off, and until then, R&D only?
-4. **`NIM.md` and `.env`.** `NIM.md` is untracked and not git-ignored; my scan found no `nvapi-` strings of 20 or more
-   characters in it, but the legacy audit reported six key-shaped strings, so the discrepancy is unresolved. `.env` is
-   mode 644; I recommend 600. Both change files outside the new work, so I need a yes.
-5. **Commit and push.** Nothing is committed yet. Approve the foundation commit, and whether to push to `origin/main`.
+1. **Legacy `src/lab` and the `timesfm-erp` package: deleted.** The user instructed deletion of the old stacks, the
+   legacy model and tuning, and their tests. Done in commit 9cf4c01.
+2. **Package name: `prophet_agent`, kept.** Not separately approved. *Open:* rename later if preferred (§4).
+3. **TimesFM 3 licence: the full official model is in use.** The user stated that the project is not commercialised and
+   that they have full right to use the official TimesFM 3 model. Recorded as their decision. The licence's research-use
+   terms still bind any commercial, client or paid use, so the gate in §5 stays. *Open:* confirm in writing (Bill or Ly)
+   before any client use.
+4. **`NIM.md` and `.env`.** `NIM.md` stays uncommitted; the whole-tree scan found no key-shaped string in it. `.env` is
+   git-ignored and was never committed, but it is mode 644. *Open:* the user decides whether to tighten it to 600.
+5. **Commit and push: authorised.** The user's instruction to keep going until everything is shipped and pushed end to
+   end is the approval. Commits are local and then pushed to `origin/main`.
+
+## 7. Live results, 2026-11-20
+
+- Forecast-pack mission end to end: planner (NIM) → `timesfm_forecast` (TimesFM 3, MLX) → `forecast_report` → five
+  files, each re-hashed against the manifest. Evidence in GOAL.md G9 and G11.
+- Two planner defects were found in the live run and fixed: the goal was lost from the evaluator's prompt once the
+  evidence grew, and the planner did not see tool argument names. Both are covered by tests.
+- Synthetic-twin backtest, walk-forward, 26 origins: TimesFM 3 is +6.9 % better than the best baseline on head-set WAPE,
+  against a 15 % bar. The bar is **not met**. Evidence in GOAL.md G13. The numbers are synthetic replay, not observed
+  results.

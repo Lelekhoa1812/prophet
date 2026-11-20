@@ -220,6 +220,14 @@ class Store:
             return None
         return json.loads(row["output_json"])
 
+    def steps(self, mission_id: str) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT idx, name, status, output_json FROM steps WHERE mission_id=? "
+                                     "ORDER BY idx", (mission_id,)).fetchall()
+        return [{"idx": r["idx"], "name": r["name"], "status": r["status"],
+                 "output": (json.loads(r["output_json"]) or {}).get("v") if r["output_json"] else None}
+                for r in rows]
+
     def finish_step(self, mission_id: str, idx: int, name: str, output: Any) -> None:
         with self._tx() as c:
             c.execute("INSERT INTO steps (mission_id, idx, name, status, output_json, attempts, updated) "

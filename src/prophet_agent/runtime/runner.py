@@ -45,6 +45,7 @@ class Tool:
     name: str
     fn: Callable[[dict, str], Any]     # fn(args, idempotency_key) -> JSON-serialisable result
     idempotent: bool = False
+    doc: str = ""                      # one line for the planner: what the tool does and its exact argument names
 
 
 class Ctx:
@@ -157,9 +158,12 @@ class Runtime:
             self.store.release_lease(mission_id, self.owner)
             return {"status": "failed", "error": msg}
         self.store.set_answer(mission_id, result)
-        self.store.set_status(mission_id, "completed")
+        # Report the goal's own outcome. A stalled or budget-capped run is not "completed" in the sense of "met".
+        outcome = result.get("status") if isinstance(result, dict) else None
+        mission_status = "completed" if outcome in (None, "met") else str(outcome)
+        self.store.set_status(mission_id, mission_status)
         self.store.release_lease(mission_id, self.owner)
-        return {"status": "completed", "result": result}
+        return {"status": mission_status, "result": result}
 
 
 

@@ -73,26 +73,42 @@ def _clip(obj: Any) -> str:
     return s if len(s) <= OBS_CHARS else s[:OBS_CHARS] + "...[clipped]"
 
 
+def _tool_lines(tools: dict[str, Tool]) -> str:
+    if not tools:
+        return "- (none)"
+    return "\n".join(f"- {name}: {tools[name].doc}" if tools[name].doc else f"- {name}" for name in sorted(tools))
+
+
+def _evidence_lines(history: list[dict]) -> str:
+    # Each observation is clipped on its own, so the goal and the tool list are never cut off by a long result.
+    if not history:
+        return "(none yet)"
+    return "\n".join(f"{n}. {_clip(obs)}" for n, obs in enumerate(history[-12:], start=1))
+
+
 def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict]) -> list[dict]:
-    tool_list = "\n".join(f"- {name}" for name in sorted(tools)) or "- (none)"
     system = (
         "You are Prophet's planner. Choose exactly one next action toward the goal: call_tool with a tool name "
         "and args, ask_user with 1 to 4 structured questions (header at most 12 characters, 2 to 4 options each), "
         "or finish when you believe the evidence is sufficient. Prefer the smallest step that gains evidence. "
-        "Never repeat an identical call that already returned the same result."
+        "Pass only the argument names listed for the tool. Never repeat an identical call that already returned "
+        "the same result."
     )
-    user = {"goal": goal, "available_tools": tool_list, "history": history[-12:]}
-    return [{"role": "system", "content": system}, {"role": "user", "content": _clip(user)}]
+    user = (f"Goal:\n{goal}\n\nAvailable tools:\n{_tool_lines(tools)}\n\n"
+            f"Evidence so far (oldest first):\n{_evidence_lines(history)}")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def _eval_messages(goal: str, history: list[dict]) -> list[dict]:
     system = (
         "You are Prophet's evaluator. Given the goal and the evidence so far, return verdict: met if the goal is "
         "satisfied (and put the final answer in answer), not_met if more work could satisfy it, or impossible if "
-        "the goal cannot be met with the tools and data available. Be strict: do not mark met on a guess."
+        "the goal cannot be met with the tools and data available. Be strict: do not mark met on a guess. "
+        "Every figure in the answer must say where its input came from: synthetic (generated test data), real staging, "
+        "or measured. If the goal does not state the source, say the source is unstated rather than assuming one."
     )
-    user = {"goal": goal, "evidence": history[-12:]}
-    return [{"role": "system", "content": system}, {"role": "user", "content": _clip(user)}]
+    user = f"Goal:\n{goal}\n\nEvidence so far (oldest first):\n{_evidence_lines(history)}"
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def _signature(obs: dict) -> str:

@@ -94,9 +94,33 @@ def test_stall_detected_when_the_same_call_returns_the_same_result(store):
     brain = ScriptedBrain(plans=plans, evals=[not_met()] * 5)
     program = goal_program("g", {"a": _tool("a", lambda args, key: {"same": True})}, brain,
                            GoalConfig(max_iterations=8, stall_window=3))
-    _, out = run(store, program)
+    mid, out = run(store, program)
     assert out["result"]["status"] == "stalled"
+    assert out["status"] == "stalled", "a stalled goal must not be recorded as a completed mission"
+    assert store.mission(mid)["status"] == "stalled"
     assert brain.calls["plan"] == 3, "the loop stops after the stall window, not after the iteration cap"
+
+
+def test_goal_and_argument_names_survive_a_large_observation(store):
+    seen = []
+
+    class Recording(ScriptedBrain):
+        def decide(self, messages, schema, name):
+            seen.append((name, messages[-1]["content"]))
+            return super().decide(messages, schema, name)
+
+    big = {"pad": list(range(3000))}       # far over OBS_CHARS once serialised
+    tool = Tool("a", lambda args, key: big, idempotent=True,
+                doc="Echo a large payload. Arguments (use these names only): none.")
+    brain = Recording(plans=[call("a"), finish()], evals=[not_met(), met()])
+    goal = "Forecast marker ZX-42 for 8 weeks"
+    _, out = run(store, goal_program(goal, {"a": tool}, brain))
+    assert out["result"]["status"] == "met"
+    plan_text = next(c for n, c in seen if n == "plan")
+    eval_texts = [c for n, c in seen if n == "eval"]
+    assert f"Goal:\n{goal}" in plan_text and "Arguments (use these names only)" in plan_text
+    assert all(f"Goal:\n{goal}" in text for text in eval_texts), "the goal must never be clipped away"
+    assert "...[clipped]" in eval_texts[-1], "the large observation is clipped on its own"
 
 
 def test_iteration_budget_caps_an_endless_loop(store):
