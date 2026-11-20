@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from prophet_agent.config import ROOT
+from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
 from prophet_agent.runtime.store import LeaseHeld
 from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
@@ -40,10 +41,21 @@ WEB_DIST = ROOT / "web" / "dist"
 
 class MissionIn(BaseModel):
     goal: str = Field(min_length=3, max_length=2000)
+    dataset_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 class AnswerIn(BaseModel):
     answers: dict[str, Any]
+
+
+def _history(args: dict) -> list[float]:
+    """The series behind a forecast, for the chart: from the call's own numbers or from the analysis run it named."""
+    from prophet_agent.tools.series_io import resolve_series
+    try:
+        _, arr = resolve_series({k: args[k] for k in ("values", "source") if k in args})[0]
+    except (ValueError, KeyError, IndexError):
+        return []
+    return [float(v) for v in arr[-400:]]
 
 
 def create_app(service: MissionService) -> FastAPI:
@@ -70,6 +82,29 @@ def create_app(service: MissionService) -> FastAPI:
         return [{"name": t.name, "title": t.title or t.name, "activity": t.activity or t.title or t.name,
                  "description": t.doc} for t in service.tools.values()]
 
+    @app.post("/api/datasets", status_code=201)
+    async def upload_dataset(request: Request, name: str = "data") -> dict:
+        """Raw file bytes in the body, the file name in ?name=. Parsing happens later, in the sandbox."""
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BYTES:
+            raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
+        data = await request.body()
+        try:
+            return service.datasets.add(name, data)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+
+    @app.get("/api/datasets")
+    def list_datasets() -> list[dict]:
+        return service.datasets.list()
+
+    @app.get("/api/datasets/{dataset_id}")
+    def get_dataset(dataset_id: str) -> dict:
+        try:
+            return service.datasets.get(dataset_id)
+        except KeyError:
+            raise HTTPException(404, "no such file")
+
     @app.get("/api/missions")
     def list_missions() -> list[dict]:
         return service.list()
@@ -80,7 +115,10 @@ def create_app(service: MissionService) -> FastAPI:
         if service.brain_factory is default_brain_factory and not load_keys():
             # Refuse before writing a mission row, so no orphan "created" mission is left behind.
             raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
-        mission_id = service.create(body.goal.strip())
+        try:
+            mission_id = service.create(body.goal.strip(), dataset_ids=body.dataset_ids)
+        except KeyError:
+            raise HTTPException(422, "one of the uploaded files no longer exists; upload it again")
         try:
             service.start(mission_id)
         except NotConfigured:
@@ -123,8 +161,7 @@ def create_app(service: MissionService) -> FastAPI:
                 fc = res.get("forecast") or {}
                 q = fc.get("quantiles") or {}
                 args = json.loads(r["args_json"] or "null") or {}
-                values = args.get("values")
-                history = [float(v) for v in values[-400:]] if isinstance(values, list) else []
+                history = _history(args)
                 out.append({"run_id": run_id, "files": res.get("files", []), "history": history,
                             "forecast": {"config": fc.get("config"), "point": fc.get("point"),
                                          "q10": q.get("0.1"), "q50": q.get("0.5"), "q90": q.get("0.9")}})

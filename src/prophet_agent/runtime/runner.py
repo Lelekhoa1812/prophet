@@ -48,6 +48,7 @@ class Tool:
     doc: str = ""                      # one line for the planner: what the tool does and its exact argument names
     title: str = ""                    # short noun for people, e.g. "Forecast"; the UI never shows the tool's code name
     activity: str = ""                 # present-tense phrase for a running step, e.g. "Forecasting the series"
+    observe: Callable[[Any], Any] | None = None   # compact view of a result for the planner; the ledger keeps the full one
 
 
 class Ctx:

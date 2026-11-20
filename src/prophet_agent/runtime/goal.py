@@ -50,7 +50,7 @@ EVAL_SCHEMA: dict[str, Any] = {
     },
 }
 
-OBS_CHARS = 2000
+OBS_CHARS = 4000
 
 
 class Brain(Protocol):
@@ -169,6 +169,11 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
         raise                    # control flow, not evidence: the runtime must see these
     except Exception as exc:  # a tool failure is evidence for the planner; the ledger already recorded it
         return {"kind": "tool", "tool": name, "args": args, "error": redact(str(exc))}
+    if tool.observe is not None:
+        try:
+            result = tool.observe(result)
+        except Exception:  # a broken summariser must not hide the result from the planner
+            pass
     return {"kind": "tool", "tool": name, "args": args, "result": result}
 
 

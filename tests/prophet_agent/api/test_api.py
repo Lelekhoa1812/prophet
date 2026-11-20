@@ -29,8 +29,11 @@ class _StubEngine:
     checkpoint = "stub"
     global_context = 64
 
-    def forecast(self, series, horizon):
-        return Forecast(np.full(horizon, float(series[-1])), np.tile(np.linspace(0, 8, 9), (horizon, 1)))
+    def forecast_batch(self, series_list, horizon):
+        n = len(series_list)
+        point = np.stack([np.full(horizon, float(np.asarray(x)[-1])) for x in series_list])
+        q = np.tile(np.linspace(0, 8, 9), (n, horizon, 1))
+        return Forecast(point, q)
 
 
 @pytest.fixture(autouse=True)

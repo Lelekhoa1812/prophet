@@ -13,7 +13,7 @@ import os
 import uvicorn
 
 from prophet_agent.config import DB_PATH, ensure_dirs
-from prophet_agent.tools import default_tools
+from prophet_agent.tools import default_tools, tool_catalogue
 
 from .app import create_app, default_brain_factory
 from .service import MissionService
@@ -21,7 +21,7 @@ from .service import MissionService
 
 def build_app():
     ensure_dirs()
-    service = MissionService(DB_PATH, default_brain_factory, default_tools())
+    service = MissionService(DB_PATH, default_brain_factory, tool_catalogue(), tools_factory=default_tools)
     return create_app(service)
 
 

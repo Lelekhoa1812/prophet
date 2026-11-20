@@ -12,24 +12,27 @@ from typing import Any
 
 from prophet_agent.artifacts import build_forecast_pack
 from prophet_agent.runtime.runner import Tool
+from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series
 from prophet_agent.tools.timesfm_tool import _run as timesfm_run
 
 MAX_TITLE = 120
-ALLOWED_ARGS = {"values", "horizon", "title"}
+ALLOWED_ARGS = {"values", "source", "horizon", "title"}
 
 
 def _run(args: dict, key: str) -> dict[str, Any]:
     extra = sorted(set(args) - ALLOWED_ARGS)
     if extra:
-        raise ValueError(f"unknown arguments {extra}; the series goes in 'values' (list of numbers); "
-                         "allowed: values, horizon, title")
+        raise ValueError(f"unknown arguments {extra}; allowed: values or source, horizon, title")
+    named = resolve_series(args)
+    if len(named) != 1:
+        raise ValueError(f"the pack is for one series; choose one with source.name from {[n for n, _ in named][:20]}")
     title = str(args.get("title", "Forecast"))[:MAX_TITLE] or "Forecast"
-    fc = timesfm_run({"values": args.get("values"), "horizon": args.get("horizon")}, key)
-    values = [float(v) for v in args["values"]]
-    point = fc["point"]
-    q10 = fc["quantiles"]["0.1"]
-    q90 = fc["quantiles"]["0.9"]
-    pack = build_forecast_pack(history=values, point=point, q10=q10, q90=q90, title=title)
+    fc = timesfm_run({k: args[k] for k in ("values", "source", "horizon") if k in args}, key)
+    if "series" in fc:
+        fc = next(iter(fc["series"].values()))
+    values = [float(v) for v in named[0][1]]
+    pack = build_forecast_pack(history=values, point=fc["point"], q10=fc["quantiles"]["0.1"],
+                               q90=fc["quantiles"]["0.9"], title=title)
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
     return {
@@ -40,15 +43,21 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     }
 
 
+def observe(result: dict) -> dict:
+    from prophet_agent.tools.timesfm_tool import _compact
+    return {"forecast": _compact(result["forecast"]), "files": [f["path"] for f in result["files"]]}
+
+
 def forecast_report_tool() -> Tool:
-    return Tool("forecast_report", _run, idempotent=True)
+    return Tool("forecast_report", _run, idempotent=True, observe=observe)
 
 
 FORECAST_REPORT_SPEC = {
     "name": "forecast_report",
     "title": "Forecast pack",
     "activity": "Building the chart, workbook and report",
-    "description": "Forecast a series with TimesFM 3 and produce a chart (PNG, SVG), spreadsheet (XLSX), report "
-                   "(DOCX) and PDF, listed in a sha256 manifest.",
-    "args": {"values": "list of numbers, oldest first", "horizon": "integer, 1 to 512", "title": "short title"},
+    "description": "Forecast ONE series with TimesFM 3 and produce the deliverables a person opens: a chart (PNG, SVG), a "
+                   "spreadsheet (XLSX), a report (DOCX) and a PDF, listed in a sha256 manifest. Use it for the final "
+                   "forecast the person asked for, after any checking is done.",
+    "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report"},
 }

@@ -25,6 +25,7 @@ import platform
 import resource
 import signal
 import subprocess
+import shutil
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -35,6 +36,8 @@ from prophet_agent.nim.errors import redact
 
 SANDBOX_ROOT = DATA / "sandbox"
 OUT_DIR = "out"
+IN_DIR = "in"
+LIB_SOURCE = Path(__file__).with_name("prophet_lib.py")
 MAX_STREAM_CHARS = 20_000
 
 _BOOT = r"""
@@ -42,9 +45,11 @@ import os, runpy, sys
 WD = os.path.realpath(sys.argv[1])
 TARGET = sys.argv[2]
 _WRITE = ("w", "a", "x", "+")
+IN = os.path.join(WD, "in") + os.sep
 def _inside(p):
     rp = os.path.realpath(p)
-    return rp == WD or rp.startswith(WD + os.sep)
+    # The run folder is writable except in/, which holds the person's files and is read-only to the program.
+    return (rp == WD or rp.startswith(WD + os.sep)) and not (rp + os.sep).startswith(IN)
 def _hook(event, args):
     if event == "open":
         path, mode, flags = args[0], args[1], args[2]
@@ -59,6 +64,7 @@ def _hook(event, args):
     elif event in ("socket.connect", "socket.bind", "socket.sendto"):
         raise PermissionError("network access is blocked in the sandbox")
 sys.addaudithook(_hook)
+sys.path.insert(0, os.path.join(WD, "lib"))   # prophet_lib: loaders and profiling helpers
 sys.argv = [TARGET]
 runpy.run_path(TARGET, run_name="__main__")
 """
@@ -137,13 +143,24 @@ def memory_limit_enforced() -> bool:
 
 
 def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64,
-               files: dict[str, bytes] | None = None) -> SandboxResult:
-    """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data)."""
+               files: dict[str, bytes] | None = None, inputs: dict[str, Path] | None = None) -> SandboxResult:
+    """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data).
+
+    ``inputs`` maps a file name to a path on disk; each is copied to ``in/<name>``, which the program can read but not
+    change. ``prophet_lib`` is importable from ``lib/``.
+    """
     run_id = uuid.uuid4().hex
     wd = (SANDBOX_ROOT / run_id).resolve()
     home = wd / "home"
     (wd / OUT_DIR).mkdir(parents=True)
+    (wd / IN_DIR).mkdir()
+    (wd / "lib").mkdir()
     home.mkdir()
+    shutil.copy2(LIB_SOURCE, wd / "lib" / "prophet_lib.py")
+    for name, src in (inputs or {}).items():
+        if "/" in name or name.startswith("."):
+            raise ValueError("input names are plain file names")
+        shutil.copy2(src, wd / IN_DIR / name)
     for name, data in (files or {}).items():
         target = (wd / name).resolve()
         if not str(target).startswith(str(wd) + os.sep):

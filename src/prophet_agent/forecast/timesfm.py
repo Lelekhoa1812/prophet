@@ -52,7 +52,8 @@ class TimesFMEngine:
         return Forecast(batch.point[0], batch.q[0])
 
     def forecast_batch(self, series_list, horizon: int) -> Forecast:
-        """Forecast many series in one model call. Returns point (n, horizon) and q (n, horizon, 9)."""
+        """Forecast many series in one model call. Returns point (n, horizon) and q (n, horizon, 9). Forecasts are floored at zero only for
+        series that never went below zero."""
         if horizon < 1:
             raise ValueError("horizon must be at least 1")
         if len(series_list) == 0:
@@ -69,11 +70,16 @@ class TimesFMEngine:
             outs = list(self.model.predict_batch(batch, horizon=horizon, return_quantiles=True))
         if len(outs) != len(batch):
             raise RuntimeError(f"TimesFM returned {len(outs)} forecasts for {len(batch)} series")
-        point = np.clip(np.stack([np.asarray(o.forecast, dtype=np.float32) for o in outs]), 0, None)
+        point = np.stack([np.asarray(o.forecast, dtype=np.float32) for o in outs])
         q = np.stack([np.asarray(o.quantiles, dtype=np.float32) for o in outs])
         if q.shape != (len(batch), horizon, N_QUANTILES):
             raise RuntimeError(f"unexpected quantile shape {q.shape}, expected {(len(batch), horizon, N_QUANTILES)}")
-        q = np.sort(np.clip(q, 0, None), axis=-1)  # guard against quantile crossing
+        # A series that never went below zero (counts, sales) cannot be forecast below zero. A series that did (returns,
+        # temperatures, balances) is left alone: clipping it would bend a legitimate forecast.
+        nonneg = np.array([bool((x >= 0).all()) for x in batch])
+        point = np.where(nonneg[:, None], np.clip(point, 0, None), point)
+        q = np.where(nonneg[:, None, None], np.clip(q, 0, None), q)
+        q = np.sort(q, axis=-1)  # guard against quantile crossing
         return Forecast(point, q)
 
 
