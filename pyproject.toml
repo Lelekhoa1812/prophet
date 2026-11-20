@@ -9,6 +9,9 @@ dependencies = [
   "pandas",
   "matplotlib",
   "openpyxl",
+  "python-calamine==0.9.1",   # reads xls, xlsb and ods; MIT
+  "scipy",
+  "statsmodels",
   "python-docx",
   "reportlab",
   "jsonschema",

@@ -60,29 +60,206 @@ def _sniff_delimiter(lines: list[str]) -> str:
     return best
 
 
-def read_table(path: str | Path, sheet: str | int | None = 0) -> tuple[pd.DataFrame, dict]:
+class TableReadError(Exception):
+    """The file cannot be read as a table. The message is written for the person who uploaded it."""
+
+
+MAX_ROWS = 500_000
+MAX_DECOMPRESSED = 200 * 1024 * 1024
+
+
+def sniff_kind(path: str | Path) -> str:
+    """What the file really is, from its first bytes, not its extension."""
+    p = Path(path)
+    with p.open("rb") as f:
+        head = f.read(8)
+    if head[:2] == b"\x1f\x8b":
+        return "gzip"
+    if head[:3] == b"BZh":
+        return "bzip2"
+    if head[:4] == b"PAR1":
+        return "parquet"
+    if head[:6] == b"ARROW1":
+        return "feather"
+    if head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return "ole"                      # legacy .xls, or an encrypted workbook
+    if head[:4] == b"PK\x03\x04":
+        import zipfile
+        try:
+            names = zipfile.ZipFile(p).namelist()
+        except zipfile.BadZipFile:
+            return "corrupt zip"
+        if "xl/workbook.xml" in names:
+            return "xlsx"
+        if "xl/workbook.bin" in names:
+            return "xlsb"
+        if "mimetype" in names and "content.xml" in names:
+            return "ods"
+        if any(n.startswith("Index/") for n in names):
+            return "numbers"
+        return "zip"
+    return "text"
+
+
+def _cell(v: Any) -> str:
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    if isinstance(v, float) and v.is_integer() and abs(v) < 1e15:
+        return str(int(v))
+    if isinstance(v, (pd.Timestamp,)) or hasattr(v, "isoformat"):
+        return v.isoformat(sep=" ") if hasattr(v, "hour") else v.isoformat()
+    return str(v).strip()
+
+
+def list_sheets(path: str | Path) -> list[dict]:
+    """Sheets of a workbook with their visibility, or [] for a file that is not a workbook."""
+    kind = sniff_kind(path)
+    if kind == "xlsx":
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True, keep_links=False)
+        try:
+            return [{"name": ws.title, "state": ws.sheet_state} for ws in wb.worksheets]
+        finally:
+            wb.close()
+    if kind in ("xlsb", "ods", "ole"):
+        from python_calamine import CalamineWorkbook
+        wb = CalamineWorkbook.from_path(str(path))
+        return [{"name": n, "state": "visible"} for n in wb.sheet_names]
+    return []
+
+
+def _excel_rows(path: Path, kind: str, sheet: str | int | None, report: dict) -> list[list[str]]:
+    sheets = list_sheets(path)
+    visible = [s for s in sheets if s["state"] == "visible"] or sheets
+    hidden = [s["name"] for s in sheets if s["state"] != "visible"]
+    if hidden:
+        report["hidden_sheets_not_read"] = hidden
+    report["sheets"] = [s["name"] for s in visible]
+    if sheet is None or sheet == 0:
+        pick = visible[0]["name"]
+    elif isinstance(sheet, int):
+        pick = visible[min(sheet, len(visible) - 1)]["name"]
+    else:
+        names = [s["name"] for s in sheets]
+        if sheet not in names:
+            raise TableReadError(f"there is no sheet named {sheet!r}; the sheets are {names}")
+        pick = sheet
+    report["sheet"] = pick
+    rows: list[list[str]] = []
+    if kind == "xlsx":
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True, keep_links=False)
+        try:
+            ws = wb[pick]
+            ws.reset_dimensions()
+            for i, r in enumerate(ws.iter_rows(values_only=True)):
+                if i >= MAX_ROWS:
+                    report["problems"].append(f"stopped after {MAX_ROWS:,} rows; the sheet is longer")
+                    break
+                rows.append([_cell(c) for c in r])
+        finally:
+            wb.close()
+    else:
+        from python_calamine import CalamineWorkbook
+        wb = CalamineWorkbook.from_path(str(path))
+        data = wb.get_sheet_by_name(pick).to_python()
+        if len(data) > MAX_ROWS:
+            report["problems"].append(f"stopped after {MAX_ROWS:,} rows; the sheet is longer")
+            data = data[:MAX_ROWS]
+        rows = [[_cell(c) for c in r] for r in data]
+    return rows
+
+
+def _blocks(rows: list[list[str]]) -> list[tuple[int, int]]:
+    """Row ranges (start, end, 0-based, inclusive) of tables separated by fully blank rows. Only blocks of 3+ rows count."""
+    out, start = [], None
+    for i, r in enumerate(rows + [[]]):
+        blank = not any(c.strip() for c in r)
+        if not blank and start is None:
+            start = i
+        if blank and start is not None:
+            if i - start >= 3:
+                out.append((start, i - 1))
+            start = None
+    return out
+
+
+def read_table(path: str | Path, sheet: str | int | None = None, block: int | None = None) -> tuple[pd.DataFrame, dict]:
     """Read a table of any common shape as text. Returns (frame of strings, report).
 
-    The report lists ``format``, ``encoding``, ``delimiter``, ``skipped_preamble_lines`` and ``problems``: rows that had
-    the wrong number of fields (kept out of the frame, never silently repaired).
+    Spreadsheets: ``sheet`` is a name or position (default: the first visible sheet); hidden sheets are listed and not
+    read. When a sheet holds several tables separated by blank rows, ``block`` picks one (default the first) and the
+    others are listed. Compressed files are opened; archives with several members read the first supported one and list
+    the rest. The report lists what was done and what could not be read; nothing is repaired silently.
     """
     p = Path(path)
-    suffix = p.suffix.lower()
     report: dict[str, Any] = {"file": p.name, "problems": []}
-    if suffix in (".xlsx", ".xlsm", ".xls"):
-        df = pd.read_excel(p, sheet_name=sheet, dtype=str, header=0)
-        report.update(format="excel", sheet=sheet)
-        return df, report
+    kind = sniff_kind(p)
+    report["detected_type"] = kind
+    if kind == "numbers":
+        raise TableReadError("Apple Numbers files cannot be read; export from Numbers to .xlsx or .csv and upload that")
+    if kind == "ole" and p.suffix.lower() in (".xlsx", ".xlsm"):
+        raise TableReadError("this workbook is password-protected or in an old format; save an unprotected .xlsx copy")
+    if kind == "corrupt zip":
+        raise TableReadError("the file is damaged (its archive index cannot be read); no data from it was used")
+    if kind in ("gzip", "bzip2"):
+        import bz2
+        import gzip
+        opener = gzip.open if kind == "gzip" else bz2.open
+        with opener(p, "rb") as f:
+            raw = f.read(MAX_DECOMPRESSED + 1)
+        if len(raw) > MAX_DECOMPRESSED:
+            raise TableReadError("the compressed file expands to more than 200 MB; split it and upload the parts")
+        tmp = Path("home") / f"{p.stem}.unz"
+        tmp.parent.mkdir(exist_ok=True)
+        tmp.write_bytes(raw)
+        df, rep = read_table(tmp, sheet, block)
+        rep["file"], rep["decompressed_from"] = p.name, kind
+        return df, rep
+    if kind == "zip":
+        import zipfile
+        z = zipfile.ZipFile(p)
+        infos = [i for i in z.infolist() if not i.is_dir() and not i.filename.startswith(("__MACOSX", ".")) and ".." not in i.filename]
+        if sum(i.file_size for i in infos) > MAX_DECOMPRESSED:
+            raise TableReadError("the archive expands to more than 200 MB; upload the files separately")
+        usable = [i for i in infos if i.filename.lower().rsplit(".", 1)[-1] in ("csv", "tsv", "txt", "xlsx", "xls", "json", "jsonl", "ods", "xlsb", "parquet")]
+        if not usable:
+            raise TableReadError("the archive holds no spreadsheet or data file")
+        tmp = Path("home") / "zipmember"
+        tmp.mkdir(parents=True, exist_ok=True)
+        member = tmp / Path(usable[0].filename).name
+        member.write_bytes(z.read(usable[0]))
+        df, rep = read_table(member, sheet, block)
+        rep["file"], rep["archive_member"] = p.name, usable[0].filename
+        if len(usable) > 1:
+            rep["other_members_not_read"] = [i.filename for i in usable[1:20]]
+        return df, rep
+    if kind == "feather":
+        raise TableReadError("Feather files need a reader that is not installed; export to .csv or .parquet")
+    if kind == "parquet":
+        import duckdb
+        df = duckdb.sql(f"SELECT * FROM read_parquet('{str(p).replace(chr(39), '')}') LIMIT {MAX_ROWS}").df()
+        report["format"] = "parquet"
+        return df.astype(str).replace({"nan": "", "None": "", "NaT": ""}), report
+    if kind in ("xlsx", "xlsb", "ods", "ole"):
+        try:
+            rows = _excel_rows(p, kind, sheet, report)
+        except TableReadError:
+            raise
+        except Exception as exc:
+            raise TableReadError(f"the workbook could not be read in full ({type(exc).__name__}); no data from it was used")
+        report["format"] = "excel" if kind != "ods" else "opendocument"
+        return _rows_to_frame(rows, report, block), report
     text, enc = read_text(p)
     report["encoding"] = enc
     stripped = text.lstrip()
-    if suffix == ".json" or stripped[:1] in "[{":
+    if p.suffix.lower() in (".json", ".jsonl", ".ndjson") or stripped[:1] in "[{":
         try:
             obj = json.loads(text)
             df = pd.json_normalize(obj if isinstance(obj, list) else (obj.get("data", obj) if isinstance(obj, dict) else obj))
             report.update(format="json")
             return df.astype(str).replace("nan", ""), report
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             try:
                 df = pd.read_json(io.StringIO(text), lines=True)
                 report.update(format="json lines")
@@ -96,30 +273,60 @@ def read_table(path: str | Path, sheet: str | int | None = 0) -> tuple[pd.DataFr
         rows = [re.split(r"\s+", ln.strip()) for ln in lines if ln.strip()]
     else:
         rows = [r for r in csv.reader(lines, delimiter=delim) if r and any(c.strip() for c in r)]
+    return _rows_to_frame(rows, report, None, pad=False), report
+
+
+def _rows_to_frame(rows: list[list[str]], report: dict, block: int | None, pad: bool = True) -> pd.DataFrame:
+    raw = rows
+    blocks = _blocks(raw)
+    sel = range(len(raw))
+    if len(blocks) > 1:
+        report["tables_on_sheet"] = [{"rows": f"{a + 1}-{b + 1}", "first_cells": [c for c in raw[a][:4]]} for a, b in blocks]
+        pick = block if block is not None else max(range(len(blocks)), key=lambda k: blocks[k][1] - blocks[k][0])
+        a, b = blocks[min(pick, len(blocks) - 1)]
+        report["table_read"] = min(pick, len(blocks) - 1)
+        sel = range(a, b + 1)
+    idx = [i for i in sel if any(c.strip() for c in raw[i])]
+    rows = [raw[i] for i in idx]
     if not rows:
-        return pd.DataFrame(), report
-    counts = [len(r) for r in rows]
-    width = max(set(counts), key=counts.count)
-    # Preamble: leading rows that do not have the table's width (titles, notes) are skipped and reported.
-    start = next((i for i, c in enumerate(counts) if c == width), 0)
-    if start:
-        report["skipped_preamble_lines"] = start
+        return pd.DataFrame()
+    if pad:
+        # Spreadsheet rows are padded to the sheet width; trim columns that are empty everywhere.
+        width = max(len(r) for r in rows)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        keep = [j for j in range(width) if any(r[j].strip() for r in rows)]
+        if len(keep) < width:
+            rows = [[r[j] for j in keep] for r in rows]
+        nwidth = len(rows[0])
+    else:
+        # Delimited text: a row with the wrong number of fields is reported, never padded into shape.
+        lens = [len(r) for r in rows]
+        nwidth = max(set(lens), key=lens.count)
+    counts = [sum(1 for c in r if c.strip()) for r in rows]
+    # A table's header row is the first row that has about as many filled cells as the widest rows below it.
+    modal = max(set(counts[:200]), key=counts[:200].count)
+    start = next((i for i, c in enumerate(counts) if c >= (max(2, -(-modal * 3 // 5)) if modal >= 2 else 1)), 0)
+    if idx[start]:
+        report["skipped_preamble_lines"] = idx[start]
     first = [c.strip() for c in rows[start]]
-    headerless = _looks_headerless(first, rows[start + 1:start + 41], width)
+    headerless = _looks_headerless(first, rows[start + 1:start + 41], nwidth)
     if headerless:
-        header = [f"column_{i + 1}" for i in range(width)]
+        header = [f"column_{i + 1}" for i in range(nwidth)]
         report["header"] = "none found; columns are named column_1, column_2, ..."
-        data_rows = rows[start:]
-        first_line = start + 1
+        data_rows, first_line = rows[start:], start + 1
     else:
         header, data_rows, first_line = first, rows[start + 1:], start + 2
     body, bad = [], []
     for i, r in enumerate(data_rows, start=first_line):
-        (body if len(r) == width else bad).append(r if len(r) == width else (i, len(r)))
+        (body if len(r) == nwidth else bad).append(r if len(r) == nwidth else (i, len(r)))
     if bad:
-        report["problems"].append({"wrong_field_count_rows": len(bad), "first_rows_and_counts": bad[:10], "expected_fields": width})
+        report["problems"].append({"wrong_field_count_rows": len(bad), "first_rows_and_counts": bad[:10], "expected_fields": nwidth})
     df = pd.DataFrame(body, columns=_unique(header))
-    return df, report
+    report["header_row"] = None if headerless else idx[start] + 1
+    totals = [i for i, r in enumerate(body) if r and re.match(r"^\s*(grand\s+|sub[\s-]*)?total\b", r[0] or "", re.I)]
+    if totals:
+        report["rows_that_look_like_totals"] = len(totals)
+    return df
 
 
 def _looks_headerless(first: list[str], below: list[list[str]], width: int) -> bool:
@@ -249,10 +456,21 @@ def _regularity(ts: pd.Series) -> dict:
             "is_sorted": bool(ts.index.is_monotonic_increasing)}
 
 
-def profile(path: str | Path, sheet: str | int | None = 0) -> dict:
+def profile(path: str | Path, sheet: str | int | None = None, block: int | None = None) -> dict:
     """Describe a data file so a decision can be made about it. Facts only: no repair is applied."""
-    df, rep = read_table(path, sheet)
+    try:
+        df, rep = read_table(path, sheet, block)
+    except TableReadError as exc:
+        return {"read": {"file": Path(path).name, "problems": [str(exc)]}, "rows": 0, "columns": [], "issues": [str(exc)],
+                "layout_hints": []}
     out: dict[str, Any] = {"read": rep, "rows": int(len(df)), "columns": [], "issues": [], "layout_hints": []}
+    if rep.get("hidden_sheets_not_read"):
+        out["issues"].append(f"hidden sheets were not read: {rep['hidden_sheets_not_read']}")
+    if rep.get("tables_on_sheet"):
+        out["issues"].append(f"the sheet holds {len(rep['tables_on_sheet'])} separate tables (rows {[t['rows'] for t in rep['tables_on_sheet']]}); "
+                             f"table {rep['table_read']} was read; ask which one is meant if it matters")
+    if rep.get("rows_that_look_like_totals"):
+        out["issues"].append(f"{rep['rows_that_look_like_totals']} rows look like totals or subtotals; keeping them would double-count")
     if df.empty:
         out["issues"].append("no table could be read from this file")
         return out
@@ -304,6 +522,21 @@ def profile(path: str | Path, sheet: str | int | None = 0) -> dict:
         out["layout_hints"].append(f"long: a time column, grouping column(s) {id_cols[:3]} and numeric column(s); each group may be its own series")
     if not time_cols and numeric_cols:
         out["layout_hints"].append("no time column found; rows may already be in time order, or the time information is in the header")
+    return out
+
+
+def profile_workbook(path: str | Path, max_sheets: int = 12) -> dict:
+    """Profile every visible sheet of a workbook (or the one table of any other file)."""
+    sheets = list_sheets(path) if sniff_kind(path) in ("xlsx", "xlsb", "ods", "ole") else []
+    if not sheets:
+        return {"sheets": [{"name": None, **profile(path)}]}
+    visible = [s["name"] for s in sheets if s["state"] == "visible"] or [s["name"] for s in sheets]
+    out = {"sheets": [{"name": n, **profile(path, n)} for n in visible[:max_sheets]]}
+    if len(visible) > max_sheets:
+        out["sheets_not_profiled"] = visible[max_sheets:]
+    hidden = [s["name"] for s in sheets if s["state"] != "visible"]
+    if hidden:
+        out["hidden_sheets"] = hidden
     return out
 
 
