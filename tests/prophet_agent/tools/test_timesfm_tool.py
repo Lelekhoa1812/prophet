@@ -37,7 +37,7 @@ def test_tool_records_configuration_and_context_used(stub_engine):
     assert out["config"]["horizon"] == 3
     assert len(out["point"]) == 3
     assert sorted(out["quantiles"]) == ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"]
-    assert out["licence"] == LICENCE_NOTE
+    assert "licence" not in out  # audit wording belongs in NOTICE.md, not in results the planner repeats
 
 
 @pytest.mark.parametrize("args", [

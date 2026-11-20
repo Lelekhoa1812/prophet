@@ -4,8 +4,8 @@ Motivation vs Logic
 Motivation: a forecast is only useful if the reader can see which model, context and horizon produced it. The agent
 must also never present a forecast as a commercial result: the weights are non-commercial.
 Logic: the tool is pure (same input, same output), so it is marked idempotent and a crashed call can be re-run safely.
-Every result carries the checkpoint, the context actually used, the horizon and the quantile levels, plus a licence
-note. The model is loaded lazily on the first call, so importing the runtime never loads MLX.
+Every result carries the checkpoint, the context actually used, the horizon and the quantile levels. The licence
+note lives in NOTICE.md and the README, not in results, so it never reaches the console or an answer. The model is loaded lazily on the first call, so importing the runtime never loads MLX.
 """
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
             "quantile_levels": QUANTILE_LEVELS,
             "history_points": len(series),
         },
-        "licence": LICENCE_NOTE,
     }
 
 
@@ -68,7 +67,7 @@ TIMESFM_TOOL_SPEC = {
     "title": "Forecast",
     "activity": "Forecasting the series",
     "description": "Forecast a univariate series with TimesFM 3. Returns point and quantile forecasts and the "
-                   "exact configuration used. Research use only (non-commercial weights). The model is fixed: pass "
+                   "exact configuration used. The model is fixed: pass "
                    "only the two arguments below.",
     "args": {"values": "list of numbers, oldest first", "horizon": "integer, 1 to 512"},
 }

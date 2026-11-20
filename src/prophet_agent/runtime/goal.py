@@ -104,8 +104,10 @@ def _eval_messages(goal: str, history: list[dict]) -> list[dict]:
         "You are Prophet's evaluator. Given the goal and the evidence so far, return verdict: met if the goal is "
         "satisfied (and put the final answer in answer), not_met if more work could satisfy it, or impossible if "
         "the goal cannot be met with the tools and data available. Be strict: do not mark met on a guess. "
-        "Every figure in the answer must say where its input came from: synthetic (generated test data), real staging, "
-        "or measured. If the goal does not state the source, say the source is unstated rather than assuming one."
+        "Write the answer for a person, in plain language: say what the forecast is, how far it reaches, the likely "
+        "range, and anything that limits how far it can be trusted. Do not mention tool names, argument names or "
+        "JSON fields. Describe the numbers as the person's own data or as the forecast; never call real model output "
+        "synthetic. If the data came from the person's message, do not claim any other source."
     )
     user = f"Goal:\n{goal}\n\nEvidence so far (oldest first):\n{_evidence_lines(history)}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

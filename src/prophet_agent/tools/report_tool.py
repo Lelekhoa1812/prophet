@@ -12,7 +12,7 @@ from typing import Any
 
 from prophet_agent.artifacts import build_forecast_pack
 from prophet_agent.runtime.runner import Tool
-from prophet_agent.tools.timesfm_tool import LICENCE_NOTE, _run as timesfm_run
+from prophet_agent.tools.timesfm_tool import _run as timesfm_run
 
 MAX_TITLE = 120
 ALLOWED_ARGS = {"values", "horizon", "title"}
@@ -29,7 +29,7 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     point = fc["point"]
     q10 = fc["quantiles"]["0.1"]
     q90 = fc["quantiles"]["0.9"]
-    pack = build_forecast_pack(history=values, point=point, q10=q10, q90=q90, title=title, note=LICENCE_NOTE)
+    pack = build_forecast_pack(history=values, point=point, q10=q10, q90=q90, title=title)
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
     return {
@@ -49,6 +49,6 @@ FORECAST_REPORT_SPEC = {
     "title": "Forecast pack",
     "activity": "Building the chart, workbook and report",
     "description": "Forecast a series with TimesFM 3 and produce a chart (PNG, SVG), spreadsheet (XLSX), report "
-                   "(DOCX) and PDF, listed in a sha256 manifest. Research use only.",
+                   "(DOCX) and PDF, listed in a sha256 manifest.",
     "args": {"values": "list of numbers, oldest first", "horizon": "integer, 1 to 512", "title": "short title"},
 }

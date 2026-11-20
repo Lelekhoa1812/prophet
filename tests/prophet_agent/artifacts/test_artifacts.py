@@ -54,7 +54,7 @@ def test_xlsx_reopens_with_the_forecast_rows(pack):
     wb = openpyxl.load_workbook(_out(pack, "forecast.xlsx"), read_only=True)
     rows = list(wb["Forecast"].iter_rows(values_only=True))
     wb.close()
-    assert rows[0] == ("Period ahead", "Point", "P10", "P90")
+    assert rows[0] == ("Periods ahead", "Forecast", "Low (P10)", "High (P90)")
     assert len(rows) == 13
     assert rows[1][0] == 1 and abs(rows[1][1] - 12.0) < 1e-9
     assert rows[1][2] < rows[1][1] < rows[1][3]
