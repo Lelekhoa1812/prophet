@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 warnings.filterwarnings("ignore", message="Could not infer format")
+warnings.filterwarnings("ignore", message="Parsing dates in")
 
 MAX_PROFILE_COLUMNS = 40
 _NA_TOKENS = {"", "na", "n/a", "nan", "null", "none", "nil", "-", "--", "?", "missing", "#n/a", "#value!"}
@@ -383,9 +384,10 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     return num, info
 
 
-def to_datetime(s: pd.Series) -> tuple[pd.Series, dict]:
+def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, dict]:
     """Parse text to timestamps and say how. Reports when day-first and month-first both fit (ambiguous), so the
-    caller can ask rather than guess."""
+    caller can ask rather than guess. ``dayfirst=True`` or ``False`` states the order the person gave; it settles an
+    ambiguous column and is recorded in the info. Returns (timestamps, info): unpack both, or use ``as_dates``."""
     t = s.astype(str).str.strip()
     t = t.mask(t.str.lower().isin(_NA_TOKENS))
     info: dict[str, Any] = {"ambiguous_day_month": False}
@@ -409,6 +411,9 @@ def to_datetime(s: pd.Series) -> tuple[pd.Series, dict]:
         if v.between(1800, 2200).all() and (v % 1 == 0).all():
             info["format"] = "year"
             return pd.to_datetime(num.astype("Int64").astype(str), format="%Y", errors="coerce"), info
+    if dayfirst is not None:
+        info["format"] = "day first (stated)" if dayfirst else "month first (stated)"
+        return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst), info
     day = pd.to_datetime(t, errors="coerce", dayfirst=True)
     mon = pd.to_datetime(t, errors="coerce", dayfirst=False)
     both_ok = day.notna() & mon.notna()
@@ -426,6 +431,56 @@ def to_datetime(s: pd.Series) -> tuple[pd.Series, dict]:
         return mon, info
     info["format"] = "unambiguous"
     return (mon if mon.notna().sum() >= day.notna().sum() else day), info
+
+
+def as_number(s: pd.Series) -> pd.Series:
+    """Just the numbers: ``to_number`` without the info. NaN where a cell was blank or not a number."""
+    return to_number(s)[0]
+
+
+def as_dates(s: pd.Series, dayfirst: bool | None = None) -> pd.Series:
+    """Just the timestamps: ``to_datetime`` without the info. Pass ``dayfirst`` when the person stated the order."""
+    return to_datetime(s, dayfirst)[0]
+
+
+CONVERT_SHARE = 0.9          # a column becomes numbers or dates only when this share of its filled cells parses
+
+
+def load(path: str | Path, sheet: str | int | None = None, block: int | None = None,
+         dayfirst: bool | None = None) -> pd.DataFrame:
+    """Read a table and return a typed DataFrame: numeric columns are numbers, date columns are timestamps, the rest stay
+    text. The recommended way to open a file. What was done is in ``df.attrs["report"]`` (reading notes, which columns
+    were converted and how many cells failed, ambiguous dates, columns kept as text). Blank cells are NaN, never zero.
+    Identifier-like columns (leading zeros such as 00123) are kept as text."""
+    df, rep = read_table(path, sheet, block)
+    converted: dict[str, dict] = {}
+    as_text: list[str] = []
+    for col in df.columns:
+        s = df[col]
+        filled = s.astype(str).str.strip()
+        filled = filled[~filled.str.lower().isin(_NA_TOKENS) & (filled != "")]
+        if filled.empty:
+            as_text.append(str(col))
+            continue
+        if filled.str.match(r"^[+-]?0\d+$").any():
+            as_text.append(str(col))
+            continue
+        num, ninfo = to_number(s)
+        if num.notna().sum() / len(filled) >= CONVERT_SHARE:
+            df[col] = num
+            converted[str(col)] = {"to": "number", **{k: v for k, v in ninfo.items() if v}}
+            continue
+        ts, dinfo = to_datetime(s, dayfirst)
+        if dinfo.get("format") != "not a date" and ts.notna().sum() / len(filled) >= CONVERT_SHARE:
+            df[col] = ts
+            converted[str(col)] = {"to": "date", "format": dinfo.get("format"),
+                                   "ambiguous_day_month": bool(dinfo.get("ambiguous_day_month")),
+                                   "failed": int(len(filled) - ts.notna().sum())}
+            continue
+        as_text.append(str(col))
+    df.attrs["report"] = {"read": rep, "converted": converted, "kept_as_text": as_text,
+                          "ambiguous_dates": [c for c, v in converted.items() if v.get("ambiguous_day_month")]}
+    return df
 
 
 # ------------------------------------------------------------------------------------------------ profiling --
@@ -615,3 +670,429 @@ def find_season(values: list[float] | np.ndarray, candidates: tuple[int, ...] | 
     best = max(acf, key=acf.get) if acf else None
     return {"autocorrelation_by_lag": acf, "strongest_lag": best, "strength": acf.get(best) if best else None,
             "reading": "above about 0.3 suggests a repeating pattern at that lag; near 0 suggests none"}
+
+
+# ------------------------------------------------------------------------------------------------- charts --
+# One entry point for every chart, built to the standard a senior analyst holds: the title states the finding, units and
+# period sit in the subtitle, bars start at zero, lines are labelled at their end instead of a legend, colours are
+# colour-blind safe, numbers carry thousands separators, and a source line names where the data came from. Rules that
+# cannot be bent raise ValueError with the fix; softer findings come back in ``problems``.
+
+OKABE_ITO = ["#0072B2", "#D55E00", "#009E73", "#E69F00", "#56B4E9", "#CC79A7"]   # colour-blind safe, in order of use
+_INK, _MUTED, _GRID, _CONTEXT = "#2b241c", "#6b6256", "#e5dccb", "#b9ae9a"
+MAX_SERIES = 6
+MAX_BARS = 15
+CHART_KINDS = ("line", "bar", "hist", "scatter", "forecast", "small_multiples")
+
+
+def _decimals(values: Any) -> int:
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if not len(v) or np.allclose(v, np.round(v)):
+        return 0
+    return 1 if np.nanmax(np.abs(v)) >= 10 else 2
+
+
+def _fmt(v: float, unit: str, d: int = 0, compact: bool = False) -> str:
+    sign = "-" if v < 0 else ""
+    a = abs(v)
+    if compact and a >= 1e9:
+        body = f"{a / 1e9:,.1f}B"
+    elif compact and a >= 1e6:
+        body = f"{a / 1e6:,.1f}M"
+    else:
+        body = f"{a:,.{d}f}"
+    if unit in ("$", "A$", "€", "£", "¥"):
+        return f"{sign}{unit}{body}"
+    if unit == "%":
+        return f"{sign}{body}%"
+    return f"{sign}{body}"
+
+
+def _as_series_dict(data: Any) -> dict[str, pd.Series]:
+    if isinstance(data, pd.DataFrame):
+        return {str(c): data[c].astype(float) for c in data.columns}
+    if isinstance(data, pd.Series):
+        return {str(data.name or "value"): data.astype(float)}
+    if isinstance(data, dict):
+        return {str(k): (v if isinstance(v, pd.Series) else pd.Series(list(v))).astype(float) for k, v in data.items()}
+    raise ValueError("chart data must be a pandas Series, a DataFrame (one column per series) or a dict of Series")
+
+
+def _dodge(ys: list[float], gap: float) -> list[float]:
+    """Spread label positions so that neighbours are at least ``gap`` apart, keeping their order."""
+    order = sorted(range(len(ys)), key=lambda i: ys[i])
+    out = list(ys)
+    for a, b in zip(order, order[1:]):
+        if out[b] - out[a] < gap:
+            out[b] = out[a] + gap
+    shift = (np.mean([ys[i] for i in order]) - np.mean([out[i] for i in order])) if order else 0
+    return [o + shift for o in out]
+
+
+def _frame(fig: Any, ax: Any, title: str, subtitle: str, source: str) -> None:
+    fig.subplots_adjust(top=0.80 if subtitle else 0.86, bottom=0.15, left=0.09, right=0.86)
+    fig.text(0.02, 0.965, title, ha="left", va="top", fontsize=15, fontweight="bold", color=_INK, wrap=True)
+    if subtitle:
+        fig.text(0.02, 0.895, subtitle, ha="left", va="top", fontsize=10.5, color=_MUTED)
+    fig.text(0.02, 0.02, source, ha="left", va="bottom", fontsize=8.5, color=_MUTED)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    for s in ("left", "bottom"):
+        ax.spines[s].set_color(_CONTEXT)
+    ax.tick_params(colors=_MUTED, labelsize=9.5, length=3)
+    ax.grid(axis="y", color=_GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+
+
+def _date_axis(ax: Any, index: Any) -> None:
+    if isinstance(index, pd.DatetimeIndex):
+        import matplotlib.dates as mdates
+        loc = mdates.AutoDateLocator(minticks=4, maxticks=8)
+        ax.xaxis.set_major_locator(loc)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
+
+
+def _end_labels(ax: Any, items: list[tuple[str, float, str]], x_last: Any, unit: str, d: int, extra: bool = False) -> None:
+    """Direct labels at the right end of each line (name and last value), spread so they never overlap."""
+    lo, hi = ax.get_ylim()
+    lines = max(n.count("\n") + 1 for n, _, _ in items)
+    ys = _dodge([y for _, y, _ in items], (hi - lo) * 0.065 * lines)
+    for (name, y, colour), ty in zip(items, ys):
+        ax.annotate(name, xy=(x_last, ty), xytext=(8, 0), textcoords="offset points", va="center", ha="left", fontsize=9.5,
+                    color=colour, fontweight="bold", annotation_clip=False)
+
+
+def chart(kind: str, data: Any = None, *, title: str, subtitle: str = "", unit: str = "", x_label: str = "", y_label: str = "",
+          source: str = "Source: the uploaded data", path: str = "out/chart.png", order: str = "sort",
+          highlight: str | None = None, x: str | None = None, y: str | None = None, trend: bool = False,
+          history: pd.Series | None = None, point: Any = None, bands: list[tuple[float, Any, Any]] | None = None,
+          future_index: Any = None, shared_y: bool = True) -> dict:
+    """Draw one chart to ``path`` (PNG, with an SVG and the plotted numbers as CSV beside it) and report on it.
+
+    kind: "line" (data: Series, DataFrame or dict of Series, at most 6 series), "bar" (a Series of category to value; sorted
+    largest first unless order="keep"), "hist" (a sequence of numbers), "scatter" (a DataFrame with x= and y= column names;
+    trend=True adds a fitted line), "small_multiples" (a dict or DataFrame, one panel per series, up to 12), and "forecast".
+    For "forecast" pass history= (a Series with a date or number index), point= (the forecast values) and bands=[(level,
+    lower, upper), ...] with the widest first, for example [(80, q10, q90), (50, q25, q75)]; future_index= is optional.
+
+    title: a sentence that states the finding ("Weekly demand is flat, with a 20% rise expected in March"), not the chart type.
+    subtitle: what is measured, the unit and the period. unit: "%", "$", "units", "kg" and so on. source: where the data came from.
+    highlight: the name of the one line to emphasise; the others are drawn in grey.
+    Returns {"files": [...], "problems": [...], "checks": {...}}. Print the result and fix every problem before you rely on the chart.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if kind not in CHART_KINDS:
+        raise ValueError(f"unknown chart kind {kind!r}; use one of {', '.join(CHART_KINDS)}")
+    if len(title.split()) < 4:
+        raise ValueError("the title must state the finding in a sentence of at least four words, for example "
+                         "'Sales fell 12% in the second half'. A title that names the chart type is not allowed.")
+    if not subtitle and kind != "small_multiples":
+        raise ValueError("give a subtitle with what is measured, its unit and the period, for example 'Units per week, Jan to Jun 2024'")
+
+    plt.rcParams.update({"font.family": "serif", "font.serif": ["Times New Roman", "Times", "STIXGeneral", "DejaVu Serif"],
+                         "svg.fonttype": "none", "axes.unicode_minus": True})
+    problems: list[str] = []
+    checks: dict[str, Any] = {"colour_blind_safe_palette": True, "source_line": bool(source)}
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=144)
+    table: pd.DataFrame
+
+    if kind == "line":
+        series = _as_series_dict(data)
+        if len(series) > MAX_SERIES:
+            raise ValueError(f"{len(series)} lines are too many to read (limit {MAX_SERIES}). Show the {MAX_SERIES - 1} that matter and "
+                             "group the rest as 'Other', or use kind='small_multiples'.")
+        if highlight and highlight not in series:
+            raise ValueError(f"highlight={highlight!r} is not one of the series: {list(series)}")
+        d = _decimals(np.concatenate([s.values for s in series.values()]))
+        items = []
+        for n, (name, s) in enumerate(series.items()):
+            colour = OKABE_ITO[n % len(OKABE_ITO)] if not highlight else (OKABE_ITO[1] if name == highlight else _CONTEXT)
+            if s.isna().any():
+                problems.append(f"{name}: {int(s.isna().sum())} missing points are drawn as gaps, not as zero")
+            ax.plot(s.index, s.values, color=colour, linewidth=2.4 if (not highlight or name == highlight) else 1.4, solid_capstyle="round")
+            last = s.dropna()
+            if len(last):
+                items.append((name, float(last.iloc[-1]), colour))
+        _frame(fig, ax, title, subtitle, source)
+        _date_axis(ax, next(iter(series.values())).index)
+        _end_labels(ax, items, max(s.dropna().index[-1] for s in series.values() if s.notna().any()), unit, d)
+        fig.subplots_adjust(right=float(np.clip(0.97 - 0.0105 * max(len(n) for n in series) - 0.03, 0.62, 0.9)))
+        table = pd.DataFrame(series)
+
+    elif kind == "bar":
+        s = _as_series_dict(data)
+        if len(s) != 1:
+            raise ValueError("kind='bar' takes one Series of category to value; for several measures draw one chart each")
+        s = next(iter(s.values())).dropna()
+        if len(s) > MAX_BARS:
+            raise ValueError(f"{len(s)} bars are too many (limit {MAX_BARS}). Show the top {MAX_BARS - 3} and group the rest as 'Other'.")
+        if order == "sort":
+            s = s.sort_values(ascending=False)
+        horizontal = len(s) > 5 or max(len(str(i)) for i in s.index) > 10
+        labels = [str(i) for i in s.index]
+        colours = [OKABE_ITO[0]] * len(s)
+        if highlight is not None:
+            colours = [OKABE_ITO[1] if str(i) == highlight else _CONTEXT for i in s.index]
+        d = _decimals(s.values)
+        if horizontal:
+            ypos = np.arange(len(s))[::-1]
+            ax.barh(ypos, s.values, color=colours, height=0.68)
+            ax.set_yticks(ypos, labels)
+            ax.set_xlim(min(0, s.min() * 1.15), max(0, s.max() * 1.15) or 1)
+            ax.grid(axis="x", color=_GRID, linewidth=0.8)
+            ax.grid(axis="y", visible=False)
+            ax.axvline(0, color=_INK, linewidth=1)
+            for yp, v in zip(ypos, s.values):
+                ax.annotate(_fmt(v, unit, d), xy=(v, yp), xytext=(5 if v >= 0 else -5, 0), textcoords="offset points",
+                            va="center", ha="left" if v >= 0 else "right", fontsize=9.5, color=_INK)
+            checks["zero_baseline"] = ax.get_xlim()[0] <= 0 <= ax.get_xlim()[1]
+            ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: _fmt(v, unit, d, compact=True)))
+        else:
+            xpos = np.arange(len(s))
+            ax.bar(xpos, s.values, color=colours, width=0.62)
+            ax.set_xticks(xpos, labels)
+            ax.set_ylim(min(0, s.min() * 1.15), max(0, s.max() * 1.15) or 1)
+            ax.axhline(0, color=_INK, linewidth=1)
+            for xp, v in zip(xpos, s.values):
+                ax.annotate(_fmt(v, unit, d), xy=(xp, v), xytext=(0, 4 if v >= 0 else -4), textcoords="offset points",
+                            ha="center", va="bottom" if v >= 0 else "top", fontsize=9.5, color=_INK)
+            checks["zero_baseline"] = ax.get_ylim()[0] <= 0 <= ax.get_ylim()[1]
+            ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: _fmt(v, unit, d, compact=True)))
+        _frame(fig, ax, title, subtitle, source)
+        if horizontal:
+            ax.spines["left"].set_visible(False)
+            ax.tick_params(axis="y", length=0, labelsize=10, colors=_INK)
+        fig.subplots_adjust(right=0.94, left=0.22 if horizontal else 0.09)
+        if not checks["zero_baseline"]:
+            raise ValueError("a bar chart must start at zero")
+        table = s.rename("value").to_frame()
+
+    elif kind == "hist":
+        v = pd.Series(np.asarray(data, dtype=float)).dropna()
+        if len(v) < 5:
+            raise ValueError("a distribution needs at least 5 values")
+        iqr = float(v.quantile(0.75) - v.quantile(0.25))
+        width = 2 * iqr / (len(v) ** (1 / 3)) if iqr > 0 else 0
+        bins = int(np.clip(np.ceil((v.max() - v.min()) / width) if width > 0 else 10, 5, 40))
+        counts, edges, _ = ax.hist(v, bins=bins, color=OKABE_ITO[0], edgecolor="white", linewidth=0.8)
+        med = float(v.median())
+        ax.axvline(med, color=OKABE_ITO[1], linewidth=2)
+        d = _decimals(v.values)
+        ax.annotate(f"Median {_fmt(med, unit, d)}", xy=(med, ax.get_ylim()[1]), xytext=(6, -4), textcoords="offset points",
+                    va="top", ha="left", fontsize=10, color=OKABE_ITO[1], fontweight="bold")
+        _frame(fig, ax, title, subtitle, source)
+        fig.subplots_adjust(right=0.94)
+        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda t, _: _fmt(t, unit, d, compact=True)))
+        checks["zero_baseline"] = True
+        table = pd.DataFrame({"bin_start": edges[:-1], "bin_end": edges[1:], "count": counts})
+
+    elif kind == "scatter":
+        if not isinstance(data, pd.DataFrame) or not x or not y:
+            raise ValueError("kind='scatter' needs data=<DataFrame>, x='<column>', y='<column>'")
+        df = data[[x, y]].astype(float).dropna()
+        ax.scatter(df[x], df[y], s=26, color=OKABE_ITO[0], alpha=0.75, edgecolor="white", linewidth=0.5)
+        if trend and len(df) >= 3:
+            k, b = np.polyfit(df[x], df[y], 1)
+            xs = np.array([df[x].min(), df[x].max()])
+            ax.plot(xs, k * xs + b, color=OKABE_ITO[1], linewidth=2)
+            r = float(np.corrcoef(df[x], df[y])[0, 1])
+            checks["correlation"] = round(r, 3)
+            ax.annotate(f"Trend line, correlation {r:.2f}", xy=(xs[1], k * xs[1] + b), xytext=(6, 0), textcoords="offset points",
+                        va="center", fontsize=9.5, color=OKABE_ITO[1], fontweight="bold", annotation_clip=False)
+        _frame(fig, ax, title, subtitle, source)
+        ax.grid(axis="x", color=_GRID, linewidth=0.8)
+        ax.set_xlabel(x_label or x, color=_MUTED)
+        ax.set_ylabel(y_label or y, color=_MUTED)
+        table = df
+        if len(df) > 2000:
+            problems.append(f"{len(df)} points: consider a sample or a hexbin, the points overlap")
+
+    elif kind == "small_multiples":
+        series = _as_series_dict(data)
+        if not 2 <= len(series) <= 12:
+            raise ValueError("small_multiples draws 2 to 12 panels; group or filter to fewer series")
+        plt.close(fig)
+        cols = 2 if len(series) <= 4 else 3
+        rows = int(np.ceil(len(series) / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(9, 1.0 + 2.1 * rows), dpi=144, sharex=True, sharey=shared_y, squeeze=False)
+        for n, (name, s) in enumerate(series.items()):
+            a = axes[n // cols][n % cols]
+            a.plot(s.index, s.values, color=OKABE_ITO[0], linewidth=1.8)
+            a.set_title(name, loc="left", fontsize=10, color=_INK, fontweight="bold")
+            for sp in ("top", "right"):
+                a.spines[sp].set_visible(False)
+            a.grid(axis="y", color=_GRID, linewidth=0.8)
+            a.tick_params(colors=_MUTED, labelsize=8.5)
+            _date_axis(a, s.index)
+        for n in range(len(series), rows * cols):
+            axes[n // cols][n % cols].axis("off")
+        fig.suptitle(title, x=0.02, ha="left", fontsize=14, fontweight="bold", color=_INK)
+        if subtitle:
+            fig.text(0.02, 0.905 if rows == 1 else 0.925, subtitle, fontsize=10, color=_MUTED, ha="left")
+        fig.text(0.02, 0.01, source, fontsize=8.5, color=_MUTED, ha="left")
+        fig.tight_layout(rect=(0, 0.03, 1, 0.90))
+        checks["shared_y_axis"] = bool(shared_y)
+        table = pd.DataFrame(series)
+
+    else:  # forecast
+        if history is None or point is None or not bands:
+            raise ValueError("kind='forecast' needs history=<Series>, point=<forecast values> and bands=[(80, lower, upper), ...]")
+        h = history.astype(float).dropna()
+        pts = np.asarray(point, dtype=float)
+        n = len(pts)
+        if future_index is None:
+            if isinstance(h.index, pd.DatetimeIndex):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    f = pd.infer_freq(h.index[-min(len(h), 40):]) or None
+                step = (h.index[-1] - h.index[-2]) if f is None else None
+                fi = pd.date_range(h.index[-1], periods=n + 1, freq=f)[1:] if f else pd.DatetimeIndex([h.index[-1] + step * (i + 1) for i in range(n)])
+            else:
+                fi = pd.RangeIndex(int(h.index[-1]) + 1, int(h.index[-1]) + 1 + n)
+        else:
+            fi = future_index
+        if len(fi) != n:
+            raise ValueError(f"future_index has {len(fi)} entries but point has {n}")
+        d = _decimals(np.concatenate([h.values, pts]))
+        ordered = sorted(bands, key=lambda b: -b[0])
+        shades = [0.14, 0.28, 0.40][: len(ordered)] if len(ordered) <= 3 else [0.14] * len(ordered)
+        for (level, lo, hi), a in zip(ordered, shades):
+            lo, hi = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+            if len(lo) != n or len(hi) != n:
+                raise ValueError(f"band {level} must have {n} values for lower and upper")
+            if np.any(lo > hi):
+                raise ValueError(f"band {level} has a lower value above its upper value")
+            ax.fill_between(fi, lo, hi, color=OKABE_ITO[1], alpha=a, linewidth=0)
+        ax.plot(h.index, h.values, color=_INK, linewidth=2.0)
+        bridge_x = [h.index[-1], *fi]
+        ax.plot(bridge_x, [h.iloc[-1], *pts], color=OKABE_ITO[1], linewidth=2.4)
+        ax.axvline(h.index[-1], color=_MUTED, linestyle=(0, (4, 3)), linewidth=1)
+        top = ax.get_ylim()[1]
+        ax.annotate("Forecast starts", xy=(h.index[-1], top), xytext=(-6, -4), textcoords="offset points", ha="right", va="top",
+                    fontsize=9.5, color=_MUTED)
+        _frame(fig, ax, title, subtitle, source)
+        _date_axis(ax, h.index)
+        d_ = d
+        labels = [(f"Forecast  {_fmt(float(pts[-1]), unit, d_, compact=True)}", float(pts[-1]), OKABE_ITO[1])]
+        for (level, lo, hi) in ordered:
+            lab = f"{level:g}% range\n{_fmt(float(np.asarray(lo)[-1]), unit, d_, compact=True)} to {_fmt(float(np.asarray(hi)[-1]), unit, d_, compact=True)}"
+            labels.append((lab, float(np.asarray(hi)[-1]), _MUTED))
+        _end_labels(ax, labels, fi[-1], unit, d_)
+        fig.subplots_adjust(right=0.76)
+        checks["bands"] = [float(b[0]) for b in ordered]
+        checks["forecast_origin_marked"] = True
+        cols = {"history": h}
+        table = pd.concat([pd.DataFrame({"history": h}), pd.DataFrame({"forecast": pts, **{f"lower_{b[0]:g}": np.asarray(b[1]) for b in ordered},
+                                                                     **{f"upper_{b[0]:g}": np.asarray(b[2]) for b in ordered}}, index=fi)])
+
+    if kind in ("line", "bar", "hist", "scatter", "forecast"):
+        if x_label and kind != "scatter":
+            ax.set_xlabel(x_label, color=_MUTED)
+        ylab = y_label or ("" if kind == "bar" else unit)
+        if ylab and kind not in ("scatter", "bar", "hist"):
+            ax.set_ylabel(ylab, color=_MUTED)
+        if kind == "hist":
+            ax.set_ylabel("Count", color=_MUTED)
+
+    # Programmatic checks on what was drawn: labels fully inside the figure, no text overlapping another.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    ticks = {id(t) for a_ in fig.axes for t in (*a_.get_xticklabels(), *a_.get_yticklabels())}
+    texts = [t for t in fig.findobj(matplotlib.text.Text) if t.get_visible() and t.get_text().strip() and id(t) not in ticks]
+    boxes = [(t.get_text(), t.get_window_extent(renderer)) for t in texts]
+    fw, fh = fig.canvas.get_width_height()
+    for txt, b in boxes:
+        if b.x1 > fw + 1 or b.x0 < -1 or b.y0 < -1 or b.y1 > fh + 1:
+            problems.append(f"text is cut off at the figure edge: {txt[:40]!r}")
+    annots = [(t.get_text(), t.get_window_extent(renderer)) for t in texts if isinstance(t, matplotlib.text.Annotation)]
+    for i in range(len(annots)):
+        for j in range(i + 1, len(annots)):
+            if annots[i][1].overlaps(annots[j][1]):
+                problems.append(f"labels overlap: {annots[i][0][:30]!r} and {annots[j][0][:30]!r}")
+    checks["labels_overlap"] = not any(p.startswith("labels overlap") for p in problems)
+    checks["text_inside_figure"] = not any(p.startswith("text is cut off") for p in problems)
+
+    fig.savefig(out, facecolor="white")
+    svg = out.with_suffix(".svg")
+    fig.savefig(svg, facecolor="white")
+    plt.close(fig)
+    csv_path = out.with_suffix(".csv")
+    table.to_csv(csv_path)
+    return {"files": [str(out), str(svg), str(csv_path)], "problems": problems, "checks": checks,
+            "note": "the CSV holds exactly the numbers drawn; every figure you quote about the chart must match it"}
+
+
+# ------------------------------------------------------------------------------------------ large files --
+# Files too big to read whole are queried where they are. DuckDB streams CSV and Parquet from disk, spills to a temp
+# folder when a step needs more memory than the cap, and returns only the small result the analysis asks for.
+
+BIG_FILE_BYTES = 150 * 1024 * 1024
+QUERY_MEMORY = "1GB"
+
+
+def _scan_expr(path: Path) -> str:
+    q = str(path).replace("'", "''")
+    kind = sniff_kind(path)
+    if kind == "parquet":
+        return f"read_parquet('{q}')"
+    if kind in ("csv", "text", "tsv"):
+        return f"read_csv_auto('{q}', sample_size=200000, ignore_errors=true)"
+    raise TableReadError(f"{path.name} is a {kind} file; query reads CSV, TSV and Parquet. Use pl.load for workbooks.")
+
+
+def _connect(files: dict[str, str | Path]) -> Any:
+    import duckdb
+    con = duckdb.connect(":memory:")
+    con.execute(f"SET memory_limit='{QUERY_MEMORY}'")
+    con.execute("SET threads=2")
+    tmp = Path(".duck_tmp")
+    tmp.mkdir(exist_ok=True)
+    con.execute(f"SET temp_directory='{tmp.resolve()}'")
+    allowed = []
+    for name, f in files.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"table name {name!r} must be a plain identifier")
+        p = Path(f).resolve()
+        con.execute(f'CREATE VIEW "{name}" AS SELECT * FROM {_scan_expr(p)}')
+        allowed.append(str(p).replace("'", "''"))
+    con.execute("SET allowed_paths=[" + ",".join(f"'{a}'" for a in allowed) + "]")
+    con.execute("SET enable_external_access=false")        # from here the query can read only the named files
+    return con
+
+
+def size_report(path: str | Path) -> dict:
+    """How big a CSV or Parquet file really is and how to work with it: bytes, rows, columns with types, and a strategy."""
+    p = Path(path)
+    con = _connect({"t": p})
+    rows = con.sql("SELECT count(*) FROM t").fetchall()[0][0]
+    head = con.sql("SELECT * FROM t LIMIT 0")
+    cols = [(n, str(t)) for n, t in zip(head.columns, head.types)]
+    size = p.stat().st_size
+    if size < BIG_FILE_BYTES and rows <= MAX_ROWS:
+        strategy = "small enough to read whole: pl.load(path) and use pandas"
+    else:
+        strategy = ("too big to read whole: query it in place with pl.query(sql, t=path) so only a grouped or filtered result "
+                    "comes back; aggregate to the period or key the question needs before charting or forecasting; never "
+                    "print more than 50 rows")
+    return {"file": p.name, "bytes": size, "rows": int(rows), "columns": [{"name": n, "type": t} for n, t in cols], "strategy": strategy}
+
+
+def query(sql: str, max_rows: int = 20_000, **files: str | Path) -> pd.DataFrame:
+    """Run one SELECT over files that stay on disk. Name each file as a table: pl.query("SELECT region, sum(units) u FROM t
+    GROUP BY 1 ORDER BY u DESC", t="in/sales.csv"). Returns a DataFrame of at most ``max_rows`` rows; df.attrs["truncated"]
+    says whether more existed. The query can read only the files you named and cannot write."""
+    if not files:
+        raise ValueError("name at least one file, for example t='in/sales.csv'")
+    stmt = sql.strip().rstrip(";")
+    if ";" in stmt or not re.match(r"(?is)^\s*(with|select|from)\b", stmt):
+        raise ValueError("pass one SELECT (or WITH ... SELECT) statement")
+    con = _connect(files)
+    df = con.sql(stmt).limit(max_rows + 1).df()
+    df.attrs["truncated"] = len(df) > max_rows
+    return df.iloc[:max_rows]

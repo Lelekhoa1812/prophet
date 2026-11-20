@@ -268,3 +268,129 @@ def test_prompt_contracts_are_versioned_files_and_recorded_in_the_ledger(tmp_pat
     Runtime(store, owner="t").run(mid, goal_program("g", {}, B()))
     recorded = next(s for s in store.steps(mid) if s["name"] == "contracts")["output"]
     assert recorded["planner"]["version"] == prompts.CURRENT["planner"]
+
+
+def test_a_figure_missing_from_the_evidence_is_repaired_once(store):
+    brain = ScriptedBrain(plans=[call("a"), finish()],
+                          evals=[met("The total is 999 units."), met("The total is 42 units.")])
+    program = goal_program("what is the total", {"a": _tool("a", lambda args, key: {"total": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    assert out["result"]["answer"] == "The total is 42 units."
+    assert brain.calls["eval"] == 2, "one judgement and one repair, no more"
+
+
+def test_figures_still_unsupported_after_repair_make_a_partial_answer(store):
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[met("Total 999."), met("Total 998.")])
+    program = goal_program("what is the total", {"a": _tool("a", lambda args, key: {"total": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert out["result"]["unverified"] == ["998"]
+    assert out["status"] == "partial", "a partial answer is not recorded as met"
+
+
+class WritingBrain(ScriptedBrain):
+    """A brain that can also write free text, as the real one does, so the answer keeps its line breaks."""
+
+    def __init__(self, plans=(), evals=(), writes=()):
+        super().__init__(plans, evals)
+        self.writes = list(writes)
+        self.prompts = []
+
+    def write(self, messages):
+        self.prompts.append(messages[-1]["content"])
+        return self.writes.pop(0)
+
+
+def test_the_final_answer_is_written_as_free_text_with_its_line_breaks(store):
+    flat = "## Totals  **42 units**  - North 42"        # what a schema-bound reply looks like: no newlines
+    nice = "## Totals\n\n**42 units**\n\n- North 42"
+    brain = WritingBrain(plans=[call("a"), finish()], evals=[met(flat)], writes=[nice])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    assert out["result"]["answer"] == nice and "\n" in out["result"]["answer"]
+    assert flat in brain.prompts[0], "the verdict's answer goes to the writer as the draft"
+
+
+def test_a_written_answer_with_a_stray_figure_is_rewritten_once(store):
+    brain = WritingBrain(plans=[call("a"), finish()], evals=[met("North 42")],
+                         writes=["North **42** of 999\n", "North **42**\n"])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met" and out["result"]["answer"] == "North **42**\n"
+    assert "999" in brain.prompts[1], "the rewrite is told which figure was not in the evidence"
+
+
+def test_a_spent_tool_budget_ends_in_a_judgement_not_a_runtime_stop(store):
+    seen, counter = [], {"n": 0}
+
+    class Rec(ScriptedBrain):
+        def decide(self, messages, schema, name):
+            seen.append((name, messages[-1]["content"]))
+            return super().decide(messages, schema, name)
+
+    def changing(args, key):
+        counter["n"] += 1
+        return {"n": counter["n"]}
+
+    brain = Rec(plans=[call("a", {"i": 0}), call("a", {"i": 1}), call("a", {"i": 2})],
+                evals=[{"verdict": "not_met", "reason": "forecast missing", "answer": "So far 3 steps."}])
+    program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=10, tool_budget=3))
+    _, out = run(store, program, budget={"max_tool_calls": 3})
+    assert out["result"]["status"] == "partial", "the loop judges before the runtime has to stop it"
+    assert out["result"]["answer"] == "So far 3 steps."
+    plans = [text for name, text in seen if name == "plan"]
+    assert "Budget: step 1 of 10; 3 steps left." in plans[0] and "Stop exploring" not in plans[0]
+    assert "Stop exploring" in plans[2], "with two or fewer steps left the planner is told to finish"
+    assert len(plans) == 3, "no fourth plan is requested once the calls are used"
+
+
+def test_an_empty_repair_is_reported_as_partial_not_met(store):
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[met("Total 999."), {"verdict": "not_met", "reason": "x"}])
+    program = goal_program("what is the total", {"a": _tool("a", lambda args, key: {"total": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert out["result"]["answer"] == ""
+
+
+def test_a_spent_budget_gives_the_best_answer_so_far(store):
+    brain = ScriptedBrain(plans=[call("a")], evals=[
+        {"verdict": "not_met", "reason": "no forecast yet", "answer": "So far 7 units."}])
+    program = goal_program("g", {"a": _tool("a", lambda args, key: {"n": 7})}, brain, GoalConfig(max_iterations=1))
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert out["result"]["answer"] == "So far 7 units."
+    assert out["result"]["reason"] == "no forecast yet"
+
+
+def test_evaluator_question_pauses_once_then_judges_with_the_answer(store):
+    question = {"verdict": "not_met", "reason": "which product", "questions": [
+        {"question": "Which product should I total?", "header": "Product", "multiSelect": False,
+         "options": [{"label": "Widgets", "description": ""}, {"label": "Gadgets", "description": ""}]}]}
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[question, met("5 units of widgets.")])
+    program = goal_program("total units", {"a": _tool("a", lambda args, key: {"units": 5})}, brain)
+    mid, first = run(store, program)
+    assert first["status"] == "waiting_user"
+    store.answer_question(store.open_questions(mid)[0]["id"], {"Product": "Widgets"})
+    done = Runtime(store, owner="r2").run(mid, program)
+    assert done["result"]["status"] == "met"
+    assert done["result"]["answer"] == "5 units of widgets."
+    assert brain.calls == {"plan": 2, "eval": 2}
+
+
+def test_near_duplicate_options_are_rejected():
+    base = {"question": "Which total?", "header": "Total", "multiSelect": False}
+    dup = {**base, "options": [{"label": "Monthly totals", "description": ""}, {"label": "Monthly total", "description": ""}]}
+    assert validate_questions({"questions": [dup]})
+    distinct = {**base, "options": [{"label": "Monthly", "description": ""}, {"label": "Quarterly", "description": ""}]}
+    assert validate_questions({"questions": [distinct]}) == []
+
+
+def test_grounding_matches_figures_at_their_written_precision():
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "result": {"share": 0.1234, "units": 1204}}]
+    assert unverified("Units 1,204 and a share of 12.3%.", history, "g") == []
+    assert unverified("Units 1,205.", history, "g") == ["1,205"], "a different figure is not a rounding"
+    assert unverified("Share 9%.", history, "g") == ["9%"]
+    assert unverified("Horizon 8 weeks.", history, "forecast 8 weeks") == [], "figures in the goal are allowed"

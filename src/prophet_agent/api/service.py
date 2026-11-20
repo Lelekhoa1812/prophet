@@ -11,6 +11,7 @@ come from the notebook at the moment it starts, and it may keep tables for later
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,7 +24,7 @@ from prophet_agent.tools.notebook_tools import NotebookBinding
 
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
-DEFAULT_BUDGET = {"max_tool_calls": 12, "max_seconds": 600}
+DEFAULT_BUDGET = {"max_tool_calls": 20, "max_seconds": 900}
 
 
 class MissionService:
@@ -92,7 +93,8 @@ class MissionService:
             live = self._threads.get(mission_id)
             if live is not None and live.is_alive():
                 raise LeaseHeld(f"mission {mission_id} is already running")
-            program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), self.goal_cfg,
+            cfg = replace(self.goal_cfg, tool_budget=mission["budget"].get("max_tool_calls"))
+            program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), cfg,
                                    self.files_context(mission))
             runtime = Runtime(self.store, owner=f"api-{mission_id[:8]}")
             t = threading.Thread(target=self._run, args=(runtime, mission_id, program), daemon=True)

@@ -23,6 +23,7 @@ from prophet_agent import prompts
 from prophet_agent.nim.errors import redact
 from prophet_agent.nim.transport import DEFAULT_CHAIN
 
+from .grounding import unverified
 from .questions import QUESTIONS_SCHEMA, validate_questions
 from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import OutcomeUnknown, canonical
@@ -48,6 +49,7 @@ EVAL_SCHEMA: dict[str, Any] = {
         "verdict": {"type": "string", "enum": ["met", "not_met", "impossible"]},
         "reason": {"type": "string", "maxLength": 400},
         "answer": {"type": "string", "maxLength": 4000},
+        "questions": QUESTIONS_SCHEMA["properties"]["questions"],
     },
 }
 
@@ -57,11 +59,15 @@ OBS_CHARS = 4000
 class Brain(Protocol):
     def decide(self, messages: list[dict], schema: dict, name: str) -> dict: ...
 
+    # Optional: ``write(messages) -> str`` returns free text. The final answer is written through it when present,
+    # because a schema-bound reply loses its line breaks.
+
 
 @dataclass
 class GoalConfig:
     max_iterations: int = 14
     stall_window: int = 3
+    tool_budget: int | None = None     # tool calls the runtime allows; the planner is told how many are left
 
 
 @dataclass
@@ -87,10 +93,26 @@ def _evidence_lines(history: list[dict]) -> str:
     return "\n".join(f"{n}. {_clip(obs)}" for n, obs in enumerate(history[-12:], start=1))
 
 
-def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict], context: str = "") -> list[dict]:
+def _calls_used(history: list[dict]) -> int:
+    """Tool calls made so far: unknown-tool slips never reached the runtime, so they are not counted."""
+    return sum(1 for h in history if h.get("kind") == "tool" and not str(h.get("error", "")).startswith("unknown tool"))
+
+
+def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
+    left = cfg.max_iterations - i
+    if cfg.tool_budget is not None:
+        left = min(left, cfg.tool_budget - _calls_used(history))
+    note = f"Budget: step {i + 1} of {cfg.max_iterations}; {max(left, 0)} steps left."
+    if left <= 2:
+        note += " Stop exploring. Finish with what is established and say plainly what is missing."
+    return note
+
+
+def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict], context: str = "",
+                   budget: str = "") -> list[dict]:
     system = prompts.current("planner").text
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}Available tools:\n{_tool_lines(tools)}\n\n"
-            f"Evidence so far (oldest first):\n{_evidence_lines(history)}")
+            f"Evidence so far (oldest first):\n{_evidence_lines(history)}" + (f"\n\n{budget}" if budget else ""))
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -98,6 +120,45 @@ def _eval_messages(goal: str, history: list[dict], context: str = "") -> list[di
     system = prompts.current("evaluator").text
     user = f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}Evidence so far (oldest first):\n{_evidence_lines(history)}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _repair_messages(goal: str, history: list[dict], answer: str, bad: list[str], context: str = "") -> list[dict]:
+    system = prompts.current("evaluator").text
+    user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}Evidence so far (oldest first):\n"
+            f"{_evidence_lines(history)}\n\nYour draft answer:\n{answer}\n\n"
+            f"These figures in the draft do not appear in the evidence: {', '.join(bad)}. Rewrite the answer and remove "
+            "each of them, row numbers included. Describe a row in words if the evidence gives no number for it. Use only "
+            "figures that appear in the evidence above, and say plainly when a figure is not available. Return the "
+            "verdict met with the rewritten answer.")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _compose_messages(goal: str, history: list[dict], context: str, draft: str, bad: list[str] | None = None) -> list[dict]:
+    system = prompts.current("composer").text
+    user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}Evidence (oldest first):\n"
+            f"{_evidence_lines(history)}\n\nDraft (the content to keep; its formatting was lost):\n{draft}")
+    if bad:
+        user += (f"\n\nThese figures in the draft do not appear in the evidence: {', '.join(bad)}. Remove each of them, "
+                 "row numbers included. Describe a row in words if the evidence gives no number for it.")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user + "\n\nWrite the final answer in Markdown."}]
+
+
+def _compose(ctx: Ctx, brain: Any, step: str, goal: str, history: list[dict], context: str, draft: str,
+             bad: list[str] | None = None) -> str | None:
+    """The finished answer as plain text. A schema-bound reply cannot carry line breaks (the decoder drops them), so the
+    verdict's answer is only a draft; the text the person reads is written in a free-text call. None: the brain cannot."""
+    write = getattr(brain, "write", None)
+    if write is None or not draft.strip():
+        return None
+    return ctx.step(step, lambda c: write(_compose_messages(goal, history, context, draft, bad)))
+
+
+def _usable_questions(verdict: dict) -> list[dict] | None:
+    """The evaluator's questions, if it asked any and they pass the same validator as the planner's."""
+    qs = verdict.get("questions")
+    if not qs or validate_questions({"questions": qs}):
+        return None
+    return qs
 
 
 def _signature(obs: dict) -> str:
@@ -115,8 +176,15 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                                          for n in prompts.CURRENT})
         history: list[dict] = []
         for i in range(cfg.max_iterations):
-            plan = ctx.step(f"plan:{i}", lambda c: brain.decide(_plan_messages(goal, tools, history, context),
-                                                               PLAN_SCHEMA, "plan"))
+            out_of_calls = cfg.tool_budget is not None and _calls_used(history) >= cfg.tool_budget
+            if out_of_calls:
+                # No tool call is left, so planning another would only end the run with nothing to show. It is derived
+                # from the history, so a resumed run reaches the same decision without a stored step.
+                plan = {"action": "finish", "rationale": "tool budget used"}
+            else:
+                note = _budget_note(i, cfg, history)
+                plan = ctx.step(f"plan:{i}", lambda c: brain.decide(_plan_messages(goal, tools, history, context, note),
+                                                                   PLAN_SCHEMA, "plan"))
             if plan["action"] == "finish":
                 obs = {"kind": "finish", "rationale": plan["rationale"]}
             elif plan["action"] == "ask_user":
@@ -146,12 +214,48 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                 continue
             verdict = ctx.step(f"eval:{i}", lambda c: brain.decide(_eval_messages(goal, history, context),
                                                                    EVAL_SCHEMA, "eval"))
+            # The evaluator may find that one decision by the person would change the answer. It is asked once per
+            # run, then the evaluator judges again with the answer in the evidence.
+            qs = _usable_questions(verdict) if verdict["verdict"] != "met" else None
+            if qs and not any(h.get("kind") == "evaluator_question" for h in history):
+                answers = ctx.step(f"evalask:{i}", lambda c: c.ask({"questions": qs}))
+                history.append({"kind": "evaluator_question", "questions": qs, "answers": answers})
+                verdict = ctx.step(f"eval2:{i}", lambda c: brain.decide(_eval_messages(goal, history, context),
+                                                                        EVAL_SCHEMA, "eval"))
             if verdict["verdict"] == "met":
-                return {"status": "met", "iterations": i + 1, "answer": verdict.get("answer", ""),
-                        "evidence": history}
+                answer = verdict.get("answer", "")
+                written = _compose(ctx, brain, f"compose:{i}", goal, history, context, answer)
+                if written is not None:
+                    answer = written
+                bad = unverified(answer, history, goal)
+                if bad:
+                    # One repair pass: the figures must come from the evidence or be left out.
+                    repaired = _compose(ctx, brain, f"repair:{i}", goal, history, context, answer, bad)
+                    if repaired is None:
+                        fixed = ctx.step(f"repair:{i}", lambda c: brain.decide(
+                            _repair_messages(goal, history, answer, bad, context), EVAL_SCHEMA, "eval"))
+                        repaired = fixed.get("answer", "") or ""
+                    answer = repaired
+                    if not answer.strip():
+                        return {"status": "partial", "iterations": i + 1, "answer": "",
+                                "reason": "The results did not support a written answer.", "evidence": history}
+                    bad = unverified(answer, history, goal)
+                if bad:
+                    return {"status": "partial", "iterations": i + 1, "answer": answer,
+                            "reason": "Some figures in this answer could not be matched to the analysis output.",
+                            "unverified": bad, "evidence": history}
+                return {"status": "met", "iterations": i + 1, "answer": answer, "evidence": history}
             if verdict["verdict"] == "impossible":
                 return {"status": "impossible", "iterations": i + 1, "reason": verdict["reason"],
                         "evidence": history}
+            final = i == cfg.max_iterations - 1 or out_of_calls
+            if final and verdict.get("answer", "").strip():
+                # The budget is spent. A best answer from the evidence, with what is missing, beats no answer.
+                written = _compose(ctx, brain, f"compose:{i}", goal, history, context, verdict["answer"])
+                return {"status": "partial", "iterations": i + 1, "answer": written if written is not None else verdict["answer"],
+                        "reason": verdict["reason"], "evidence": history}
+            if final:
+                return {"status": "iteration_budget", "iterations": i + 1, "evidence": history}
             history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]})
         return {"status": "iteration_budget", "iterations": cfg.max_iterations, "evidence": history}
 
@@ -185,11 +289,18 @@ class NimBrain:
     """Adapter from the goal loop to the NIM transport. Output is schema-bound and parsed here."""
 
     def __init__(self, client: Any, models: list[str] | None = None, *, thinking: bool = False,
-                 max_tokens: int = 4096):
+                 max_tokens: int = 4096, write_tokens: int = 3000):
+        self.write_tokens = write_tokens
         self.client = client
         self.models = models
         self.thinking = thinking
         self.max_tokens = max_tokens
+
+    def write(self, messages: list[dict]) -> str:
+        """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line)."""
+        reply = self.client.complete(list(self.models or DEFAULT_CHAIN), messages, thinking=False,
+                                     max_tokens=self.write_tokens)
+        return reply.text
 
     def decide(self, messages: list[dict], schema: dict, name: str) -> dict:
         reply = self.client.complete(list(self.models or DEFAULT_CHAIN), messages,

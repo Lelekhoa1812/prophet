@@ -18,6 +18,7 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   outcome_unknown: { label: "Paused for review", tone: "bad" },
   budget_exhausted: { label: "Reached its limit", tone: "bad" },
   iteration_budget: { label: "Reached its limit", tone: "bad" },
+  partial: { label: "Partly answered", tone: "ember" },
   stalled: { label: "Stuck", tone: "bad" },
   impossible: { label: "Not possible with this data", tone: "bad" },
   cancelled: { label: "Stopped", tone: "sand" },

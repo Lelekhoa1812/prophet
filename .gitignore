@@ -9,3 +9,7 @@ web/dist/
 data/
 node_modules/
 .pytest_cache/
+
+# deep-research working notes
+research_notes/
+reports/

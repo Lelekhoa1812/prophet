@@ -218,7 +218,8 @@ export function Turn({
 
   const elapsed = now - startedAt;
   const answer = mission.answer && typeof mission.answer === "object" ? (mission.answer as Record<string, any>) : null;
-  const text = answer?.status === "met" && typeof answer.answer === "string" ? answer.answer : "";
+  const text = (answer?.status === "met" || answer?.status === "partial") && typeof answer.answer === "string" ? answer.answer : "";
+  const unverified: string[] = Array.isArray(answer?.unverified) ? answer.unverified.map(String) : [];
   const problem = problemFor(mission);
 
   return (
@@ -242,6 +243,16 @@ export function Turn({
         {mission.questions.map((q) => (
           <QuestionCard key={q.id} question={q} onAnswered={onAnswered} />
         ))}
+
+        {answer?.status === "partial" && (
+          <Card role="status" className="grid gap-1.5 border-ember/40 p-4">
+            <p className="text-base font-bold text-sand-0">This is a partial answer.</p>
+            {typeof answer.reason === "string" && answer.reason && <p className="text-[0.9375rem] text-sand-1">{answer.reason}</p>}
+            {unverified.length > 0 && (
+              <p className="text-[0.9375rem] text-sand-1">Not found in the results: {unverified.join(", ")}</p>
+            )}
+          </Card>
+        )}
 
         {text && <Markdown text={text} className="text-[1.125rem] leading-[1.7]" />}
 

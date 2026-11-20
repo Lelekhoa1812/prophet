@@ -462,6 +462,21 @@ def test_repr_never_shows_key_material():
     client.close()
 
 
+def test_every_request_streams_with_an_idle_timeout_inside_the_budget():
+    from prophet_agent.nim.transport import BUDGET_S, STREAM_IDLE_S
+    script = Script().on(answer('{"a": 1}'))
+    client, _ = make(script)
+    client.complete([M1], MSGS)
+    client.complete([M1], MSGS, schema={"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]})
+    client.probe(1)
+    assert len(script.calls) == 3
+    for c in script.calls:
+        assert c["body"]["stream"] is True, "no request may wait for a whole response in one piece"
+    for c in script.calls[:2]:
+        assert c["request"].extensions["timeout"]["read"] <= STREAM_IDLE_S
+    assert BUDGET_S >= 300.0, "long schema-bound answers need room beyond five minutes of silence-free streaming"
+
+
 def test_probe_reports_status_only_and_never_retries():
     script = Script().on(status(403), slot=1)
     client, _ = make(script)

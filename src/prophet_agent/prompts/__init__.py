@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).parent
-CURRENT = {"planner": "planner.v2", "evaluator": "evaluator.v1"}
+CURRENT = {"planner": "planner.v3", "evaluator": "evaluator.v2", "composer": "composer.v1"}
 
 
 @dataclass(frozen=True)

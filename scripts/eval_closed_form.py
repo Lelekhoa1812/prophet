@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 BASE = "http://127.0.0.1:8010"
-FINAL = {"completed", "met", "failed", "stalled", "impossible", "iteration_budget", "budget_exhausted",
+FINAL = {"completed", "met", "partial", "failed", "stalled", "impossible", "iteration_budget", "budget_exhausted",
          "outcome_unknown", "cancelled"}
 
 

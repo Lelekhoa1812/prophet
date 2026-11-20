@@ -61,8 +61,10 @@ SANDBOX_PYTHON_SPEC = {
     "activity": "Running an analysis",
     "description": "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guardrailed sandbox: no network, no "
                    "secrets, one minute. The person's uploaded files are in in/ (read-only). `import prophet_lib as pl` "
-                   "gives pl.profile(path), pl.read_table(path), pl.to_number(s), pl.to_datetime(s), pl.build_series(...), "
-                   "pl.find_season(values) and pl.save_series(series, 'out/series.json'). Write files to out/. "
+                   "gives pl.load(path, sheet) (one typed DataFrame: numbers and dates converted, blanks missing; the "
+                   "report is df.attrs['report']), pl.profile(path), pl.as_number(s), pl.as_dates(s, dayfirst=None), "
+                   "pl.build_series(...), pl.find_season(values) and pl.save_series(series, 'out/series.json'). "
+                   "pl.read_table, pl.to_number and pl.to_datetime return (value, info) pairs: unpack both. Draw charts with pl.chart(kind, data, title=<the finding>, subtitle=<measure, unit, period>, unit=..., source=..., path=\"out/name.png\") and read the problems it returns. pl.size_report(path) and pl.query(sql, t=path) work on CSV or Parquet files too big to read whole (the query sees only the named files). Write files to out/. "
                    "Print only what you need: output you do not print, you do not see. A series written with "
                    "pl.save_series can be forecast by passing source {run_id, file}.",
     "args": {"code": "Python source, at most 20000 characters"},

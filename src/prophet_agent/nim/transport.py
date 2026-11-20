@@ -61,6 +61,8 @@ COOL_429_S = 30.0                 # used when Retry-After is absent or unreadabl
 RETRY_AFTER_CAP_S = 120.0
 MAX_TOKENS_DEFAULT = 16384
 GLM_MIN_TOKENS = 1024             # GLM spends small budgets on reasoning (NIM.md §3)
+STREAM_IDLE_S = 120.0              # longest silence tolerated inside one streamed response, then fail over
+BUDGET_S = 420.0                  # wall-clock budget for one logical call (long schema-bound answers need it)
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -258,7 +260,9 @@ def _check_schema(text: str, schema: dict) -> str | None:
 
 
 def _timeout(remaining: float) -> httpx.Timeout:
-    return httpx.Timeout(connect=min(10.0, remaining), read=remaining, write=min(30.0, remaining),
+    # `read` is the longest silence between two bytes, not the whole response: a long answer keeps streaming up to the
+    # wall-clock budget, while a stalled one fails over after STREAM_IDLE_S instead of holding the call until the end.
+    return httpx.Timeout(connect=min(10.0, remaining), read=min(STREAM_IDLE_S, remaining), write=min(30.0, remaining),
                          pool=min(30.0, remaining))
 
 
@@ -317,7 +321,7 @@ class NimClient:
                thinking: bool | None = False, max_tokens: int = MAX_TOKENS_DEFAULT,
                schema: dict | None = None, schema_name: str = "output",
                tools: Sequence[Mapping[str, Any]] | None = None,
-               budget_s: float = 240.0) -> Iterator[tuple[str, Any]]:
+               budget_s: float = BUDGET_S) -> Iterator[tuple[str, Any]]:
         """Yield ("delta", text) while output is released, then one ("done", Reply).
 
         With a schema or tools, nothing is released early: the answer is buffered, validated and then returned in
@@ -386,12 +390,12 @@ class NimClient:
         key = self.keys[slot - 1]
         started = self.clock()
         try:
-            r = self.http.post("/chat/completions",
-                               headers={"authorization": f"Bearer {key}"},
-                               json={"model": model, "messages": [{"role": "user", "content": "ping"}],
-                                     "max_tokens": 4, "stream": False},
-                               timeout=_timeout(30.0))
-            status = r.status_code
+            with self.http.stream("POST", "/chat/completions",
+                                  headers={"authorization": f"Bearer {key}", "accept": "text/event-stream"},
+                                  json={"model": model, "messages": [{"role": "user", "content": "ping"}],
+                                        "max_tokens": 4, "stream": True},
+                                  timeout=_timeout(30.0)) as r:
+                status = r.status_code
         except httpx.TransportError as exc:
             status = None
             err = type(exc).__name__

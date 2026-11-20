@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 BASE = os.environ.get("PROPHET_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL = "2024-11-05"
-FINAL = {"completed", "met", "failed", "stalled", "impossible", "iteration_budget", "budget_exhausted",
+FINAL = {"completed", "met", "partial", "failed", "stalled", "impossible", "iteration_budget", "budget_exhausted",
          "outcome_unknown", "cancelled"}
 WORKING = {"created", "running"}
 
@@ -58,6 +58,11 @@ def _answer_text(mission: dict) -> dict:
         out["next"] = "Call prophet_answer with the question_id and an answers object keyed by each question's header."
     elif isinstance(ans, dict) and ans.get("status") == "met":
         out["answer"] = ans.get("answer")
+    elif isinstance(ans, dict) and ans.get("status") == "partial":
+        out["answer"] = ans.get("answer")
+        out["partial"] = ans.get("reason")
+        if ans.get("unverified"):
+            out["unverified_figures"] = ans["unverified"]
     elif ans:
         out["detail"] = ans
     return out

@@ -8,6 +8,7 @@ the authority; the schema only helps the model produce valid output on the first
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 MAX_QUESTIONS = 4
@@ -94,4 +95,22 @@ def validate_questions(payload: Any) -> list[str]:
                 problems.append(f"{where}.options[{j}].description must be a string")
         if len(set(labels)) != len(labels):
             problems.append(f"{where}.options labels must be distinct")
+        for a in range(len(labels)):
+            for b in range(a + 1, len(labels)):
+                if _near_duplicates(labels[a], labels[b]):
+                    problems.append(f"{where}.options {labels[a]!r} and {labels[b]!r} are near-duplicates; make each "
+                                    "option a clearly different choice")
     return problems
+
+
+def _terms(label: str) -> frozenset[str]:
+    """Words of a label, lower-cased, with a plural 's' dropped, so 'Monthly totals' and 'Monthly total' match."""
+    words = re.findall(r"[a-z0-9]+", label.lower())
+    return frozenset(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words)
+
+
+def _near_duplicates(a: str, b: str) -> bool:
+    ta, tb = _terms(a), _terms(b)
+    if not ta or not tb:
+        return False
+    return ta == tb or len(ta & tb) / len(ta | tb) >= 0.6

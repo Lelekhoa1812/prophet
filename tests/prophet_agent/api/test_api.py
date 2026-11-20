@@ -143,3 +143,25 @@ def test_forecast_report_produces_downloadable_files(tmp_path, stub_timesfm):
     assert png.status_code == 200 and png.content[:8] == b"\x89PNG\r\n\x1a\n"
     assert arts[0]["forecast"]["config"]["checkpoint"] == "stub"
     assert len(arts[0]["forecast"]["point"]) == 4 and len(arts[0]["forecast"]["q10"]) == 4
+
+
+def test_analysis_charts_are_listed_for_inline_display(tmp_path):
+    code = (
+        "import prophet_lib as pl, pandas as pd, numpy as np\n"
+        "s = pd.Series(np.arange(20.0), index=pd.date_range('2024-01-01', periods=20, freq='W'))\n"
+        "r = pl.chart('line', s, title='Demand rose every single week', subtitle='Units per week', unit='units')\n"
+        "print(r['problems'])\n")
+    scratch = "open('out/notes.txt', 'w').write('x')\nprint(1)\n"
+    brain = ScriptedBrain(
+        plans=[{"action": "call_tool", "tool": "sandbox_python", "rationale": "chart", "args": {"code": code}},
+               {"action": "call_tool", "tool": "sandbox_python", "rationale": "scratch", "args": {"code": scratch}},
+               {"action": "finish", "rationale": "x"}],
+        evals=[{"verdict": "not_met", "reason": "more"}, {"verdict": "met", "reason": "done", "answer": "ok"}])
+    client, service = _client(tmp_path, lambda: brain)
+    mid = client.post("/api/missions", json={"goal": "chart it"}).json()["id"]
+    service.wait(mid, timeout=60)
+    arts = client.get(f"/api/missions/{mid}/artifacts").json()
+    assert len(arts) == 1                                     # the run that only wrote a text note is not listed
+    names = {f["path"] for f in arts[0]["files"]}
+    assert {"out/chart.png", "out/chart.svg", "out/chart.csv"} <= names and arts[0]["forecast"] is None
+    assert client.get(f"/api/artifacts/{arts[0]['run_id']}/chart.png").content[:4] == b"\x89PNG"

@@ -67,6 +67,9 @@ class TurnIn(BaseModel):
     goal: str = Field(min_length=3, max_length=2000)
 
 
+DISPLAY_EXTS = (".png", ".svg", ".xlsx", ".docx", ".pdf")
+
+
 def _history(args: dict) -> list[float]:
     """The series behind a forecast, for the chart: from the call's own numbers or from the analysis run it named."""
     from prophet_agent.tools.series_io import resolve_series
@@ -170,20 +173,27 @@ def create_app(service: MissionService) -> FastAPI:
     @app.get("/api/missions/{mission_id}/artifacts")
     def list_artifacts(mission_id: str) -> list[dict]:
         rows = service.store.conn.execute(
-            "SELECT result_json, args_json FROM tool_calls "
-            "WHERE mission_id=? AND tool='forecast_report' AND status='done' ORDER BY step_idx", (mission_id,)).fetchall()
+            "SELECT tool, result_json, args_json FROM tool_calls "
+            "WHERE mission_id=? AND tool IN ('forecast_report','sandbox_python') AND status='done' ORDER BY step_idx", (mission_id,)).fetchall()
         out = []
         for r in rows:
             res = json.loads(r["result_json"] or "null") or {}
             run_id = res.get("run_id")
-            if run_id:
-                fc = res.get("forecast") or {}
-                q = fc.get("quantiles") or {}
-                args = json.loads(r["args_json"] or "null") or {}
-                history = _history(args)
-                out.append({"run_id": run_id, "files": res.get("files", []), "history": history,
-                            "forecast": {"config": fc.get("config"), "point": fc.get("point"),
-                                         "q10": q.get("0.1"), "q50": q.get("0.5"), "q90": q.get("0.9")}})
+            if not run_id:
+                continue
+            if r["tool"] == "sandbox_python":
+                # Analysis runs show up only when they made something a person opens: a chart or a document.
+                files = [{"path": o["path"], "sha256": o["sha256"], "bytes": o["bytes"]} for o in res.get("outputs", [])
+                         if isinstance(o, dict) and o.get("path", "").startswith("out/")]
+                if any(f["path"].lower().endswith(DISPLAY_EXTS) for f in files):
+                    out.append({"run_id": run_id, "files": files, "history": [], "forecast": None})
+                continue
+            fc = res.get("forecast") or {}
+            q = fc.get("quantiles") or {}
+            args = json.loads(r["args_json"] or "null") or {}
+            out.append({"run_id": run_id, "files": res.get("files", []), "history": _history(args),
+                        "forecast": {"config": fc.get("config"), "point": fc.get("point"),
+                                     "q10": q.get("0.1"), "q50": q.get("0.5"), "q90": q.get("0.9")}})
         return out
 
     @app.get("/api/artifacts/{run_id}/{name:path}")

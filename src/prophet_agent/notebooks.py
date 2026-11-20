@@ -33,6 +33,12 @@ from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
 
 TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+READ_RULE = ("Reading rule: open files with pl.load(path, sheet), which returns one typed DataFrame (numbers and dates "
+             "converted, blanks missing; what was done is in df.attrs['report']). pl.read_table returns (text table, report) and "
+             "pl.to_number / pl.to_datetime return (value, info): unpack both, or use pl.as_number(s) and "
+             "pl.as_dates(s, dayfirst=True).")
+BLANK_RULE = ("Blank rule (applies to every question): a blank cell is missing, not zero. Leave blanks out of averages "
+              "and counts of values, do not count them as zeros in totals, and say how many were left out.")
 CARD_CHARS = 3200            # per source
 CONTEXT_CHARS = 14000        # whole notebook context
 RECENT_TURNS = 6
@@ -343,7 +349,7 @@ class Notebooks:
         if srcs:
             names = self.datasets.mount([s["dataset_id"] for s in srcs])
             lines = ["Sources in this notebook (analysis code sees them in in/ under these names; "
-                     "pl.read_table(path, sheet) reads one sheet):"]
+                     "pl.read_table(path, sheet) reads one sheet):", READ_RULE, BLANK_RULE]
             for (fname, _), s in zip(names.items(), srcs):
                 head = f"- {fname} ({s['bytes']:,} bytes) status: {s['status']}"
                 if s["status"] == "profiling":
@@ -368,7 +374,7 @@ class Notebooks:
                 f"- {t['name']} v{t['version']}: {t['rows']} rows; columns {', '.join(t['columns'][:12])}"
                 + (f"; {t['description']}" if t["description"] else "") for t in tbl))
         past = [t for t in self.turns(nid) if before_seq is None or t["seq"] < before_seq]
-        done = [t for t in past if t["status"] in ("completed", "impossible", "stalled", "iteration_budget")]
+        done = [t for t in past if t["status"] in ("completed", "impossible", "stalled", "iteration_budget", "partial")]
         if done:
             shown = done[-RECENT_TURNS:]
             lines = ["Earlier in this conversation:"]
