@@ -1,72 +1,35 @@
-import { AlertCircle, CheckCircle2, ChevronRight, Download, FileSpreadsheet, Plus, X } from "lucide-react";
-import { useRef, useState, type DragEvent, type ReactNode } from "react";
+import { AlertCircle, CheckCircle2, ChevronRight, Download, FileSpreadsheet } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { api, tableDownloadUrl, type KeptTable, type Source } from "../lib/api";
 import { errorMessage, truncate } from "../lib/format";
+import type { Uploads } from "../lib/useUploads";
 import { cn, formatBytes } from "../lib/utils";
 import { Button, Spinner } from "./ui";
 
-type UploadNote = { id: number; name: string; message: string };
-
 // Every file in the notebook, with its own state. A file that cannot be used says why, in words, and is never dropped.
+// Adding files happens elsewhere (drop anywhere, or the attach button); this is where you decide which ones are read.
 export function SourcesPanel({
   notebookId,
   sources,
   tables,
+  uploads,
   onChanged,
 }: {
   notebookId: string;
   sources: Source[];
   tables: KeptTable[];
+  uploads: Uploads;
   onChanged: () => void;
 }) {
-  const input = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState<{ done: number; total: number; name: string } | null>(null);
-  const [notes, setNotes] = useState<UploadNote[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  async function addFiles(files: File[]) {
-    if (files.length === 0) return;
-    const failed: UploadNote[] = [];
-    for (let i = 0; i < files.length; i += 1) {
-      const file = files[i];
-      setUploading({ done: i, total: files.length, name: file.name });
-      try {
-        await api.uploadSource(notebookId, file);
-      } catch (err) {
-        failed.push({ id: Date.now() + i, name: file.name, message: errorMessage(err, "Couldn't add this file.") });
-      }
-    }
-    setUploading(null);
-    setNotes((prev) => [...failed, ...prev].slice(0, 6));
-    onChanged();
-  }
-
-  function onDrop(e: DragEvent<HTMLElement>) {
-    e.preventDefault();
-    setDragging(false);
-    void addFiles(Array.from(e.dataTransfer.files));
-  }
-
-  async function toggle(s: Source) {
+  async function change(s: Source, body: { included?: boolean; removed?: boolean }, fallback: string) {
     setBusyId(s.id);
     try {
-      await api.patchSource(notebookId, s.id, { included: !s.included });
+      await api.patchSource(notebookId, s.id, body);
       onChanged();
     } catch (err) {
-      setNotes((prev) => [{ id: Date.now(), name: s.name, message: errorMessage(err, "Couldn't change this file.") }, ...prev]);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function remove(s: Source) {
-    setBusyId(s.id);
-    try {
-      await api.patchSource(notebookId, s.id, { removed: true });
-      onChanged();
-    } catch (err) {
-      setNotes((prev) => [{ id: Date.now(), name: s.name, message: errorMessage(err, "Couldn't remove this file.") }, ...prev]);
+      uploads.note(s.name, errorMessage(err, fallback));
     } finally {
       setBusyId(null);
     }
@@ -75,77 +38,21 @@ export function SourcesPanel({
   const usable = sources.filter((s) => s.included).length;
 
   return (
-    <section
-      aria-label="Sources"
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false);
-      }}
-      onDrop={onDrop}
-      className={cn("grid gap-4 rounded-xl border p-4 transition-colors", dragging ? "border-ember bg-night-2" : "border-sand-2/25 bg-night-1")}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="grid gap-0.5">
-          <h2 className="text-lg font-bold">Sources</h2>
-          <p className="text-[0.9375rem] text-sand-2">
-            {sources.length === 0
-              ? "Add spreadsheets or data files. Drop them here or use Add files."
-              : `${usable} of ${sources.length} in use for questions. Only files in use are read.`}
-          </p>
-        </div>
-        <input
-          ref={input}
-          type="file"
-          multiple
-          className="sr-only"
-          tabIndex={-1}
-          aria-hidden="true"
-          onChange={(e) => {
-            void addFiles(Array.from(e.target.files ?? []));
-            e.target.value = "";
-          }}
-        />
-        <Button variant="secondary" onClick={() => input.current?.click()} disabled={uploading !== null}>
-          <Plus aria-hidden="true" className="size-4" />
-          Add files
-        </Button>
-      </div>
-
-      {uploading && (
-        <p role="status" className="flex items-center gap-2 text-[0.9375rem] text-sand-1">
-          <Spinner />
-          Adding {uploading.name} ({uploading.done + 1} of {uploading.total})
-        </p>
-      )}
-
-      {notes.length > 0 && (
-        <ul className="grid gap-2" aria-label="File messages">
-          {notes.map((n) => (
-            <li key={n.id} role="alert" className="flex items-start justify-between gap-3 rounded-lg border border-bad/40 p-3 text-[0.9375rem]">
-              <span className="min-w-0 [overflow-wrap:anywhere]">
-                <span className="font-semibold text-sand-0">{n.name}: </span>
-                <span className="text-bad">{n.message}</span>
-              </span>
-              <button
-                type="button"
-                aria-label={`Dismiss message about ${n.name}`}
-                onClick={() => setNotes((prev) => prev.filter((x) => x.id !== n.id))}
-                className="grid size-9 shrink-0 place-items-center rounded-md text-sand-1 hover:bg-night-2 hover:text-sand-0"
-              >
-                <X aria-hidden="true" className="size-4" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+    <section aria-label="Files in this notebook" className="grid gap-4 rounded-2xl border border-sand-2/20 bg-night-1/70 p-4 sm:p-5">
+      <p className="text-[0.9375rem] text-sand-2">
+        {usable} of {sources.length} in use for questions. Only files in use are read.
+      </p>
 
       {sources.length > 0 && (
         <ul className="grid gap-2">
           {sources.map((s) => (
-            <SourceRow key={s.id} source={s} busy={busyId === s.id} onToggle={() => void toggle(s)} onRemove={() => void remove(s)} />
+            <SourceRow
+              key={s.id}
+              source={s}
+              busy={busyId === s.id}
+              onToggle={() => void change(s, { included: !s.included }, "Couldn't change this file.")}
+              onRemove={() => void change(s, { removed: true }, "Couldn't remove this file.")}
+            />
           ))}
         </ul>
       )}
@@ -155,9 +62,9 @@ export function SourcesPanel({
           <h3 className="text-[0.9375rem] font-semibold text-sand-2">Kept tables</h3>
           <ul className="grid gap-2">
             {tables.map((t) => (
-              <li key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-night-0/40 p-3">
+              <li key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-night-0/40 p-3">
                 <span className="grid min-w-0 gap-0.5">
-                  <span className="font-mono text-base text-sand-0 [overflow-wrap:anywhere]">{t.name}</span>
+                  <span className="text-base font-semibold text-sand-0 [overflow-wrap:anywhere]">{t.name}</span>
                   <span className="text-[0.9375rem] text-sand-2">
                     Version {t.version} · {t.rows.toLocaleString("en-AU")} rows · {t.columns.length} columns
                     {t.description ? ` · ${truncate(t.description, 120)}` : ""}

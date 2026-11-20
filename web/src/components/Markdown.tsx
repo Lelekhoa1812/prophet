@@ -15,7 +15,7 @@ function inline(text: string): ReactNode[] {
   });
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, className = "" }: { text: string; className?: string }) {
   const blocks: ReactNode[] = [];
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   let i = 0;
@@ -24,6 +24,58 @@ export function Markdown({ text }: { text: string }) {
     const line = lines[i];
     if (!line.trim()) {
       i++;
+      continue;
+    }
+    if (/^\s*```/.test(line)) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) {
+        code.push(lines[i]);
+        i++;
+      }
+      i++;
+      blocks.push(
+        <pre key={key++} className="max-h-80 overflow-auto rounded-xl bg-night-1 p-4 text-[0.9375rem] leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-1">
+          {code.join("\n")}
+        </pre>,
+      );
+      continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1])) {
+      const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const body: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        body.push(cells(lines[i]));
+        i++;
+      }
+      blocks.push(
+        <div key={key++} className="overflow-x-auto rounded-xl border border-sand-2/20">
+          <table className="w-full min-w-max border-collapse text-left text-[0.9375rem]">
+            <thead>
+              <tr className="bg-night-1 text-sand-1">
+                {head.map((h, n) => (
+                  <th key={n} scope="col" className="px-3 py-2 font-semibold">
+                    {inline(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {body.map((r, n) => (
+                <tr key={n} className="border-t border-sand-2/15">
+                  {r.map((c, k) => (
+                    <td key={k} className="px-3 py-2 tabular-nums">
+                      {inline(c)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
       continue;
     }
     const heading = /^#{1,3}\s+(.*)$/.exec(line);
@@ -56,7 +108,7 @@ export function Markdown({ text }: { text: string }) {
       continue;
     }
     const para: string[] = [];
-    while (i < lines.length && lines[i].trim() && !/^#{1,3}\s/.test(lines[i]) && !/^\s*([-*•]|\d+[.)])\s+/.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !/^#{1,3}\s/.test(lines[i]) && !/^\s*```/.test(lines[i]) && !/^\s*\|.*\|\s*$/.test(lines[i]) && !/^\s*([-*•]|\d+[.)])\s+/.test(lines[i])) {
       para.push(lines[i]);
       i++;
     }
@@ -66,5 +118,5 @@ export function Markdown({ text }: { text: string }) {
       </p>,
     );
   }
-  return <div className="grid gap-3 text-sand-0">{blocks}</div>;
+  return <div className={`grid gap-3.5 text-sand-0 ${className}`}>{blocks}</div>;
 }

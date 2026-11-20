@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, ChevronRight, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, ChevronRight, Copy, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ArtifactRun, Mission, ToolInfo } from "../lib/api";
 import { formatDuration, truncate } from "../lib/format";
@@ -18,7 +18,7 @@ function StepIcon({ state }: { state: StepView["state"] }) {
 function StepRow({ step }: { step: StepView }) {
   const hasDetails = step.facts.length > 0 || step.code || step.output || step.error;
   return (
-    <li className="grid gap-1 py-2.5">
+    <li className="grid gap-1 py-2">
       <div className="flex items-start gap-3">
         <span className="mt-1 shrink-0">
           <StepIcon state={step.state} />
@@ -90,8 +90,8 @@ function StepsPanel({ steps, working }: { steps: StepView[]; working: boolean })
   if (steps.length === 0) return null;
   const retried = steps.filter((s) => s.state === "failed").length;
   const summary = working
-    ? `Working through step ${steps.length}`
-    : `${steps.length} ${steps.length === 1 ? "step" : "steps"}${retried ? ` · ${retried} needed a retry` : ""}`;
+    ? `${steps.length} ${steps.length === 1 ? "step" : "steps"} so far`
+    : `Worked in ${steps.length} ${steps.length === 1 ? "step" : "steps"}${retried ? ` · ${retried} needed a retry` : ""}`;
 
   return (
     <details
@@ -103,13 +103,13 @@ function StepsPanel({ steps, working }: { steps: StepView[]; working: boolean })
           setOpen(now);
         }
       }}
-      className="rounded-xl border border-sand-2/25 bg-night-1/60"
+      className="group"
     >
-      <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-4 text-base text-sand-1 hover:text-sand-0">
+      <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg pr-3 text-[0.9375rem] text-sand-2 transition-colors hover:text-sand-0">
         <ChevronRight aria-hidden="true" className="size-4 transition-transform [details[open]>summary_&]:rotate-90" />
         {summary}
       </summary>
-      <ol className="divide-y divide-sand-2/15 px-4 pb-1.5" aria-label="What Prophet did">
+      <ol className="mt-1 ml-1.5 grid gap-0.5 border-l border-sand-2/25 pl-4" aria-label="What Prophet did">
         {steps.map((s) => (
           <StepRow key={s.key} step={s} />
         ))}
@@ -119,6 +119,33 @@ function StepsPanel({ steps, working }: { steps: StepView[]; working: boolean })
 }
 
 // What went wrong, why, and what to do next, in that order. Never a bare status code.
+function AnswerActions({ text, seconds }: { text: string; seconds: number }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <div className="-mt-1 flex items-center gap-1 text-[0.9375rem] text-sand-2">
+      <button
+        type="button"
+        onClick={() => void copy()}
+        aria-label={copied ? "Copied" : "Copy answer"}
+        title={copied ? "Copied" : "Copy answer"}
+        className="grid size-9 place-items-center rounded-lg transition-colors hover:bg-night-2 hover:text-sand-0"
+      >
+        {copied ? <Check aria-hidden="true" className="size-4 text-ok" /> : <Copy aria-hidden="true" className="size-4" />}
+      </button>
+      {seconds >= 1 && <span className="tabular-nums">Took {seconds < 60 ? `${Math.round(seconds)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`}</span>}
+    </div>
+  );
+}
+
 function problemFor(mission: Mission): { what: string; why: string; next: string } | null {
   const answer = mission.answer && typeof mission.answer === "object" ? (mission.answer as Record<string, any>) : {};
   const failedEvent = [...mission.events].reverse().find((e) => e.kind === "mission.failed");
@@ -189,8 +216,8 @@ export function Turn({
   const problem = problemFor(mission);
 
   return (
-    <article className="grid gap-5" aria-label="Forecast">
-      <div className="justify-self-end max-w-[88%] rounded-2xl bg-night-2 px-4 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap sm:max-w-[80%]">
+    <article className="grid gap-5" aria-label="Question and answer">
+      <div className="justify-self-end max-w-[88%] rounded-3xl bg-night-2 px-5 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap sm:max-w-[80%]">
         {mission.goal}
       </div>
 
@@ -210,9 +237,11 @@ export function Turn({
           <QuestionCard key={q.id} question={q} onAnswered={onAnswered} />
         ))}
 
-        {text && <Markdown text={text} />}
+        {text && <Markdown text={text} className="text-[1.125rem] leading-[1.7]" />}
 
         <Results runs={runs} />
+
+        {text && <AnswerActions text={text} seconds={Math.max(0, (mission.events[mission.events.length - 1]?.ts ?? startedAt) - startedAt)} />}
 
         {problem && (
           <Card role="alert" className={cn("grid gap-2 border-bad/40 p-4")}>

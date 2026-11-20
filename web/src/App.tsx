@@ -1,7 +1,7 @@
-import { Menu, Plus, Square, X } from "lucide-react";
+import { Menu, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Composer } from "./components/Composer";
-import { NotebookView, THREAD_SCROLL_ID } from "./components/NotebookView";
+import { NotebookView } from "./components/NotebookView";
 import { Sidebar } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
 import { Button, Card, Spinner } from "./components/ui";
@@ -156,7 +156,7 @@ export default function App() {
     : waitingOnYou
       ? "Answer the question above to continue."
       : current && isWorking(current.status)
-        ? "Prophet is working. You can start another forecast once it finishes."
+        ? "Prophet is working. Press Stop to interrupt it."
         : null;
 
   const sidebar = (
@@ -205,85 +205,80 @@ export default function App() {
           </Button>
         </header>
 
-        <main
-          id={THREAD_SCROLL_ID}
-          ref={scroller}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-          }}
-          className="min-h-0 flex-1 overflow-y-auto"
-        >
-          <div className="mx-auto grid w-full max-w-3xl gap-6 px-4 py-6 sm:px-6">
-            {(noKeys || apiDown) && (
-              <Card role="alert" className="grid gap-1 border-bad/40 p-4">
-                <p className="text-base font-bold">{apiDown ? "Prophet isn't running" : "Prophet needs a model key"}</p>
-                <p className="text-[0.9375rem] text-sand-1">
-                  {apiDown
-                    ? "Start the Prophet server, then reload this page."
-                    : "Add your NVIDIA key to the .env file in the project folder, then restart the server."}
-                </p>
-              </Card>
-            )}
-
-            {inNotebook ? (
-              <NotebookView notebookId={selectedNotebookId} tools={tools} onChanged={refreshList} />
-            ) : selectedId === null ? (
-              <section aria-label="Start" className="grid gap-8 pt-6 sm:pt-14">
-                <div className="grid gap-3">
-                  <h2 className="text-3xl leading-tight font-bold text-balance sm:text-4xl">What would you like to work on?</h2>
-                  <p className="text-lg text-sand-1">
-                    Start a notebook to add spreadsheets and ask questions about them, or ask a quick forecast below.
-                  </p>
-                  <div>
-                    <Button onClick={() => void newNotebook().catch(() => {})}>
-                      <Plus aria-hidden="true" className="size-4" />
-                      New notebook
-                    </Button>
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <p className="text-[0.9375rem] font-semibold text-sand-2">Or try a quick forecast</p>
-                  <ul className="flex flex-wrap gap-2">
-                    {EXAMPLES.map((ex) => (
-                      <li key={ex.label}>
-                        <button
-                          type="button"
-                          onClick={() => setDraft(ex.text)}
-                          className="min-h-10 rounded-full border border-sand-2/40 px-4 text-base text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
-                        >
-                          {ex.label}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </section>
-            ) : current ? (
-              <>
-                {isWorking(current.status) && (
-                  <div className="flex justify-end">
-                    <Button variant="secondary" onClick={() => void stopForecast()} disabled={stopping} aria-label="Stop this forecast">
-                      <Square aria-hidden="true" className="size-4" />
-                      {stopping ? "Stopping" : "Stop"}
-                    </Button>
-                  </div>
-                )}
-                <Turn mission={current} tools={tools} runs={runs} onAnswered={refresh} onRetry={(g) => void start(g).catch(() => {})} />
-              </>
-            ) : (
-              <p role="status" className="flex items-center gap-2 text-base text-sand-1">
-                {pollError ? (
-                  <span className="text-bad">{pollError}</span>
-                ) : (
-                  <>
-                    <Spinner /> Loading
-                  </>
-                )}
+        {(noKeys || apiDown) && (
+          <div className="px-4 pt-4 sm:px-6">
+            <Card role="alert" className="mx-auto grid w-full max-w-3xl gap-1 border-bad/40 p-4">
+              <p className="text-base font-bold">{apiDown ? "Prophet isn't running" : "Prophet needs a model key"}</p>
+              <p className="text-[0.9375rem] text-sand-1">
+                {apiDown
+                  ? "Start the Prophet server, then reload this page."
+                  : "Add your NVIDIA key to the .env file in the project folder, then restart the server."}
               </p>
-            )}
+            </Card>
           </div>
-        </main>
+        )}
+
+        {inNotebook ? (
+          <main className="min-h-0 flex-1 overflow-hidden">
+            <NotebookView key={selectedNotebookId} notebookId={selectedNotebookId} tools={tools} onChanged={refreshList} />
+          </main>
+        ) : (
+          <main
+            ref={scroller}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+            }}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="mx-auto grid w-full max-w-3xl gap-6 px-4 py-6 sm:px-6">
+              {selectedId === null ? (
+                <section aria-label="Start" className="grid gap-8 pt-6 sm:pt-14">
+                  <div className="grid gap-3">
+                    <h2 className="text-3xl leading-tight font-bold text-balance sm:text-4xl">What would you like to work on?</h2>
+                    <p className="text-lg text-sand-1">
+                      Start a notebook to add spreadsheets and ask questions about them, or ask a quick forecast below.
+                    </p>
+                    <div>
+                      <Button onClick={() => void newNotebook().catch(() => {})}>
+                        <Plus aria-hidden="true" className="size-4" />
+                        New notebook
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <p className="text-[0.9375rem] font-semibold text-sand-2">Or try a quick forecast</p>
+                    <ul className="flex flex-wrap gap-2">
+                      {EXAMPLES.map((ex) => (
+                        <li key={ex.label}>
+                          <button
+                            type="button"
+                            onClick={() => setDraft(ex.text)}
+                            className="min-h-10 rounded-full border border-sand-2/40 px-4 text-base text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
+                          >
+                            {ex.label}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </section>
+              ) : current ? (
+                <Turn mission={current} tools={tools} runs={runs} onAnswered={refresh} onRetry={(g) => void start(g).catch(() => {})} />
+              ) : (
+                <p role="status" className="flex items-center gap-2 text-base text-sand-1">
+                  {pollError ? (
+                    <span className="text-bad">{pollError}</span>
+                  ) : (
+                    <>
+                      <Spinner /> Loading
+                    </>
+                  )}
+                </p>
+              )}
+            </div>
+          </main>
+        )}
 
         {!inNotebook && (
           <div className={cn("border-t border-sand-2/15 bg-night-0 px-4 pt-3 pb-3 sm:px-6")}>
@@ -292,6 +287,9 @@ export default function App() {
                 onSend={start}
                 busy={sending}
                 blockedReason={blockedReason}
+                working={current !== null && isWorking(current.status)}
+                onStop={() => void stopForecast()}
+                stopping={stopping}
                 initial={draft}
                 placeholder={selectedId === null ? "Describe a quick forecast" : "Describe another forecast"}
               />
