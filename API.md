@@ -214,6 +214,45 @@ Practical advice for calling agents:
 - **Treat numbers as grounded only when the answer cites them** (file, sheet, column, row counts). Ask a follow-up when it does not.
 - Run long work asynchronously: send the turn, do other things, poll.
 
+## MCP server (Claude, Cursor and other MCP clients)
+
+The same capabilities are available as MCP tools, so a client can use Prophet without writing HTTP calls. The bridge holds no state and no keys; it talks to the running server.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m prophet_agent.api          # terminal 1: Prophet itself
+```
+
+Add it to the client's MCP settings (Claude Desktop, Cursor and others use the same shape):
+
+```json
+{
+  "mcpServers": {
+    "prophet": {
+      "command": "/absolute/path/to/prophet/.venv/bin/python",
+      "args": ["-m", "prophet_agent.mcp_server"],
+      "env": { "PYTHONPATH": "/absolute/path/to/prophet/src", "PROPHET_URL": "http://127.0.0.1:8010" }
+    }
+  }
+}
+```
+
+Claude Code: `claude mcp add prophet -e PYTHONPATH=/absolute/path/to/prophet/src -- /absolute/path/to/prophet/.venv/bin/python -m prophet_agent.mcp_server`
+
+| tool | what it does |
+|---|---|
+| `prophet_create_notebook` | New notebook, optional standing instructions |
+| `prophet_add_file` | Upload a local file by path and wait until it has been checked |
+| `prophet_notebook` | Files with status, kept tables, past questions |
+| `prophet_ask` | Ask a question and wait for the answer (or for a question back) |
+| `prophet_status` | Keep waiting on a turn that was still working |
+| `prophet_answer` | Answer questions Prophet asked |
+| `prophet_cancel` | Stop a turn |
+| `prophet_files` | Charts, workbooks and reports a turn produced, with URLs and sha256 |
+| `prophet_quick_forecast` | One-off forecast, no notebook |
+| `prophet_list_notebooks` | List notebooks |
+
+`prophet_ask` waits up to `wait_seconds` (default 240) and returns either the answer, a `waiting_user` payload with the questions, or a note to call `prophet_status` to keep waiting. Transport is stdio (newline-delimited JSON-RPC, protocol 2024-11-05, standard library only).
+
 ## Limits and guarantees
 
 - 50 MB per file, up to 10 files per quick forecast, 2000 characters per goal.
