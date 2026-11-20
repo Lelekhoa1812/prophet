@@ -115,3 +115,4 @@
 - Loop 32: value paper interactions clicked in a browser (about 128 of 213 controls): no JavaScript errors. Partial coverage. Recorded in GOAL_AUDIT section 15.
 - Loop 33: re-checked CI. Still blocked: the runner says account payments failed or the spending limit must be raised (run 23:03 UTC on c76a80c, 0 steps). Re-ran the CI steps on a fresh clone of c76a80c: 108 passed, 1 skipped. Account billing cannot be changed from the repo.
 - Loop 34 (20 Nov 2026): GitHub Actions workflow removed (billing blocked, Liam decision). Replaced by `scripts/check.sh` (pytest plus console typecheck and build): 109 passed locally, console build ok. TimesFM smoke test: weights load in 1.4 s, 8-step forecast returns point and 9 quantiles. CLAUDE.md added. B9 now means local gate, not remote CI.
+- Loop 35 (20 Nov 2026): TimesFM audit run, results in GOAL_EVIDENCE. Twin gain 17.4% vs 7.3% recorded in PLAN.md (unreconciled); censored twin 13.5%. Staging too short. No code change.
