@@ -628,7 +628,14 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
                 time_cols.append(str(name))
             else:
                 info.update(kind="text", missing=int((col.astype(str).str.strip().str.lower().isin(_NA_TOKENS)).sum()))
-                if info["unique"] <= max(50, 0.2 * len(df)):
+                present = col[~col.astype(str).str.strip().str.lower().isin(_NA_TOKENS | {""})].astype(str)
+                folded = present.str.replace(r"[\s\u00a0]+", " ", regex=True).str.strip().str.casefold().str.rstrip(".,;")
+                if info["unique"] >= 3 and folded.nunique() < present.nunique():
+                    info["spelling_variants"] = {"unique": int(present.nunique()), "after_tidy": int(folded.nunique())}
+                    out["issues"].append(
+                        f"column {name!r}: {present.nunique()} different values but {folded.nunique()} once case and spacing are ignored "
+                        "(for example the same name typed two ways); use pl.tidy_text before counting, grouping or joining on it")
+                if info["unique"] <= max(50, 0.2 * len(df)) or "spelling_variants" in info:
                     id_cols.append(str(name))
         out["columns"].append(info)
     if len(out["columns"]) > MAX_PROFILE_COLUMNS:

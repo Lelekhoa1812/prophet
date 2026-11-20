@@ -56,7 +56,7 @@ def _col_line(c: dict) -> str:
         if k in c and c[k] not in (None, 0, 0.0):
             v = c[k]
             bits.append(f"{k}={str(v)[:10] if k in ('first', 'last') else v}")
-    for k in ("sentinel_candidate", "decimal_comma_values", "unparsed_values", "ambiguous_day_month", "looks_like_year"):
+    for k in ("sentinel_candidate", "decimal_comma_values", "unparsed_values", "ambiguous_day_month", "looks_like_year", "spelling_variants"):
         if k in c:
             bits.append(f"{k}={c[k]}")
     return f"{c['name']}: " + ", ".join(bits)
