@@ -64,25 +64,26 @@ def run(store, program, budget=None, owner="r1"):
 
 
 def test_met_after_one_tool_call(store):
-    brain = ScriptedBrain(plans=[call("ping", {"x": 1})], evals=[met("pong")])
+    brain = ScriptedBrain(plans=[call("ping", {"x": 1}), finish()], evals=[met("pong")])
     program = goal_program("check", {"ping": _tool("ping")}, brain)
     _, out = run(store, program)
     assert out["status"] == "completed"
     assert out["result"]["status"] == "met"
     assert out["result"]["answer"] == "pong"
-    assert brain.calls == {"plan": 1, "eval": 1}
+    assert brain.calls == {"plan": 2, "eval": 1}, "the evaluator runs once, when the planner says it is done"
 
 
 def test_not_met_then_met_after_two_iterations(store):
-    brain = ScriptedBrain(plans=[call("a"), call("b")], evals=[not_met(), met()])
+    brain = ScriptedBrain(plans=[call("a"), finish(), call("b"), finish()], evals=[not_met(), met()])
     program = goal_program("g", {"a": _tool("a"), "b": _tool("b")}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "met"
-    assert out["result"]["iterations"] == 2
+    assert out["result"]["iterations"] == 4
+    assert out["result"]["evidence"][2]["kind"] == "evaluation", "a not-met verdict goes back to the planner as evidence"
 
 
 def test_impossible_verdict_stops_the_loop(store):
-    brain = ScriptedBrain(plans=[call("a")], evals=[{"verdict": "impossible", "reason": "no data for that region"}])
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[{"verdict": "impossible", "reason": "no data for that region"}])
     program = goal_program("g", {"a": _tool("a")}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "impossible"
@@ -91,7 +92,7 @@ def test_impossible_verdict_stops_the_loop(store):
 
 def test_stall_detected_when_the_same_call_returns_the_same_result(store):
     plans = [call("a", {"k": 1})] * 5
-    brain = ScriptedBrain(plans=plans, evals=[not_met()] * 5)
+    brain = ScriptedBrain(plans=plans, evals=[])
     program = goal_program("g", {"a": _tool("a", lambda args, key: {"same": True})}, brain,
                            GoalConfig(max_iterations=8, stall_window=3))
     mid, out = run(store, program)
@@ -112,7 +113,7 @@ def test_goal_and_argument_names_survive_a_large_observation(store):
     big = {"pad": list(range(3000))}       # far over OBS_CHARS once serialised
     tool = Tool("a", lambda args, key: big, idempotent=True,
                 doc="Echo a large payload. Arguments (use these names only): none.")
-    brain = Recording(plans=[call("a"), finish()], evals=[not_met(), met()])
+    brain = Recording(plans=[call("a"), finish(), finish()], evals=[not_met(), met()])
     goal = "Forecast marker ZX-42 for 8 weeks"
     _, out = run(store, goal_program(goal, {"a": tool}, brain))
     assert out["result"]["status"] == "met"
@@ -131,7 +132,7 @@ def test_iteration_budget_caps_an_endless_loop(store):
         return {"n": counter["n"]}
 
     plans = [call("a")] * 4
-    brain = ScriptedBrain(plans=plans, evals=[not_met()] * 4)
+    brain = ScriptedBrain(plans=plans, evals=[not_met()])     # only the last iteration is evaluated
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=4))
     _, out = run(store, program)
     assert out["result"]["status"] == "iteration_budget"
@@ -145,14 +146,14 @@ def test_tool_budget_from_the_runtime_stops_the_mission(store):
         counter["n"] += 1
         return {"n": counter["n"]}
 
-    brain = ScriptedBrain(plans=[call("a")] * 10, evals=[not_met()] * 10)
+    brain = ScriptedBrain(plans=[call("a")] * 10, evals=[])
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=10))
     _, out = run(store, program, budget={"max_tool_calls": 2})
     assert out == {"status": "budget_exhausted", "which": "max_tool_calls"}
 
 
 def test_unknown_tool_is_an_observation_not_a_crash(store):
-    brain = ScriptedBrain(plans=[call("nope"), call("a")], evals=[not_met(), met()])
+    brain = ScriptedBrain(plans=[call("nope"), call("a"), finish()], evals=[met()])
     program = goal_program("g", {"a": _tool("a")}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "met"
@@ -163,7 +164,7 @@ def test_tool_error_is_passed_to_the_planner_as_evidence(store):
     def broken(args, key):
         raise RuntimeError("upstream 500 with token nvapi-LEAKED987654321")
 
-    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[not_met(), met()])
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[met()])
     program = goal_program("g", {"a": _tool("a", broken, idempotent=False)}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "met"
@@ -197,7 +198,7 @@ def test_ask_pauses_then_resumes_from_the_answer(store):
     done = Runtime(store, owner="r2").run(mid, program)
     assert done["status"] == "completed"
     assert done["result"]["status"] == "met"
-    assert brain.calls == {"plan": 1, "eval": 1}, "the planner is not asked again after the answer"
+    assert brain.calls == {"plan": 2, "eval": 1}, "plan:0 is not asked again after the answer"
     assert len(store.open_questions(mid)) == 0
 
 
@@ -210,19 +211,18 @@ def test_crash_mid_loop_resumes_without_repeating_decisions_or_tools(store):
         return {"v": args["i"]}
 
     class CrashingBrain(ScriptedBrain):
-        eval_requests = 0
+        plan_requests = 0
 
         def decide(self, messages, schema, name):
-            if name == "eval":
-                self.eval_requests += 1
-                if self.eval_requests == 2 and crash_after["armed"]:
+            if name == "plan":
+                self.plan_requests += 1
+                if self.plan_requests == 3 and crash_after["armed"]:
                     crash_after["armed"] = False
-                    raise Crash()      # die while the second evaluation is in flight, before it is stored
+                    raise Crash()      # die while the third plan is in flight, before it is stored
             return super().decide(messages, schema, name)
 
-    plans = [call("a", {"i": 0}), call("a", {"i": 1}), call("a", {"i": 2})]
-    evals = [not_met(), not_met(), met("three")]
-    brain = CrashingBrain(plans=plans, evals=evals)
+    plans = [call("a", {"i": 0}), call("a", {"i": 1}), call("a", {"i": 2}), finish()]
+    brain = CrashingBrain(plans=plans, evals=[met("three")])
     program = goal_program("g", {"a": _tool("a", tool_fn)}, brain)
 
     mid = store.create_mission("g", {})
@@ -234,9 +234,9 @@ def test_crash_mid_loop_resumes_without_repeating_decisions_or_tools(store):
     assert out["result"]["status"] == "met"
     assert out["result"]["answer"] == "three"
     assert ran["tool"] == 3, "each tool ran once across the crash"
-    # Decisions already stored are not requested again: 3 plans and 3 evals in total, not 4 evals.
-    assert brain.calls["plan"] == 3
-    assert brain.calls["eval"] == 3
+    # Decisions already stored are not requested again: four plans were answered in total, and one evaluation.
+    assert brain.calls["plan"] == 4
+    assert brain.calls["eval"] == 1
 
 
 def test_question_validator_rules():

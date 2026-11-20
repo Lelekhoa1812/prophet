@@ -43,6 +43,15 @@ class MissionService:
             budget["dataset_ids"] = list(dataset_ids)
         return self.store.create_mission(goal, budget)
 
+    def files_context(self, mission: dict) -> str:
+        """The person's files by the names the tools use, so the planner never has to guess them."""
+        ids = mission["budget"].get("dataset_ids", [])
+        if not ids:
+            return ""
+        names = self.datasets.mount(ids)
+        lines = [f"- {n} ({self.datasets.get(i)['bytes']:,} bytes)" for (n, _), i in zip(names.items(), ids)]
+        return "Files the person attached (use these exact names; they are in in/ for analysis code):\n" + "\n".join(lines)
+
     def tools_for(self, mission: dict) -> dict[str, Tool]:
         if self.tools_factory is None:
             return self.tools
@@ -55,7 +64,8 @@ class MissionService:
             live = self._threads.get(mission_id)
             if live is not None and live.is_alive():
                 raise LeaseHeld(f"mission {mission_id} is already running")
-            program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), self.goal_cfg)
+            program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), self.goal_cfg,
+                                   self.files_context(mission))
             runtime = Runtime(self.store, owner=f"api-{mission_id[:8]}")
             t = threading.Thread(target=self._run, args=(runtime, mission_id, program), daemon=True)
             self._threads[mission_id] = t

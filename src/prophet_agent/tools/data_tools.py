@@ -45,8 +45,27 @@ def make_inspect(datasets: dict[str, Path]):
     return _run
 
 
+def _col_line(c: dict) -> str:
+    bits = [c["kind"]]
+    for k in ("first", "last", "typical_step", "missing_periods", "min", "max", "mean", "zero_share", "missing", "unique"):
+        if k in c and c[k] not in (None, 0, 0.0):
+            v = c[k]
+            bits.append(f"{k}={str(v)[:19] if k in ('first', 'last') else v}")
+    for k in ("sentinel_candidate", "decimal_comma_values", "unparsed_values", "ambiguous_day_month", "looks_like_year"):
+        if k in c:
+            bits.append(f"{k}={c[k]}")
+    return f"{c['name']}: " + ", ".join(bits) + f"; e.g. {c.get('sample', [])[:2]}"
+
+
+def observe_inspect(result: dict) -> dict:
+    p = result["profile"]
+    return {"file": result["file"], "rows": p["rows"], "read": {k: v for k, v in p["read"].items() if k != "file"},
+            "columns": [_col_line(c) for c in p["columns"][:40]], "issues": p["issues"], "layout_hints": p["layout_hints"],
+            "analysis_run_id": result["run_id"]}
+
+
 def inspect_data_tool(datasets: dict[str, Path] | None = None) -> Tool:
-    return Tool("inspect_data", make_inspect(dict(datasets or {})), idempotent=True)
+    return Tool("inspect_data", make_inspect(dict(datasets or {})), idempotent=True, observe=observe_inspect)
 
 
 INSPECT_DATA_SPEC = {

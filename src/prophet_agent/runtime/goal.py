@@ -60,7 +60,7 @@ class Brain(Protocol):
 
 @dataclass
 class GoalConfig:
-    max_iterations: int = 8
+    max_iterations: int = 14
     stall_window: int = 3
 
 
@@ -87,16 +87,16 @@ def _evidence_lines(history: list[dict]) -> str:
     return "\n".join(f"{n}. {_clip(obs)}" for n, obs in enumerate(history[-12:], start=1))
 
 
-def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict]) -> list[dict]:
+def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict], context: str = "") -> list[dict]:
     system = prompts.current("planner").text
-    user = (f"Goal:\n{goal}\n\nAvailable tools:\n{_tool_lines(tools)}\n\n"
+    user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}Available tools:\n{_tool_lines(tools)}\n\n"
             f"Evidence so far (oldest first):\n{_evidence_lines(history)}")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _eval_messages(goal: str, history: list[dict]) -> list[dict]:
+def _eval_messages(goal: str, history: list[dict], context: str = "") -> list[dict]:
     system = prompts.current("evaluator").text
-    user = f"Goal:\n{goal}\n\nEvidence so far (oldest first):\n{_evidence_lines(history)}"
+    user = f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}Evidence so far (oldest first):\n{_evidence_lines(history)}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -105,7 +105,8 @@ def _signature(obs: dict) -> str:
                       "error": obs.get("error")})
 
 
-def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfig | None = None) -> Callable[[Ctx], dict]:
+def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfig | None = None,
+                 context: str = "") -> Callable[[Ctx], dict]:
     cfg = cfg or GoalConfig()
 
     def program(ctx: Ctx) -> dict:
@@ -114,7 +115,7 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                                          for n in prompts.CURRENT})
         history: list[dict] = []
         for i in range(cfg.max_iterations):
-            plan = ctx.step(f"plan:{i}", lambda c: brain.decide(_plan_messages(goal, tools, history),
+            plan = ctx.step(f"plan:{i}", lambda c: brain.decide(_plan_messages(goal, tools, history, context),
                                                                PLAN_SCHEMA, "plan"))
             if plan["action"] == "finish":
                 obs = {"kind": "finish", "rationale": plan["rationale"]}
@@ -139,7 +140,11 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
             if obs.get("kind") == "tool" and _stalled(history, cfg.stall_window):
                 return {"status": "stalled", "iterations": i + 1, "evidence": history}
 
-            verdict = ctx.step(f"eval:{i}", lambda c: brain.decide(_eval_messages(goal, history),
+            # The evaluator is a judgement on a finished piece of work, so it runs when the planner says it is done, or
+            # on the last iteration to turn whatever was found into an honest answer. Between those, it only costs time.
+            if plan["action"] != "finish" and i < cfg.max_iterations - 1:
+                continue
+            verdict = ctx.step(f"eval:{i}", lambda c: brain.decide(_eval_messages(goal, history, context),
                                                                    EVAL_SCHEMA, "eval"))
             if verdict["verdict"] == "met":
                 return {"status": "met", "iterations": i + 1, "answer": verdict.get("answer", ""),
@@ -147,6 +152,7 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
             if verdict["verdict"] == "impossible":
                 return {"status": "impossible", "iterations": i + 1, "reason": verdict["reason"],
                         "evidence": history}
+            history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]})
         return {"status": "iteration_budget", "iterations": cfg.max_iterations, "evidence": history}
 
     return program
