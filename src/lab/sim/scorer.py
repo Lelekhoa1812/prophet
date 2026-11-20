@@ -107,9 +107,17 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
     # ---------- freshness: lots that really expired (proposals are per product, listing the lots at risk)
     sub = P[P.agent == "freshness"]
     if len(sub):
-        ex = exp.groupby("lot_id").agg(qty=("qty", "sum"), on=("moved_on", "max"), cost=("unit_cost", "first"), product_id=("product_id", "first")).reset_index()
-        ex = ex[(ex.on >= lo) & (ex.on <= hi)]
-        exmap = ex.set_index("lot_id")
+        ex_all = exp.groupby("lot_id").agg(qty=("qty", "sum"), on=("moved_on", "max"), cost=("unit_cost", "first"), product_id=("product_id", "first")).reset_index()
+        ex = ex_all[(ex_all.on >= lo) & (ex_all.on <= hi)]
+        # Motivation vs Logic: an alert is judged on expiries that happen after the window end, up to the data end.
+        # Bug: expiries were cut at the window end, so alerts whose lots expired later were counted as false.
+        # Fix: flags use expiries to the data end, and only alerts whose full horizon is inside the data are scored.
+        exmap = ex_all[ex_all.on <= data_end].set_index("lot_id")
+        days_left = sub.action.apply(lambda a: max((l["days_left"] for l in a.get("lots", [])), default=0))
+        mature = (sub.as_of + pd.to_timedelta(days_left + 1, unit="D")) <= data_end
+        immature_n = int((~mature).sum())
+        sub = sub[mature]
+        P = pd.concat([P[P.agent != "freshness"], sub])
         flags = []
         for r in sub.itertuples():
             lots = r.action.get("lots", [])
@@ -131,6 +139,7 @@ def score(dataset: str, proposals: list[dict], window: tuple[pd.Timestamp, pd.Ti
                            "dollars": dollars, "caught": bool(caught), "delay_days": float((r.on - ff).days) if caught else None,
                            "event_id": f"EX-{r.lot_id}"})
         finish("freshness", flags, events)
+        res["agents"]["freshness"]["immature_excluded"] = immature_n
 
     # ---------- customer: slowdown / lapse / keying against truth events
     sub = P[P.agent == "customer"]
