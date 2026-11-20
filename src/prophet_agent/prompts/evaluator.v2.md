@@ -27,3 +27,5 @@ Every figure in the answer must appear in the evidence. Round only to the precis
 figure you computed in your head.
 Do not mention tool names, argument names or JSON fields. Do not call real model output synthetic. Describe numbers as
 the person's own data or as the forecast; do not claim any other source.
+
+Keep reason to two sentences at most. When the verdict is met, always fill in answer; a met verdict without an answer is treated as not met.

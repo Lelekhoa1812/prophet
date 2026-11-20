@@ -92,7 +92,7 @@ def test_impossible_verdict_stops_the_loop(store):
 
 def test_stall_detected_when_the_same_call_returns_the_same_result(store):
     plans = [call("a", {"k": 1})] * 5
-    brain = ScriptedBrain(plans=plans, evals=[])
+    brain = ScriptedBrain(plans=plans, evals=[{"verdict": "not_met", "reason": "stuck"}])
     program = goal_program("g", {"a": _tool("a", lambda args, key: {"same": True})}, brain,
                            GoalConfig(max_iterations=8, stall_window=3))
     mid, out = run(store, program)
@@ -417,3 +417,38 @@ def test_grounding_does_not_ask_the_evidence_for_a_bare_year():
     from prophet_agent.runtime.grounding import unverified
     assert unverified("Rose each year, 2023 to 2026, to 1,389 units", [{"n": 1389}], "") == []
     assert unverified("Sold 1,390 units in 2026", [{"n": 1389}], "") == ["1,390"]
+
+
+def test_a_met_verdict_without_an_answer_is_written_from_its_reason(store):
+    brain = WritingBrain(plans=[call("a"), finish()], evals=[{"verdict": "met", "reason": "North sold 42 units"}],
+                         writes=["**North sold 42 units.**"])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met" and out["result"]["answer"] == "**North sold 42 units.**"
+    assert "North sold 42 units" in brain.prompts[0]
+
+
+def test_met_with_nothing_to_read_is_never_reported_as_met(store):
+    brain = ScriptedBrain(plans=[call("a"), finish(), finish()],
+                          evals=[{"verdict": "met", "reason": ""}, {"verdict": "met", "reason": "", "answer": "North 42"}])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met" and out["result"]["answer"] == "North 42"   # it went round again and got one
+    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[{"verdict": "met", "reason": ""}])
+    _, out = run(store, goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain, GoalConfig(max_iterations=1)))
+    assert out["result"]["status"] == "partial" and out["result"]["answer"] == ""
+
+
+def test_a_stalled_run_gives_a_partial_answer_from_what_was_found(store):
+    brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
+                         writes=["**North 42 so far.**"])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial" and out["result"]["answer"] == "**North 42 so far.**"
+    assert "repeating" in out["result"]["reason"]
+
+
+def test_grounding_ignores_ordinal_labels_but_not_suffixed_figures():
+    from prophet_agent.runtime.grounding import figures
+    assert figures("10th–90th percentile, 1st and 3rd place") == []
+    assert figures("sold 1.2M units, 5k orders") == ["1.2", "5"]

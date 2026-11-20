@@ -26,6 +26,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore", message="Could not infer format")
 warnings.filterwarnings("ignore", message="Parsing dates in")
+warnings.filterwarnings("ignore", message="Could not infer format")
 
 MAX_PROFILE_COLUMNS = 40
 _NA_TOKENS = {"", "na", "n/a", "nan", "null", "none", "nil", "-", "--", "?", "missing", "#n/a", "#value!"}
@@ -317,6 +318,11 @@ def _rows_to_frame(rows: list[list[str]], report: dict, block: int | None, pad: 
         data_rows, first_line = rows[start:], start + 1
     else:
         header, data_rows, first_line = first, rows[start + 1:], start + 2
+        merged = _two_row_header(first, rows[start + 1:start + 42], nwidth)
+        if merged:
+            header, data_rows, first_line = merged, rows[start + 2:], start + 3
+            report["header_rows"] = 2
+            report["header_note"] = "a two-row header (merged group labels over column names) was combined into one name per column"
     body, bad = [], []
     for i, r in enumerate(data_rows, start=first_line):
         (body if len(r) == nwidth else bad).append(r if len(r) == nwidth else (i, len(r)))
@@ -328,6 +334,32 @@ def _rows_to_frame(rows: list[list[str]], report: dict, block: int | None, pad: 
     if totals:
         report["rows_that_look_like_totals"] = len(totals)
     return df
+
+
+def _two_row_header(top: list[str], below: list[list[str]], width: int) -> list[str] | None:
+    """Combined column names when the first row holds group labels (often merged cells) and the next row holds the names.
+
+    Detected when the next row is text above numbers, and the first row has gaps or repeats where the second row has names.
+    Returns None when the first row alone is the header."""
+    if len(below) < 4 or any(len(r) != width for r in below[:4]):
+        return None
+    sub = [c.strip() for c in below[0]]
+    named = [j for j in range(width) if sub[j]]
+    if len(named) < 2 or len(named) < width // 2:
+        return None
+    body = below[1:]
+    numeric = lambda j: pd.to_numeric(pd.Series([r[j] for r in body if len(r) == width]).str.replace(",", "", regex=False)
+                                     .str.replace(r"[$€£%\s]", "", regex=True), errors="coerce").notna().mean() >= 0.8
+    if not all(numeric(j) and pd.isna(pd.to_numeric(sub[j].replace(",", ""), errors="coerce")) for j in named):
+        return None
+    labels = [top[j] for j in named if top[j]]
+    if not (any(not top[j] for j in named) or len(set(labels)) < len(labels)):
+        return None
+    out, group = [], ""
+    for j in range(width):
+        group = top[j] or group              # a merged group label covers the columns to its right until the next label
+        out.append(f"{group} {sub[j]}".strip() if sub[j] else top[j])
+    return out
 
 
 def _looks_headerless(first: list[str], below: list[list[str]], width: int) -> bool:
@@ -447,6 +479,23 @@ def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, 
         return mon, info
     info["format"] = "unambiguous"
     return (mon if mon.notna().sum() >= day.notna().sum() else day), info
+
+
+def tidy_text(s: pd.Series) -> pd.Series:
+    """Names and codes that differ only in case, spacing or stray punctuation become one spelling (the most common one).
+
+    "Sable Logistics", "sable logistics " and "SABLE  LOGISTICS" are one customer. Blanks stay missing. The series carries
+    ``s.attrs["report"]``: unique values before and after, and examples of what was merged, so the change is reported."""
+    raw = s.astype("string")
+    key = raw.str.replace(r"[\s\u00a0]+", " ", regex=True).str.strip().str.casefold().str.replace(r"[.,;]+$", "", regex=True)
+    key = key.mask(key == "")
+    spelling = raw.str.replace(r"[\s\u00a0]+", " ", regex=True).str.strip().groupby(key).agg(lambda v: v.value_counts().index[0])
+    out = key.map(spelling)
+    merged = [[x for x in raw[key == k].dropna().unique()][:4] for k in key.dropna().unique() if raw[key == k].nunique() > 1]
+    out = out.astype(object).where(out.notna(), None)
+    res = pd.Series(out, index=s.index, name=s.name)
+    res.attrs["report"] = {"unique_before": int(raw.nunique()), "unique_after": int(key.nunique()), "examples_merged": merged[:5]}
+    return res
 
 
 def as_number(s: pd.Series) -> pd.Series:

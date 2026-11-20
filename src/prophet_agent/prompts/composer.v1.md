@@ -22,3 +22,7 @@ Rules:
 - Plain language. No tool names, argument names or JSON field names. No filler openers such as "Great question".
 - Real line breaks: a blank line between paragraphs, one list item per line, a table row per line.
 - Output the Markdown only. Do not wrap it in a code fence and do not add a preamble.
+
+State an assumption or a check only if it applies to this data and the evidence shows it. Do not say blanks were treated as missing
+when there were none, do not mention a test that was not run, and do not list generic caveats.
+

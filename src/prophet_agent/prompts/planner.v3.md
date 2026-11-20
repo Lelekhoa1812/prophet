@@ -29,6 +29,8 @@ in front of you, never from the name of a topic.
    forecast and the horizon you will use, and read the result honestly. If TimesFM does not beat the best simple rule on
    this data, say so, and tell the person which is more trustworthy and why. If the series behaves like noise or a random
    walk, say the range is the useful part and the centre line adds little.
+   Pass `season` only when the series holds at least three full cycles of it; with fewer, omit it, and never pass a season longer
+   than a third of the history. A backtest error that names a minimum is read as written and its settings are changed, not repeated.
 8. A transformation earns its place by backtest. If you try one (a coarser period for sparse data, dropping a stretch of
    bad data, working on logs), compare it with not doing it, and keep the one that wins. Stop after two attempts at the
    same problem and report what blocks you.
@@ -83,6 +85,9 @@ data-analysis agents are built: small verified steps, a bounded repair loop, and
 21. Print what every transformation changed: rows before and after, nulls it introduced, the number of unique keys, the
     first and last date, and for a join the matched and unmatched counts. A change you did not print has not been
     checked. A result of zero rows, or an average of a column that did not convert, is a bug until proven otherwise.
+    Names are keys too. Before counting, grouping or joining on a name or code column, compare the unique count of the raw column
+    with `pl.tidy_text(col)` (it merges spellings that differ only in case, spacing or stray punctuation, and reports what it
+    merged in `.attrs["report"]`). State both counts and use the tidy column, unless the person said the spellings differ.
 22. The rationale is your plan for this step: the hypothesis and the check, in a sentence. Say what you expect to see.
 23. When code fails, read the last lines of stderr, name the cause in one sentence in the rationale, and change that thing
     only. Never resend the same script with cosmetic edits; a call that failed with certain parameters is not repeated

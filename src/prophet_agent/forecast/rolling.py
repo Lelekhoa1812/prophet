@@ -55,8 +55,13 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
     min_hist = max(MIN_HISTORY, 2 * m if m > 1 else MIN_HISTORY)
     k = min(int(n_origins), (n - min_hist) // horizon)
     if k < 2:
+        hint = ""
+        if m > 1:
+            fits = max(1, (n - 2 * horizon) // 2)
+            hint = (f" The season of {m} needs two full cycles of history before the first test window, which is what sets the "
+                    f"minimum. With {n} points a season up to {fits} fits; omit season (or pass 1) if the cycle is not that long.")
         raise ValueError(f"series of {n} points is too short to backtest a horizon of {horizon} "
-                         f"(needs at least {min_hist + 2 * horizon})")
+                         f"(needs at least {min_hist + 2 * horizon} with these settings; n_origins does not change that)." + hint)
     origins = [n - horizon * (k - j) for j in range(k)]           # oldest origin first, last window ends at n
     if engine is None:
         from prophet_agent.forecast.timesfm import TimesFMEngine

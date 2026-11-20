@@ -206,6 +206,16 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
             history.append(obs)
 
             if obs.get("kind") == "tool" and _stalled(history, cfg.stall_window):
+                # Repeating the same call will not help. Judge what was found so far: a best answer, labelled partial,
+                # beats an empty "stalled".
+                verdict = ctx.step(f"evalstall:{i}", lambda c: brain.decide(_eval_messages(goal, history, context),
+                                                                           EVAL_SCHEMA, "eval"))
+                draft = verdict.get("answer", "") or verdict.get("reason", "")
+                written = _compose(ctx, brain, f"composestall:{i}", goal, history, context, draft)
+                text = written if written is not None else verdict.get("answer", "")
+                if text.strip() and verdict["verdict"] != "impossible":
+                    return {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history,
+                            "reason": "The analysis kept repeating the same step, so this answer rests on what was found before that."}
                 return {"status": "stalled", "iterations": i + 1, "evidence": history}
 
             # The evaluator is a judgement on a finished piece of work, so it runs when the planner says it is done, or
@@ -224,9 +234,18 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                                                                         EVAL_SCHEMA, "eval"))
             if verdict["verdict"] == "met":
                 answer = verdict.get("answer", "")
-                written = _compose(ctx, brain, f"compose:{i}", goal, history, context, answer)
+                # A verdict can say "met" and carry no answer (a reply cut short, or a model that only gave its reason).
+                # The writer then works from the reason and the evidence; "met" with nothing to read is never returned.
+                written = _compose(ctx, brain, f"compose:{i}", goal, history, context, answer or verdict.get("reason", ""))
                 if written is not None:
                     answer = written
+                if not answer.strip():
+                    if i < cfg.max_iterations - 1 and not out_of_calls:
+                        history.append({"kind": "evaluation", "verdict": "not_met",
+                                        "missing": "the goal looks met, but no written answer was given; state the answer"})
+                        continue
+                    return {"status": "partial", "iterations": i + 1, "answer": "",
+                            "reason": "The analysis finished but no written answer was produced.", "evidence": history}
                 bad = unverified(answer, history, goal)
                 if bad:
                     # One repair pass: the figures must come from the evidence or be left out.
