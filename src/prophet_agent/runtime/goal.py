@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from prophet_agent import prompts
 from prophet_agent.nim.errors import redact
 from prophet_agent.nim.transport import DEFAULT_CHAIN
 
@@ -87,28 +88,14 @@ def _evidence_lines(history: list[dict]) -> str:
 
 
 def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict]) -> list[dict]:
-    system = (
-        "You are Prophet's planner. Choose exactly one next action toward the goal: call_tool with a tool name "
-        "and args, ask_user with 1 to 4 structured questions (header at most 12 characters, 2 to 4 options each), "
-        "or finish when you believe the evidence is sufficient. Prefer the smallest step that gains evidence. "
-        "Pass only the argument names listed for the tool. Never repeat an identical call that already returned "
-        "the same result."
-    )
+    system = prompts.current("planner").text
     user = (f"Goal:\n{goal}\n\nAvailable tools:\n{_tool_lines(tools)}\n\n"
             f"Evidence so far (oldest first):\n{_evidence_lines(history)}")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def _eval_messages(goal: str, history: list[dict]) -> list[dict]:
-    system = (
-        "You are Prophet's evaluator. Given the goal and the evidence so far, return verdict: met if the goal is "
-        "satisfied (and put the final answer in answer), not_met if more work could satisfy it, or impossible if "
-        "the goal cannot be met with the tools and data available. Be strict: do not mark met on a guess. "
-        "Write the answer for a person, in plain language: say what the forecast is, how far it reaches, the likely "
-        "range, and anything that limits how far it can be trusted. Do not mention tool names, argument names or "
-        "JSON fields. Describe the numbers as the person's own data or as the forecast; never call real model output "
-        "synthetic. If the data came from the person's message, do not claim any other source."
-    )
+    system = prompts.current("evaluator").text
     user = f"Goal:\n{goal}\n\nEvidence so far (oldest first):\n{_evidence_lines(history)}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -122,6 +109,9 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
     cfg = cfg or GoalConfig()
 
     def program(ctx: Ctx) -> dict:
+        # Which instructions this mission ran under, recorded once so a resumed run reads it back unchanged.
+        ctx.step("contracts", lambda c: {n: {"version": prompts.current(n).version, "sha256": prompts.current(n).sha256}
+                                         for n in prompts.CURRENT})
         history: list[dict] = []
         for i in range(cfg.max_iterations):
             plan = ctx.step(f"plan:{i}", lambda c: brain.decide(_plan_messages(goal, tools, history),

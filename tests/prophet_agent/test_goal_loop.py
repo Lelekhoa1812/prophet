@@ -251,3 +251,20 @@ def test_question_validator_rules():
     assert validate_questions({"questions": five})
     assert validate_questions({"questions": [{**good["questions"][0], "options": [
         {"label": "A", "description": ""}, {"label": "A", "description": ""}]}]})
+
+
+def test_prompt_contracts_are_versioned_files_and_recorded_in_the_ledger(tmp_path):
+    from prophet_agent import prompts
+    for name, version in prompts.CURRENT.items():
+        c = prompts.load(version)
+        assert c.version == version and c.text and len(c.sha256) == 12
+    store = Store(tmp_path / "c.sqlite")
+    mid = store.create_mission("g", {"max_tool_calls": 3, "max_seconds": 30})
+
+    class B:
+        def decide(self, messages, schema, name):
+            return {"action": "finish", "rationale": "r"} if name == "plan" else {"verdict": "met", "reason": "ok", "answer": "a"}
+
+    Runtime(store, owner="t").run(mid, goal_program("g", {}, B()))
+    recorded = next(s for s in store.steps(mid) if s["name"] == "contracts")["output"]
+    assert recorded["planner"]["version"] == prompts.CURRENT["planner"]
