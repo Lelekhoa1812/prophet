@@ -159,9 +159,19 @@ class MissionService:
         except KeyError:
             return False
 
+    def archive(self, mission_id: str, archived: bool = True) -> None:
+        """Hide a finished quick forecast from the sidebar. Nothing is deleted; a running one cannot be hidden."""
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT status FROM missions WHERE id=? AND notebook_id IS NULL", (mission_id,)).fetchone()
+            if row is None:
+                raise KeyError(mission_id)
+            if row["status"] in ("created", "running", "waiting_user"):
+                raise ValueError("this forecast is still running; stop it first")
+            self.store.conn.execute("UPDATE missions SET archived=? WHERE id=?", (1 if archived else 0, mission_id))
+
     def list(self, limit: int = 20) -> list[dict]:
         with self.store.lock:
             rows = self.store.conn.execute(
-                "SELECT id, goal, status, created, updated FROM missions WHERE notebook_id IS NULL "
+                "SELECT id, goal, status, created, updated FROM missions WHERE notebook_id IS NULL AND archived=0 "
                 "ORDER BY created DESC LIMIT ?", (int(limit),)).fetchall()
         return [dict(r) for r in rows]

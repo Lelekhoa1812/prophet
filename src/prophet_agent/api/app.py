@@ -44,6 +44,10 @@ class MissionIn(BaseModel):
     dataset_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
+class MissionPatch(BaseModel):
+    archived: bool
+
+
 class AnswerIn(BaseModel):
     answers: dict[str, Any]
 
@@ -130,6 +134,16 @@ def create_app(service: MissionService) -> FastAPI:
     @app.get("/api/missions")
     def list_missions() -> list[dict]:
         return service.list()
+
+    @app.patch("/api/missions/{mission_id}")
+    def patch_mission(mission_id: str, body: MissionPatch) -> dict:
+        try:
+            service.archive(mission_id, body.archived)
+        except KeyError:
+            raise HTTPException(404, "no such quick forecast")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        return {"id": mission_id, "archived": body.archived}
 
     @app.post("/api/missions", status_code=201)
     def create_mission(body: MissionIn) -> dict:

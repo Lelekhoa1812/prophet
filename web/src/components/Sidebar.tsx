@@ -1,4 +1,4 @@
-import { BookOpen, Plus, Search, Sparkles } from "lucide-react";
+import { BookOpen, Plus, Search, Sparkles, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { MissionRow, NotebookRow } from "../lib/api";
 import { relativeTime, truncate } from "../lib/format";
@@ -15,6 +15,7 @@ export function Sidebar({
   onSelectMission,
   onNewNotebook,
   onNewForecast,
+  onHideMission,
 }: {
   notebooks: NotebookRow[];
   missions: MissionRow[];
@@ -24,6 +25,7 @@ export function Sidebar({
   onSelectMission: (id: string) => void;
   onNewNotebook: () => void;
   onNewForecast: () => void;
+  onHideMission: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const shown = useMemo(() => {
@@ -112,12 +114,23 @@ export function Sidebar({
               const active = m.id === selectedMissionId;
               const tone = statusInfo(m.status).tone;
               return (
-                <li key={m.id}>
+                <li key={m.id} className="group relative">
+                  {!isWorking(m.status) && (
+                    <button
+                      type="button"
+                      aria-label={`Hide forecast: ${truncate(m.goal, 40)}`}
+                      title="Hide this forecast"
+                      onClick={() => onHideMission(m.id)}
+                      className="absolute top-1.5 right-1.5 z-10 grid size-8 place-items-center rounded-md text-sand-2 opacity-0 transition-opacity hover:bg-night-3 hover:text-sand-0 focus-visible:opacity-100 group-hover:opacity-100 max-lg:opacity-100"
+                    >
+                      <X aria-hidden="true" className="size-4" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => onSelectMission(m.id)}
                     aria-current={active ? "true" : undefined}
-                    className={cn("grid min-h-11 w-full gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-night-2", active && "bg-night-2")}
+                    className={cn("grid min-h-11 w-full gap-0.5 rounded-lg py-2 pr-10 pl-3 text-left transition-colors hover:bg-night-2", active && "bg-night-2")}
                   >
                     <span className="line-clamp-2 text-base text-sand-0 [overflow-wrap:anywhere]">{truncate(m.goal, 90)}</span>
                     <span className="flex items-center gap-2 text-[0.9375rem] text-sand-2">

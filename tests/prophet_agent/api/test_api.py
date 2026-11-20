@@ -165,3 +165,18 @@ def test_analysis_charts_are_listed_for_inline_display(tmp_path):
     names = {f["path"] for f in arts[0]["files"]}
     assert {"out/chart.png", "out/chart.svg", "out/chart.csv"} <= names and arts[0]["forecast"] is None
     assert client.get(f"/api/artifacts/{arts[0]['run_id']}/chart.png").content[:4] == b"\x89PNG"
+
+
+def test_finished_quick_forecasts_can_be_hidden_from_the_list(tmp_path):
+    brain = ScriptedBrain(plans=[{"action": "finish", "rationale": "x"}],
+                          evals=[{"verdict": "met", "reason": "ok", "answer": "done"}])
+    client, service = _client(tmp_path, lambda: brain)
+    mid = client.post("/api/missions", json={"goal": "say hello please"}).json()["id"]
+    service.wait(mid, timeout=30)
+    assert [m["id"] for m in client.get("/api/missions").json()] == [mid]
+    assert client.patch(f"/api/missions/{mid}", json={"archived": True}).json() == {"id": mid, "archived": True}
+    assert client.get("/api/missions").json() == []
+    assert client.get(f"/api/missions/{mid}").status_code == 200          # hidden, not deleted
+    assert client.patch(f"/api/missions/{mid}", json={"archived": False}).status_code == 200
+    assert len(client.get("/api/missions").json()) == 1
+    assert client.patch("/api/missions/nope", json={"archived": True}).status_code == 404

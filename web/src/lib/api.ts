@@ -143,6 +143,7 @@ export const api = {
   health: () => req<{ ok: boolean; nim_keys_configured: boolean }>("/api/health"),
   tools: () => req<ToolInfo[]>("/api/tools"),
   missions: () => req<MissionRow[]>("/api/missions"),
+  archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
   createMission: (goal: string) => req<{ id: string }>("/api/missions", { method: "POST", body: JSON.stringify({ goal }) }),
   answer: (questionId: string, answers: Record<string, string | string[]>) =>

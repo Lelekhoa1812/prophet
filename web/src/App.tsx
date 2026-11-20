@@ -164,6 +164,7 @@ export default function App() {
       onSelectMission={openMission}
       onNewNotebook={() => void newNotebook().catch(() => {})}
       onNewForecast={newForecast}
+      onHideMission={(id) => void api.archiveMission(id).then(refreshList).catch(() => {})}
     />
   );
 

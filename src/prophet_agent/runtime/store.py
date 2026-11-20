@@ -131,6 +131,7 @@ _MISSION_COLUMNS_V2 = {
     "seq": "INTEGER",
     "parent_turn_id": "TEXT",
     "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+    "archived": "INTEGER NOT NULL DEFAULT 0",
 }
 ACTIVE = ("created", "running", "waiting_user")
 
