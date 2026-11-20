@@ -20,6 +20,7 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   iteration_budget: { label: "Reached its limit", tone: "bad" },
   stalled: { label: "Stuck", tone: "bad" },
   impossible: { label: "Not possible with this data", tone: "bad" },
+  cancelled: { label: "Stopped", tone: "sand" },
 };
 
 export function statusInfo(status: string) {

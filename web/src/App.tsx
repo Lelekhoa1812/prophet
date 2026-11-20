@@ -1,10 +1,11 @@
-import { Menu, Plus, X } from "lucide-react";
+import { Menu, Plus, Square, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Composer } from "./components/Composer";
+import { NotebookView, THREAD_SCROLL_ID } from "./components/NotebookView";
 import { Sidebar } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
 import { Button, Card, Spinner } from "./components/ui";
-import { api, type ArtifactRun, type MissionRow, type ToolInfo } from "./lib/api";
+import { api, type ArtifactRun, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
 import { errorMessage } from "./lib/format";
 import { useMission } from "./lib/useMission";
 import { cn, isWorking } from "./lib/utils";
@@ -25,8 +26,15 @@ const EXAMPLES: { label: string; text: string }[] = [
   },
 ];
 
+function notebookTitle(): string {
+  const day = new Date().toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+  return `Notebook · ${day}`;
+}
+
 export default function App() {
   const [missions, setMissions] = useState<MissionRow[]>([]);
+  const [notebooks, setNotebooks] = useState<NotebookRow[]>([]);
+  const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [health, setHealth] = useState<{ ok: boolean; nim_keys_configured: boolean } | null>(null);
   const [tools, setTools] = useState<Record<string, ToolInfo>>({});
@@ -34,6 +42,7 @@ export default function App() {
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const { mission, error: pollError, refresh } = useMission(selectedId);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -48,11 +57,12 @@ export default function App() {
 
   const refreshList = useCallback(() => {
     api.missions().then(setMissions).catch(() => {});
+    api.notebooks().then(setNotebooks).catch(() => {});
   }, []);
 
   useEffect(() => {
     refreshList();
-  }, [refreshList, selectedId, mission?.status]);
+  }, [refreshList, selectedId, selectedNotebookId, mission?.status]);
 
   const eventCount = mission?.events.length ?? 0;
   useEffect(() => {
@@ -63,7 +73,7 @@ export default function App() {
     api.artifacts(selectedId).then(setRuns).catch(() => setRuns([]));
   }, [selectedId, mission?.status, eventCount]);
 
-  // Follow the work down the page, unless the person has scrolled up to read.
+  // Follow the work down the page, unless the person has scrolled up to read. (Notebooks follow their own thread.)
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTo({ top: el.scrollHeight });
@@ -76,11 +86,36 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [navOpen]);
 
+  const openNotebook = (id: string) => {
+    setSelectedNotebookId(id);
+    setSelectedId(null);
+    setNavOpen(false);
+  };
+
+  const openMission = (id: string) => {
+    stick.current = true;
+    setSelectedNotebookId(null);
+    setSelectedId(id);
+    setNavOpen(false);
+  };
+
+  const newNotebook = async () => {
+    try {
+      const nb = await api.createNotebook(notebookTitle());
+      openNotebook(nb.id);
+      refreshList();
+    } catch (err) {
+      setDraft(undefined);
+      throw new Error(errorMessage(err, "Couldn't create a notebook. Try again."));
+    }
+  };
+
   const start = async (goal: string) => {
     setSending(true);
     try {
       const { id } = await api.createMission(goal);
       stick.current = true;
+      setSelectedNotebookId(null);
       setSelectedId(id);
       setDraft(undefined);
       setNavOpen(false);
@@ -93,14 +128,28 @@ export default function App() {
   };
 
   const newForecast = () => {
+    setSelectedNotebookId(null);
     setSelectedId(null);
     setDraft(undefined);
     setNavOpen(false);
   };
 
+  const stopForecast = async () => {
+    if (!selectedId) return;
+    setStopping(true);
+    try {
+      await api.cancel(selectedId);
+    } finally {
+      setStopping(false);
+      refresh();
+      refreshList();
+    }
+  };
+
   const noKeys = health !== null && !health.nim_keys_configured;
   const apiDown = health === null && pollError !== null;
   const current = mission && mission.id === selectedId ? mission : null;
+  const inNotebook = selectedNotebookId !== null;
   const waitingOnYou = current?.status === "waiting_user";
   const blockedReason = noKeys
     ? "Prophet needs a model key before it can start."
@@ -112,14 +161,14 @@ export default function App() {
 
   const sidebar = (
     <Sidebar
+      notebooks={notebooks}
       missions={missions}
-      selectedId={selectedId}
-      onSelect={(id) => {
-        stick.current = true;
-        setSelectedId(id);
-        setNavOpen(false);
-      }}
-      onNew={newForecast}
+      selectedNotebookId={selectedNotebookId}
+      selectedMissionId={selectedId}
+      onSelectNotebook={openNotebook}
+      onSelectMission={openMission}
+      onNewNotebook={() => void newNotebook().catch(() => {})}
+      onNewForecast={newForecast}
     />
   );
 
@@ -151,12 +200,13 @@ export default function App() {
             <Menu aria-hidden="true" className="size-5" />
           </Button>
           <span className="text-xl font-bold">Prophet</span>
-          <Button variant="ghost" size="icon" aria-label="New forecast" onClick={newForecast}>
+          <Button variant="ghost" size="icon" aria-label="New notebook" onClick={() => void newNotebook().catch(() => {})}>
             <Plus aria-hidden="true" className="size-5" />
           </Button>
         </header>
 
         <main
+          id={THREAD_SCROLL_ID}
           ref={scroller}
           onScroll={(e) => {
             const el = e.currentTarget;
@@ -176,17 +226,24 @@ export default function App() {
               </Card>
             )}
 
-            {selectedId === null ? (
-              <section aria-label="New forecast" className="grid gap-6 pt-6 sm:pt-14">
-                <div className="grid gap-2">
-                  <h2 className="text-3xl leading-tight font-bold text-balance sm:text-4xl">What would you like to forecast?</h2>
+            {inNotebook ? (
+              <NotebookView notebookId={selectedNotebookId} tools={tools} onChanged={refreshList} />
+            ) : selectedId === null ? (
+              <section aria-label="Start" className="grid gap-8 pt-6 sm:pt-14">
+                <div className="grid gap-3">
+                  <h2 className="text-3xl leading-tight font-bold text-balance sm:text-4xl">What would you like to work on?</h2>
                   <p className="text-lg text-sand-1">
-                    Paste your numbers or describe the series. Prophet plans the work, checks what it can, asks when it needs
-                    you, and gives you a chart and files to download.
+                    Start a notebook to add spreadsheets and ask questions about them, or ask a quick forecast below.
                   </p>
+                  <div>
+                    <Button onClick={() => void newNotebook().catch(() => {})}>
+                      <Plus aria-hidden="true" className="size-4" />
+                      New notebook
+                    </Button>
+                  </div>
                 </div>
                 <div className="grid gap-2">
-                  <p className="text-[0.9375rem] font-semibold text-sand-2">Try an example</p>
+                  <p className="text-[0.9375rem] font-semibold text-sand-2">Or try a quick forecast</p>
                   <ul className="flex flex-wrap gap-2">
                     {EXAMPLES.map((ex) => (
                       <li key={ex.label}>
@@ -203,7 +260,17 @@ export default function App() {
                 </div>
               </section>
             ) : current ? (
-              <Turn mission={current} tools={tools} runs={runs} onAnswered={refresh} onRetry={(g) => void start(g).catch(() => {})} />
+              <>
+                {isWorking(current.status) && (
+                  <div className="flex justify-end">
+                    <Button variant="secondary" onClick={() => void stopForecast()} disabled={stopping} aria-label="Stop this forecast">
+                      <Square aria-hidden="true" className="size-4" />
+                      {stopping ? "Stopping" : "Stop"}
+                    </Button>
+                  </div>
+                )}
+                <Turn mission={current} tools={tools} runs={runs} onAnswered={refresh} onRetry={(g) => void start(g).catch(() => {})} />
+              </>
             ) : (
               <p role="status" className="flex items-center gap-2 text-base text-sand-1">
                 {pollError ? (
@@ -218,17 +285,19 @@ export default function App() {
           </div>
         </main>
 
-        <div className={cn("border-t border-sand-2/15 bg-night-0 px-4 pt-3 pb-3 sm:px-6")}>
-          <div className="mx-auto w-full max-w-3xl">
-            <Composer
-              onSend={start}
-              busy={sending}
-              blockedReason={blockedReason}
-              initial={draft}
-              placeholder={selectedId === null ? "Describe what to forecast" : "Describe another forecast"}
-            />
+        {!inNotebook && (
+          <div className={cn("border-t border-sand-2/15 bg-night-0 px-4 pt-3 pb-3 sm:px-6")}>
+            <div className="mx-auto w-full max-w-3xl">
+              <Composer
+                onSend={start}
+                busy={sending}
+                blockedReason={blockedReason}
+                initial={draft}
+                placeholder={selectedId === null ? "Describe a quick forecast" : "Describe another forecast"}
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
