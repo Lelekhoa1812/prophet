@@ -26,6 +26,45 @@
 - **Forecasts earn their place.** Each forecast is backtested against simple baselines on your own history, so you can see whether the model beats a naive guess.
 - **Runs on your machine.** The server listens on loopback only. Your files stay local; the only outbound calls are planner requests to NVIDIA NIM.
 
+## Real questions, real answers
+
+These are unedited answers from Prophet. The datasets are synthetic demo files, so the figures are illustrative, not observed results.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Forecast backtest with drivers.** Promotion and Christmas flags cut MASE from 0.717 to 0.499 on a three-year weekly series. The best simple baseline scores 1.246.
+
+<img src="docs/images/backtest-drivers.png" alt="Backtest table comparing TimesFM with and without drivers against naive baselines, followed by a 12-week forecast with 80% ranges">
+
+</td>
+<td width="50%" valign="top">
+
+**Anomaly hunt.** Fifteen unusual weeks, sorted into explained by promotions, explained by Christmas, and unexplained, each with the reason it was or was not explained.
+
+<img src="docs/images/anomaly-explained.png" alt="Answer listing unusual weeks grouped as explained by promotions, explained by Christmas, and unexplained">
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Cleaning a messy workbook.** A hidden sheet, a duplicate row and blank units are reported, then totals by region are computed from the cleaned table.
+
+<img src="docs/images/cleaning-workbook.png" alt="Answer profiling a workbook with a hidden sheet, one duplicate row and blank unit cells, and totals by region">
+
+</td>
+<td width="50%" valign="top">
+
+**Reusing an earlier analysis.** A saved synthetic notebook reopens with its answer, growth table and six-month forecast intact.
+
+<img src="docs/images/regional-demand-reuse.png" alt="A saved notebook answering which region is growing faster, with a growth comparison table and a forecast table">
+
+</td>
+</tr>
+</table>
+
 ## Features
 
 ### Ask in plain language
@@ -42,25 +81,6 @@ TimesFM 3 produces a point forecast and an 80% likely range. Prophet also scores
 
 <p align="center"><img src="docs/images/forecast-range.png" alt="A six-month forecast table with 80% likely ranges and the backtest result" width="860"></p>
 
-<!-- The 2 sections below are just dummy UI setups -->
-
-<!-- ### Organised workspace
-
-Notebooks and quick forecasts live in the sidebar. Each one has a menu to pin, rename, archive or delete. Titles are generated from your question, then refined by a model in the background.
-
-<p align="center"><img src="docs/images/sidebar-menu.png" alt="The sidebar with the notebook menu open showing Pin, Rename, Archive and Delete" width="520"></p> -->
-
-<!-- ### Attach files, mention them, pick skills
-
-Use **+** to add files, a whole folder, skills or tools. Type **@** to mention an attached file, or **/** to start a skill: a prompt you can adjust before sending.
-
-<p align="center">
-  <img src="docs/images/attach-menu.png" alt="The plus menu with Add files, Add folder, Skills and Tools" width="400">
-  &nbsp;
-  <img src="docs/images/mention-files.png" alt="An attached file listed after typing @" width="520">
-</p>
-
-<p align="center"><img src="docs/images/skills-list.png" alt="The slash menu listing skills and tools" width="520"></p> -->
 
 ### Charts that make one point
 
@@ -68,7 +88,7 @@ Titles state the finding, bars start at zero, lines are labelled directly and th
 
 ### Large files
 
-CSV and Parquet files too big to read whole are queried where they sit. Only a small result comes back; totals come from the full file.
+Uploads take files up to 50 MB. A CSV or Parquet file with more than 500,000 rows is not loaded whole: it is queried where it sits, and only the small grouped result comes back. Totals come from every row, not a sample.
 
 ### Keep what matters
 
