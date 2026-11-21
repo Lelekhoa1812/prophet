@@ -35,6 +35,7 @@ Each criterion is done only when its check passes and its evidence is recorded i
 | G13 | TimesFM evaluation on the synthetic twin vs baselines, reported honestly against the 15 % bar | `scripts/backtest_twin.py` (written to `data/backtests/`, git-ignored) | **[LIVE]** SYNTHETIC REPLAY. The 15 % bar is **not met**: see the result below |
 | G15 | Provider routing never shows a rate-limit, overload, truncation or schema error to the person: key and model rotation, quota groups, diagnosed repair | transport tests (73) and live NIM and Gemini pressure runs | **[TEST]** per branch. **[LIVE]** Gemini 3.5 Flash and NIM completed hourly-load missions with no provider error shown (2026-11-21). One live failure found and fixed: Google answers a bad key with HTTP 400, which killed a Gemini mission; the key is now retired |
 | G16 | The agent works like a principal analyst: funnel, atomic breakdown, cause-led treatment, leakage-safe cleaning, deterministic checks before "met" | `docs/prophet/ANALYST_PLAYBOOK.md`; `runtime/contracts.py`; `sandbox/prophet_stats.py`; 11 skills | **[TEST]** 74 contract, 39 stats and 17 skill tests. **[LIVE]** NIM read playbooks mid-mission and repaired its own steps (r8 runs). Whether any cleaning step helps TimesFM is **unmeasured** (see below) |
+| G17 | The agent can test, not assume, what helps TimesFM: a leak-free paired experiment over input treatments with a zero baseline and pinball loss | `forecast/lab.py`, `tools/lab_tool.py` (`control_lab`), `ps.causal_canary` | **[TEST]** 44 lab tests with a fake engine; 47 helper tests. **[LIVE-MEASURED]** real TimesFM 3 on six real public series (below) |
 | G14 | No key or secret reaches logs, errors, transcripts or git | redaction tests plus a whole-tree scan before each commit | **[TEST]** redaction; **[LIVE]** whole-tree scan on 2026-11-20 (below) |
 
 ### Evidence for G13 (synthetic replay, 2026-11-20)
@@ -75,6 +76,28 @@ Each criterion is done only when its check passes and its evidence is recorded i
   figure that is not marked, and not printed, still leaves the answer partial; planner rule 57 tells the planner to print it.
 - Open: no measurement yet of whether smoothing, outlier replacement or imputation improves a TimesFM backtest. The
   research found none. Each step must earn its place on the synthetic twin with a no-cleaning arm.
+
+### Evidence for G17 (measured, real TimesFM 3 on real public series, 2026-11-22)
+
+Method: `control_lab`, 8 rolling origins per series, origins two horizons apart, last 700 points, MASE and pinball loss paired
+against the default, bootstrap 90 % interval on folds. Adopt needs MASE gain of at least 2 %, a win rate of at least 60 %, an
+interval above zero and no worse pinball loss. Each series had 5 to 8 treatments tested on the same folds.
+
+- Retail net sales (h14), COVID cases (h14), quake counts (h14), CO2 (h30), pollen (h14): **no treatment adopted**. Replacing
+  or ignoring flagged outliers never beat the default. Shortening the context (2x, 4x, 8x horizon, one season) was
+  **harmful** on retail, CO2, pollen and quakes (2x only), and never helped. z-normalisation was harmful on CO2 and pollen.
+- WTI spot (h20): **symmetric averaging adopted** (7 of 8 wins). One adoption in about 40 treatment tests is what chance alone
+  would give at these thresholds, so treat it as a lead to re-check on newer data, not a rule.
+- Reading: on these series the default TimesFM input was never beaten by cleaning. This is the first measurement of the
+  question the research could not answer; it is six series, 8 folds each, so it does not show that cleaning never helps.
+  Thresholds (2 % gain, 60 % wins) are proposals to calibrate.
+- Reproduce: scratch script in the session scratchpad; results in `data/lab_real_results.json` (git-ignored).
+
+### Pre-existing helpers that are not causal (found with `ps.causal_canary`, 2026-11-22)
+
+`ps.changepoints` and `ps.isolation_outliers` are fitted on every row passed, so a flag at time t depends on later rows. Their
+reports now carry `diagnostic_only` and a leak warning. The earlier claim that `ps` is causal by default holds for hampel,
+smooth, impute, derivative_features and the new helpers only.
 
 ### Evidence for the live planner defects fixed on 2026-11-20
 
