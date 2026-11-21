@@ -204,7 +204,7 @@ Please run the offline gate and the web typecheck before opening a pull request.
 
 ## Licence and notices
 
-- **Project licence:** not yet chosen. The repository has no licence file, so the code is not licensed for reuse until one is added.
+- **Project licence:** Apache License 2.0, see [LICENSE](LICENSE). Copyright 2026 Dang Khoa Le.
 - **TimesFM 3 weights** are released for non-commercial research use. Do not use outputs for commercial decisions, client deliverables or paid services. The licence gate is in [docs/prophet/ARCHITECTURE.md](docs/prophet/ARCHITECTURE.md).
 - **Analytics sandbox:** a guardrail, not isolation. Open only files you trust.
 - **Examples:** the screenshots use a synthetic dataset, and figures from the built-in data generator are synthetic.
