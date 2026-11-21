@@ -203,3 +203,13 @@ Source: `docs/prophet/goal_mode_rea.md` (mechanism read from the shipped Claude 
 5. **Not adopted, and why.** `/goal`'s judge reads the whole transcript and has no deterministic floor; ours reads a compacted
    view, so the deterministic checks stay the authority and the evaluator's verdict stays advisory. `/goal`'s eight-block override
    is not copied: `MAX_REJECTED_FINISHES` and `MAX_CONTRACT_BLOCKS` end a loop with a labelled partial answer instead.
+6. **Auto-continue needs progress.** A further automatic part starts only if the checklist advanced during the last one
+   (`budget["auto_progress"]`); otherwise a `mission.auto_continue_stopped` event is written and the person decides. A mission
+   that is not moving gains nothing from more of the same.
+7. **Earlier results are carried, not rebuilt.** Each `sandbox_python` run starts with an empty `out/`. `carry=[{run_id, file}]`
+   mounts earlier outputs read-only at `in/carried/<name>`. Live evidence: a mission re-ran its whole pipeline five times to get a
+   file back before this existed.
+8. **Helpers explain a wrong read.** `(value, report)` helpers return a `Pair` (a tuple) whose text-key read answers from the report
+   or names what the function returns; `sc.scan` accepts `entity_col` and returns a result readable as `res.findings`. Hand-tuning
+   TimesFM (context, ignored points, znorm, symmetric averaging) is blocked by the `controls_tested` contract until `control_lab`
+   has run. Compaction folds at least three observations at a time.

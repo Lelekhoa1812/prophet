@@ -93,6 +93,25 @@ interval above zero and no worse pinball loss. Each series had 5 to 8 treatments
   Thresholds (2 % gain, 60 % wins) are proposals to calibrate.
 - Reproduce: scratch script in the session scratchpad; results in `data/lab_real_results.json` (git-ignored).
 
+### Evidence for G15 to G17, live round 2 and 3 (real public series through the real API, 2026-11-22)
+
+Same four scenarios on the build before and after the round-2 fixes (sandbox carry, tolerant scan, progress-gated auto-continue,
+`Pair`, batched compaction, `controls_tested`, planner.v13). Wall time and tool calls are as the mission reported them.
+
+| Scenario, planner | Before | After |
+| --- | --- | --- |
+| CO2 daily (h30), NIM | checkpoint after two auto-continues, about 2,400 s, about 50 tools, empty answer, same crash repeated | `partial_unverified`, 351 s, 19 tools, checklist 6 of 6, answer with scan findings, ledger and backtest (unverified: three derived figures) |
+| WTI (h20), NIM | not run | `partial_unverified`, 451 s, 15 tools, 6 of 6 (one derived interval half-width unverified) |
+| Quakes (h14), NIM | not run | `done_verified`, 491 s, 17 tools, 6 of 6 |
+| Retail (h14), NIM | `partial_unverified`, 1,162 s, 39 tools, four unverified figures | `partial_unverified`, 711 s, 16 tools, 7 of 7 (one derived figure unverified) |
+| Retail, Gemini | `done_verified`, 50 to 130 s | `done_verified`, 110 s, 9 tools |
+
+Reading: the missions finish in minutes with the checklist complete. The remaining `partial_unverified` results come from the
+grounding gate refusing a figure the model derived itself (a half-width, a ratio); the gate is working as designed, and the answer
+says so. Gemini finishes fastest with the fewest analysis cells (6 to 9 tools); it did not call `control_lab`, which is correct
+when it forecasts with the default. Six series on two providers is a small sample; no run here shows the agent matches a human
+analyst.
+
 ### Pre-existing helpers that are not causal (found with `ps.causal_canary`, 2026-11-22)
 
 `ps.changepoints` and `ps.isolation_outliers` are fitted on every row passed, so a flag at time t depends on later rows. Their
