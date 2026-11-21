@@ -637,3 +637,34 @@ def test_a_sub_agent_cannot_delegate_again(store):
     assert out["result"]["status"] == "met"
     sub_steps = out["result"]["evidence"][0]["evidence"]
     assert "cannot start another sub-agent" in sub_steps[0]["error"], "depth is capped at one level"
+
+
+def test_format_options_that_differ_in_the_main_word_are_distinct():
+    # Live run 06 (mixed day/month dates): the planner's correct question was refused 80 times in a row because
+    # 'Day-first (DD/MM/YYYY)' and 'Month-first (MM/DD/YYYY)' were judged near-duplicates. The mission never paused.
+    base = {"question": "Which order does the file use?", "header": "Date order", "multiSelect": False}
+    day_month = {**base, "options": [
+        {"label": "Day-first (DD/MM/YYYY)", "description": "01/02/2025 = 1 Feb"},
+        {"label": "Month-first (MM/DD/YYYY)", "description": "01/02/2025 = 2 Jan"}]}
+    assert validate_questions({"questions": [day_month]}) == []
+    # Same choice written twice is still caught.
+    reworded = {**base, "options": [{"label": "Day-first (DD/MM/YYYY)", "description": ""},
+                                    {"label": "Day first (DD/MM/YYYY)", "description": ""}]}
+    assert validate_questions({"questions": [reworded]})
+    # Qualifiers that really differ make distinct choices.
+    qualified = {**base, "options": [{"label": "Units (sold)", "description": ""}, {"label": "Units (returned)", "description": ""}]}
+    assert validate_questions({"questions": [qualified]}) == []
+
+
+def test_repeated_refused_questions_change_the_planner_note():
+    # Live run 06: the same refused question was sent 80 times. Refusals now count as failures, and the note says so.
+    from prophet_agent.runtime.goal import GoalConfig, _budget_note, _failure_streak
+    refused = {"kind": "ask_user", "error": "invalid questions: options are near-duplicates"}
+    history = [{"kind": "tool", "result": {}}, refused, refused]
+    streak, err, kind = _failure_streak(history)
+    assert (streak, kind) == (2, "ask_user") and "near-duplicates" in err
+    note = _budget_note(3, GoalConfig(max_iterations=20), history)
+    assert "questions were refused" in note and "Do not send that question again" in note
+    # A tool failure keeps the old wording.
+    tool_fail = [{"kind": "tool", "error": "boom"}, {"kind": "tool", "error": "boom"}]
+    assert "calls failed" in _budget_note(2, GoalConfig(max_iterations=20), tool_fail)

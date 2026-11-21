@@ -109,8 +109,27 @@ def _terms(label: str) -> frozenset[str]:
     return frozenset(w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words)
 
 
-def _near_duplicates(a: str, b: str) -> bool:
-    ta, tb = _terms(a), _terms(b)
-    if not ta or not tb:
+def _split(label: str) -> tuple[str, str]:
+    """A label's main words and its parenthetical qualifier, e.g. 'Day-first (DD/MM/YYYY)'."""
+    main = re.sub(r"\([^)]*\)", " ", label)
+    qualifier = " ".join(re.findall(r"\(([^)]*)\)", label))
+    return main, qualifier
+
+
+def _similar(x: str, y: str) -> bool:
+    tx, ty = _terms(x), _terms(y)
+    if not tx or not ty:
         return False
-    return ta == tb or len(ta & tb) / len(ta | tb) >= 0.6
+    return tx == ty or len(tx & ty) / len(tx | ty) >= 0.6
+
+
+def _near_duplicates(a: str, b: str) -> bool:
+    # The main words decide whether two options are the same choice. A parenthetical is an example or a qualifier:
+    # 'Day-first (DD/MM/YYYY)' and 'Month-first (MM/DD/YYYY)' share the format text but are different choices, so the
+    # qualifiers only count when both labels have one that is similar.
+    (main_a, qual_a), (main_b, qual_b) = _split(a), _split(b)
+    if not _terms(main_a) or not _terms(main_b):
+        return _similar(a, b)
+    if not _similar(main_a, main_b):
+        return False
+    return not (qual_a and qual_b) or _similar(qual_a, qual_b)

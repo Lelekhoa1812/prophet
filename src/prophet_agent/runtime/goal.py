@@ -225,17 +225,22 @@ def _corrections(history: list[dict]) -> int:
     return sum(1 for h in history if h.get("kind") == "evaluation" and h.get("unverified"))
 
 
-def _failure_streak(history: list[dict]) -> tuple[int, str]:
-    """How many of the latest tool calls failed in a row, and the latest error. A repeated failure must change the plan."""
-    streak, last = 0, ""
+def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
+    """How many of the latest tool calls or questions were refused in a row, the latest error, and the kind of step.
+
+    A repeated failure must change the plan. A question the runtime refuses is a failure too: live run 06 sent the same
+    refused question 80 times because only tool failures were counted.
+    """
+    streak, last, kind = 0, "", ""
     for h in reversed(history):
-        if h.get("kind") != "tool":
+        if h.get("kind") not in ("tool", "ask_user"):
             continue
         if not h.get("error"):
             break
         streak += 1
         last = last or str(h["error"])[:200]
-    return streak, last
+        kind = kind or str(h["kind"])
+    return streak, last, kind
 
 
 def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
@@ -243,8 +248,11 @@ def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
     if cfg.tool_budget is not None:
         left = min(left, cfg.tool_budget - _calls_used(history))
     note = f"Budget: step {i + 1} of this part of the work; {max(left, 0)} steps left in it."
-    streak, err = _failure_streak(history)
-    if streak >= 2:
+    streak, err, kind = _failure_streak(history)
+    if streak >= 2 and kind == "ask_user":
+        note += (f" The last {streak} questions were refused ({err}). Do not send that question again. Fix its shape, or "
+                 "decide without asking and say what you assumed.")
+    elif streak >= 2:
         note += (f" The last {streak} calls failed ({err}). Do not repeat them: change the arguments or the approach, "
                  "or ask the person.")
     if left <= 2:
