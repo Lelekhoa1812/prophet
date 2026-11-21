@@ -668,3 +668,67 @@ def test_repeated_refused_questions_change_the_planner_note():
     # A tool failure keeps the old wording.
     tool_fail = [{"kind": "tool", "error": "boom"}, {"kind": "tool", "error": "boom"}]
     assert "calls failed" in _budget_note(2, GoalConfig(max_iterations=20), tool_fail)
+
+
+def test_three_rejected_finishes_in_a_row_end_as_a_partial_answer_not_a_loop(store):
+    # Regression: a planner said finish 90 times and the evaluator said not_met 89 times, so the mission never ended.
+    gap = {"verdict": "not_met", "reason": "workbook not shown", "answer": "The forecast is established; the workbook is not."}
+    brain = ScriptedBrain(plans=[finish(), finish(), finish()], evals=[dict(gap), dict(gap), dict(gap)])
+    program = goal_program("g", {}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert "established" in out["result"]["answer"] and "workbook not shown" in out["result"]["reason"]
+    assert brain.calls == {"plan": 3, "eval": 3}
+
+
+def test_a_tool_call_between_finishes_resets_the_rejected_finish_count(store):
+    brain = ScriptedBrain(plans=[finish(), finish(), call("a"), finish()], evals=[not_met(), not_met(), met("ok")])
+    program = goal_program("g", {"a": _tool("a")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+
+
+def test_a_run_id_the_model_made_up_is_replaced_by_this_missions_run_that_wrote_the_file(tmp_path, monkeypatch):
+    from prophet_agent.runtime import goal
+
+    real = "a" * 32
+    (tmp_path / real / "out").mkdir(parents=True)
+    (tmp_path / real / "out" / "series.json").write_text("{}")
+    monkeypatch.setattr(goal, "SANDBOX_ROOT", tmp_path)
+    history = [{"kind": "tool", "tool": "sandbox_python",
+                "result": {"run_id": real, "outputs": ["out/series.json (12 bytes)"]}}]
+    made_up = {"horizon": 48, "source": {"run_id": "b" * 32, "file": "out/series.json", "name": "series"}}
+    fixed = goal._repair_source(made_up, history)
+    assert fixed["source"]["run_id"] == real and fixed["source"]["name"] == "series"
+    # an id that exists on disk is left alone, a file no run of this mission wrote is not guessed
+    assert goal._repair_source({"source": {"run_id": real, "file": "out/series.json"}}, history)["source"]["run_id"] == real
+    other = {"source": {"run_id": "c" * 32, "file": "out/other.json"}}
+    assert goal._repair_source(other, history) == other
+    assert goal._repair_source({"values": [1, 2]}, history) == {"values": [1, 2]}
+
+
+def test_a_wrong_series_name_resolves_when_the_file_holds_only_one_series(tmp_path, monkeypatch):
+    import json
+
+    from prophet_agent.tools import series_io
+
+    run = "d" * 32
+    (tmp_path / run / "out").mkdir(parents=True)
+    (tmp_path / run / "out" / "series.json").write_text(json.dumps({"series": [1.0, 2.0, 3.0]}))
+    monkeypatch.setattr(series_io, "SANDBOX_ROOT", tmp_path)
+    named = series_io.resolve_series({"source": {"run_id": run, "file": "out/series.json", "name": "total_load_kw"}})
+    assert [n for n, _ in named] == ["series"]
+    (tmp_path / run / "out" / "two.json").write_text(json.dumps({"series": {"a": [1.0], "b": [2.0]}}))
+    with pytest.raises(ValueError, match="not in the file"):
+        series_io.resolve_series({"source": {"run_id": run, "file": "out/two.json", "name": "zzz"}})
+
+
+def test_the_report_observation_carries_the_run_id_so_the_files_can_be_found():
+    from prophet_agent.tools.report_tool import observe
+
+    point = [1.0 + i for i in range(48)]
+    result = {"forecast": {"point": point, "health": {"verdict": "ok"}, "quantiles": {"0.1": point, "0.9": point},
+                           "config": {"horizon": 48}},
+              "run_id": "e" * 32, "manifest": "/x/manifest.json", "files": [{"path": "out/forecast.xlsx"}]}
+    seen = observe(result)
+    assert seen["run_id"] == "e" * 32 and seen["files"] == ["out/forecast.xlsx"] and "manifest" in seen

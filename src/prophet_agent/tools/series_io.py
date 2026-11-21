@@ -84,6 +84,8 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
         raise ValueError(f"{rel} must hold a list of numbers or a dict of named lists")
     want = source.get("name")
     if want is not None:
+        if want not in named and len(named) == 1:
+            want = next(iter(named))          # one series in the file: no ambiguity, so a wrong name is not an error
         if want not in named:
             raise ValueError(f"series {want!r} not in the file; available: {sorted(named)[:20]}")
         named = {want: named[want]}

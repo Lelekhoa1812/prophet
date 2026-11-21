@@ -40,6 +40,8 @@ from .questions import QUESTIONS_SCHEMA, validate_questions
 from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import OutcomeUnknown, canonical
 
+from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT
+
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["action", "rationale"],
@@ -76,6 +78,7 @@ VIEW_CHARS = 16000        # uncompacted observations shown before the older ones
 KEEP_RECENT = 4           # newest observations never compacted
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
+MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
 SUB_STEPS = 12            # default step budget of a delegated sub-agent
 
@@ -374,6 +377,43 @@ def _signature(obs: dict) -> str:
                       "error": obs.get("error")})
 
 
+def _runs_with_outputs(history: list[dict]) -> list[tuple[str, set[str]]]:
+    """(run id, output paths) of every analysis or report step in this mission, oldest first."""
+    runs: list[tuple[str, set[str]]] = []
+    for h in history:
+        res = h.get("result") if h.get("kind") == "tool" else None
+        if not isinstance(res, dict) or not isinstance(res.get("run_id"), str):
+            continue
+        paths: set[str] = set()
+        for o in res.get("outputs") or res.get("files") or []:
+            if isinstance(o, str):
+                paths.add(o.split(" (")[0])
+            elif isinstance(o, dict) and isinstance(o.get("path"), str):
+                paths.add(o["path"])
+        runs.append((res["run_id"], paths))
+    return runs
+
+
+def _repair_source(args: Any, history: list[dict]) -> Any:
+    """A planner sometimes writes a run id that never existed (a model copies the shape of an id, not the id). When the
+    named run has no such file on disk, the newest run of THIS mission that wrote the file stands in. Runs of other missions
+    are never searched, so the repair cannot read someone else's data."""
+    src = args.get("source") if isinstance(args, dict) else None
+    if not isinstance(src, dict):
+        return args
+    want = str(src.get("file") or f"{OUT_DIR}/series.json")
+    rid = str(src.get("run_id", ""))
+    try:
+        if rid and (SANDBOX_ROOT / rid / want).is_file():
+            return args
+    except (OSError, ValueError):
+        pass
+    for run, paths in reversed(_runs_with_outputs(history)):
+        if want in paths and run != rid:
+            return {**args, "source": {**src, "run_id": run}}
+    return args
+
+
 def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
     try:
         result = ctx.call(tool, args)
@@ -426,6 +466,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                          for n in prompts.CURRENT})
     tag = f"d{cfg.depth}"
     seg_len = cfg.max_iterations
+    rejected_finishes = 0     # consecutive finishes the evaluator turned down
     for i in range(cfg.end):
         if i and i % seg_len == 0:
             # A new part of the work starts here. The marker is an observation, so the planner and the replay see it.
@@ -465,7 +506,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             obs = _delegate(ctx, brain, plan, tools, cfg, context)
         else:
             name = plan.get("tool", "")
-            args = plan.get("args", {})
+            args = _repair_source(plan.get("args", {}), history)
             if name not in tools:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
             else:
@@ -560,7 +601,24 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # goes on. The draft is kept so "answer now" can still write what is established.
             return {"status": "checkpoint", "iterations": i + 1, "segment": cfg.segment, "reason": verdict["reason"],
                     "draft": verdict.get("answer", ""), "evidence": history, "memory": memo.text}
-        history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]})
+        if plan["action"] == "finish":
+            rejected_finishes += 1
+            if rejected_finishes >= MAX_REJECTED_FINISHES:
+                # The planner keeps saying it is done and the evaluator keeps saying it is not: more passes will not settle
+                # it. Write up what is established, say what is not, and label it partial (seen live: 90 rejected finishes).
+                draft = verdict.get("answer", "") or verdict.get("reason", "")
+                written = _compose(ctx, brain, f"composeloop:{tag}:{i}", goal, history, memo, context, draft)
+                text = written if written is not None and written.strip() else verdict.get("answer", "")
+                if text.strip():
+                    return {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history,
+                            "reason": "The analysis could not close this gap: " + verdict["reason"]}
+                return {"status": "stalled", "iterations": i + 1, "evidence": history}
+            history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]
+                            + " Your last finish was refused. Call a tool that closes this gap; if no tool can, finish again and "
+                              "say plainly what is established and what is not."})
+        else:
+            rejected_finishes = 0
+            history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]})
     # Unreachable: the last step of the part always returns above. Kept so a future edit cannot fall through silently.
     return {"status": "checkpoint", "iterations": cfg.end, "segment": cfg.segment,
             "reason": "this part of the work is spent", "evidence": history, "memory": memo.text}

@@ -135,7 +135,11 @@ def _run(args: dict, key: str) -> dict[str, Any]:
 
 def observe(result: dict) -> dict:
     from prophet_agent.tools.timesfm_tool import _compact
-    return {"forecast": _compact(result["forecast"]), "files": [f["path"] for f in result["files"]]}
+    # The run id is what proves where the files are: without it the planner cannot cite or re-open the workbook and asks
+    # where it went (seen live, as "the forecast workbook could not be found").
+    return {"forecast": _compact(result["forecast"]), "run_id": result["run_id"],
+            "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
+            "deliverables": "built and listed in the manifest; no further build is needed"}
 
 
 def forecast_report_tool() -> Tool:
