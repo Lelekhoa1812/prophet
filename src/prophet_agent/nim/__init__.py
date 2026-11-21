@@ -1,4 +1,4 @@
-"""Model access for Prophet: NVIDIA NIM (default) plus Claude, ChatGPT, Gemini, Grok and Matilda. Public surface: NimClient,
+"""Model access for Prophet: NIM (default) plus Claude, ChatGPT, Gemini, Grok, Matilda and FreeRouter. Public surface: NimClient,
 Reply, load_keys, the provider registry, DEFAULT_CHAIN and the error types."""
 from .errors import Exhausted, NimError, NotConfigured, SchemaViolation, redact
 from .providers import PROVIDERS, Provider

@@ -1,7 +1,7 @@
 """Model providers Prophet can call: where each one lives, which env vars hold its keys, and which models it offers.
 
 Motivation vs Logic
-Motivation: NVIDIA NIM stays the default, but a person may want Claude, ChatGPT, Gemini, Grok or Matilda for planning.
+Motivation: NIM stays the default, but a person may want Claude, ChatGPT, Gemini, Grok, Matilda or FreeRouter for planning.
 Each one needs its own keys, endpoint and model list, and Settings must show them one at a time, not as one long list.
 Logic: one frozen ``Provider`` per vendor and one ``ModelInfo`` per model in ``CATALOG``. The catalog is the only list of
 models Prophet offers: Settings, the planner and the usage page all read it. Every provider except Claude speaks the
@@ -60,6 +60,10 @@ CATALOG: tuple[ModelInfo, ...] = (
     ModelInfo("grok-4.6", "grok", "Grok 4.6"),
     ModelInfo("grok-4.3", "grok", "Grok 4.3"),
     ModelInfo("matilda", "matilda", "Matilda"),
+    ModelInfo("fr-auto", "freerouter", "FreeRouter auto"),
+    ModelInfo("fr-fast", "freerouter", "FreeRouter fast"),
+    ModelInfo("fr-quality", "freerouter", "FreeRouter quality"),
+    ModelInfo("fr-code", "freerouter", "FreeRouter code"),
 )
 MODELS: dict[str, ModelInfo] = {m.id: m for m in CATALOG}
 
@@ -70,7 +74,7 @@ def catalog_ids(provider: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Provider:
-    name: str                              # stable id used in settings and the API: nim, claude, openai, gemini, grok, matilda
+    name: str                              # stable id used in settings and the API: nim, claude, openai, gemini, grok, matilda, freerouter
     label: str                             # what a person reads in Settings
     key_list_var: str                      # env var holding one key or a comma list
     key_prefix: str | None                 # env prefix for indexed keys: <prefix>_1 .. <prefix>_9 (multi-key providers only)
@@ -118,7 +122,7 @@ class Provider:
 
 PROVIDERS: dict[str, Provider] = {
     "nim": Provider(
-        name="nim", label="NVIDIA NIM", key_list_var="NVIDIA_NIM_API_KEYS", key_prefix="NVIDIA_NIM_API_KEY",
+        name="nim", label="NIM", key_list_var="NVIDIA_NIM_API_KEYS", key_prefix="NVIDIA_NIM_API_KEY",
         base_url=NIM_BASE_URL, default_models=NIM_DEFAULT_CHAIN, probe_model="poolside/laguna-xs-2.1",
         nim_extras=True,
     ),
@@ -166,6 +170,17 @@ PROVIDERS: dict[str, Provider] = {
         name="matilda", label="Matilda", key_list_var="MATILDA_API_KEY", key_prefix="MATILDA_API_KEY",
         base_url="https://matilda.maincode.com/api/v1", base_url_var="MATILDA_BASE_URL", default_models=catalog_ids("matilda"),
         send_temperature=False,
+    ),
+    # FreeRouter (free-router-olive.vercel.app): a self-hosted OpenAI-compatible gateway in front of several upstream
+    # vendors. One key (sk-fr-...) from FREEROUTE_API_KEY; the endpoint is fixed and FREEROUTE_BASE_URL overrides it.
+    # Live-verified 2026-11-21: each alias answers HTTP 200 with a streamed completion. The gateway rejects unknown body
+    # fields with 400, so only the standard chat fields are sent (the shared transport body is exactly that). Its stream
+    # can fail after HTTP 200 with an error frame; transport.py reads that frame and classifies it.
+    # Sources: free-router src/lib/validation.ts, src/lib/models/catalog.ts, src/lib/http.ts (audited 2026-11-21).
+    "freerouter": Provider(
+        name="freerouter", label="FreeRouter", key_list_var="FREEROUTE_API_KEY", key_prefix=None,
+        base_url="https://free-router-olive.vercel.app/v1", base_url_var="FREEROUTE_BASE_URL",
+        default_models=catalog_ids("freerouter"), probe_model="fr-fast",
     ),
 }
 DEFAULT_PROVIDER = "nim"

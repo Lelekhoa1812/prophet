@@ -71,6 +71,13 @@ REPAIR_QUOTE_CHARS = 4000         # how much of the refused reply the repair tur
 REPAIR_PROMPT = ("Your reply was not usable: {reason}. Reply again with only the JSON object the schema asks for. "
                  "No prose, no code fence.")
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
+# Error codes a gateway puts in an in-stream error frame, mapped to the HTTP status they stand for (FreeRouter's
+# envelope: free-router src/lib/http.ts). An unknown code is treated as a 502: the key cools briefly and the call moves on.
+_IN_STREAM_STATUS: dict[str, int] = {
+    "invalid_api_key": 401, "insufficient_scope": 403, "model_forbidden": 403, "model_not_found": 404,
+    "rate_limit_exceeded": 429, "quota_exhausted": 429, "upstream_unavailable": 503, "upstream_invalid_output": 502,
+    "upstream_request_rejected": 400, "unsupported_capability": 400, "unsupported_parameter": 400, "invalid_request": 400,
+}
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 _FENCE = re.compile(r"\s*```(?:json)?\s*(.*?)\s*```\s*", re.DOTALL)
@@ -716,6 +723,10 @@ class NimClient:
                     if data == "[DONE]":
                         break
                     ev = json.loads(data)
+                    if isinstance(ev, dict) and ev.get("error") is not None:
+                        # A gateway can fail after HTTP 200 (FreeRouter sends an error frame and no [DONE]). It is
+                        # classified as the HTTP status its code stands for, so a refusal is never read as an empty reply.
+                        return self._stream_error(key, model, slot, ev["error"], emitted, parts, opts, shape, started)
                     usage = ev.get("usage") or usage
                     for ch in ev.get("choices") or []:
                         finish = ch.get("finish_reason") or finish
@@ -771,6 +782,18 @@ class NimClient:
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,
                       usage=_usage(usage), key_slot=slot, elapsed_s=round(elapsed, 2))
         return _Outcome("ok", reply=reply, status=status)
+
+    def _stream_error(self, key: str, model: str, slot: int, error: Any, emitted: bool, parts: list[str],
+                      opts: _Opts, shape: _Shape, started: float) -> _Outcome:
+        """An error frame inside a 200 stream. After text was released the attempt cannot fail over, so it is cut and
+        continued; before that it is classified like the HTTP status its code stands for."""
+        code = error.get("code") if isinstance(error, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if emitted:
+            return _Outcome("cut", f"{model}: stream error ({code or 'unknown'})", partial="".join(parts))
+        status = _IN_STREAM_STATUS.get(code, 502)
+        raw = json.dumps({"error": {"code": code, "message": str(message or "")[:200]}})
+        return self._classify_http(key, model, slot, status, None, raw, opts, shape, started)
 
     def _classify_http(self, key: str, model: str, slot: int, status: int, retry_after: str | None, raw: str,
                        opts: _Opts, shape: _Shape, started: float) -> _Outcome:

@@ -280,3 +280,141 @@ def test_gemini_sends_the_schema_in_the_prompt_because_strict_mode_drops_free_fo
     body = build_body("gemini-3.5-flash", [{"role": "user", "content": "x"}],
                       _Opts(False, 256, {"type": "object"}, "plan", None), _Shape("strict"), gemini)
     assert "response_format" not in body
+
+
+# -- FreeRouter (free-router-olive.vercel.app): one key, OpenAI wire format, errors can arrive inside a 200 stream ----------
+
+FR_KEY = "sk-fr-test-111111111"
+
+
+def _sse_error(code: str, message: str = "refused") -> bytes:
+    """A FreeRouter stream that opens with HTTP 200 and then fails: an error frame and no [DONE] (free-router route.ts)."""
+    return f'data: {json.dumps({"error": {"code": code, "message": message}})}\n\n'.encode()
+
+
+def _sse_text(*pieces: str, finish: bool = True) -> bytes:
+    frames = [{"choices": [{"delta": {"content": p}, "finish_reason": None}]} for p in pieces]
+    if finish:
+        frames.append({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3, "completion_tokens": 2}})
+    body = "".join(f"data: {json.dumps(c)}\n\n" for c in frames)
+    return (body + "data: [DONE]\n\n" if finish else body).encode()    # a failing stream never reaches [DONE]
+
+
+class _InOrder(random.Random):
+    def shuffle(self, x):
+        return None
+
+
+def test_freerouter_is_one_key_at_the_verified_endpoint_with_four_text_aliases(monkeypatch):
+    monkeypatch.delenv("FREEROUTE_BASE_URL", raising=False)
+    spec = PROVIDERS["freerouter"]
+    assert spec.label == "FreeRouter" and spec.key_list_var == "FREEROUTE_API_KEY" and not spec.multi_key
+    assert spec.resolve_base_url() == "https://free-router-olive.vercel.app/v1"
+    assert spec.models({}) == ("fr-auto", "fr-fast", "fr-quality", "fr-code")
+    assert spec.probe_target({}) == "fr-fast" and spec.usable({})
+    assert load_provider_keys(spec, {"FREEROUTE_API_KEY": FR_KEY, "OPENAI_API_KEY": "sk-openai-0000000"}) == [FR_KEY]
+
+
+def test_freerouter_endpoint_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("FREEROUTE_BASE_URL", "https://fr.example.test/v1/")
+    assert PROVIDERS["freerouter"].resolve_base_url() == "https://fr.example.test/v1"
+
+
+def test_freerouter_request_sends_only_fields_the_gateway_accepts(monkeypatch):
+    monkeypatch.delenv("FREEROUTE_BASE_URL", raising=False)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"], seen["auth"], seen["body"] = str(request.url), request.headers.get("authorization"), json.loads(request.content)
+        return httpx.Response(200, content=_sse_text('{"status": "ok"}'), headers={"content-type": "text/event-stream"})
+
+    schema = {"type": "object", "properties": {"status": {"type": "string", "enum": ["ok"]}},
+              "required": ["status"], "additionalProperties": False}
+    clock, sleep = _clock()
+    client = NimClient([FR_KEY], provider=PROVIDERS["freerouter"], transport=httpx.MockTransport(handler), clock=clock, sleep=sleep)
+    reply = client.complete(["fr-auto"], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=50,
+                            schema=schema, schema_name="status_reply")
+    assert reply.model == "fr-auto" and reply.text == '{"status": "ok"}'
+    assert seen["url"] == "https://free-router-olive.vercel.app/v1/chat/completions"
+    assert seen["auth"] == f"Bearer {FR_KEY}"
+    body = seen["body"]
+    assert body["model"] == "fr-auto" and body["stream"] is True and body["max_tokens"] == 50
+    assert body["stream_options"] == {"include_usage": True}
+    assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["strict"] is True
+    # The gateway answers 400 to any field outside its list (validation.ts), so none of these may be sent.
+    for banned in ("reasoning_effort", "chat_template_kwargs", "max_completion_tokens", "enable_thinking"):
+        assert banned not in body, f"FreeRouter rejects {banned}"
+    assert FR_KEY not in repr(client), "the client never shows key material"
+
+
+def test_freerouter_error_frame_after_http_200_fails_over_on_a_rate_limit(monkeypatch):
+    monkeypatch.delenv("FREEROUTE_BASE_URL", raising=False)
+    keys = ["sk-fr-slot-one-111", "sk-fr-slot-two-222"]
+    used: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.headers["authorization"].removeprefix("Bearer ")
+        used.append(key)
+        if key == keys[0]:
+            return httpx.Response(200, content=_sse_error("rate_limit_exceeded", "slow down"),
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, content=_sse_text("READY"), headers={"content-type": "text/event-stream"})
+
+    clock, sleep = _clock()
+    client = NimClient(keys, provider=PROVIDERS["freerouter"], transport=httpx.MockTransport(handler), clock=clock,
+                       sleep=sleep, rng=_InOrder())
+    reply = client.complete(["fr-auto"], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=20)
+    assert reply.text == "READY" and reply.key_slot == 2, "the error frame is a refusal, not an empty reply"
+    assert used[0] == keys[0] and used[-1] == keys[1]
+
+
+def test_freerouter_error_frame_with_a_bad_key_retires_that_key(monkeypatch):
+    monkeypatch.delenv("FREEROUTE_BASE_URL", raising=False)
+    keys = ["sk-fr-slot-one-111", "sk-fr-slot-two-222"]
+    used: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.headers["authorization"].removeprefix("Bearer ")
+        used.append(key)
+        if key == keys[0]:
+            return httpx.Response(200, content=_sse_error("invalid_api_key", "bad key"),
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, content=_sse_text("OK"), headers={"content-type": "text/event-stream"})
+
+    clock, sleep = _clock()
+    client = NimClient(keys, provider=PROVIDERS["freerouter"], transport=httpx.MockTransport(handler), clock=clock,
+                       sleep=sleep, rng=_InOrder())
+    reply = client.complete(["fr-auto"], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=20)
+    assert reply.text == "OK" and reply.key_slot == 2
+    assert keys[0] in client.bad and used.count(keys[0]) == 1, "a 401-class frame retires the key for good measure"
+
+
+def test_freerouter_error_frame_after_text_was_released_continues_instead_of_failing_over(monkeypatch):
+    monkeypatch.delenv("FREEROUTE_BASE_URL", raising=False)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, content=_sse_text("Hello ", finish=False) + _sse_error("upstream_unavailable"),
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, content=_sse_text("world"), headers={"content-type": "text/event-stream"})
+
+    clock, sleep = _clock()
+    client = NimClient([FR_KEY], provider=PROVIDERS["freerouter"], transport=httpx.MockTransport(handler), clock=clock, sleep=sleep)
+    reply = client.complete(["fr-auto"], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=20)
+    assert calls["n"] == 2, "the cut attempt is continued on the same model, not abandoned"
+    assert "Hello" in reply.text and "world" in reply.text
+
+
+def test_freerouter_alias_can_be_pinned_for_the_planner_and_is_not_the_default(tmp_path):
+    settings = Settings(data_root=tmp_path, dotenv=tmp_path / ".env")
+    env = {"FREEROUTE_API_KEY": FR_KEY}
+    provider, chain = settings.planner_choice(model="fr-auto", environ=env)
+    # The pinned model is tried first; the rest of the chain stays inside FreeRouter, never another provider.
+    assert provider == "freerouter" and chain[0] == "fr-auto"
+    assert set(chain) <= set(PROVIDERS["freerouter"].models({})), "failover never leaves the provider the person chose"
+    # FreeRouter is last in catalog order, so with NIM also ready the planner still defaults to NIM.
+    both = {**env, "NVIDIA_NIM_API_KEYS": "nvapi-test-0000000000"}
+    assert planner_problem(tmp_path, environ=both) is None
+    assert settings.planner_choice(environ=both)[0] == "nim"

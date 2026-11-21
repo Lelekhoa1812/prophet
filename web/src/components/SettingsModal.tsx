@@ -202,7 +202,7 @@ type Patch = (update: (v: SettingsView) => SettingsView) => void;
 type Tone = "ok" | "bad" | "idle";
 
 // Only the endpoint variable is named where we know it. Other providers get generic wording.
-const ENDPOINT_ENV: Record<string, string> = { matilda: "MATILDA_BASE_URL" };
+const ENDPOINT_ENV: Record<string, string> = { matilda: "MATILDA_BASE_URL", freerouter: "FREEROUTE_BASE_URL" };
 
 const TONE_CLASS: Record<Tone, string> = { ok: "text-ok", bad: "text-bad", idle: "text-sand-1" };
 const KEY_STATUS: Record<KeyStatus, { tone: Tone; label: string }> = {
@@ -455,6 +455,20 @@ function ProviderPanel({
   const enabledModels = p.models.filter((m) => m.enabled).length;
   const [modelsOpen, setModelsOpen] = useState(false);
   const modelsPanelId = useId();
+  // The keys list is collapsed until opened; the body stays mounted, so unsaved key edits survive a collapse.
+  const [keysOpen, setKeysOpen] = useState(false);
+  const keysPanelId = useId();
+  const keysSummary = (() => {
+    const n = p.keys.length;
+    if (n === 0) return "No keys yet. Open to add one.";
+    const count = (status: KeyStatus) => p.keys.filter((k) => k.status === status).length;
+    const bits = [
+      count("valid") > 0 ? `${count("valid")} valid` : null,
+      count("invalid") > 0 ? `${count("invalid")} invalid` : null,
+      count("untested") > 0 ? `${count("untested")} not checked` : null,
+    ].filter(Boolean);
+    return `${n} ${n === 1 ? "key" : "keys"}${bits.length ? ` · ${bits.join(" · ")}` : ""}`;
+  })();
   const endpointEnv = ENDPOINT_ENV[p.name] ?? null;
   const probeSummary = probes
     ? `Tested ${probes.length} ${probes.length === 1 ? "key" : "keys"}: ${probes.filter((r) => r.ok).length} valid, ${probes.filter((r) => !r.ok).length} invalid.`
@@ -599,7 +613,20 @@ function ProviderPanel({
       )}
 
       <div className="grid gap-3 border-t border-sand-2/15 pt-4">
-        <p className="text-base font-semibold text-sand-0">Keys</p>
+        <button
+          type="button"
+          aria-expanded={keysOpen}
+          aria-controls={keysPanelId}
+          onClick={() => setKeysOpen((o) => !o)}
+          className="flex min-h-11 items-center justify-between gap-3 rounded-lg text-left"
+        >
+          <span className="grid gap-0.5">
+            <span className="text-base font-semibold text-sand-0">Keys</span>
+            <span className="text-caption text-sand-2 tabular-nums">{keysSummary}</span>
+          </span>
+          <ChevronDown aria-hidden="true" className={cn("size-5 shrink-0 text-sand-2 transition-transform duration-150 motion-reduce:transition-none", keysOpen && "rotate-180")} />
+        </button>
+      <div id={keysPanelId} hidden={!keysOpen} className="grid gap-3">
         {rows.length === 0 ? (
           <p className="text-caption text-sand-2">No key is set for {p.label}.</p>
         ) : (
@@ -704,6 +731,7 @@ function ProviderPanel({
             )
           )}
         </div>
+      </div>
       </div>
 
       <div className="grid gap-3 border-t border-sand-2/15 pt-4">
