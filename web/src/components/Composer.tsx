@@ -281,12 +281,11 @@ export function Composer({
           </ul>
         )}
 
-        <div className="flex items-end gap-1.5">
+        <div className="flex items-center gap-1.5">
           {quick ? (
             <ActionMenu
               label="Add files, folders, skills or tools"
               trigger={<Plus aria-hidden="true" className="size-5" />}
-              className="self-end"
               items={[
                 { key: "files", label: "Add files", icon: <Paperclip className="size-4" />, onSelect: quick.onOpenFiles },
                 { key: "folder", label: "Add folder", icon: <Folder className="size-4" />, onSelect: quick.onOpenFolder },

@@ -1,12 +1,23 @@
-# Prophet
+<p align="center"><img src="docs/images/logo.png" alt="Prophet logo" width="112"></p>
 
-**Ask your spreadsheets anything. Forecast what comes next.**
+<h1 align="center">Prophet</h1>
+
+<p align="center"><strong>Ask your spreadsheets anything. Forecast what comes next.</strong></p>
+
+<p align="center">
+  <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="React 19" src="https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB">
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white">
+  <img alt="TimesFM 3" src="https://img.shields.io/badge/TimesFM-3-B5651D">
+  <img alt="SQLite WAL" src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white">
+  <img alt="MCP bridge" src="https://img.shields.io/badge/MCP-bridge-7C3AED">
+  <img alt="Licence: non-commercial research" src="https://img.shields.io/badge/licence-non--commercial%20research-E0A040">
+</p>
 
 Prophet is a local analyst you talk to. Drop in any number of spreadsheets, ask questions in plain language, clean and reshape the data, and forecast with TimesFM 3. It shows its working, cites where every number came from, asks when something is genuinely ambiguous, and hands you charts, workbooks and reports.
 
-<p align="center"><img src="docs/images/notebook.jpg" alt="A Prophet notebook with an uploaded file and an answered question" width="860"></p>
-<p align="center"><img src="docs/images/chart.jpg" alt="A chart drawn by the analysis, shown inside the answer" width="860"></p>
-<p align="center"><sub>Screenshots use a synthetic file (regional_demand_synthetic.csv). The numbers are synthetic, not observed.</sub></p>
+<p align="center"><img src="docs/images/start.png" alt="The Prophet start screen with quick actions and the message box" width="860"></p>
+<p align="center"><sub>Screenshot of the start screen. Data shown in the examples is synthetic, not observed.</sub></p>
 
 ## What you can do
 
