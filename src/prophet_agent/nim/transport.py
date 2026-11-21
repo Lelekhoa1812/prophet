@@ -11,7 +11,7 @@ Logic: one shared client per process. A logical call tries models in order (demo
 each model may use up to 3 keys and the call at most 7 dispatches. Every HTTP request gets a timeout equal to the
 time left on the wall-clock budget (F1). Each status code has one consequence: cool (key, model) for 429/408/425/402/
 5xx; retire the key for 401/403 (re-admitted after 10 min, so a rotated key recovers, F4); demote the model for
-404/410/413/503; reshape the schema on a 400/422 that names keywords (same key, same model); otherwise next model.
+404/410/503; a 413 (request too large) moves to the next model without demotion; reshape the schema on a 400/422 that names keywords (same key, same model); otherwise next model.
 Requests always stream upstream and are assembled here (NIM.md §5 rule 4). Text is released to the caller only when
 no schema or tool output needs buffering, and failover happens only before the first released token.
 """
@@ -603,8 +603,10 @@ class NimClient:
         if status in (401, 403):                 # NIM answers 403, not 401, to a bad key on chat
             self._retire(key)
             return _Outcome("retire", note)
-        if status in (404, 410, 413, 503):
+        if status in (404, 410, 503):
             return _Outcome("model", note, demote=True)
+        if status == 413:                        # this request is too large for this model's limit, not the model's health
+            return _Outcome("model", note)
         if status in (400, 422):
             if opts.schema is not None and not opts.tools:
                 names = unimplemented_keys(raw)

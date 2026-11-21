@@ -209,7 +209,14 @@ def test_unreadable_stream_json_cools_key_then_next_key():
     assert client.cool[(KEYS[0], M1)] - 1000.0 == pytest.approx(30.0)
 
 
-@pytest.mark.parametrize("code", [404, 410, 413, 503])
+def test_request_too_large_moves_on_without_demoting_the_model():
+    script = Script().on(status(413), model=M1)
+    client, clock = make(script)
+    assert client.complete([M1, M2], MSGS).model == M2
+    assert M1 not in client.demoted, "a 413 is about this request, so the model stays first in the chain"
+
+
+@pytest.mark.parametrize("code", [404, 410, 503])
 def test_model_errors_demote_the_model_and_move_on(code):
     script = Script().on(status(code), model=M1)
     client, clock = make(script)

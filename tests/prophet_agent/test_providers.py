@@ -28,12 +28,12 @@ def _clock():
 
 
 def test_key_variables_follow_the_brief():
-    env = {"GEMINI_API_KEY": "AIza-one,AIza-two", "GEMINI_API_KEY_3": "AIza-three", "GEMINI_API_KEY_1": "AIza-two",
+    env = {"GOOGLE_API_KEY": "AIza-one,AIza-two", "GOOGLE_API_KEY_3": "AIza-three", "GOOGLE_API_KEY_1": "AIza-two",
            "ANTHROPIC_API_KEY": "sk-ant-1234567890", "ANTHROPIC_API_KEY_2": "sk-ant-NOT-READ",
            "MATILDA_API_KEY_1": "mat-key-111111", "OPENAI_API_KEY": "sk-openai-0000000"}
     assert load_provider_keys(PROVIDERS["gemini"], env) == ["AIza-one", "AIza-two", "AIza-three"]
-    assert load_provider_keys(PROVIDERS["gemini"], {"GOOGLE_API_KEY": "AIza-not-read"}) == [], \
-        "Gemini reads GEMINI_API_KEY, the name in the working .env and free-router"
+    assert load_provider_keys(PROVIDERS["gemini"], {"GEMINI_API_KEY_2": "AIza-alias"}) == ["AIza-alias"], \
+        "GEMINI_API_KEY_n is read too, the name the working .env and free-router use"
     assert load_provider_keys(PROVIDERS["claude"], env) == ["sk-ant-1234567890"], "Claude is a single key"
     assert load_provider_keys(PROVIDERS["matilda"], env) == ["mat-key-111111"]
     assert load_provider_keys(PROVIDERS["openai"], env) == ["sk-openai-0000000"]
@@ -238,12 +238,13 @@ def test_active_provider_persists_across_limit_updates(tmp_path):
 
 def test_keys_are_written_per_provider_and_never_shown_whole(tmp_path):
     dotenv = tmp_path / ".env"
-    dotenv.write_text("OTHER=1\nGEMINI_API_KEY_2=AIza-old-0000\nOPENAI_API_KEY=sk-openai-OLD0000\n")
+    dotenv.write_text("OTHER=1\nGEMINI_API_KEY_2=AIza-old-0000\nGOOGLE_API_KEY_2=AIza-old-1111\nOPENAI_API_KEY=sk-openai-OLD0000\n")
     settings = Settings(data_root=tmp_path, dotenv=dotenv)
     settings.set_keys(["AIza-new-1111aaaa", "AIza-new-2222bbbb"], provider="gemini")
     text = dotenv.read_text()
-    assert "GEMINI_API_KEY=AIza-new-1111aaaa,AIza-new-2222bbbb" in text
-    assert "GEMINI_API_KEY_2" not in text, "indexed Gemini keys are replaced, not kept beside the new list"
+    assert "GOOGLE_API_KEY=AIza-new-1111aaaa,AIza-new-2222bbbb" in text
+    assert "GOOGLE_API_KEY_2" not in text and "GEMINI_API_KEY_2" not in text, \
+        "indexed Gemini keys under either name are replaced, not kept beside the new list"
     assert "OPENAI_API_KEY=sk-openai-OLD0000" in text, "other providers' lines are left alone"
     assert "OTHER=1" in text
     masked = settings.masked_keys("gemini")

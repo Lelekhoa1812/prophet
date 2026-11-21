@@ -174,17 +174,23 @@ class Settings:
             raise ValueError(f"{spec.label} takes one key")
         self._write_dotenv(spec, resolved)
         os.environ[spec.key_list_var] = ",".join(resolved)
+        for alias in spec.key_aliases:
+            os.environ[alias] = ""
         if spec.key_prefix:
             for i in range(1, 10):                   # blank the indexed form so an old value cannot come back
                 os.environ[f"{spec.key_prefix}_{i}"] = ""
+                for alias in spec.key_aliases:
+                    os.environ[f"{alias}_{i}"] = ""
         from prophet_agent.nim.transport import reset_shared_client
         reset_shared_client()
         return resolved
 
     def _write_dotenv(self, spec: Provider, keys: list[str]) -> None:
-        names = [re.escape(spec.key_list_var)]
+        names = [re.escape(spec.key_list_var), *(re.escape(a) for a in spec.key_aliases)]
         if spec.key_prefix:
             names.append(re.escape(spec.key_prefix) + r"_[1-9]")
+        for alias in spec.key_aliases:
+            names.append(re.escape(alias) + r"_[1-9]")
         env_line = re.compile(r"^\s*(export\s+)?(" + "|".join(names) + r")\s*=")
         try:
             lines = self.dotenv.read_text().splitlines()

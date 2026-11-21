@@ -42,6 +42,7 @@ class Provider:
     token_param: str = "max_tokens"        # OpenAI's newer models need max_completion_tokens
     send_temperature: bool = True          # reasoning-model endpoints reject a custom temperature
     schema_mode: str = "json_schema"       # "prompt": no response_format; the schema goes into the prompt and is checked locally
+    key_aliases: tuple[str, ...] = ()      # other names read the same way (list and indexed); the primary name is written
 
     @property
     def multi_key(self) -> bool:
@@ -103,11 +104,12 @@ PROVIDERS: dict[str, Provider] = {
         default_models=("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-luna"),
         token_param="max_completion_tokens", send_temperature=False,
     ),
-    # Google AI Studio. Keys are GEMINI_API_KEY (list) or GEMINI_API_KEY_1..9, the names free-router uses. Quotas apply per
+    # Google AI Studio. Keys are GOOGLE_API_KEY (list) or GOOGLE_API_KEY_1..9; GEMINI_API_KEY_n is also read, as free-router uses it. Quotas apply per
     # Google project, so keys from different projects add capacity. free-router removed the 2.5 models as unavailable on
     # 3 Nov 2026 (its OPERATIONS.md); the chain holds the 3.x models it lists as ready.
     "gemini": Provider(
-        name="gemini", label="Gemini", key_list_var="GEMINI_API_KEY", key_prefix="GEMINI_API_KEY",
+        name="gemini", label="Gemini", key_list_var="GOOGLE_API_KEY", key_prefix="GOOGLE_API_KEY",
+        key_aliases=("GEMINI_API_KEY",),
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         default_models=("gemini-3.5-flash-lite", "gemini-3.1-flash-lite"),
     ),
@@ -148,9 +150,12 @@ def load_provider_keys(provider: Provider, environ: Mapping[str, str] | None = N
     kept. The process environment wins over the git-ignored .env file. Values are returned, never printed."""
     import re
     env = _environ(environ)
-    raw = re.split(r"[,\s]+", env.get(provider.key_list_var, ""))
-    if provider.key_prefix:
-        raw += [env.get(f"{provider.key_prefix}_{i}", "") for i in range(1, 10)]
+    raw: list[str] = []
+    for name in (provider.key_list_var, *provider.key_aliases):
+        raw += re.split(r"[,\s]+", env.get(name, ""))
+    for prefix in (provider.key_prefix, *provider.key_aliases):
+        if prefix and provider.multi_key:
+            raw += [env.get(f"{prefix}_{i}", "") for i in range(1, 10)]
     return list(dict.fromkeys(k.strip() for k in raw if k and k.strip()))
 
 
