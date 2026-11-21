@@ -1104,11 +1104,12 @@ def chart(kind: str, data: Any = None, *, title: str, subtitle: str = "", unit: 
           source: str = "Source: the uploaded data", path: str = "out/chart.png", order: str = "sort",
           highlight: str | None = None, x: str | None = None, y: str | list[str] | None = None, trend: bool = False,
           history: pd.Series | None = None, point: Any = None, bands: list[tuple[float, Any, Any]] | None = None,
-          future_index: Any = None, shared_y: bool = True) -> dict:
+          future_index: Any = None, shared_y: bool = True, group: str | None = None) -> dict:
     """Draw one chart to ``path`` (PNG, with an SVG and the plotted numbers as CSV beside it) and report on it.
 
     kind: "line" (data: Series, DataFrame or dict of Series, at most 6 series; or a table with x="<column>" and y="<column>"
-    or a list of columns), "bar" (a Series of category to value; sorted
+    or a list of columns; a long table with one row per x and group value needs group="<column>" to get one line per group),
+    "bar" (a Series of category to value; sorted
     largest first unless order="keep"), "hist" (a sequence of numbers), "scatter" (a DataFrame with x= and y= column names;
     trend=True adds a fitted line), "small_multiples" (a dict or DataFrame, one panel per series, up to 12), and "forecast".
     For "forecast" pass history= (a Series with a date or number index), point= (the forecast values) and bands=[(level,
@@ -1129,13 +1130,29 @@ def chart(kind: str, data: Any = None, *, title: str, subtitle: str = "", unit: 
         # A table with its x column named: that column becomes the axis and y= (one name or a list) the measures.
         if x not in data.columns:
             raise ValueError(f"x={x!r} is not a column; columns are {list(data.columns)}")
-        cols = [y] if isinstance(y, str) else (list(y) if y else [c for c in data.columns if c != x and pd.api.types.is_numeric_dtype(data[c])])
+        cols = [y] if isinstance(y, str) else (list(y) if y else [c for c in data.columns if c not in (x, group) and pd.api.types.is_numeric_dtype(data[c])])
         missing = [c for c in cols if c not in data.columns]
         if missing:
             raise ValueError(f"y column(s) {missing} not found; columns are {list(data.columns)}")
-        frame = data[[x, *cols]].copy()
-        frame[x] = pd.to_datetime(frame[x]) if pd.api.types.is_datetime64_any_dtype(frame[x]) else frame[x]
-        data = frame.set_index(x)[cols[0] if kind == "bar" else cols]
+        if group is not None:
+            if group not in data.columns:
+                raise ValueError(f"group={group!r} is not a column; columns are {list(data.columns)}")
+            if len(cols) != 1:
+                raise ValueError("group= draws one measure, one line per group: pass a single y= column")
+            wide = data[[x, group, cols[0]]].copy()
+            if wide.duplicated([x, group]).any():
+                raise ValueError(f"some {x!r} and {group!r} pairs appear more than once; sum or aggregate the rows first, "
+                                 "for example df.groupby([x, group])[y].sum()")
+            wide[x] = pd.to_datetime(wide[x]) if pd.api.types.is_datetime64_any_dtype(wide[x]) else wide[x]
+            data = wide.pivot(index=x, columns=group, values=cols[0])
+            data.columns = [str(c) for c in data.columns]
+        else:
+            frame = data[[x, *cols]].copy()
+            if frame[x].duplicated().any():
+                raise ValueError(f"{x!r} repeats, so several rows would be drawn over each other as one line. Pass group='<column>' "
+                                 "to draw one line per group, or aggregate the rows first.")
+            frame[x] = pd.to_datetime(frame[x]) if pd.api.types.is_datetime64_any_dtype(frame[x]) else frame[x]
+            data = frame.set_index(x)[cols[0] if kind == "bar" else cols]
     if len(title.split()) < 4:
         raise ValueError("the title must state the finding in a sentence of at least four words, for example "
                          "'Sales fell 12% in the second half'. A title that names the chart type is not allowed.")

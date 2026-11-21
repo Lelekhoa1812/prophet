@@ -127,3 +127,21 @@ def test_a_table_with_named_columns_draws_like_a_frame_with_an_index(tmp_path):
     assert b["checks"]["zero_baseline"]
     with pytest.raises(ValueError, match="not a column"):
         pl.chart("line", df, x="Nope", y="Online", title="A title with several words", subtitle="s", path=str(tmp_path / "e.png"))
+
+
+def test_group_draws_one_line_per_region_not_one_tangled_line(tmp_path):
+    rows = pd.DataFrame({"month": ["2024-01", "2024-01", "2024-02", "2024-02"], "region": ["North", "South", "North", "South"],
+                         "amount": [10.0, 4.0, 12.0, 5.0]})
+    r = pl.chart("line", rows, x="month", y="amount", group="region", title="North earned more than South in both months",
+                 subtitle="Revenue by month, 2024", unit="USD", path=str(tmp_path / "g.png"))
+    assert r["problems"] == []
+    csv = pd.read_csv(tmp_path / "g.csv", index_col=0)
+    assert list(csv.columns) == ["North", "South"] and len(csv) == 2
+
+
+def test_repeated_x_without_group_is_refused_with_the_fix(tmp_path):
+    rows = pd.DataFrame({"month": ["2024-01", "2024-01", "2024-02", "2024-02"], "region": ["North", "South", "North", "South"],
+                         "amount": [10.0, 4.0, 12.0, 5.0]})
+    with pytest.raises(ValueError, match="group="):
+        pl.chart("line", rows, x="month", y="amount", title="North earned more than South in both months",
+                 subtitle="Revenue by month, 2024", path=str(tmp_path / "g.png"))
