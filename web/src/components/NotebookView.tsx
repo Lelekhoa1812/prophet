@@ -1,11 +1,14 @@
-import { AlertCircle, CheckCircle2, FileSpreadsheet, Paperclip, SlidersHorizontal, Upload, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, FileSpreadsheet, SlidersHorizontal, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { api, type Source, type ToolInfo } from "../lib/api";
 import { errorMessage } from "../lib/format";
+import { SKILLS } from "../lib/skills";
 import { useNotebook } from "../lib/useNotebook";
+import type { SelectableModel } from "../lib/useModels";
 import { useUploads } from "../lib/useUploads";
 import { cn, isWorking } from "../lib/utils";
 import { Composer } from "./Composer";
+import { ComposerControls } from "./ComposerControls";
 import { NotebookTurn } from "./NotebookTurn";
 import { SourcesPanel } from "./SourcesPanel";
 import { IconButton, Spinner } from "./ui";
@@ -33,17 +36,29 @@ function chipState(s: Source): { icon: ReactNode; text: string; tone: string } {
   }
 }
 
-// A notebook: its files as chips at the top, its questions as a thread, and one message box pinned below.
+// A notebook: its files as chips at the top, its questions as a thread, and one message box pinned below. The message box
+// is the same one a quick forecast uses, with the same model switcher and usage meter; the model chosen there is sent
+// with each question.
 export function NotebookView({
   notebookId,
   tools,
   onChanged,
   onError,
+  models,
+  catalogStatus,
+  model,
+  onSelectModel,
+  onOpenSettings,
 }: {
   notebookId: string;
   tools: Record<string, ToolInfo>;
   onChanged: () => void;
   onError: (message: string) => void;
+  models: SelectableModel[];
+  catalogStatus: "loading" | "ready" | "error";
+  model: SelectableModel | null;
+  onSelectModel: (id: string) => void;
+  onOpenSettings: () => void;
 }) {
   const { notebook, error, refresh } = useNotebook(notebookId);
   const [stopping, setStopping] = useState(false);
@@ -53,6 +68,7 @@ export function NotebookView({
   // True while a question is being sent, so the send button cannot fire a second copy of the same question.
   const [sending, setSending] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const turnCount = notebook?.turns.length ?? 0;
 
   const changed = useCallback(() => {
@@ -99,7 +115,7 @@ export function NotebookView({
   async function send(goal: string) {
     setSending(true);
     try {
-      await api.createTurn(notebookId, goal);
+      await api.createTurn(notebookId, goal, model?.id);
     } catch (err) {
       throw new Error(errorMessage(err, "Couldn't send that. Try again."));
     } finally {
@@ -128,7 +144,8 @@ export function NotebookView({
     void uploads.addFiles(Array.from(e.dataTransfer.files));
   }
 
-  const attach = (
+  // The file pickers behind the "+" menu and the drop zone. Files go into this notebook as sources.
+  const pickers = (
     <>
       <input
         ref={input}
@@ -142,18 +159,25 @@ export function NotebookView({
           e.target.value = "";
         }}
       />
-      <button
-        type="button"
-        onClick={() => input.current?.click()}
-        disabled={uploads.uploading !== null}
-        aria-label="Add files"
-        title="Add spreadsheets or data files"
-        className="grid size-10 shrink-0 place-items-center rounded-full text-sand-1 transition-colors hover:bg-night-2 hover:text-sand-0 disabled:opacity-50 sm:size-8"
-      >
-        {uploads.uploading ? <Spinner /> : <Paperclip aria-hidden="true" className="size-4" />}
-      </button>
+      <input
+        ref={folderInput}
+        type="file"
+        multiple
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+        {...({ webkitdirectory: "" } as Record<string, string>)}
+        onChange={(e) => {
+          void uploads.addFiles(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+      />
     </>
   );
+  // Files the "@" list can mention: the ones in use. They are shown as chips above, so they get no chip in the box.
+  const mentions = notebook.sources
+    .filter((s) => s.included && (s.status === "ready" || s.status === "needs_attention"))
+    .map((s) => ({ key: s.id, name: s.name }));
 
   return (
     <div
@@ -167,6 +191,7 @@ export function NotebookView({
       }}
       onDrop={onDrop}
     >
+      {pickers}
       <div id={THREAD_SCROLL_ID} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto grid w-full max-w-3xl gap-6 px-4 pt-6 pb-8 sm:px-6">
           <header className="grid gap-3">
@@ -303,10 +328,27 @@ export function NotebookView({
             busy={sending}
             blockedReason={blockedReason}
             initial={draft}
-            leading={attach}
             working={working}
             onStop={() => void stop()}
             stopping={stopping}
+            quick={{
+              attachments: [],
+              mentions,
+              tools: Object.values(tools),
+              skills: SKILLS,
+              onAddFiles: (files) => void uploads.addFiles(files),
+              onOpenFiles: () => input.current?.click(),
+              onOpenFolder: () => folderInput.current?.click(),
+            }}
+            footer={
+              <ComposerControls
+                models={models}
+                catalogStatus={catalogStatus}
+                selected={model}
+                onSelect={onSelectModel}
+                onOpenSettings={onOpenSettings}
+              />
+            }
             placeholder={notebook.turns.length === 0 ? "Ask a question about your files" : "Ask a follow-up question"}
           />
         </div>

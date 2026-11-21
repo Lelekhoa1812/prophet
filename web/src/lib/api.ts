@@ -224,10 +224,11 @@ export const api = {
   deleteNotebook: (nid: string) => req<{ id: string }>(`/api/notebooks/${nid}`, { method: "DELETE" }),
   patchSource: (notebookId: string, sourceId: string, body: { included?: boolean; removed?: boolean }) =>
     req<Source>(`/api/notebooks/${notebookId}/sources/${sourceId}`, { method: "PATCH", body: JSON.stringify(body) }),
-  createTurn: (notebookId: string, goal: string) =>
+  // The model id is sent only when one is selected, so the server default applies otherwise (as for quick forecasts).
+  createTurn: (notebookId: string, goal: string, model?: string) =>
     req<{ id: string; seq: number }>(`/api/notebooks/${notebookId}/turns`, {
       method: "POST",
-      body: JSON.stringify({ goal }),
+      body: JSON.stringify({ goal, ...(model ? { model } : {}) }),
     }),
 };
 

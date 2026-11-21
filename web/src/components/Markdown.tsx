@@ -1,13 +1,27 @@
 import { isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeSanitize from "rehype-sanitize";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import rehypeSanitize, { defaultSchema, type Options as SanitizeOptions } from "rehype-sanitize";
 import { Check, Copy } from "lucide-react";
+import "katex/dist/katex.min.css";
 
 // Answers are written as Markdown by the composer. This renders it as a document: bold, italic, links, lists, tables,
-// footnote references, fenced snippets with a copy button, and Mermaid diagrams when the answer contains one.
+// footnote references, fenced snippets with a copy button, LaTeX maths ($inline$ and $$display$$), and Mermaid
+// diagrams when the answer contains one.
 // Nothing the model writes becomes live HTML: raw HTML is not parsed, the output is sanitised, links open with
 // rel="noopener noreferrer", and Mermaid runs in its strict security level.
+// Maths runs after sanitising. KaTeX builds its own markup from the TeX source and escapes the text it is given, so its
+// output is not sanitised; the sanitiser only lets through the class names remark-math uses to mark maths.
+
+const sanitizeSchema: SanitizeOptions = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [...(defaultSchema.attributes?.code ?? []), ["className", "math-inline", "math-display"]],
+  },
+};
 
 // Answers stored before the composer existed arrive as one long line. Where the structure is still visible, put the
 // line breaks back so lists and paragraphs read as they were meant to. Text that already has line breaks is left alone.
@@ -18,6 +32,15 @@ export function repairFlat(text: string): string {
   out = out.replace(/ {2,}(?=#{1,4}\s)/g, "\n\n");
   out = out.replace(/ {2,}/g, "\n\n");
   return out;
+}
+
+// A dollar sign followed by a digit is almost always money ("$5 and $10"), not the start of a maths span, so it is escaped
+// before the maths plugin sees it. Code spans and fenced blocks are left as they are.
+export function escapeCurrency(text: string): string {
+  return text
+    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
+    .map((part, i) => (i % 2 ? part : part.replace(/(^|[^\\$])\$(?=\d)/g, (_, before: string) => `${before}\\$`)))
+    .join("");
 }
 
 const SAFE_URL = /^(https?:|mailto:|#|\/)/i;
@@ -233,10 +256,14 @@ const components: Components = {
 };
 
 export function Markdown({ text, className = "" }: { text: string; className?: string }) {
-  const source = useMemo(() => repairFlat(text), [text]);
+  const source = useMemo(() => escapeCurrency(repairFlat(text)), [text]);
   return (
-    <div className={`grid gap-3.5 text-sand-0 ${className}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={components}>
+    <div className={`grid gap-3.5 text-sand-0 [&_.katex-display]:overflow-x-auto [&_.katex-display]:py-1 ${className}`}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeSanitize, sanitizeSchema], rehypeKatex]}
+        components={components}
+      >
         {source}
       </ReactMarkdown>
     </div>

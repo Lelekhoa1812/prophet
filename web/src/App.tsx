@@ -2,9 +2,8 @@ import { BarChart3, BookOpen, Menu, PanelLeft, PanelLeftClose, Plus, ScanSearch,
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import logo from "./public/logo.png";
 import { Composer, type Attachment } from "./components/Composer";
-import { ModelSwitcher } from "./components/ModelSwitcher";
+import { ComposerControls } from "./components/ComposerControls";
 import { NotebookView } from "./components/NotebookView";
-import { UsageMeter } from "./components/UsageMeter";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar, type ItemKind } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
@@ -443,6 +442,11 @@ export default function App() {
               tools={tools}
               onChanged={refreshList}
               onError={showError}
+              models={catalog.selectable}
+              catalogStatus={catalog.status}
+              model={model}
+              onSelectModel={chooseModel}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           </main>
         ) : (
@@ -541,20 +545,13 @@ export default function App() {
                 onStop={() => void stopForecast()}
                 stopping={stopping}
                 footer={
-                  <>
-                    <ModelSwitcher
-                      models={catalog.selectable}
-                      selected={model}
-                      catalogStatus={catalog.status}
-                      onSelect={chooseModel}
-                      onOpenSettings={() => setSettingsOpen(true)}
-                    />
-                    <UsageMeter
-                      modelId={model?.id ?? null}
-                      modelLabel={model?.label ?? null}
-                      onManageBudgets={() => setSettingsOpen(true)}
-                    />
-                  </>
+                  <ComposerControls
+                    models={catalog.selectable}
+                    catalogStatus={catalog.status}
+                    selected={model}
+                    onSelect={chooseModel}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                  />
                 }
                 initial={draft}
                 placeholder={selectedId === null ? "Describe a quick forecast" : "Describe another forecast"}

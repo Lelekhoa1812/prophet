@@ -31,12 +31,16 @@ function isTouchPointer(): boolean {
 // A file added to a quick forecast. Ready files are sent with the question as data sets.
 export type Attachment = { key: string; name: string; status: "uploading" | "ready" | "failed"; datasetId?: string; message?: string };
 
-// Everything the quick-forecast composer adds on top of the plain message box. Notebooks leave it out.
+// Everything the "+" menu, "@" and "/" add on top of the plain message box. Quick forecasts and notebooks both use it.
 export type ComposerQuick = {
+  // Files attached to the message itself. Their chips sit inside the box, and their X removes them when given.
   attachments: Attachment[];
+  // Files that already belong to the conversation (a notebook's included files). "@" can mention them, but they are
+  // shown elsewhere, so they get no chip.
+  mentions?: { key: string; name: string }[];
   tools: ToolInfo[];
   skills?: Skill[];
-  onRemoveAttachment: (key: string) => void;
+  onRemoveAttachment?: (key: string) => void;
   onAddFiles: (files: File[]) => void;
   onOpenFiles: () => void;
   onOpenFolder: () => void;
@@ -45,17 +49,17 @@ export type ComposerQuick = {
 type Pick = { kind: "file" | "command" | "skill" | "tool"; anchor: number; trigger: boolean; query: string };
 type Option = { id: string; group: string; label: string; detail: string; icon: ReactNode; insert: string };
 
-// One message box, like the one people already know: attach on the left, send on the right.
+// One message box, like the one people already know: "+" on the left, send on the right.
 // Enter sends, Shift+Enter adds a line, and Enter during IME composition is left alone. While the agent works the
 // send button becomes Stop, so stopping is where the eye already is. The hint under the box appears only when it helps.
-// In a quick forecast, "+" adds files, folders, skills or tools, "@" mentions an attached file and "/" picks a skill or tool.
+// "+" adds files, folders, skills or tools, "@" mentions a file and "/" picks a skill or tool. Quick forecasts and
+// notebooks share this box; each passes its own files, footer and submit handler.
 export function Composer({
   onSend,
   busy,
   blockedReason,
   initial,
   placeholder,
-  leading,
   working = false,
   onStop,
   stopping = false,
@@ -67,11 +71,10 @@ export function Composer({
   blockedReason: string | null;
   initial?: string;
   placeholder: string;
-  leading?: ReactNode;
   working?: boolean;
   onStop?: () => void;
   stopping?: boolean;
-  quick?: ComposerQuick;
+  quick: ComposerQuick;
   // Controls shown along the bottom of the box, right-aligned (the model switcher and usage meter).
   footer?: ReactNode;
 }) {
@@ -104,7 +107,7 @@ export function Composer({
     el.style.overflowY = el.scrollHeight > cap ? "auto" : "hidden";
   }, [text]);
 
-  const options = quick ? optionsFor(pick, quick) : [];
+  const options = optionsFor(pick, quick);
   const listOpen = pick !== null && options.length > 0;
 
   const trimmed = text.trim();
@@ -154,7 +157,7 @@ export function Composer({
     const caret = e.target.selectionStart ?? value.length;
     setText(value);
     setActive(0);
-    const typed = quick ? /(^|\s)([@/])([^\s@/]*)$/.exec(value.slice(0, caret)) : null;
+    const typed = /(^|\s)([@/])([^\s@/]*)$/.exec(value.slice(0, caret));
     if (typed) {
       const kind = typed[2] === "@" ? "file" : "command";
       setPick({ kind, anchor: caret - typed[3].length - 1, trigger: true, query: typed[3] });
@@ -190,8 +193,9 @@ export function Composer({
   }
 
   function onDrop(e: DragEvent<HTMLDivElement>) {
-    if (!quick) return;
     e.preventDefault();
+    // A notebook's page is also a drop zone; stop here so one drop adds its files once.
+    e.stopPropagation();
     setDragging(false);
     const files = Array.from(e.dataTransfer.files ?? []);
     if (files.length) quick.onAddFiles(files);
@@ -200,6 +204,7 @@ export function Composer({
   // Only errors and blocking reasons are shown under the box. The send hint is hidden.
   const note = error ?? blockedReason ?? null;
   const activeId = listOpen ? `${listId}-${active}` : undefined;
+  const removable = quick.onRemoveAttachment;
   // Options keep one flat index (for the arrow keys) but render under their group heading.
   const groups = options.reduce<{ name: string; items: { option: Option; index: number }[] }[]>((acc, option, index) => {
     const last = acc[acc.length - 1];
@@ -214,7 +219,7 @@ export function Composer({
         <div
           id={listId}
           role="listbox"
-          aria-label={pick?.kind === "file" ? "Attached files" : pick?.kind === "tool" ? "Tools" : "Skills and tools"}
+          aria-label={pick?.kind === "file" ? "Files" : pick?.kind === "tool" ? "Tools" : "Skills and tools"}
           className="absolute inset-x-0 bottom-full z-30 mb-2 grid max-h-80 gap-0.5 overflow-y-auto rounded-xl border border-sand-2/30 bg-night-2 p-1 shadow-[0_18px_40px_-12px_rgba(0,0,0,0.9)]"
         >
           {groups.map((g) => (
@@ -252,7 +257,6 @@ export function Composer({
 
       <div
         onDragOver={(e) => {
-          if (!quick) return;
           e.preventDefault();
           setDragging(true);
         }}
@@ -264,7 +268,7 @@ export function Composer({
           dragging && "border-ember border-dashed bg-ember-soft",
         )}
       >
-        {quick && quick.attachments.length > 0 && (
+        {quick.attachments.length > 0 && (
           <ul aria-label="Attached files" className="flex flex-wrap gap-1.5 px-1 pt-1">
             {quick.attachments.map((a) => (
               <li
@@ -279,35 +283,33 @@ export function Composer({
                   {a.name}
                 </span>
                 <span className="sr-only">{a.status === "uploading" ? "uploading" : a.status === "failed" ? `failed: ${a.message ?? "could not add"}` : "ready"}</span>
-                <button
-                  type="button"
-                  onClick={() => quick.onRemoveAttachment(a.key)}
-                  aria-label={`Remove ${a.name}`}
-                  className="grid size-7 shrink-0 place-items-center rounded-md text-sand-2 hover:bg-night-3 hover:text-sand-0"
-                >
-                  <X aria-hidden="true" className="size-3.5" />
-                </button>
+                {removable && (
+                  <button
+                    type="button"
+                    onClick={() => removable(a.key)}
+                    aria-label={`Remove ${a.name}`}
+                    className="grid size-7 shrink-0 place-items-center rounded-md text-sand-2 hover:bg-night-3 hover:text-sand-0"
+                  >
+                    <X aria-hidden="true" className="size-3.5" />
+                  </button>
+                )}
               </li>
             ))}
           </ul>
         )}
 
         <div className="flex items-center gap-1">
-          {quick ? (
-            <ActionMenu
-              label="Add files, folders, skills or tools"
-              triggerClassName="shrink-0 rounded-full bg-night-2 text-sand-1 hover:bg-night-3 hover:text-sand-0 sm:size-8"
-              trigger={<Plus aria-hidden="true" className="size-4" />}
-              items={[
-                { key: "files", label: "Add files", icon: <Paperclip className="size-4" />, onSelect: quick.onOpenFiles },
-                { key: "folder", label: "Add folder", icon: <Folder className="size-4" />, onSelect: quick.onOpenFolder },
-                { key: "skills", label: "Skills", icon: <Sparkles className="size-4" />, onSelect: () => openFromMenu("skill") },
-                { key: "tools", label: "Tools", icon: <Wrench className="size-4" />, onSelect: () => openFromMenu("tool") },
-              ]}
-            />
-          ) : (
-            leading
-          )}
+          <ActionMenu
+            label="Add files, folders, skills or tools"
+            triggerClassName="shrink-0 rounded-full bg-night-2 text-sand-1 hover:bg-night-3 hover:text-sand-0 sm:size-8"
+            trigger={<Plus aria-hidden="true" className="size-4" />}
+            items={[
+              { key: "files", label: "Add files", icon: <Paperclip className="size-4" />, onSelect: quick.onOpenFiles },
+              { key: "folder", label: "Add folder", icon: <Folder className="size-4" />, onSelect: quick.onOpenFolder },
+              { key: "skills", label: "Skills", icon: <Sparkles className="size-4" />, onSelect: () => openFromMenu("skill") },
+              { key: "tools", label: "Tools", icon: <Wrench className="size-4" />, onSelect: () => openFromMenu("tool") },
+            ]}
+          />
           <label htmlFor="composer" className="sr-only">
             Your question
           </label>
@@ -319,11 +321,11 @@ export function Composer({
             onChange={onChange}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
-            role={quick ? "combobox" : undefined}
-            aria-expanded={quick ? listOpen : undefined}
-            aria-controls={quick && listOpen ? listId : undefined}
+            role="combobox"
+            aria-expanded={listOpen}
+            aria-controls={listOpen ? listId : undefined}
             aria-activedescendant={activeId}
-            aria-autocomplete={quick ? "list" : undefined}
+            aria-autocomplete="list"
             className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-caption leading-normal text-sand-0 placeholder:text-sand-2 focus:outline-none sm:min-h-8 sm:py-1"
           />
           {showStop ? (
@@ -374,14 +376,15 @@ function optionsFor(pick: Pick | null, quick: ComposerQuick): Option[] {
   const match = (s: string) => !q || s.toLowerCase().includes(q);
 
   if (pick.kind === "file") {
-    const files = quick.attachments.filter((a) => a.status === "ready" && match(a.name));
-    return files.map((a) => ({
-      id: `file-${a.key}`,
-      group: "Attached files",
-      label: a.name,
+    const attached = quick.attachments.filter((a) => a.status === "ready").map((a) => ({ key: a.key, name: a.name }));
+    const files = [...attached, ...(quick.mentions ?? [])].filter((f) => match(f.name));
+    return files.map((f) => ({
+      id: `file-${f.key}`,
+      group: "Files",
+      label: f.name,
       detail: "Mention this file",
       icon: <FileText aria-hidden="true" className="size-4" />,
-      insert: `@${a.name} `,
+      insert: `@${f.name} `,
     }));
   }
 
