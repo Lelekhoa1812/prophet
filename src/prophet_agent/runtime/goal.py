@@ -79,6 +79,13 @@ VIEW_CHARS = 16000        # uncompacted observations shown before the older ones
 KEEP_RECENT = 4           # newest observations never compacted
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
+DONE_WHEN = ("the evaluator judges the goal met", "the deterministic checks pass on the evidence "
+             "(data inspected, forecast compared with baselines, forecast health repaired, deliverables present)",
+             "every figure in the answer traces to a tool result")
+MUST_NOT_CHANGE = ("synthetic or expected numbers are never presented as observed", "the 15 percent improvement bar is not moved",
+                   "TimesFM 3 outputs are research use only")
+STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "impossible": "impossible", "stalled": "stalled",
+                "checkpoint": "budget_part_spent"}
 MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
@@ -464,8 +471,15 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     memo = Memo()
     if cfg.depth == 0:
         # Which instructions this mission ran under, recorded once so a resumed run reads it back unchanged.
-        ctx.step("contracts", lambda c: {n: {"version": prompts.current(n).version, "sha256": prompts.current(n).sha256}
-                                         for n in prompts.CURRENT})
+        # The brief is stored with them: the goal, what counts as done, what must not change, and the budget. It is data a
+        # resumed run and a reader can see, so a summary of the work can never drop it.
+        def record(c: Ctx) -> dict:
+            recorded = {n: {"version": prompts.current(n).version, "sha256": prompts.current(n).sha256}
+                        for n in prompts.CURRENT}
+            recorded["brief"] = {"goal": goal, "done_when": DONE_WHEN, "must_not_change": MUST_NOT_CHANGE,
+                                 "budget": {"steps_per_part": cfg.max_iterations, "tool_calls": cfg.tool_budget}}
+            return recorded
+        ctx.step("contracts", record)
     tag = f"d{cfg.depth}"
     seg_len = cfg.max_iterations
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
@@ -658,7 +672,8 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                     ctx.store.append_event(ctx.mission_id, "provider.waiting", info)
 
             bind(ctx._guard_time, note)
-        return _ground_result(_run(ctx, brain, goal, tools, cfg, context, history), history, goal)
+        result = _ground_result(_run(ctx, brain, goal, tools, cfg, context, history), history, goal)
+        return {**result, "stop_reason": STOP_REASONS.get(result.get("status", ""), "unknown")}
 
     return program
 
