@@ -180,3 +180,29 @@ def test_finished_quick_forecasts_can_be_hidden_from_the_list(tmp_path):
     assert client.patch(f"/api/missions/{mid}", json={"archived": False}).status_code == 200
     assert len(client.get("/api/missions").json()) == 1
     assert client.patch("/api/missions/nope", json={"archived": True}).status_code == 404
+
+
+def test_an_interrupted_mission_is_marked_at_startup_and_can_be_resumed(tmp_path):
+    # A previous process died mid-mission: its row says running, its lease has lapsed.
+    seed = MissionService(tmp_path / "api.sqlite", lambda: ScriptedBrain([], []), default_tools())
+    mid = seed.store.create_mission("forecast", {})
+    seed.store.acquire_lease(mid, "dead", ttl_s=-1)
+    seed.store.set_status(mid, "running")
+    seed.store.close()
+
+    brain = ScriptedBrain([{"action": "finish", "rationale": "nothing to do"}],
+                          [{"verdict": "met", "reason": "ok", "answer": "Nothing was needed."}])
+    client, service = _client(tmp_path, lambda: brain)
+    assert service.interrupted_at_start == [mid]
+    assert client.get(f"/api/missions/{mid}").json()["status"] == "interrupted"
+    assert client.post(f"/api/missions/{mid}/resume").status_code == 202
+    service.wait(mid, timeout=10)
+    assert client.get(f"/api/missions/{mid}").json()["status"] == "completed"
+
+
+def test_only_an_interrupted_mission_can_be_resumed(tmp_path):
+    client, service = _client(tmp_path, lambda: ScriptedBrain([], []))
+    mid = service.store.create_mission("forecast", {})
+    service.store.set_status(mid, "completed")
+    assert client.post(f"/api/missions/{mid}/resume").status_code == 409
+    assert client.post("/api/missions/does-not-exist/resume").status_code == 404

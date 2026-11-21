@@ -22,6 +22,9 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   stalled: { label: "Stuck", tone: "bad" },
   impossible: { label: "Not possible with this data", tone: "bad" },
   cancelled: { label: "Stopped", tone: "sand" },
+  // The app was closed or restarted mid-run. Finished steps are kept; the mission can be resumed from where it stopped.
+  interrupted: { label: "Interrupted", tone: "sand" },
+  lease_lost: { label: "Moved to another run", tone: "sand" },
 };
 
 export function statusInfo(status: string) {

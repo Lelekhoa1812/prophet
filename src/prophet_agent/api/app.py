@@ -316,6 +316,24 @@ def create_app(service: MissionService) -> FastAPI:
         except KeyError:
             raise HTTPException(404, "no such mission")
 
+    @app.post("/api/missions/{mission_id}/resume", status_code=202)
+    def resume_mission(mission_id: str) -> dict:
+        """Run an interrupted mission again. Completed steps and tool calls are read back from the ledger, not repeated;
+        a side-effecting call left in progress still stops the mission for review rather than running twice."""
+        try:
+            mission = service.store.mission(mission_id)
+        except KeyError:
+            raise HTTPException(404, "no such mission")
+        if mission["status"] != "interrupted":
+            raise HTTPException(409, "only an interrupted mission can be resumed")
+        try:
+            service.start(mission_id)
+        except LeaseHeld:
+            raise HTTPException(409, "this mission is already running")
+        except NotConfigured:
+            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+        return {"id": mission_id, "status": "running"}
+
     if WEB_DIST.is_dir():
         from fastapi.staticfiles import StaticFiles
         app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
