@@ -135,7 +135,7 @@ def test_iteration_budget_caps_an_endless_loop(store):
     brain = ScriptedBrain(plans=plans, evals=[not_met()])     # only the last iteration is evaluated
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=4))
     _, out = run(store, program)
-    assert out["result"]["status"] == "iteration_budget"
+    assert out["result"]["status"] == "checkpoint", "the step budget is a checkpoint, never a terminal failure"
     assert out["result"]["iterations"] == 4
 
 
@@ -148,8 +148,9 @@ def test_tool_budget_from_the_runtime_stops_the_mission(store):
 
     brain = ScriptedBrain(plans=[call("a")] * 10, evals=[])
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=10))
-    _, out = run(store, program, budget={"max_tool_calls": 2})
-    assert out == {"status": "budget_exhausted", "which": "max_tool_calls"}
+    mid, out = run(store, program, budget={"max_tool_calls": 2})
+    assert out["status"] == "checkpoint" and out["which"] == "max_tool_calls", "a spent allowance is resumable, not terminal"
+    assert store.mission(mid)["status"] == "checkpoint"
 
 
 def test_unknown_tool_is_an_observation_not_a_crash(store):
@@ -270,23 +271,25 @@ def test_prompt_contracts_are_versioned_files_and_recorded_in_the_ledger(tmp_pat
     assert recorded["planner"]["version"] == prompts.CURRENT["planner"]
 
 
-def test_a_figure_missing_from_the_evidence_is_repaired_once(store):
-    brain = ScriptedBrain(plans=[call("a"), finish()],
+def test_a_figure_missing_from_the_evidence_is_gathered_before_it_is_repaired(store):
+    brain = ScriptedBrain(plans=[call("a"), finish(), finish()],
                           evals=[met("The total is 999 units."), met("The total is 42 units.")])
     program = goal_program("what is the total", {"a": _tool("a", lambda args, key: {"total": 42})}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "met"
     assert out["result"]["answer"] == "The total is 42 units."
-    assert brain.calls["eval"] == 2, "one judgement and one repair, no more"
+    assert brain.calls["eval"] == 2, "one judgement that is sent back to gather, then a second judgement that passes"
 
 
-def test_figures_still_unsupported_after_repair_make_a_partial_answer(store):
-    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[met("Total 999."), met("Total 998.")])
+def test_figures_still_unsupported_after_gathering_and_repair_make_a_partial_answer(store):
+    brain = ScriptedBrain(plans=[call("a"), finish(), finish(), finish()],
+                          evals=[met("Total 999."), met("Total 998."), met("Total 998."), met("Total 998.")])
     program = goal_program("what is the total", {"a": _tool("a", lambda args, key: {"total": 42})}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "partial"
     assert out["result"]["unverified"] == ["998"]
     assert out["status"] == "partial", "a partial answer is not recorded as met"
+    assert brain.calls["eval"] == 4, "two gathering rounds, then one repair judgement"
 
 
 class WritingBrain(ScriptedBrain):
@@ -313,13 +316,13 @@ def test_the_final_answer_is_written_as_free_text_with_its_line_breaks(store):
     assert flat in brain.prompts[0], "the verdict's answer goes to the writer as the draft"
 
 
-def test_a_written_answer_with_a_stray_figure_is_rewritten_once(store):
-    brain = WritingBrain(plans=[call("a"), finish()], evals=[met("North 42")],
-                         writes=["North **42** of 999\n", "North **42**\n"])
+def test_a_written_answer_with_a_stray_figure_is_gathered_then_rewritten(store):
+    brain = WritingBrain(plans=[call("a"), finish(), finish(), finish()], evals=[met("North 42"), met("North 42"), met("North 42")],
+                         writes=["North **42** of 999\n", "North **42** of 999\n", "North **42**\n"])
     program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "met" and out["result"]["answer"] == "North **42**\n"
-    assert "999" in brain.prompts[1], "the rewrite is told which figure was not in the evidence"
+    assert brain.calls["eval"] == 3, "the stray figure is sent back twice to gather, then the rewrite passes"
 
 
 def test_a_spent_tool_budget_ends_in_a_judgement_not_a_runtime_stop(store):
@@ -338,30 +341,30 @@ def test_a_spent_tool_budget_ends_in_a_judgement_not_a_runtime_stop(store):
                 evals=[{"verdict": "not_met", "reason": "forecast missing", "answer": "So far 3 steps."}])
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=10, tool_budget=3))
     _, out = run(store, program, budget={"max_tool_calls": 3})
-    assert out["result"]["status"] == "partial", "the loop judges before the runtime has to stop it"
-    assert out["result"]["answer"] == "So far 3 steps."
+    assert out["result"]["status"] == "checkpoint", "a spent tool allowance is a checkpoint, not a partial answer"
+    assert out["result"]["draft"] == "So far 3 steps."
     plans = [text for name, text in seen if name == "plan"]
-    assert "Budget: step 1 of 10; 3 steps left." in plans[0] and "Stop exploring" not in plans[0]
+    assert "Budget: step 1 of this part of the work; 3 steps left in it." in plans[0] and "Stop exploring" not in plans[0]
     assert "Stop exploring" in plans[2], "with two or fewer steps left the planner is told to finish"
     assert len(plans) == 3, "no fourth plan is requested once the calls are used"
 
 
 def test_an_empty_repair_is_reported_as_partial_not_met(store):
-    brain = ScriptedBrain(plans=[call("a"), finish()], evals=[met("Total 999."), {"verdict": "not_met", "reason": "x"}])
+    brain = ScriptedBrain(plans=[call("a"), finish(), finish(), finish()],
+                          evals=[met("Total 999."), met("Total 999."), met("Total 999."), {"verdict": "met", "reason": "x", "answer": ""}])
     program = goal_program("what is the total", {"a": _tool("a", lambda args, key: {"total": 42})}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "partial"
     assert out["result"]["answer"] == ""
 
 
-def test_a_spent_budget_gives_the_best_answer_so_far(store):
+def test_a_spent_step_budget_is_a_checkpoint_that_keeps_the_draft(store):
     brain = ScriptedBrain(plans=[call("a")], evals=[
         {"verdict": "not_met", "reason": "no forecast yet", "answer": "So far 7 units."}])
     program = goal_program("g", {"a": _tool("a", lambda args, key: {"n": 7})}, brain, GoalConfig(max_iterations=1))
     _, out = run(store, program)
-    assert out["result"]["status"] == "partial"
-    assert out["result"]["answer"] == "So far 7 units."
-    assert out["result"]["reason"] == "no forecast yet"
+    assert out["result"]["status"] == "checkpoint" and out["status"] == "checkpoint"
+    assert out["result"]["draft"] == "So far 7 units." and "answer" not in out["result"]
 
 
 def test_evaluator_question_pauses_once_then_judges_with_the_answer(store):
@@ -489,10 +492,148 @@ class FixedWriterBrain(ScriptedBrain):
         return "Established: 7 units. Missing: the forecast."
 
 
-def test_a_spent_budget_with_no_draft_still_writes_what_is_established(store):
+def test_a_spent_step_budget_with_no_draft_is_a_checkpoint_with_the_reason(store):
     brain = FixedWriterBrain(plans=[call("a")], evals=[{"verdict": "not_met", "reason": "no forecast yet"}])
     program = goal_program("g", {"a": _tool("a", lambda args, key: {"n": 7})}, brain, GoalConfig(max_iterations=1))
     _, out = run(store, program)
-    assert out["result"]["status"] == "partial"
-    assert out["result"]["answer"].startswith("Established: 7 units")
-    assert out["result"]["reason"] == "no forecast yet"
+    assert out["result"]["status"] == "checkpoint"
+    assert out["result"]["reason"] == "no forecast yet" and out["result"]["draft"] == ""
+
+
+
+
+def test_a_checkpoint_continues_from_the_stored_steps_with_a_new_part(store):
+    """The core of "reached its limit": a part of the work ends in a checkpoint, and Continue runs the next part.
+    The stored steps replay from the ledger (no model call repeats), then the loop goes on past the old end."""
+    counter = {"n": 0}
+
+    def changing(args, key):
+        counter["n"] += 1
+        return {"n": counter["n"]}
+
+    mid = store.create_mission("g", {})
+    first = ScriptedBrain(plans=[call("a"), call("a")], evals=[not_met()])
+    out = Runtime(store, owner="r1").run(mid, goal_program("g", {"a": _tool("a", changing)}, first, GoalConfig(max_iterations=2)))
+    assert out["result"]["status"] == "checkpoint" and out["result"]["segment"] == 0
+    assert store.mission(mid)["status"] == "checkpoint"
+
+    # Continue: part 1 has four steps; the model is asked only for the steps that are new.
+    second = ScriptedBrain(plans=[call("a"), finish()], evals=[met("Total 3.")])
+    cfg = GoalConfig(max_iterations=2, segment=1)
+    out = Runtime(store, owner="r2").run(mid, goal_program("g", {"a": _tool("a", changing)}, second, cfg))
+    assert out["result"]["status"] == "met", out
+    assert second.calls["plan"] == 2, "the two stored plans of part 0 are not asked again"
+    assert counter["n"] == 3, "the tool calls of part 0 are not repeated"
+    assert any(h.get("kind") == "continued" for h in out["result"]["evidence"])
+
+
+class CompactingBrain(ScriptedBrain):
+    """A brain whose free-text writer doubles as the compactor. Records every planner prompt it is shown."""
+
+    def __init__(self, plans=(), evals=()):
+        super().__init__(plans, evals)
+        self.writes = 0
+        self.planner_prompts: list[str] = []
+
+    def decide(self, messages, schema, name):
+        if name == "plan":
+            self.planner_prompts.append("\n".join(m["content"] for m in messages))
+        return super().decide(messages, schema, name)
+
+    def write(self, messages):
+        self.writes += 1
+        return "MEMO-1: the tool a was called for each earlier step."     # no figures: grounding would rightly reject them
+
+
+def test_older_observations_fold_into_memory_and_the_record_is_kept(store):
+    """Context management: once the view outgrows its budget, older steps fold into a memo the planner reads, while
+    every observation stays in the stored record for replay and audit."""
+    counter = {"n": 0}
+
+    def changing(args, key):
+        counter["n"] += 1
+        return {"n": counter["n"], "pad": "x" * 200}
+
+    brain = CompactingBrain(plans=[call("a")] * 5 + [finish()], evals=[met()])
+    cfg = GoalConfig(view_chars=300, keep_recent=2, memory_chars=4000)
+    _, out = run(store, goal_program("g", {"a": _tool("a", changing)}, brain, cfg))
+    assert out["result"]["status"] == "met"
+    assert brain.writes >= 1, "the older steps were folded by the compactor, not dropped"
+    assert "Memory of earlier steps" in brain.planner_prompts[-1]
+    assert "MEMO-1" in brain.planner_prompts[-1]
+    tool_steps = [h for h in out["result"]["evidence"] if h.get("kind") == "tool"]
+    assert len(tool_steps) == 5, "compaction never deletes an observation from the record"
+
+
+def test_a_brain_that_cannot_write_cuts_older_steps_and_says_so(store):
+    """Without a writer the planner is told how many steps were left out of its view; nothing is invented."""
+    counter = {"n": 0}
+
+    def changing(args, key):
+        counter["n"] += 1
+        return {"n": counter["n"], "pad": "x" * 200}
+
+    class NoWriter(ScriptedBrain):          # no free-text writer: the brain cannot compact, so the view is cut instead
+        def __init__(self, plans=(), evals=()):
+            super().__init__(plans, evals)
+            self.planner_prompts: list[str] = []
+
+        def decide(self, messages, schema, name):
+            if name == "plan":
+                self.planner_prompts.append("\n".join(m["content"] for m in messages))
+            return super().decide(messages, schema, name)
+
+    brain = NoWriter(plans=[call("a")] * 5 + [finish()], evals=[met()])
+    cfg = GoalConfig(view_chars=300, keep_recent=2)
+    _, out = run(store, goal_program("g", {"a": _tool("a", changing)}, brain, cfg))
+    assert out["result"]["status"] == "met"
+    assert "left out of this view" in brain.planner_prompts[-1]
+    assert "MEMO-1" not in brain.planner_prompts[-1], "nothing is invented for the cut steps"
+    tool_steps = [h for h in out["result"]["evidence"] if h.get("kind") == "tool"]
+    assert len(tool_steps) == 5, "the record is complete even when the view is cut"
+
+
+def test_a_sub_agent_returns_only_its_report_to_the_planner(store):
+    """Isolation: the sub-agent's own tool results never enter the parent's planner prompt; only its report does."""
+    prompts_seen: list[str] = []
+
+    class Recording(ScriptedBrain):
+        def decide(self, messages, schema, name):
+            if name == "plan":
+                prompts_seen.append("\n".join(m["content"] for m in messages))
+            return super().decide(messages, schema, name)
+
+    brain = Recording(
+        plans=[
+            {"action": "delegate", "task": "find the trend", "tools": ["a"], "rationale": "isolate the search"},
+            call("a"),        # the sub-agent's step
+            finish(),         # the sub-agent is done
+            finish(),         # the parent is done
+        ],
+        evals=[met("the trend is up"), met("final")],
+    )
+    tool = _tool("a", lambda args, key: {"marker": "SUB-EVIDENCE-7"})
+    _, out = run(store, goal_program("g", {"a": tool}, brain))
+    assert out["result"]["status"] == "met"
+    parent_last = prompts_seen[-1]
+    assert "the trend is up" in parent_last, "the report is what the parent reads"
+    assert "SUB-EVIDENCE-7" not in parent_last, "the sub-agent's working stays out of the parent's context"
+    sub = out["result"]["evidence"][0]
+    assert sub["kind"] == "subagent" and sub["status"] and sub["steps"] == 2
+    assert any("SUB-EVIDENCE-7" in str(h) for h in sub["evidence"]), "the working is kept in the record for audit"
+
+
+def test_a_sub_agent_cannot_delegate_again(store):
+    brain = ScriptedBrain(
+        plans=[
+            {"action": "delegate", "task": "outer task", "tools": [], "rationale": "split"},
+            {"action": "delegate", "task": "inner task", "tools": [], "rationale": "split again"},
+            finish(),
+            finish(),
+        ],
+        evals=[met("inner"), met("outer")],
+    )
+    _, out = run(store, goal_program("g", {"a": _tool("a")}, brain))
+    assert out["result"]["status"] == "met"
+    sub_steps = out["result"]["evidence"][0]["evidence"]
+    assert "cannot start another sub-agent" in sub_steps[0]["error"], "depth is capped at one level"

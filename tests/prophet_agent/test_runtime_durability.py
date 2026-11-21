@@ -171,8 +171,8 @@ def test_tool_budget_stops_the_mission(store):
         return out
 
     result = Runtime(store, owner="r1").run(mid, program)
-    assert result == {"status": "budget_exhausted", "which": "max_tool_calls"}
-    assert store.mission(mid)["status"] == "budget_exhausted"
+    assert result["status"] == "checkpoint" and result["which"] == "max_tool_calls", "resumable, never terminal"
+    assert store.mission(mid)["status"] == "checkpoint"
 
 
 def test_tool_exception_is_recorded_and_mission_fails_cleanly(store):
@@ -317,3 +317,17 @@ def test_a_failed_transaction_rolls_back_and_the_connection_keeps_working(store)
     assert store.mission(mid)["goal"] == "forecast demand", "the half-written change was rolled back"
     store.set_status(mid, "created")                       # later writes still work
     assert store.mission(mid)["status"] == "created"
+
+
+def test_a_replay_that_asks_for_a_different_step_fails_loudly(store):
+    """A stored position answers only the step that was stored there. Silently returning it to a different question
+    would be a wrong answer, so the mission fails instead."""
+    mid = _mission(store)
+    Runtime(store, owner="r1").run(mid, lambda ctx: ctx.step("first", lambda c: 1))
+    store.set_status(mid, "created")
+
+    def diverged(ctx: Ctx):
+        return ctx.step("second", lambda c: 2)
+
+    result = Runtime(store, owner="r2").run(mid, diverged)
+    assert result["status"] == "failed" and "replay diverged at step 0" in result["error"]

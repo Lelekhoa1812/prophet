@@ -281,6 +281,11 @@ class Store:
             c.execute("UPDATE missions SET status=?, updated=? WHERE id=?", (status, time.time(), mission_id))
         self.append_event(mission_id, "mission.status", {"status": status})
 
+    def set_budget(self, mission_id: str, budget: dict) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE missions SET budget_json=?, updated=? WHERE id=?",
+                      (canonical(budget), time.time(), mission_id))
+
     def set_answer(self, mission_id: str, answer: Any) -> None:
         with self._tx() as c:
             c.execute("UPDATE missions SET answer_json=?, updated=? WHERE id=?",
@@ -354,6 +359,16 @@ class Store:
             return None
         return json.loads(row["output_json"])
 
+    def step_record(self, mission_id: str, idx: int) -> dict | None:
+        """The stored step at this position: name, status and output (``v``), or None if the position is empty."""
+        with self.lock:
+            row = self.conn.execute("SELECT name, status, output_json FROM steps WHERE mission_id=? AND idx=?",
+                                    (mission_id, idx)).fetchone()
+        if row is None:
+            return None
+        out = json.loads(row["output_json"]) if row["output_json"] else {}
+        return {"name": row["name"], "status": row["status"], "v": out.get("v")}
+
     def steps(self, mission_id: str) -> list[dict]:
         with self.lock:
             rows = self.conn.execute("SELECT idx, name, status, output_json FROM steps WHERE mission_id=? "
@@ -390,6 +405,20 @@ class Store:
         with self._tx() as c:
             c.execute("UPDATE tool_calls SET status=?, result_json=?, error=?, updated=? WHERE idem_key=?",
                       (status, canonical(result) if result is not None else None, error, time.time(), key))
+
+    def wipe_ledger(self) -> dict[str, int]:
+        """Delete every row of the ledger, children before parents, in one transaction. Returns the rows removed per table.
+        The caller must have checked that no mission is running; the schema itself is kept."""
+        order = ("events", "steps", "tool_calls", "questions", "sources", "derived_versions", "derived_tables",
+                 "missions", "notebooks")
+        with self._tx() as c:
+            present = {r["name"] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()}
+            tables = [t for t in order if t in present] + sorted(present - set(order))
+            removed = {}
+            for name in tables:
+                removed[name] = c.execute(f"DELETE FROM {name}").rowcount
+        return removed
 
     def count_tool_calls(self, mission_id: str) -> int:
         with self.lock:

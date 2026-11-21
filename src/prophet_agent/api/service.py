@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from prophet_agent.datasets import DatasetStore
 from prophet_agent.notebooks import Notebooks
+from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import Runtime, Tool
 from prophet_agent.runtime.store import LeaseHeld, Store
@@ -27,13 +28,21 @@ from prophet_agent.tools.notebook_tools import NotebookBinding
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
 DEFAULT_BUDGET = {"max_tool_calls": 20, "max_seconds": 900}
+# Statuses a person can continue or answer now from. The two legacy names are missions that stopped at a limit before
+# checkpoints existed; their stored steps are intact, so they resume the same way instead of being stranded.
+RESUMABLE_AT_CHECKPOINT = ("checkpoint", "budget_exhausted", "iteration_budget")
 
 
 class MissionService:
     def __init__(self, db_path: str | Path, brain_factory: BrainFactory, tools: dict[str, Tool],
                  goal_cfg: GoalConfig | None = None, *, tools_factory: ToolsFactory | None = None,
-                 datasets: DatasetStore | None = None):
+                 datasets: DatasetStore | None = None, settings: Settings | None = None):
         self.store = Store(db_path)
+        # When a settings store is given, its limits override goal_cfg at every start, so a change applies to the next part.
+        # Without one, goal_cfg is used as passed. The fallback store keeps its files beside the database, so a test never
+        # writes the real .env; it serves the settings endpoints only.
+        self._use_settings = settings is not None
+        self.settings = settings or Settings(data_root=Path(db_path).parent, dotenv=Path(db_path).parent / ".env")
         self.brain_factory = brain_factory
         self.tools = tools                      # the catalogue, for listings
         self.tools_factory = tools_factory      # per-mission tools (they need the mission's files); None: use `tools`
@@ -68,8 +77,11 @@ class MissionService:
 
     # -- one-off missions ----------------------------------------------------------------------------------------
 
+    def default_budget(self) -> dict:
+        return self.settings.default_budget() if self._use_settings else dict(DEFAULT_BUDGET)
+
     def create(self, goal: str, budget: dict | None = None, dataset_ids: list[str] | None = None) -> str:
-        budget = dict(budget or DEFAULT_BUDGET)
+        budget = dict(budget or self.default_budget())
         if dataset_ids:
             for did in dataset_ids:
                 self.datasets.get(did)          # KeyError for an unknown id, before any mission row exists
@@ -83,7 +95,7 @@ class MissionService:
         self.notebooks.get(notebook_id)
         last = self.store.conn.execute(
             "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
-        return self.store.create_mission(goal, dict(DEFAULT_BUDGET), notebook_id=notebook_id,
+        return self.store.create_mission(goal, self.default_budget(), notebook_id=notebook_id,
                                          parent_turn_id=last["id"] if last else None)
 
     # -- what a mission runs with --------------------------------------------------------------------------------
@@ -118,7 +130,10 @@ class MissionService:
             live = self._threads.get(mission_id)
             if live is not None and live.is_alive():
                 raise LeaseHeld(f"mission {mission_id} is already running")
-            cfg = replace(self.goal_cfg, tool_budget=mission["budget"].get("max_tool_calls"))
+            budget = mission["budget"]
+            base = self.settings.goal_config(self.goal_cfg) if self._use_settings else self.goal_cfg
+            cfg = replace(base, tool_budget=budget.get("max_tool_calls"),
+                          segment=int(budget.get("segment", 0)), finish_now=bool(budget.get("finish_now", False)))
             program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), cfg,
                                    self.files_context(mission))
             # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
@@ -156,6 +171,30 @@ class MissionService:
         info = self.store.answer_question(question_id, answers)
         self.start(info["mission_id"])
         return info["mission_id"]
+
+    def continue_mission(self, mission_id: str) -> None:
+        """Carry a checkpointed mission into its next part. The stored steps replay; the tool allowance is topped up by
+        one part's worth from the calls already made, so a long session keeps going without a hard stop. Raises
+        ValueError unless the mission is at a checkpoint, and LeaseHeld if it is already running."""
+        mission = self.store.mission(mission_id)
+        if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
+            raise ValueError("only a mission paused at a checkpoint can continue")
+        budget = dict(mission["budget"])
+        budget["segment"] = int(budget.get("segment", 0)) + 1
+        budget["max_tool_calls"] = self.store.count_tool_calls(mission_id) + int(self.default_budget()["max_tool_calls"])
+        budget["finish_now"] = False
+        self.store.set_budget(mission_id, budget)
+        self.start(mission_id)
+
+    def answer_now(self, mission_id: str) -> None:
+        """Stop gathering and write the best answer from the evidence so far (labelled partial). Only at a checkpoint."""
+        mission = self.store.mission(mission_id)
+        if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
+            raise ValueError("only a mission paused at a checkpoint can be answered now")
+        budget = dict(mission["budget"])
+        budget["finish_now"] = True
+        self.store.set_budget(mission_id, budget)
+        self.start(mission_id)
 
     def wait(self, mission_id: str, timeout: float | None = None) -> None:
         t = self._threads.get(mission_id)

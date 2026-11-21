@@ -13,3 +13,6 @@ node_modules/
 # deep-research working notes
 research_notes/
 reports/
+
+# generated code-graph index (local tooling)
+graphify-out/

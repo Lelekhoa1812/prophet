@@ -235,3 +235,69 @@ def test_the_sweep_never_touches_a_mission_this_process_is_running(tmp_path):
         assert client.get(f"/api/missions/{mid}").json()["status"] == "running"
     finally:
         hold.set()
+
+
+def test_a_checkpointed_mission_continues_into_its_next_part_and_completes(tmp_path):
+    """A part that ends in a checkpoint is continued from the ledger, not restarted, and reaches a verdict."""
+    from prophet_agent.runtime.goal import GoalConfig
+    brain = ScriptedBrain([{"action": "finish", "rationale": "a"}, {"action": "finish", "rationale": "b"}],
+                          [{"verdict": "not_met", "reason": "need more"}, {"verdict": "met", "reason": "ok", "answer": "Done."}])
+    service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
+    client = TestClient(create_app(service), base_url="http://127.0.0.1:8000")
+    mid = service.store.create_mission("forecast", {})
+    service.start(mid)
+    service.wait(mid, timeout=10)
+    assert client.get(f"/api/missions/{mid}").json()["status"] == "checkpoint"
+
+    assert client.post(f"/api/missions/{mid}/continue", ).status_code == 202
+    service.wait(mid, timeout=10)
+    body = client.get(f"/api/missions/{mid}").json()
+    assert body["status"] == "completed" and body["answer"]["status"] == "met"
+    assert brain.plans == [], "only the one new step was asked of the planner"
+    assert client.post(f"/api/missions/{mid}/continue").status_code == 409, "a finished mission has nothing to continue"
+
+
+def test_answer_now_writes_the_best_answer_from_a_checkpoint_as_partial(tmp_path):
+    from prophet_agent.runtime.goal import GoalConfig
+    brain = ScriptedBrain([{"action": "finish", "rationale": "a"}], [{"verdict": "not_met", "reason": "need more"}])
+    service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
+    client = TestClient(create_app(service), base_url="http://127.0.0.1:8000")
+    mid = service.store.create_mission("forecast", {})
+    service.start(mid)
+    service.wait(mid, timeout=10)
+    assert client.post(f"/api/missions/{mid}/answer-now").status_code == 202
+    service.wait(mid, timeout=10)
+    assert client.get(f"/api/missions/{mid}").json()["status"] == "partial"
+    assert client.post("/api/missions/does-not-exist/continue").status_code == 404
+
+
+def test_settings_show_masked_keys_and_bounded_limits_and_refuse_bad_input(tmp_path):
+    client, service = _client(tmp_path, lambda: ScriptedBrain([], []))
+    body = client.get("/api/settings").json()
+    assert body["nim"]["configured"] is False and body["nim"]["keys"] == []
+    assert body["agent"]["part_steps"] == 200 and body["timesfm"]["checkpoint"]
+    assert "research use only" in body["about"]["licence"]
+    assert body["bounds"]["agent"]["part_steps"] == [5, 1000], "the page reads its limits from the server"
+    assert body["sandbox"]["timeout_s"] == 20 and body["sandbox"]["mem_mb"] == 1024
+    assert isinstance(body["timesfm"]["engine_installed"], bool)
+
+    assert client.put("/api/settings", json={"agent": {"part_steps": 40}}).json()["agent"]["part_steps"] == 40
+    assert client.put("/api/settings", json={"agent": {"part_steps": 99999}}).status_code == 422
+    assert client.put("/api/settings", json={"nim": {"unknown": 1}}).status_code == 422
+    assert client.post("/api/settings/test-keys").status_code == 503, "no keys, so nothing to test"
+
+
+def test_clear_data_needs_the_phrase_and_export_carries_no_keys(tmp_path):
+    client, service = _client(tmp_path, lambda: ScriptedBrain([], []))
+    mid = service.store.create_mission("forecast demand", {})
+    service.store.set_status(mid, "completed")
+    assert client.post("/api/settings/clear-data", json={"confirm": "yes"}).status_code == 422
+    export = client.get("/api/settings/export")
+    assert export.status_code == 200 and export.headers["content-disposition"].startswith("attachment")
+    assert "forecast demand" in export.text and "nvapi-" not in export.text
+    running = service.store.create_mission("still going", {})
+    service.store.set_status(running, "running")
+    assert client.post("/api/settings/clear-data", json={"confirm": "delete all data"}).status_code == 409
+    service.store.set_status(running, "completed")
+    assert client.post("/api/settings/clear-data", json={"confirm": "delete all data"}).status_code == 200
+    assert client.get(f"/api/missions/{mid}").status_code == 404

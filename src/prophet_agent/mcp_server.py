@@ -20,8 +20,8 @@ from typing import Any, Callable
 
 BASE = os.environ.get("PROPHET_URL", "http://127.0.0.1:8010").rstrip("/")
 PROTOCOL = "2024-11-05"
-FINAL = {"completed", "met", "partial", "failed", "stalled", "impossible", "iteration_budget", "budget_exhausted",
-         "outcome_unknown", "cancelled"}
+FINAL = {"completed", "met", "partial", "failed", "stalled", "impossible", "outcome_unknown", "cancelled"}
+CHECKPOINT = "checkpoint"                # not final: the person continues from here
 WORKING = {"created", "running"}
 
 
@@ -72,7 +72,7 @@ def _wait(mission_id: str, seconds: float) -> dict:
     deadline = time.time() + max(1.0, seconds)
     while True:
         m = _call("GET", f"/api/missions/{mission_id}")
-        if m["status"] in FINAL or m["status"] == "waiting_user" or time.time() >= deadline:
+        if m["status"] in FINAL or m["status"] in (CHECKPOINT, "waiting_user") or time.time() >= deadline:
             return m
         time.sleep(2.0)
 

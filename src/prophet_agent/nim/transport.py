@@ -26,7 +26,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -63,6 +63,9 @@ MAX_TOKENS_DEFAULT = 16384
 GLM_MIN_TOKENS = 1024             # GLM spends small budgets on reasoning (NIM.md §3)
 STREAM_IDLE_S = 120.0              # longest silence tolerated inside one streamed response, then fail over
 BUDGET_S = 420.0                  # wall-clock budget for one logical call (long schema-bound answers need it)
+MAX_CONTINUATIONS = 3             # a free-text answer cut mid-stream is continued this many times, each on a new budget
+CONTINUE_PROMPT = ("Your reply was cut off. Continue exactly from where it stopped. Do not repeat anything already "
+                   "written and do not add an introduction.")
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -104,12 +107,13 @@ class _Shape:
 
 @dataclass
 class _Outcome:
-    kind: str                          # ok | key | retire | reshape | model | budget
+    kind: str                          # ok | key | retire | reshape | model | budget | cut
     reason: str = ""
     reply: Reply | None = None
     demote: bool = False
     invalid: bool = False
     shape: _Shape | None = None
+    partial: str = ""                  # "cut" only: the raw text that was already released before the stream broke
 
 
 # -- pure helpers --------------------------------------------------------------------------------------------------
@@ -273,7 +277,10 @@ class _BudgetSpent(Exception):
 # -- client --------------------------------------------------------------------------------------------------------
 
 class NimClient:
-    """Thread-safe NIM chat client. Create one per process and reuse it (keep-alive connections)."""
+    """Thread-safe NIM chat client. Create one per process and reuse it (keep-alive connections).
+
+    Cooldowns, pacing windows and in-flight counts live on the client, so every mission must share it (see
+    ``shared_client``). A client per mission would give each one its own rate window and overrun the keys."""
 
     def __init__(self, keys: Sequence[str], *, per_minute: int = PER_MINUTE,
                  transport: httpx.BaseTransport | None = None,
@@ -293,6 +300,7 @@ class NimClient:
         self.cool: dict[tuple[str, str], float] = {}
         self.bad: dict[str, float] = {}           # key -> re-admitted at
         self.demoted: dict[str, float] = {}       # model -> usable again at
+        self.inflight: dict[str, int] = {k: 0 for k in self.keys}   # requests running now, per key
         self.http = httpx.Client(
             base_url=BASE_URL, transport=transport,
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
@@ -334,6 +342,8 @@ class NimClient:
         deadline = self.clock() + budget_s
         opts = _Opts(thinking, max_tokens, schema, schema_name, [dict(t) for t in tools] if tools else None)
         dispatched, last, last_invalid = 0, "no attempt", False
+        base = list(messages)
+        carried, cuts = "", 0             # text already released from streams that were cut, and how often that happened
 
         for model in chain:
             shape = _Shape("strict")
@@ -348,11 +358,28 @@ class NimClient:
                 msgs = (_with_schema_hint(messages, schema)
                         if schema is not None and not opts.tools and shape.mode == "json_object"
                         else list(messages))
-                out = yield from self._attempt(key, model, msgs, opts, shape, deadline)
+                try:
+                    out = yield from self._attempt(key, model, msgs, opts, shape, deadline)
+                finally:
+                    self._release(key)
                 if out.kind == "ok":
-                    yield "done", out.reply
+                    reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
+                    yield "done", reply
                     return
                 last, last_invalid = out.reason, out.invalid
+                if out.kind == "cut":
+                    # The stream broke after text had already been released. Continue from that text on a fresh budget
+                    # rather than failing: the model sees its own partial reply and writes only the rest. Bounded.
+                    cuts += 1
+                    if cuts > MAX_CONTINUATIONS:
+                        raise NimError(f"nim stream cut {cuts} times; the continuation limit is reached")
+                    carried += out.partial
+                    messages = [*base, {"role": "assistant", "content": carried},
+                                {"role": "user", "content": CONTINUE_PROMPT}]
+                    deadline = self.clock() + budget_s
+                    dispatched -= 1               # a continuation is not a new attempt against the dispatch limit
+                    tried -= 1
+                    continue
                 if out.kind == "budget":
                     break
                 if out.kind == "reshape":
@@ -384,6 +411,23 @@ class NimClient:
         if done is None:
             raise NimError("stream ended without an answer")
         return done
+
+    def status(self) -> dict:
+        """What the pool is doing right now, per key slot. Never includes key material: slots are 1-based positions."""
+        now = self.clock()
+        with self.lock:
+            keys = []
+            for slot, k in enumerate(self.keys, 1):
+                self._purge(k, now)
+                cooling = [{"model": m, "for_s": round(until - now, 1)}
+                           for (kk, m), until in sorted(self.cool.items()) if kk == k and until > now]
+                retired_for = max(0.0, self.bad.get(k, 0.0) - now)
+                keys.append({"slot": slot, "in_flight": self.inflight.get(k, 0),
+                             "sent_last_minute": len(self.sent[k]), "per_minute": self.per_minute,
+                             "retired": retired_for > 0, "retired_for_s": round(retired_for, 1), "cooling": cooling})
+            demoted = [{"model": m, "for_s": round(until - now, 1)}
+                       for m, until in sorted(self.demoted.items()) if until > now]
+        return {"keys": keys, "demoted_models": demoted, "in_flight": sum(k["in_flight"] for k in keys)}
 
     def probe(self, slot: int, model: str = PROBE_MODEL) -> dict:
         """One raw 1-token chat call on a single key. Returns the status only (NIM.md §8). Never retries."""
@@ -437,14 +481,22 @@ class NimClient:
                     self._purge(k, now)
                 ready = [k for k in pool if self._ready_at(k, model, now) <= now]
                 if ready:
+                    # Least loaded first: fewest requests running now, then fewest sent in the last minute. The shuffle
+                    # above breaks ties at random, so equally idle keys share the work.
+                    ready.sort(key=lambda k: (self.inflight.get(k, 0), len(self.sent[k])))
                     chosen = ready[0]
                     self.sent[chosen].append(now)
+                    self.inflight[chosen] = self.inflight.get(chosen, 0) + 1
                     return chosen
                 soonest = min(pool, key=lambda k: self._ready_at(k, model, now))
                 at = self._ready_at(soonest, model, now)
             if at > deadline:
                 raise Exhausted("all keys are cooling or paced past the budget")
             self.sleep(max(0.01, at - now))
+
+    def _release(self, key: str) -> None:
+        with self.lock:
+            self.inflight[key] = max(0, self.inflight.get(key, 0) - 1)
 
     def _cool(self, key: str, model: str, seconds: float) -> None:
         with self.lock:
@@ -464,6 +516,7 @@ class NimClient:
         slot = self._slot(key)
         started = self.clock()
         emitted = False
+        parts: list[str] = []
         live = opts.schema is None and not opts.tools        # release text as it arrives only when nothing is buffered
         body = build_body(model, messages, opts, shape)
         try:
@@ -475,7 +528,6 @@ class NimClient:
                     raw = r.read().decode("utf-8", "replace")
                     return self._classify_http(key, model, slot, status, r.headers.get("retry-after"), raw,
                                                opts, shape, started)
-                parts: list[str] = []
                 acc: dict[int, dict] = {}
                 finish: str | None = None
                 usage: dict = {}
@@ -501,11 +553,13 @@ class NimClient:
                         _accumulate(acc, delta.get("tool_calls"))
         except _BudgetSpent:
             if emitted:
-                raise NimError("nim budget spent mid-stream after output began; no failover") from None
+                # Text has been released, so this attempt cannot fail over; the caller continues it on a new budget.
+                return _Outcome("cut", f"{model}: budget spent while streaming", partial="".join(parts))
             return _Outcome("budget", f"{model}: budget spent while reading")
         except (httpx.TransportError, ValueError) as exc:  # ValueError covers unreadable JSON in a stream
             if emitted:
-                raise NimError(f"nim stream failed after output began: {type(exc).__name__}") from None
+                return _Outcome("cut", f"{model}: stream interrupted ({type(exc).__name__})",
+                                partial="".join(parts))
             self._cool(key, model, COOL_KEY_S)
             return _Outcome("key", f"{model}: {type(exc).__name__}")
 
@@ -555,3 +609,27 @@ class NimClient:
             wait = COOL_DEFAULT_S
         self._cool(key, model, wait)
         return _Outcome("key", note)
+
+
+# -- the process-wide client ----------------------------------------------------------------------------------------
+
+_SHARED: NimClient | None = None
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_client() -> NimClient:
+    """The one NIM client of this process, created on first use. Every mission and sub-agent calls through it, so the
+    rate windows, cooldowns and in-flight counts cover all of them together. Raises NotConfigured without keys."""
+    global _SHARED
+    with _SHARED_LOCK:
+        if _SHARED is None:
+            _SHARED = NimClient.from_env()
+        return _SHARED
+
+
+def reset_shared_client() -> None:
+    """Drop the shared client so the next call re-reads the keys (after a key change in Settings). Calls already in
+    flight keep their reference and finish normally."""
+    global _SHARED
+    with _SHARED_LOCK:
+        _SHARED = None

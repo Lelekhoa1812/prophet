@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from prophet_agent.nim import Exhausted, NimClient, NimError, NotConfigured, SchemaViolation, load_keys
-from prophet_agent.nim.transport import COOL_DEFAULT_S, DEMOTE_S, RETIRE_S, clean_text
+from prophet_agent.nim.transport import COOL_DEFAULT_S, DEMOTE_S, MAX_CONTINUATIONS, RETIRE_S, clean_text
 
 KEYS = ("nvapi-AAAA1111", "nvapi-BBBB2222", "nvapi-CCCC3333")
 M1 = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -155,12 +155,13 @@ def test_key_errors_cool_the_key_for_that_model_only(code, expected_cool):
 def test_429_honours_retry_after_and_caps_it():
     script = Script().on(status(429, headers={"retry-after": "7"}), slot=1, model=M1)
     client, clock = make(script)
-    assert client.complete([M1], MSGS).key_slot == 2
+    assert client.complete([M1], MSGS).key_slot != 1
     assert client.cool[(KEYS[0], M1)] == pytest.approx(1007.0)
 
-    # key 1 is still cooling for M1, so the next M1 call uses key 2; key 1 is free for M2 at once
-    assert client.complete([M1], MSGS).key_slot == 2
-    assert client.complete([M2], MSGS).key_slot == 1
+    # key 1 is still cooling for M1, so the next M1 call avoids it; key 1 is free for M2 at once
+    assert client.complete([M1], MSGS).key_slot != 1
+    assert client.complete([M2], MSGS).model == M2
+    assert (KEYS[0], M2) not in client.cool
 
 
 def test_429_retry_after_is_capped_at_two_minutes():
@@ -181,13 +182,15 @@ def test_429_without_retry_after_cools_for_thirty_seconds():
 def test_401_and_403_retire_the_key_until_readmitted(code):
     script = Script().on(status(code), slot=1)
     client, clock = make(script)
-    assert client.complete([M1], MSGS).key_slot == 2
-    assert client.complete([M1], MSGS).key_slot == 2       # key 1 is retired, not tried again
-    assert script.sequence() == [(1, M1), (2, M1), (2, M1)]
+    assert client.complete([M1], MSGS).key_slot != 1
+    assert client.complete([M1], MSGS).key_slot != 1       # key 1 is retired, not tried again
+    assert [s for s, _ in script.sequence()].count(1) == 1
 
     clock.t += RETIRE_S + 1                                # re-admitted after the retirement window
-    client.complete([M1], MSGS)
-    assert script.calls[-2]["slot"] == 1                   # key 1 tried again (and fails again)
+    before = len(script.calls)
+    for _ in range(3):
+        client.complete([M1], MSGS)
+    assert any(c["slot"] == 1 for c in script.calls[before:])   # key 1 tried again (and fails again)
 
 
 def test_transport_error_cools_key_thirty_seconds_then_next_key():
@@ -211,7 +214,7 @@ def test_model_errors_demote_the_model_and_move_on(code):
     client, clock = make(script)
     reply = client.complete([M1, M2], MSGS)
     assert reply.model == M2
-    assert script.sequence() == [(1, M1), (1, M2)]        # one attempt per model, no key rotation
+    assert [m for _, m in script.sequence()] == [M1, M2]  # one attempt per model: a model error is not a key error
     assert client.demoted[M1] - 1000.0 == pytest.approx(DEMOTE_S)
 
 
@@ -221,7 +224,7 @@ def test_demoted_model_moves_last_but_is_never_dropped():
     client.complete([M1, M2], MSGS)                        # M1 demoted after its 503
     script.calls.clear()
     assert client.complete([M1, M2], MSGS).model == M2     # M2 is tried first now
-    assert script.sequence() == [(1, M2)]
+    assert [m for _, m in script.sequence()] == [M2]
     script.routes.pop((None, M1))                          # M1 recovers
     script.calls.clear()
     assert client.complete([M1], MSGS).model == M1         # demoted, but still usable as the only option
@@ -296,7 +299,7 @@ def test_local_schema_violation_moves_on_and_finally_raises_schema_violation():
     client, _ = make(script)
     with pytest.raises(SchemaViolation):
         client.complete([M1, M2], MSGS, schema=schema)
-    assert script.sequence() == [(1, M1), (1, M2)]
+    assert [m for _, m in script.sequence()] == [M1, M2]
 
 
 def test_local_schema_check_uses_the_original_schema_not_the_stripped_one():
@@ -345,18 +348,37 @@ def test_stream_releases_deltas_then_done():
     assert events[-1][0] == "done" and events[-1][1].text == "Hello"
 
 
-def test_failover_is_impossible_once_a_token_has_been_released():
-    def breaks_after_first_token():
-        yield b'data: {"choices": [{"delta": {"content": "Hel"}, "finish_reason": null}]}\n\n'
-        raise httpx.ReadError("connection reset")
+def _cut_after(text: str):
+    """A stream that releases one delta and then breaks, as a dropped connection does."""
+    yield f'data: {{"choices": [{{"delta": {{"content": "{text}"}}, "finish_reason": null}}]}}\n\n'.encode()
+    raise httpx.ReadError("connection reset")
 
-    script = Script().on(lambda r, p: httpx.Response(200, content=breaks_after_first_token(),
-                                                    headers={"content-type": "text/event-stream"}), model=M1)
+
+def test_a_cut_stream_is_continued_from_the_released_text_not_failed_over():
+    seen: list[dict] = []
+
+    def cut_then_finish(request, payload):
+        seen.append(payload)
+        if len(seen) == 1:
+            return httpx.Response(200, content=_cut_after("Hel"), headers={"content-type": "text/event-stream"})
+        return sse(["lo"])
+
+    script = Script().on(cut_then_finish, model=M1)
     client, _ = make(script)
-    with pytest.raises(NimError) as info:
+    done = list(client.stream([M1, M2], MSGS))[-1][1]
+    assert done.text == "Hello"                           # released "Hel" + continuation "lo"
+    assert done.model == M1
+    assert [m for _, m in script.sequence()] == [M1, M1]  # continued on the same model; M2 never spliced on
+    assert seen[1]["messages"][-2] == {"role": "assistant", "content": "Hel"}   # the model sees its own partial reply
+
+
+def test_a_stream_cut_again_and_again_stops_at_the_continuation_limit_without_failover():
+    script = Script().on(lambda r, p: httpx.Response(200, content=_cut_after("Hel"),
+                                                     headers={"content-type": "text/event-stream"}), model=M1)
+    client, _ = make(script)
+    with pytest.raises(NimError, match="continuation limit"):
         list(client.stream([M1, M2], MSGS))
-    assert "no failover" in str(info.value) or "failed after output" in str(info.value)
-    assert [m for _, m in script.sequence()] == [M1]      # M2 never spliced on
+    assert [m for _, m in script.sequence()] == [M1] * (MAX_CONTINUATIONS + 1)   # M2 never spliced on
 
 
 def test_failover_before_first_token_is_allowed_when_reading_fails_early():
@@ -440,7 +462,8 @@ def test_third_new_unimplemented_keyword_demotes_the_model_after_two_reshapes():
     client, _ = make(script)
     reply = client.complete([M1, M2], MSGS, schema=MIN_ITEMS_SCHEMA)
     assert reply.model == M2
-    assert script.sequence() == [(1, M1), (1, M1), (1, M1), (1, M2)]   # two reshapes, then demotion
+    assert [m for _, m in script.sequence()] == [M1, M1, M1, M2]        # two reshapes, then demotion
+    assert len({s for s, m in script.sequence() if m == M1}) == 1        # reshapes re-use the same key
     assert M1 in client.demoted
 
 

@@ -14,7 +14,7 @@ import re
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -22,7 +22,10 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from prophet_agent.config import ROOT
 from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
-from prophet_agent.runtime.store import LeaseHeld, NotebookBusy
+from prophet_agent.nim.transport import shared_client
+from prophet_agent.runtime.store import ACTIVE, LeaseHeld, NotebookBusy
+from prophet_agent.settings import mask
+from prophet_agent.settings import view as settings_view
 from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
 
 from .service import MissionService
@@ -334,6 +337,85 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
         return {"id": mission_id, "status": "running"}
 
+    def _checkpoint_action(mission_id: str, action) -> dict:
+        try:
+            action(mission_id)
+        except KeyError:
+            raise HTTPException(404, "no such mission")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        except LeaseHeld:
+            raise HTTPException(409, "this mission is already running")
+        except NotConfigured:
+            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+        return {"id": mission_id, "status": "running"}
+
+    @app.post("/api/missions/{mission_id}/continue", status_code=202)
+    def continue_mission(mission_id: str) -> dict:
+        """Start the next part of a checkpointed mission with a fresh tool allowance. Completed steps replay from the ledger."""
+        return _checkpoint_action(mission_id, service.continue_mission)
+
+    @app.post("/api/missions/{mission_id}/answer-now", status_code=202)
+    def answer_now(mission_id: str) -> dict:
+        """Write the best answer from the evidence gathered so far, labelled partial."""
+        return _checkpoint_action(mission_id, service.answer_now)
+
+    # -- settings ------------------------------------------------------------------------------------------------
+
+    def _pool_status() -> dict | None:
+        try:
+            return shared_client().status()
+        except NotConfigured:
+            return None
+
+    @app.get("/api/settings")
+    def get_settings() -> dict:
+        return settings_view(service.settings, service.store, service.datasets, _pool_status())
+
+    @app.put("/api/settings")
+    def put_settings(body: dict = Body(...)) -> dict:
+        """A partial update. ``nim.keys`` replaces the key list; a masked entry keeps its stored key. Limits are bounded."""
+        patch = dict(body)
+        nim = patch.pop("nim", None)
+        if nim is not None and (not isinstance(nim, dict) or set(nim) - {"keys"}):
+            raise HTTPException(422, "nim accepts only keys")
+        try:
+            service.settings.update(patch)
+            if nim is not None and "keys" in nim:
+                service.settings.set_keys(nim["keys"])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        return get_settings()
+
+    @app.post("/api/settings/test-keys")
+    def test_keys() -> dict:
+        """One 1-token call per key. Returns status codes and timings only; no key material and no generated text."""
+        try:
+            client = shared_client()
+        except NotConfigured:
+            raise HTTPException(503, "no NVIDIA NIM keys are configured")
+        rows = []
+        for slot in range(1, len(client.keys) + 1):
+            row = client.probe(slot)
+            rows.append({**row, "masked": mask(client.keys[slot - 1]), "ok": row["status"] == 200})
+        return {"keys": rows}
+
+    @app.get("/api/settings/export")
+    def export_data() -> JSONResponse:
+        data = service.settings.export(service.store, service.datasets)
+        return JSONResponse(data, headers={"content-disposition": 'attachment; filename="prophet-export.json"'})
+
+    @app.post("/api/settings/clear-data")
+    def clear_data(body: dict = Body(...)) -> dict:
+        """Delete missions, notebooks, uploads and sandbox output. Settings and keys are kept. Needs the exact phrase."""
+        try:
+            removed = service.settings.clear(service.store, ACTIVE, str(body.get("confirm", "")))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return {"removed": removed}
+
     if WEB_DIST.is_dir():
         from fastapi.staticfiles import StaticFiles
         app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
@@ -343,9 +425,9 @@ def create_app(service: MissionService) -> FastAPI:
 
 def default_brain_factory():
     """Build the NIM-backed planner, or raise NotConfigured when no keys are present."""
-    from prophet_agent.nim.transport import NimClient
+    from prophet_agent.nim.transport import shared_client
     from prophet_agent.runtime.goal import NimBrain
-    return NimBrain(NimClient.from_env())
+    return NimBrain(shared_client())
 
 
 __all__ = ["create_app", "default_brain_factory"]

@@ -79,9 +79,14 @@ class Ctx:
     def step(self, name: str, fn: Callable[["Ctx"], Any]) -> Any:
         self.step_idx += 1
         idx = self.step_idx
-        done = self.store.step_output(self.mission_id, idx)
-        if done is not None:
-            return done["v"]
+        rec = self.store.step_record(self.mission_id, idx)
+        if rec is not None and rec["status"] == "done":
+            # A replay must ask for the same step at the same position. A different name here means the program took
+            # another path than the one stored, and returning the stored value would answer a different question.
+            if rec["name"] != name:
+                raise RuntimeError(f"replay diverged at step {idx}: the ledger has {rec['name']!r}, the program asked "
+                                   f"for {name!r}")
+            return rec["v"]
         self._guard_time()
         out = fn(self)
         self.store.finish_step(self.mission_id, idx, name, {"v": out})
@@ -172,10 +177,13 @@ class Runtime:
             self.store.release_lease(mission_id, self.owner)
             return {"status": "outcome_unknown", "reason": redact(str(exc))}
         except BudgetExceeded as exc:
-            self.store.set_status(mission_id, "budget_exhausted")
-            self.store.append_event(mission_id, "mission.budget_exhausted", {"which": exc.which})
+            # The segment's allowance of time or tool calls is spent. That is a checkpoint, never a failure: the stored
+            # steps stay, and the person continues with a fresh allowance (see MissionService.continue_mission).
+            self.store.set_status(mission_id, "checkpoint")
+            self.store.append_event(mission_id, "mission.checkpoint", {"which": exc.which})
             self.store.release_lease(mission_id, self.owner)
-            return {"status": "budget_exhausted", "which": exc.which}
+            return {"status": "checkpoint", "which": exc.which,
+                    "reason": f"this part of the work reached its {exc.which} allowance"}
         except Exception as exc:
             msg = redact(f"{type(exc).__name__}: {exc}")
             self.store.set_status(mission_id, "failed")
