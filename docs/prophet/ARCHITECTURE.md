@@ -155,3 +155,32 @@ session; the reverse-engineering (REA) tools were not connected, so no shipped b
   loads on demand in its `strict` security level, falling back to its source when it cannot draw. Answers stored as one
   line are re-broken where list markers are visible.
 - **Not met, stated plainly.** The 15 % improvement bar over the best baseline is still not met on the synthetic twin.
+
+## 9. Analyst harness, finish gate and routing (2026-11-21)
+
+Decisions, with the evidence that forced each. Full reasoning: `reports/Principal analyst agent harness design.md`.
+
+1. **Skills are read on demand, not pasted into the planner.** Eleven playbooks in `src/prophet_agent/skills/` are served by the
+   `analyst_skill` tool (list, then read one). The planner prompt stays at rules 1 to 57; detail loads when a step needs it.
+2. **`ps` (prophet_stats) sits beside `pl` in the sandbox.** Every `prophet_*.py` module is copied into each run. `ps` is causal
+   by default (trailing windows, one-sided imputers) and reports every change it makes. A cleaning step is kept only if
+   `ps.backtest_treatment` says it helped on origins that never saw the data it was judged on.
+3. **"Done" is a check on the evidence.** `runtime/contracts.py` runs when the evaluator says met: data inspected before the forecast
+   that stands, forecast compared with baselines, forecast health repaired, deliverables present, and an analyst ledger of at
+   least four stages, each with a finding and a decision. A blocking failure returns to the planner twice at most, then the
+   answer leaves labelled `partial_unverified` with the failing check names. The result carries a typed `stop_reason`.
+4. **The brief is data.** The goal, what counts as done, what must not change (including the 15 % bar) and the budget are stored
+   in the `contracts` step, so a summary cannot drop them.
+5. **Quota groups.** A provider whose limit belongs to the account (OpenRouter) shares one pacing window and one cooldown across its
+   keys. Other providers keep per-key windows. Four keys do not buy four buckets where the vendor says they do not.
+6. **Routing never reports a rate limit.** Found live and fixed: all keys resting past one attempt's budget raised a failure
+   (now waited out); Google answers a bad key with HTTP 400 (the key is retired, not the model); two unusable strict-schema replies
+   switch the model to plain JSON mode before it is dropped.
+7. **The shape check cannot judge a short window.** Measured on 13 CO2 holdouts, "flat" fired on 7 where TimesFM beat seasonal naive on
+   all 13. Under a quarter of a cycle the verdict is `check` and the backtest decides.
+8. **Grounding accepts marked approximations.** "About 44,500" matches a printed figure within one percent; an unmarked figure still
+   has to match to its last written digit, and a range endpoint is never an approximation.
+
+Not decided by evidence (labelled): the 2 % improvement bar of `backtest_treatment`, the four-stage ledger minimum, the 1 % tolerance and
+the quarter-cycle window are proposed defaults to calibrate on synthetic replay. Whether smoothing, outlier replacement or imputation
+improves a TimesFM backtest is unmeasured.
