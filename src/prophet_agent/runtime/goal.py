@@ -46,13 +46,17 @@ PLAN_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "action": {"type": "string", "enum": ["call_tool", "ask_user", "delegate", "finish"]},
-        "tool": {"type": "string"},
+        "tool": {"type": "string", "minLength": 1},
         "args": {"type": "object"},
         "questions": QUESTIONS_SCHEMA["properties"]["questions"],
         "task": {"type": "string", "maxLength": 1200},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
         "rationale": {"type": "string", "maxLength": 400},
     },
+    # A call_tool plan names the tool and its arguments. Without this a plan with no tool passed the check, ran nothing and
+    # stalled the mission (seen live: Matilda sent three such plans in a row on the electricity scenario).
+    "allOf": [{"if": {"properties": {"action": {"const": "call_tool"}}, "required": ["action"]},
+               "then": {"required": ["tool", "args"]}}],
 }
 
 EVAL_SCHEMA: dict[str, Any] = {

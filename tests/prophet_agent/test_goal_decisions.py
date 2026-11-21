@@ -213,3 +213,16 @@ def test_planner_never_asks_the_person_about_how_tools_store_data():
     text = " ".join(current("planner").text.split())
     assert "How the tools store and pass data is never a question for the person" in text
     assert "rebuild what a later run needs, in one run, or batch the work" in text
+
+
+def test_a_call_tool_plan_without_its_tool_or_args_is_refused_by_the_plan_schema():
+    # Regression: Matilda sent {"action": "call_tool", "rationale": ...} with no tool and no args. The check passed, nothing
+    # ran, and the mission stalled. Such a plan must fail the local schema so the transport repairs it.
+    from prophet_agent.nim.schema import validate
+    from prophet_agent.runtime.goal import PLAN_SCHEMA
+
+    assert validate({"action": "call_tool", "rationale": "forecast next"}, PLAN_SCHEMA) is not None
+    assert validate({"action": "call_tool", "tool": "", "args": {}, "rationale": "x"}, PLAN_SCHEMA) is not None
+    assert validate({"action": "call_tool", "tool": "timesfm_forecast", "args": {"horizon": 48}, "rationale": "x"},
+                    PLAN_SCHEMA) is None
+    assert validate({"action": "finish", "rationale": "done"}, PLAN_SCHEMA) is None
