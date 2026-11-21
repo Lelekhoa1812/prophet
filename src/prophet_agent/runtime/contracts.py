@@ -308,6 +308,32 @@ def check_scan(history, run_root) -> dict | None:
                   "sc.write_scan(r)` in a sandbox step, read every blocker and major finding, and record a ledger decision for each")
 
 
+CONTROL_OPTIONS = ("context_points", "ignore_ranges", "znorm", "symmetric_averaging")   # drivers (covariates) are inputs, not tuning
+
+
+def used_controls(args: dict) -> list[str]:
+    """The TimesFM tuning options a forecast call switched on (a false or empty value is the default)."""
+    return [k for k in CONTROL_OPTIONS if args.get(k)]
+
+
+def check_controls(history, args: dict) -> dict | None:
+    """A forecast that tunes TimesFM by hand (shorter context, ignored points, znorm, symmetric averaging) needs a
+    ``control_lab`` result on the history: measured evidence that the treatment helps, because measured evidence so far says
+    most do not. Blocking when the lab never ran; a warning when it ran and recommended the default."""
+    used = used_controls(args)
+    if not used:
+        return None
+    labs = [r for h in history if isinstance(r := _ok_result(h, "control_lab"), dict)]
+    if not labs:
+        return _check("controls_tested", False,
+                      f"the forecast uses {', '.join(used)} but control_lab never ran; test the treatment on a leak-free "
+                      "walk-forward comparison, or forecast with the default")
+    if labs[-1].get("recommended") == "keep the default":
+        return _check("controls_tested", False,
+                      f"control_lab recommended keeping the default, yet the forecast uses {', '.join(used)}", "warn")
+    return _check("controls_tested", True, "control_lab ran and the treatment was measured")
+
+
 def check_ledger(history, run_root) -> dict | None:
     """The analyst's ledger: a sandbox step saved ``out/ledger.json`` (``ps.Ledger.save``) with a finding and a decision for at
     least ``MIN_LEDGER_STAGES`` distinct stages. A forecast whose data was never broken down and decided on leaves no such
@@ -433,6 +459,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
                                          horizon=horizon, history=hist_vals if _numbers(hist_vals) is not None else None))
 
     if forecasts:
+        controls = check_controls(obs, forecasts[-1][2])
+        if controls is not None:
+            checks.append(controls)
         scan = check_scan(obs, run_root)
         if scan is not None:
             checks.append(scan)

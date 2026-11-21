@@ -437,3 +437,21 @@ def test_a_ledger_saved_by_a_step_that_failed_later_in_the_cell_still_counts(tmp
     history.insert(0, _inspect())
     blocked = [c["name"] for c in blocking(check_evidence(history, run_root=tmp_path))]
     assert "analysis_ledger" not in blocked
+
+
+def _lab_obs(tool, result, args=None):
+    return {"kind": "tool", "tool": tool, "args": args or {}, "result": result}
+
+
+def test_a_hand_tuned_forecast_needs_a_control_lab_result_first():
+    from prophet_agent.runtime.contracts import check_controls
+    tuned = {"values": HISTORY, "znorm": True}
+    assert check_controls([], {"values": HISTORY}) is None, "the default needs no lab"
+    assert check_controls([], {"values": HISTORY, "znorm": False}) is None
+    missing = check_controls([], tuned)
+    assert missing["name"] == "controls_tested" and not missing["ok"] and missing["severity"] == "block"
+    ran = check_controls([_lab_obs("control_lab", {"recommended": {"candidate": "znorm"}})], tuned)
+    assert ran["ok"]
+    default = check_controls([_lab_obs("control_lab", {"recommended": "keep the default"})], tuned)
+    assert not default["ok"] and default["severity"] == "warn"
+    assert check_controls([], {"future_covariates": ["holidays"]}) is None, "drivers are inputs, not tuning"
