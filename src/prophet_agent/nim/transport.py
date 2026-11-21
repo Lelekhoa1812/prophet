@@ -8,7 +8,7 @@ Motivation: the agent runtime calls NIM many times per mission. A single busy ke
 model must not burn the whole budget, a key must never reach a log or an exception, and a bad schema must not
 silently become a bad answer.
 Logic: one shared client per process. A logical call tries models in order (demoted models last, never dropped);
-each model may use up to 3 keys and the call at most 7 dispatches. Every HTTP request gets a timeout equal to the
+each model may use up to 3 keys and a pass at most 7 dispatches. A 429 or 503 is waited out, not counted as final. Every HTTP request gets a timeout equal to the
 time left on the wall-clock budget (F1). Each status code has one consequence: cool (key, model) for 429/408/425/402/
 5xx; retire the key for 401/403 (re-admitted after 10 min, so a rotated key recovers, F4); demote the model for
 404/410/503; a 413 (request too large) moves to the next model without demotion; reshape the schema on a 400/422 that names keywords (same key, same model); otherwise next model.
@@ -62,6 +62,13 @@ ATTEMPT_BUDGET_S = 240.0          # one attempt's slice of that budget: a slow m
 MAX_CONTINUATIONS = 3             # a free-text answer cut mid-stream is continued this many times, each on a new budget
 CONTINUE_PROMPT = ("Your reply was cut off. Continue exactly from where it stopped. Do not repeat anything already "
                    "written and do not add an introduction.")
+RATE_STATUSES = frozenset({429, 503})   # rate limit or overload: waited out until the provider is depleted, never final
+RATE_WAIT_MAX_S = 60.0            # longest single sleep while every usable key and model is rate-limited; then a new pass
+RATE_WAIT_LIMIT_S = 1800.0        # one logical call waits at most this long on rate limits before it reports the refusal
+MAX_REPAIRS = 2                   # an answer that fails the local schema is re-asked on the same model this many times
+REPAIR_QUOTE_CHARS = 4000         # how much of the refused reply the repair turn shows the model
+REPAIR_PROMPT = ("Your reply was not usable: {reason}. Reply again with only the JSON object the schema asks for. "
+                 "No prose, no code fence.")
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -112,6 +119,7 @@ class _Outcome:
     partial: str = ""                  # "cut" only: the raw text that was already released before the stream broke
     status: int | None = None          # the HTTP status of the attempt, when one was received
     detail: str = ""                   # redacted, shortened response body for a failed attempt (model checks show it)
+    text: str = ""                     # "model" with invalid=True: the reply that failed the schema, for the repair turn
 
 
 # -- pure helpers --------------------------------------------------------------------------------------------------
@@ -346,6 +354,10 @@ class NimClient:
 
         With a schema or tools, nothing is released early: the answer is buffered, validated and then returned in
         "done", so a rejected answer never reaches the caller and failover stays possible.
+
+        A rate limit (429) or an overload (503) is not a failure of the request. When a pass over the chain met only those,
+        the call waits for the soonest key or model to be ready and goes round again, until the provider is depleted (every
+        key rejected) or RATE_WAIT_LIMIT_S has passed. A model that refuses the request for good is dropped for this call.
         Raises Exhausted (or SchemaViolation if the last failure was a local schema check) once the chain is spent.
         """
         chain = self._order(models)
@@ -361,75 +373,121 @@ class NimClient:
                     raise Exhausted("token budget used up: " + "; ".join(reasons))
         deadline = self.clock() + budget_s
         opts = _Opts(thinking, max_tokens, schema, schema_name, [dict(t) for t in tools] if tools else None)
-        dispatched, last, last_invalid = 0, "no attempt", False
+        last, last_invalid = "no attempt", False
         base = list(messages)
         carried, cuts = "", 0             # text already released from streams that were cut, and how often that happened
+        waited = 0.0                      # seconds spent waiting out rate limits and overloads, across passes
 
-        for model in chain:
-            shape = _Shape("strict")
-            reshapes, tried, key, reuse = 0, 0, None, False
-            while tried < MAX_KEYS_PER_MODEL and dispatched < MAX_DISPATCH:
-                if self.clock() >= deadline:
-                    raise Exhausted(f"nim budget spent before a usable answer; last: {last}")
-                key = self._acquire(model, deadline, only=key if reuse else None)
-                reuse = False
-                tried += 1
-                dispatched += 1
-                prompt_only = self.provider.schema_mode == "prompt" or shape.mode == "json_object"
-                msgs = (_with_schema_hint(messages, schema)
-                        if schema is not None and not opts.tools and prompt_only
-                        else list(messages))
-                attempt_started = self.clock()
-                # One attempt gets a slice of the logical budget. Without the slice, a slow first model spends the whole
-                # budget, every later model starts with no time, and the call fails with nothing tried after it.
-                attempt_deadline = min(deadline, self.clock() + ATTEMPT_BUDGET_S)
-                try:
-                    out = yield from self._attempt(key, model, msgs, opts, shape, attempt_deadline)
-                finally:
-                    self._release(key)
-                log.info("nim attempt: model=%s outcome=%s elapsed=%.1fs reason=%s", model, out.kind,
-                         self.clock() - attempt_started, out.reason)
-                if out.kind == "ok":
-                    reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
-                    self._record(reply)
-                    yield "done", reply
-                    return
-                last, last_invalid = out.reason, out.invalid
-                if out.kind == "cut":
-                    # The stream broke after text had already been released. Continue from that text on a fresh budget
-                    # rather than failing: the model sees its own partial reply and writes only the rest. Bounded.
-                    cuts += 1
-                    if cuts > MAX_CONTINUATIONS:
-                        raise NimError(f"nim stream cut {cuts} times; the continuation limit is reached")
-                    carried += out.partial
-                    messages = [*base, {"role": "assistant", "content": carried},
-                                {"role": "user", "content": CONTINUE_PROMPT}]
-                    deadline = self.clock() + budget_s
-                    dispatched -= 1               # a continuation is not a new attempt against the dispatch limit
-                    tried -= 1
-                    continue
-                if out.kind == "budget":
-                    break
-                if out.kind == "reshape":
-                    reshapes += 1
-                    if reshapes > MAX_RESHAPES:
-                        self._demote(model)
+        while True:
+            dispatched, waitable, dead = 0, False, set()
+            for model in chain:
+                shape = _Shape("strict")
+                reshapes, tried, key, reuse, repairs = 0, 0, None, False, 0
+                repair: list[dict] = []   # the model's last reply and the reason it was refused, when repairing
+                while tried < MAX_KEYS_PER_MODEL and dispatched < MAX_DISPATCH:
+                    if self.clock() >= deadline:
+                        raise Exhausted(f"nim budget spent before a usable answer; last: {last}")
+                    key = self._acquire(model, deadline, only=key if reuse else None)
+                    reuse = False
+                    tried += 1
+                    dispatched += 1
+                    prompt_only = self.provider.schema_mode == "prompt" or shape.mode == "json_object"
+                    sent = [*messages, *repair]
+                    msgs = (_with_schema_hint(sent, schema)
+                            if schema is not None and not opts.tools and prompt_only
+                            else list(sent))
+                    attempt_started = self.clock()
+                    # One attempt gets a slice of the logical budget. Without the slice, a slow first model spends the whole
+                    # budget, every later model starts with no time, and the call fails with nothing tried after it.
+                    attempt_deadline = min(deadline, self.clock() + ATTEMPT_BUDGET_S)
+                    try:
+                        out = yield from self._attempt(key, model, msgs, opts, shape, attempt_deadline)
+                    finally:
+                        self._release(key)
+                    log.info("nim attempt: model=%s outcome=%s elapsed=%.1fs reason=%s", model, out.kind,
+                             self.clock() - attempt_started, out.reason)
+                    if out.kind == "ok":
+                        reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
+                        self._record(reply)
+                        yield "done", reply
+                        return
+                    last, last_invalid = out.reason, out.invalid
+                    if out.status in RATE_STATUSES:
+                        waitable = True
+                    if out.kind == "cut":
+                        # The stream broke after text had already been released. Continue from that text on a fresh budget
+                        # rather than failing: the model sees its own partial reply and writes only the rest. Bounded.
+                        cuts += 1
+                        if cuts > MAX_CONTINUATIONS:
+                            raise NimError(f"nim stream cut {cuts} times; the continuation limit is reached")
+                        carried += out.partial
+                        messages = [*base, {"role": "assistant", "content": carried},
+                                    {"role": "user", "content": CONTINUE_PROMPT}]
+                        deadline = self.clock() + budget_s
+                        dispatched -= 1               # a continuation is not a new attempt against the dispatch limit
+                        tried -= 1
+                        continue
+                    if out.kind == "budget":
                         break
-                    shape = out.shape or shape
-                    tried -= 1                    # a reshape re-queues the same key and does not count as a new key
-                    reuse = True
-                    continue
-                if out.kind == "model":
-                    if out.demote:
-                        self._demote(model)
-                    break
-                # "key" or "retire": try the next key for this model
-            # next model
+                    if out.kind == "reshape":
+                        reshapes += 1
+                        if reshapes > MAX_RESHAPES:
+                            self._demote(model)
+                            dead.add(model)
+                            break
+                        shape = out.shape or shape
+                        tried -= 1                    # a reshape re-queues the same key and does not count as a new key
+                        reuse = True
+                        continue
+                    if out.invalid and repairs < MAX_REPAIRS:
+                        # The model answered, but not in the schema. Show it that reply and the reason, on the same key.
+                        repairs += 1
+                        repair = [{"role": "assistant", "content": out.text[:REPAIR_QUOTE_CHARS]},
+                                  {"role": "user", "content": REPAIR_PROMPT.format(reason=out.reason)}]
+                        tried -= 1
+                        reuse = True
+                        continue
+                    if out.kind == "model":
+                        if out.demote:
+                            self._demote(model)
+                        if out.status not in RATE_STATUSES:
+                            dead.add(model)
+                        break
+                    # "key" or "retire": try the next key for this model
+            # The pass is over. Models that refused for good are dropped; rate limits and overloads wait, then go round again.
+            chain = [m for m in chain if m not in dead]
+            if not waitable or not chain or waited >= RATE_WAIT_LIMIT_S:
+                break
+            wait = self._rate_wait(chain)
+            if wait is None:
+                break                                  # every key is rejected: the provider is depleted
+            wait = min(wait, RATE_WAIT_LIMIT_S - waited)
+            log.warning("nim: rate limited or overloaded on every usable model; waiting %.0fs then trying again (%s)",
+                        wait, last)
+            waited += wait
+            self.sleep(wait)
+            deadline = max(deadline, self.clock() + budget_s)   # waiting for a rate limit does not spend the work budget
 
-        message = f"nim-exhausted: {last}"
+        if waited >= RATE_WAIT_LIMIT_S:
+            message = f"nim-rate-limited: still refused after {waited:.0f}s of waiting; last: {last}"
+        else:
+            message = f"nim-exhausted: {last}"
         if last_invalid:
             raise SchemaViolation(message)
         raise Exhausted(message)
+
+    def _rate_wait(self, chain: Sequence[str]) -> float | None:
+        """Seconds until the soonest (key, model) pair in the chain can be used again, capped at RATE_WAIT_MAX_S. None when
+        every key is rejected (401/403) and none is re-admitted, i.e. the provider is depleted."""
+        now = self.clock()
+        usable = [k for k in self.keys if self.bad.get(k, 0.0) <= now]
+        if not usable:
+            return None
+        waits = []
+        for model in chain:
+            key_wait = min(max(0.0, self._ready_at(k, model, now) - now) for k in usable)
+            waits.append(max(key_wait, max(0.0, self.demoted.get(model, 0.0) - now)))
+        return min(max(1.0, min(waits)), RATE_WAIT_MAX_S)
 
     def complete(self, models: Sequence[str], messages: Sequence[Mapping[str, Any]], **kwargs: Any) -> Reply:
         done: Reply | None = None
@@ -646,7 +704,8 @@ class NimClient:
         if opts.schema is not None and not opts.tools:
             err = _check_schema(text, opts.schema)
             if err:
-                return _Outcome("model", f"{model}: local schema check failed: {err}", invalid=True, status=status)
+                return _Outcome("model", f"{model}: local schema check failed: {err}", invalid=True, status=status,
+                                text=text)
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,
                       usage=_usage(usage), key_slot=slot, elapsed_s=round(elapsed, 2))
         return _Outcome("ok", reply=reply, status=status)

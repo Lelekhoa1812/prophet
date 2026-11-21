@@ -13,7 +13,7 @@ import pytest
 
 from prophet_agent.nim import Exhausted, NimClient, NimError, NotConfigured, SchemaViolation, load_keys
 from prophet_agent.nim.transport import ATTEMPT_BUDGET_S, BUDGET_S
-from prophet_agent.nim.transport import COOL_DEFAULT_S, DEMOTE_S, MAX_CONTINUATIONS, RETIRE_S, clean_text
+from prophet_agent.nim.transport import COOL_DEFAULT_S, DEMOTE_S, MAX_CONTINUATIONS, MAX_DISPATCH, RATE_WAIT_LIMIT_S, RETIRE_S, clean_text
 
 KEYS = ("nvapi-AAAA1111", "nvapi-BBBB2222", "nvapi-CCCC3333")
 M1 = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -301,13 +301,83 @@ def test_format_error_falls_back_to_json_object_with_schema_in_prompt():
     assert script.sequence() == [(1, M1), (1, M1)]
 
 
-def test_local_schema_violation_moves_on_and_finally_raises_schema_violation():
+def test_local_schema_violation_is_repaired_on_the_model_then_moves_on_and_raises_schema_violation():
     script = Script().on(answer('{"ok": "yes"}'))
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
     client, _ = make(script)
     with pytest.raises(SchemaViolation):
         client.complete([M1, M2], MSGS, schema=schema)
-    assert [m for _, m in script.sequence()] == [M1, M2]
+    # two repairs on each model (the refused reply and its reason are sent back), then the next model
+    assert [m for _, m in script.sequence()] == [M1, M1, M1, M2, M2, M2]
+    repair_turn = script.calls[1]["body"]["messages"]
+    assert repair_turn[-2]["content"] == '{"ok": "yes"}' and "not usable" in repair_turn[-1]["content"]
+
+
+def test_invalid_json_is_repaired_on_the_same_model_and_the_repaired_answer_is_returned():
+    replies = iter(["Sure! Here it is.", '{"ok": true}'])
+    script = Script().on(lambda request, payload: sse([next(replies)]))
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    client, _ = make(script)
+    reply = client.complete([M1, M2], MSGS, schema=schema)
+    assert reply.model == M1 and reply.text == '{"ok": true}'
+    assert [m for _, m in script.sequence()] == [M1, M1]
+
+
+def test_rate_limit_on_every_key_waits_and_goes_round_again_until_it_clears():
+    clock = FakeClock()
+    answers = {"left": 9}
+
+    def limited_for_a_while(request, payload):
+        if answers["left"] > 0:
+            answers["left"] -= 1
+            return httpx.Response(429, text="rate", headers={"retry-after": "5"})
+        return sse(["served"])
+
+    script = Script().on(limited_for_a_while)
+    client, _ = make(script, clock=clock)
+    reply = client.complete([M1], MSGS)
+    assert reply.text == "served"
+    assert clock.t > 1000.0 + 5.0                   # it waited for the rate limit, it did not give up after one pass
+    assert len(script.calls) > MAX_DISPATCH          # more than one pass: the per-pass dispatch cap is not the limit
+
+
+def test_overload_503_on_a_model_cascades_then_waits_and_retries_the_model_once_it_recovers():
+    clock = FakeClock()
+    state = {"m1_up": False}
+
+    def m1(request, payload):
+        if state["m1_up"]:
+            return sse(["back"])
+        return httpx.Response(503, text="high demand")
+
+    script = Script().on(m1, model=M1)
+    client, _ = make(script, clock=clock)
+
+    def recover(seconds):
+        clock.sleep(seconds)
+        state["m1_up"] = clock.t >= 1000.0 + 20.0
+
+    client.sleep = recover
+    assert client.complete([M1], MSGS).text == "back"
+
+
+def test_a_depleted_provider_reports_one_definite_error_and_does_not_loop():
+    script = Script()
+    for slot in range(1, len(KEYS) + 1):
+        script.on(status(403, "free tier not available"), slot=slot)
+    client, _ = make(script)
+    with pytest.raises(Exhausted) as info:
+        client.complete([M1, M2], MSGS)
+    assert "free tier" not in str(info.value)     # the body is redacted and shortened, never echoed in full
+    assert all(client.bad[k] > 1000.0 for k in KEYS)
+
+
+def test_rate_limit_that_never_clears_stops_at_the_ceiling_with_a_clear_message():
+    clock = FakeClock()
+    client, _ = make(Script().on(status(429), model=M1), clock=clock)
+    with pytest.raises(Exhausted, match="still refused after"):
+        client.complete([M1], MSGS)
+    assert clock.t - 1000.0 >= RATE_WAIT_LIMIT_S
 
 
 def test_local_schema_check_uses_the_original_schema_not_the_stripped_one():

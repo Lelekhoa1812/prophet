@@ -298,7 +298,10 @@ class Settings:
             name = MODELS[model].provider
             if not self.provider_ready(name, environ):
                 raise NotConfigured(self._not_ready_reason(name, environ))
-            return name, (model,)
+            # The chosen model is tried first. When it is rate-limited or overloaded the call cascades to the provider's
+            # other enabled models; it never leaves the provider the person chose.
+            others = tuple(m.id for m in CATALOG if m.provider == name and m.id != model and self.model_enabled(m.id))
+            return name, (model, *others)
         enabled = [n for n in PROVIDERS if self.provider_enabled(n, environ)]
         if not enabled:
             raise NotConfigured("no model provider is turned on; turn one on in Settings and add its key")
