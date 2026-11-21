@@ -11,7 +11,7 @@ import { Button } from "./ui";
 function Ring({ pct, loading }: { pct: number | null; loading: boolean }) {
   const over = pct !== null && pct >= 100;
   return (
-    <svg viewBox="0 0 36 36" aria-hidden="true" className={cn("size-5 shrink-0 -rotate-90", loading && "animate-pulse")}>
+    <svg viewBox="0 0 36 36" aria-hidden="true" className={cn("size-3.5 shrink-0 -rotate-90", loading && "animate-pulse")}>
       <circle cx="18" cy="18" r="14" pathLength={100} fill="none" strokeWidth="3.5" className="stroke-sand-2/30" />
       {pct !== null && pct > 0 && (
         <circle
@@ -137,7 +137,7 @@ export function UsageMeter({
         )}
       >
         {failed ? (
-          <AlertCircle aria-hidden="true" className="size-6 shrink-0 text-bad" />
+          <AlertCircle aria-hidden="true" className="size-3.5 shrink-0 text-bad" />
         ) : (
           <Ring pct={reading ? reading.pct : null} loading={loading} />
         )}

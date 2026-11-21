@@ -70,19 +70,19 @@ export function ModelSwitcher({
   if (models.length === 0) {
     if (catalogStatus === "loading") {
       return (
-        <span role="status" className="inline-flex min-h-10 items-center px-3 text-caption text-sand-2 sm:min-h-8">
+        <span role="status" className="inline-flex min-h-10 items-center px-3 text-fine text-sand-2 sm:min-h-8">
           Loading models
         </span>
       );
     }
     if (catalogStatus === "error") {
-      return <span className="inline-flex min-h-10 items-center px-3 text-caption text-sand-2 sm:min-h-8">Models unavailable</span>;
+      return <span className="inline-flex min-h-10 items-center px-3 text-fine text-sand-2 sm:min-h-8">Models unavailable</span>;
     }
     return (
       <button
         type="button"
         onClick={onOpenSettings}
-        className="inline-flex min-h-10 min-w-0 flex-wrap items-center gap-x-2 rounded-lg px-3 text-caption font-semibold text-ember transition-colors hover:bg-night-2 hover:text-ember-strong sm:min-h-8"
+        className="inline-flex min-h-10 min-w-0 flex-wrap items-center gap-x-2 rounded-lg px-3 text-fine font-semibold text-ember transition-colors hover:bg-night-2 hover:text-ember-strong sm:min-h-8"
       >
         No model enabled
         <span className="font-normal text-sand-1 underline underline-offset-4">Open Settings</span>
@@ -103,12 +103,12 @@ export function ModelSwitcher({
         title="Choose a model"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "inline-flex min-h-10 max-w-44 min-w-0 items-center gap-1 rounded-lg px-3 text-caption font-semibold transition-colors hover:bg-night-2 hover:text-sand-0 sm:min-h-8",
+          "inline-flex min-h-10 max-w-44 min-w-0 items-center gap-1 rounded-lg px-3 text-fine font-semibold transition-colors hover:bg-night-2 hover:text-sand-0 sm:min-h-8",
           open ? "bg-night-2 text-sand-0" : "text-sand-1",
         )}
       >
         <span className="truncate">{selected?.label}</span>
-        <ChevronDown aria-hidden="true" className={cn("size-4 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-180")} />
+        <ChevronDown aria-hidden="true" className={cn("size-2.5 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-180")} />
       </button>
 
       {open && (

@@ -11,6 +11,17 @@ export type QuestionSpec = {
 
 export type OpenQuestion = { id: string; tool_key: string; payload: { questions: QuestionSpec[] } };
 
+// A question the person has answered (or skipped). answers is keyed by each question's header.
+export type AnsweredQuestion = {
+  id: string;
+  payload: { questions: QuestionSpec[] };
+  answers: Record<string, string | string[]>;
+  answered: number | null;
+};
+
+// A file the person attached to a quick forecast.
+export type DatasetRef = { id: string; name: string; bytes: number };
+
 export type Mission = {
   id: string;
   goal: string;
@@ -20,6 +31,8 @@ export type Mission = {
   events: EventRow[];
   steps: StepRow[];
   questions: OpenQuestion[];
+  answered_questions: AnsweredQuestion[];
+  datasets: DatasetRef[];
 };
 
 export type MissionRow = { id: string; goal: string; title: string; status: string; created: number; updated: number; pinned: boolean };

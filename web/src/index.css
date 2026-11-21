@@ -9,6 +9,7 @@
   --text-micro: 0.8125rem;      /* 13 px: tiny labels, mono detail */
   --text-meta: 0.875rem;        /* 14 px: code and hash detail */
   --text-caption: 0.9375rem;    /* 15 px: secondary text, hints, metadata */
+  --text-fine: 0.625rem;        /* 10 px: model and usage controls under the composer (two-thirds of caption) */
   --text-body: 1.0625rem;       /* 17 px: composer, chat text */
   --text-lead: 1.125rem;        /* 18 px: answers */
   --color-night-0: #0f0d0b;

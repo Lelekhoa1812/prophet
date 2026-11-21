@@ -1,11 +1,11 @@
-import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, Play, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, FileText, Play, RotateCcw, SkipForward } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type ArtifactRun, type Mission, type ToolInfo } from "../lib/api";
+import { api, type AnsweredQuestion, type ArtifactRun, type Mission, type ToolInfo } from "../lib/api";
 import { errorMessage, formatDuration, truncate } from "../lib/format";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
-import { cn, isCheckpoint, isWorking } from "../lib/utils";
+import { cn, formatBytes, isCheckpoint, isWorking } from "../lib/utils";
 import { Markdown } from "./Markdown";
-import { QuestionCard } from "./QuestionCard";
+import { QuestionCard, SKIPPED } from "./QuestionCard";
 import { Results } from "./Results";
 import { Button, Card, Spinner } from "./ui";
 
@@ -199,6 +199,45 @@ function problemFor(mission: Mission): Problem | null {
 
 // A part of the work ended on purpose. Every step is kept; the person decides whether Prophet keeps going with a fresh
 // allowance, or writes the answer now from the evidence it already has.
+// The file type shown under an attachment name: the extension in capitals, or "File" when there is none.
+function fileKind(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toUpperCase() : "File";
+}
+
+// The decisions the person has made, kept in the transcript after their question card has gone: the question, then
+// the answer or the fact that it was skipped. Like the record Claude keeps once a question is answered.
+function Decisions({ items }: { items: AnsweredQuestion[] }) {
+  const rows = items.flatMap((item) =>
+    (item.payload.questions ?? []).map((spec) => {
+      const raw = item.answers[spec.header];
+      const values = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).filter(Boolean);
+      return { key: `${item.id}-${spec.header}`, question: spec.question, values };
+    }),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <ul aria-label="Your answers" className="grid gap-2">
+      {rows.map((r) => {
+        const skipped = r.values.length === 0 || r.values.includes(SKIPPED);
+        return (
+          <li key={r.key} className="grid gap-1.5 rounded-xl border border-sand-2/20 bg-night-1/60 px-4 py-3">
+            <p className="text-caption text-sand-1 text-balance">{r.question}</p>
+            <p className="flex items-start gap-2 text-base text-sand-0 [overflow-wrap:anywhere]">
+              {skipped ? (
+                <SkipForward aria-hidden="true" className="mt-1 size-4 shrink-0 text-sand-2" />
+              ) : (
+                <Check aria-hidden="true" className="mt-1 size-4 shrink-0 text-ok" />
+              )}
+              <span>{skipped ? "Skipped. Prophet will use its best judgement." : r.values.join(", ")}</span>
+            </p>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function CheckpointCard({ mission, onChanged }: { mission: Mission; onChanged: () => void }) {
   const [busy, setBusy] = useState<"continue" | "answer" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -262,6 +301,7 @@ export function Turn({
 }) {
   const working = isWorking(mission.status);
   const steps = buildSteps(mission, tools);
+  const datasets = mission.datasets ?? [];
   const startedAt = mission.events[0]?.ts ?? Date.now() / 1000;
   const [now, setNow] = useState(() => Date.now() / 1000);
 
@@ -292,8 +332,32 @@ export function Turn({
 
   return (
     <article className="grid gap-5" aria-label="Question and answer">
-      <div className="justify-self-end max-w-[88%] rounded-3xl bg-night-2 px-5 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap sm:max-w-[80%]">
-        {mission.goal}
+      <div className="grid justify-items-end gap-2">
+        {datasets.length > 0 && (
+          <ul aria-label="Attached files" className="flex max-w-[88%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
+            {datasets.map((d) => (
+              <li
+                key={d.id}
+                className="flex min-w-0 max-w-full items-center gap-2.5 rounded-2xl border border-sand-2/30 bg-night-1 py-2 pr-3.5 pl-2.5"
+              >
+                <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-lg bg-night-2 text-sand-1">
+                  <FileText className="size-4" />
+                </span>
+                <span className="grid min-w-0 gap-0.5">
+                  <span className="truncate text-caption text-sand-0" title={d.name}>
+                    {d.name}
+                  </span>
+                  <span className="text-micro text-sand-2 tabular-nums">
+                    {fileKind(d.name)} · {formatBytes(d.bytes)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="max-w-[88%] rounded-3xl bg-night-2 px-5 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap sm:max-w-[80%]">
+          {mission.goal}
+        </div>
       </div>
 
       <div className="grid gap-4">
@@ -313,6 +377,8 @@ export function Turn({
         <p className="sr-only" aria-live="polite">
           {announce}
         </p>
+
+        <Decisions items={mission.answered_questions ?? []} />
 
         {mission.questions.map((q) => (
           <QuestionCard key={q.id} question={q} onAnswered={onAnswered} />

@@ -8,7 +8,7 @@ import { Button, Card, IconButton, Spinner } from "./ui";
 type Answers = Record<string, string | string[]>;
 
 const OTHER = "\u0000other";
-const SKIPPED = "Skipped: use your best judgement";
+export const SKIPPED = "Skipped: use your best judgement";
 
 // Questions from the agent, as one card above the work. Single choice uses native radios (arrow keys, one tab stop),
 // multiple choice uses native checkboxes. Every question can be skipped; the agent is told to use its own judgement.

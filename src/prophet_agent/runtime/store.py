@@ -459,6 +459,15 @@ class Store:
                                      "WHERE mission_id=? AND status='open' ORDER BY created", (mission_id,)).fetchall()
         return [{"id": r["id"], "tool_key": r["tool_key"], "payload": json.loads(r["payload_json"])} for r in rows]
 
+    def answered_questions(self, mission_id: str) -> list[dict]:
+        """Questions the person has answered in this mission, in the order they were answered. The chat shows these as
+        a record of each decision, so they outlive the question card."""
+        with self.lock:
+            rows = self.conn.execute("SELECT id, payload_json, answers_json, answered FROM questions "
+                                     "WHERE mission_id=? AND status='answered' ORDER BY answered", (mission_id,)).fetchall()
+        return [{"id": r["id"], "payload": json.loads(r["payload_json"]),
+                 "answers": json.loads(r["answers_json"] or "{}"), "answered": r["answered"]} for r in rows]
+
     def answer_question(self, question_id: str, answers: dict) -> dict:
         """Record the answer and resolve the waiting tool call, so the runtime can resume without asking again."""
         with self._tx() as c:

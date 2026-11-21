@@ -293,6 +293,7 @@ class MissionService:
             "events": self.store.events(mission_id, after_seq),
             "steps": self.store.steps(mission_id),
             "questions": self.store.open_questions(mission_id),
+            "answered_questions": self.store.answered_questions(mission_id),
         }
 
     def _has(self, dataset_id: str) -> bool:
