@@ -184,3 +184,22 @@ Decisions, with the evidence that forced each. Full reasoning: `reports/Principa
 Not decided by evidence (labelled): the 2 % improvement bar of `backtest_treatment`, the four-stage ledger minimum, the 1 % tolerance and
 the quarter-cycle window are proposed defaults to calibrate on synthetic replay. Whether smoothing, outlier replacement or imputation
 improves a TimesFM backtest is unmeasured.
+
+## 10. Durable goal mode, learned from Claude Code's `/goal` (2026-11-22)
+
+Source: `docs/prophet/goal_mode_rea.md` (mechanism read from the shipped Claude Code binary with REA) and the research report
+`reports/Principal analyst agent harness design 2.md`. Decisions:
+
+1. **A derived mission checklist rides in every planner prompt.** `contracts.progress` lists what a forecast needs (inspect, ledger
+   stages, baseline comparison, forecast, health, requested files) from the evidence alone, marks the first undone item, and is
+   never stored, so it cannot drift and a resumed run sees the same list. It is the feature-list device of Anthropic's long-running
+   harness and Manus's todo recitation, built from our own deterministic checks. It is shown for forecast goals only.
+2. **Compaction keeps the asks.** `compactor.v2` writes fixed sections (ASKS copied unchanged, FOUND with step references, DONE AND
+   DECIDED, ERRORS, OPEN, SUB-AGENTS, NEXT with a quote), and a memo cut to fit removes its middle, never its head.
+3. **Progress is an event.** One `mission.progress` event per step (step, tool calls, elapsed, checklist done of total, next item).
+4. **A mission keeps going by itself.** The service starts the next part when a part ends at a checkpoint, up to
+   `AUTO_CONTINUE_PARTS` (2, a proposal) per mission or `budget["auto_continue"]`; after that the person chooses Continue or
+   Answer now. Stored steps replay, so nothing is asked of the model twice.
+5. **Not adopted, and why.** `/goal`'s judge reads the whole transcript and has no deterministic floor; ours reads a compacted
+   view, so the deterministic checks stay the authority and the evaluator's verdict stays advisory. `/goal`'s eight-block override
+   is not copied: `MAX_REJECTED_FINISHES` and `MAX_CONTRACT_BLOCKS` end a loop with a labelled partial answer instead.
