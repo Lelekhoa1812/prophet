@@ -13,10 +13,55 @@ from typing import Any
 from prophet_agent.artifacts import build_forecast_pack
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP
 from prophet_agent.runtime.runner import Tool
-from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series
+from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, run_dates, source_covariates
 from prophet_agent.tools.timesfm_tool import _run as timesfm_run
 
 MAX_TITLE = 120
+
+
+def _future_dates(dates: list[str], n: int) -> list[str] | None:
+    """The next ``n`` dates, continuing the history's own rhythm (daily, weekly, month-end ...). None when the dates cannot
+    be read or the history has no regular step, so a chart never invents a calendar."""
+    import pandas as pd
+    try:
+        idx = pd.DatetimeIndex(pd.to_datetime(dates))
+    except (ValueError, TypeError):
+        return None
+    if len(idx) < 3 or not idx.is_monotonic_increasing:
+        return None
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")            # pandas is changing the return type of infer_freq; the string is what is used here
+        freq = pd.infer_freq(idx[-min(len(idx), 90):])
+    if freq:
+        nxt = pd.date_range(idx[-1], periods=n + 1, freq=freq)[1:]
+    else:
+        gaps = idx.to_series().diff().dropna()
+        step = gaps.median()
+        if step <= pd.Timedelta(0) or (gaps != step).mean() > 0.1:
+            return None
+        nxt = pd.DatetimeIndex([idx[-1] + step * (k + 1) for k in range(n)])
+    return [t.strftime("%Y-%m-%d %H:%M") if (t.hour or t.minute) else t.strftime("%Y-%m-%d") for t in nxt]
+
+
+def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
+    """Known-ahead drivers that are on/off flags, as runs of positions over history plus horizon, to shade on the chart."""
+    pool = source_covariates(args)
+    out = []
+    for name in args.get("future_covariates") or []:
+        v = pool.get(name)
+        if not isinstance(v, list) or len(v) != n + horizon or not set(v) <= {0, 0.0, 1, 1.0}:
+            continue
+        spans, start = [], None
+        for i, f in enumerate(v + [0]):
+            if f and start is None:
+                start = i
+            elif not f and start is not None:
+                spans.append([start, i])
+                start = None
+        if spans:
+            out.append({"name": str(name), "spans": spans})
+    return out
 ALLOWED_ARGS = {"values", "source", "horizon", "title"} | CONTROL_ARGS
 
 
@@ -54,8 +99,15 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     if "series" in fc:
         fc = next(iter(fc["series"].values()))
     values = [float(v) for v in named[0][1]]
-    pack = build_forecast_pack(history=values, point=fc["point"], q10=fc["quantiles"]["0.1"],
-                               q90=fc["quantiles"]["0.9"], title=title, note=_method_note(fc["config"]))
+    hist_dates = run_dates(args, named[0][0])
+    if hist_dates is not None and len(hist_dates) != len(values):
+        hist_dates = None
+    ahead = _future_dates(hist_dates, len(fc["point"])) if hist_dates else None
+    q = fc["quantiles"]
+    pack = build_forecast_pack(history=values, point=fc["point"], q10=q["0.1"], q90=q["0.9"], title=title,
+                               note=_method_note(fc["config"]), dates=hist_dates if ahead else None, future_dates=ahead,
+                               events=_event_spans(args, len(values), len(fc["point"])),
+                               ignored=args.get("ignore_ranges"), q30=q.get("0.3"), q70=q.get("0.7"))
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
     return {

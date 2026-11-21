@@ -206,3 +206,32 @@ def test_only_an_interrupted_mission_can_be_resumed(tmp_path):
     service.store.set_status(mid, "completed")
     assert client.post(f"/api/missions/{mid}/resume").status_code == 409
     assert client.post("/api/missions/does-not-exist/resume").status_code == 404
+
+
+def test_a_mission_orphaned_inside_the_lease_window_is_interrupted_once_the_lease_lapses(tmp_path):
+    client, service = _client(tmp_path, lambda: ScriptedBrain([], []))
+    mid = service.store.create_mission("forecast", {})
+    service.store.acquire_lease(mid, "dead-process", ttl_s=300)          # the dead worker's lease is still valid at restart
+    service.store.set_status(mid, "running")
+    assert service.sweep() == [] and client.get(f"/api/missions/{mid}").json()["status"] == "running"
+    service.store.acquire_lease(mid, "dead-process", ttl_s=-1)           # the window passes
+    assert service.sweep() == [mid]
+    assert client.get(f"/api/missions/{mid}").json()["status"] == "interrupted"
+    assert client.post(f"/api/missions/{mid}/resume").status_code == 202
+
+
+def test_the_sweep_never_touches_a_mission_this_process_is_running(tmp_path):
+    import threading
+    client, service = _client(tmp_path, lambda: ScriptedBrain([], []))
+    mid = service.store.create_mission("forecast", {})
+    service.store.acquire_lease(mid, "me", ttl_s=-1)                     # lapsed only because a long step has not renewed it
+    service.store.set_status(mid, "running")
+    hold = threading.Event()
+    t = threading.Thread(target=hold.wait, daemon=True)
+    t.start()
+    service._threads[mid] = t
+    try:
+        assert service.sweep() == []
+        assert client.get(f"/api/missions/{mid}").json()["status"] == "running"
+    finally:
+        hold.set()

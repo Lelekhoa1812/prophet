@@ -305,15 +305,16 @@ class Store:
             if cur.rowcount != 1:
                 raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
 
-    def interrupt_orphans(self) -> list[str]:
+    def interrupt_orphans(self, exclude: tuple[str, ...] | list[str] = ()) -> list[str]:
         """At startup: a mission left as created or running by a process that died, whose lease has lapsed, is
         marked interrupted. That frees its notebook (active turns block new ones) and lets it be started again;
-        a non-idempotent call left started is still stopped as outcome_unknown when the mission resumes."""
+        a non-idempotent call left started is still stopped as outcome_unknown when the mission resumes.
+        ``exclude`` names missions a live worker in this process is running, which are never touched."""
         now = time.time()
         with self._tx() as c:
             ids = [r["id"] for r in c.execute(
                 "SELECT id FROM missions WHERE status IN ('created','running') "
-                "AND (lease_owner IS NULL OR lease_until<?)", (now,)).fetchall()]
+                "AND (lease_owner IS NULL OR lease_until<?)", (now,)).fetchall() if r["id"] not in exclude]
             for mid in ids:
                 c.execute("UPDATE missions SET status='interrupted', lease_owner=NULL, lease_until=0, updated=? "
                           "WHERE id=?", (now, mid))

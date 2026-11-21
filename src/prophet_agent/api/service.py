@@ -10,6 +10,7 @@ come from the notebook at the moment it starts, and it may keep tables for later
 """
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from dataclasses import replace
@@ -43,6 +44,27 @@ class MissionService:
         self._lock = threading.Lock()
         # Missions a previous process left running would otherwise block their notebook forever.
         self.interrupted_at_start = self.store.interrupt_orphans()
+        self._stop = threading.Event()
+        threading.Thread(target=self._sweep_loop, daemon=True, name="orphan-sweeper").start()
+
+    # A restart inside a dead worker's lease window leaves its mission "running" with nobody behind it. The startup pass
+    # cannot tell that from a live one, so the same check runs on a timer: once the lease lapses, the mission is marked
+    # interrupted and can be resumed. Missions with a live thread here are never touched.
+    SWEEP_EVERY_S = 30.0
+
+    def sweep(self) -> list[str]:
+        with self._lock:
+            live = [mid for mid, t in self._threads.items() if t.is_alive()]
+        return self.store.interrupt_orphans(exclude=live)
+
+    def _sweep_loop(self) -> None:
+        while not self._stop.wait(self.SWEEP_EVERY_S):
+            try:
+                self.sweep()
+            except Exception as exc:                # a closed store at shutdown, or a busy database: try again next time
+                if self._stop.is_set():
+                    return
+                logging.getLogger(__name__).warning("orphan sweep failed: %s", type(exc).__name__)
 
     # -- one-off missions ----------------------------------------------------------------------------------------
 
