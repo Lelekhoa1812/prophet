@@ -513,6 +513,23 @@ def _parse_dates(t: pd.Series, dayfirst: bool) -> pd.Series:
     return year_first.where(iso, numeric.where(dmy, other))
 
 
+def order_evidence(t: pd.Series) -> tuple[int, int]:
+    """How many numeric day-month-year values can only be read one way. (day_only, month_only): a first part above 12
+    must be the day, a second part above 12 must be the month. A column with both kinds mixes the two orders, and no
+    reading of it is safe to take silently; the person has to say which applies."""
+    day_only = month_only = 0
+    for v in t.dropna().astype(str):
+        m = re.match(_DMY, v.strip())
+        if not m:
+            continue
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > 12 >= b:
+            day_only += 1
+        elif b > 12 >= a:
+            month_only += 1
+    return day_only, month_only
+
+
 def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, dict]:
     """Parse text to timestamps and say how. Reports when day-first and month-first both fit (ambiguous), so the
     caller can ask rather than guess. ``dayfirst=True`` or ``False`` states the order the person gave; it settles an
@@ -544,9 +561,18 @@ def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, 
     if len(filled) and filled.str.match(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:$|[ T])").mean() >= 0.95:
         info["format"] = "year first (unambiguous)"      # 2023-03-01 is always year-month-day, whatever order a person writes
         return _parse_dates(t, False), info
+    day_only, month_only = order_evidence(t)
+    if day_only and month_only:
+        # The column mixes the two orders. Say so, with the counts, whichever reading is used.
+        info["order_conflict"] = {"day_first_only_rows": day_only, "month_first_only_rows": month_only}
     if dayfirst is not None:
         info["format"] = "day first (stated)" if dayfirst else "month first (stated)"
-        return _parse_dates(t, dayfirst), info
+        parsed = _parse_dates(t, dayfirst)
+        contradicted = month_only if dayfirst else day_only
+        if contradicted:
+            # Rows that only fit the other order come out as NaT here. They are not guessed, and the count is reported.
+            info["rows_contradicting_stated_order"] = contradicted
+        return parsed, info
     day = _parse_dates(t, True)
     mon = _parse_dates(t, False)
     both_ok = day.notna() & mon.notna()
@@ -709,10 +735,21 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
                 nums[str(name)] = num
         else:
             ts, tinfo = to_datetime(col)
-            if ts.notna().mean() >= 0.9 and col.nunique() > 1:
+            # A column whose day and month orders are mixed is still a date column: it is read, with the conflict reported,
+            # rather than falling back to text and hiding the problem.
+            mixed = bool(tinfo.get("order_conflict")) and ts.notna().mean() >= 0.5
+            if (ts.notna().mean() >= 0.9 or mixed) and col.nunique() > 1:
                 info.update(kind="time", **_regularity(ts), parsed_as=tinfo.get("format"))
                 times[str(name)] = ts
-                if tinfo.get("ambiguous_day_month"):
+                if mixed:
+                    oc = tinfo["order_conflict"]
+                    out["issues"].append(
+                        f"column {name!r}: {oc['day_first_only_rows']} dates only fit day-first and {oc['month_first_only_rows']} only "
+                        f"fit month-first, so the column mixes both orders and the reading cannot be settled from the data. Ask which "
+                        f"order applies before forecasting, and say how many rows were not read ({int(ts.isna().sum())} unread here)")
+                    info["ambiguous_day_month"] = True
+                    info["order_conflict"] = oc
+                elif tinfo.get("ambiguous_day_month"):
                     out["issues"].append(f"column {name!r}: dates such as {col.iloc[0]!r} read differently day-first and month-first "
                                          f"({tinfo.get('rows_where_it_matters')} rows differ); ask which applies")
                     info["ambiguous_day_month"] = True

@@ -42,13 +42,15 @@ TimesFM 3 produces a point forecast and an 80% likely range. Prophet also scores
 
 <p align="center"><img src="docs/images/forecast-range.png" alt="A six-month forecast table with 80% likely ranges and the backtest result" width="860"></p>
 
-### Organised workspace
+<!-- The 2 sections below are just dummy UI setups -->
+
+<!-- ### Organised workspace
 
 Notebooks and quick forecasts live in the sidebar. Each one has a menu to pin, rename, archive or delete. Titles are generated from your question, then refined by a model in the background.
 
-<p align="center"><img src="docs/images/sidebar-menu.png" alt="The sidebar with the notebook menu open showing Pin, Rename, Archive and Delete" width="520"></p>
+<p align="center"><img src="docs/images/sidebar-menu.png" alt="The sidebar with the notebook menu open showing Pin, Rename, Archive and Delete" width="520"></p> -->
 
-### Attach files, mention them, pick skills
+<!-- ### Attach files, mention them, pick skills
 
 Use **+** to add files, a whole folder, skills or tools. Type **@** to mention an attached file, or **/** to start a skill: a prompt you can adjust before sending.
 
@@ -58,7 +60,7 @@ Use **+** to add files, a whole folder, skills or tools. Type **@** to mention a
   <img src="docs/images/mention-files.png" alt="An attached file listed after typing @" width="520">
 </p>
 
-<p align="center"><img src="docs/images/skills-list.png" alt="The slash menu listing skills and tools" width="520"></p>
+<p align="center"><img src="docs/images/skills-list.png" alt="The slash menu listing skills and tools" width="520"></p> -->
 
 ### Charts that make one point
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from prophet_agent.config import DATA, DOTENV, TIMESFM_CHECKPOINT
+from prophet_agent.nim.providers import DEFAULT_PROVIDER, PROVIDERS, Provider, active_provider_name, get_provider
 from prophet_agent.nim.transport import DEFAULT_CHAIN
 from prophet_agent.runtime.goal import GoalConfig
 from prophet_agent.sandbox.runner import memory_limit_enforced, run_python
@@ -43,8 +44,10 @@ BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
     ("context", "memory_chars"): (1000, 100000),
 }
 MAX_KEYS = 16
-KEY_PATTERN = re.compile(r"^nvapi-[A-Za-z0-9_\-]{8,}$")
-ENV_KEY_LINE = re.compile(r"^\s*(export\s+)?NVIDIA_NIM_API_KEY(S|_[1-9])\s*=")
+KEY_PATTERN = re.compile(r"^nvapi-[A-Za-z0-9_\-]{8,}$")                # NVIDIA NIM keys
+GENERIC_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_\-.]{8,}$")             # other providers' key formats vary
+LLM_SECTION = "llm"
+KEY_SECTIONS = ("nim", "providers")                                     # handled by set_keys, not by update()
 CLEAR_PHRASE = "delete all data"
 LICENCE = ("TimesFM 3 weights are non-commercial: research use only. Do not use outputs for commercial decisions, client "
            "deliverables or paid services.")
@@ -83,9 +86,17 @@ class Settings:
         if not isinstance(patch, dict):
             raise ValueError("settings must be an object")
         current = self.values()
+        chosen: str | None = None
         for section, body in patch.items():
-            if section == "nim":
+            if section in KEY_SECTIONS:
                 continue                             # keys are handled by set_keys
+            if section == LLM_SECTION:
+                if not isinstance(body, dict) or set(body) - {"provider"}:
+                    raise ValueError("llm accepts only provider")
+                if body.get("provider") not in PROVIDERS:
+                    raise ValueError(f"unknown provider {body.get('provider')!r}; choose one of {', '.join(PROVIDERS)}")
+                chosen = body["provider"]
+                continue
             if section not in DEFAULTS or not isinstance(body, dict):
                 raise ValueError(f"unknown settings section {section!r}")
             for name, value in body.items():
@@ -96,8 +107,24 @@ class Settings:
                     raise ValueError(f"{section}.{name} must be a whole number from {low} to {high}")
                 current[section][name] = value
         with self._lock:
-            self._write_json(self.path, current)
+            stored = self._raw()                     # keep sections this method does not own, such as llm
+            stored.update(current)
+            if chosen is not None:
+                stored[LLM_SECTION] = {"provider": chosen}
+                from prophet_agent.nim.transport import reset_shared_client
+                reset_shared_client()
+            self._write_json(self.path, stored)
         return current
+
+    def _raw(self) -> dict[str, Any]:
+        try:
+            stored = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return {}
+        return stored if isinstance(stored, dict) else {}
+
+    def active_provider(self) -> str:
+        return active_provider_name(self.data_root)
 
     def goal_config(self, base: GoalConfig) -> GoalConfig:
         """The goal loop's limits as the person set them. Read at every start, so a change applies to the next part."""
@@ -112,19 +139,21 @@ class Settings:
 
     # -- NIM keys ----------------------------------------------------------------------------------------------
 
-    def key_slots(self, environ: dict[str, str] | None = None) -> list[str]:
+    def key_slots(self, environ: dict[str, str] | None = None, provider: str = DEFAULT_PROVIDER) -> list[str]:
         from prophet_agent.nim.transport import load_keys
-        return load_keys(environ)
+        return load_keys(environ, provider)
 
-    def masked_keys(self) -> list[dict[str, Any]]:
-        return [{"slot": i, "masked": mask(k)} for i, k in enumerate(self.key_slots(), 1)]
+    def masked_keys(self, provider: str = DEFAULT_PROVIDER) -> list[dict[str, Any]]:
+        return [{"slot": i, "masked": mask(k)} for i, k in enumerate(self.key_slots(None, provider), 1)]
 
-    def set_keys(self, keys: list[str]) -> list[str]:
-        """Replace the NIM key list. An entry that is the masked form of an existing key keeps that key, so a form that
-        echoes masked values back cannot erase a key. Writes .env (owner-only) and the process environment."""
+    def set_keys(self, keys: list[str], provider: str = DEFAULT_PROVIDER) -> list[str]:
+        """Replace one provider's key list. An entry that is the masked form of an existing key keeps that key, so a form
+        that echoes masked values back cannot erase a key. Writes .env (owner-only) and the process environment."""
+        spec = get_provider(provider)
         if not isinstance(keys, list) or len(keys) > MAX_KEYS:
             raise ValueError(f"keys must be a list of at most {MAX_KEYS} entries")
-        existing = self.key_slots()
+        existing = self.key_slots(None, provider)
+        pattern = KEY_PATTERN if provider == DEFAULT_PROVIDER else GENERIC_KEY_PATTERN
         resolved: list[str] = []
         for item in keys:
             if not isinstance(item, str):
@@ -135,26 +164,35 @@ class Settings:
                 if not match:
                     raise ValueError("a masked key does not match any stored key; paste the full key")
                 value = match[0]
-            if not KEY_PATTERN.match(value):
-                raise ValueError("a NIM key starts with nvapi- and contains only letters, digits, '-' and '_'")
+            if not pattern.match(value):
+                if provider == DEFAULT_PROVIDER:
+                    raise ValueError("a NIM key starts with nvapi- and contains only letters, digits, '-' and '_'")
+                raise ValueError(f"a {spec.label} key contains only letters, digits, '-', '_' and '.' (8 or more)")
             if value not in resolved:
                 resolved.append(value)
-        self._write_dotenv(resolved)
-        os.environ["NVIDIA_NIM_API_KEYS"] = ",".join(resolved)
-        for i in range(1, 10):                       # blank the indexed form so an old value cannot come back
-            os.environ[f"NVIDIA_NIM_API_KEY_{i}"] = ""
+        if not spec.multi_key and len(resolved) > 1:
+            raise ValueError(f"{spec.label} takes one key")
+        self._write_dotenv(spec, resolved)
+        os.environ[spec.key_list_var] = ",".join(resolved)
+        if spec.key_prefix:
+            for i in range(1, 10):                   # blank the indexed form so an old value cannot come back
+                os.environ[f"{spec.key_prefix}_{i}"] = ""
         from prophet_agent.nim.transport import reset_shared_client
         reset_shared_client()
         return resolved
 
-    def _write_dotenv(self, keys: list[str]) -> None:
+    def _write_dotenv(self, spec: Provider, keys: list[str]) -> None:
+        names = [re.escape(spec.key_list_var)]
+        if spec.key_prefix:
+            names.append(re.escape(spec.key_prefix) + r"_[1-9]")
+        env_line = re.compile(r"^\s*(export\s+)?(" + "|".join(names) + r")\s*=")
         try:
             lines = self.dotenv.read_text().splitlines()
         except OSError:
             lines = []
-        kept = [line for line in lines if not ENV_KEY_LINE.match(line)]
+        kept = [line for line in lines if not env_line.match(line)]
         if keys:
-            kept.append(f"NVIDIA_NIM_API_KEYS={','.join(keys)}")
+            kept.append(f"{spec.key_list_var}={','.join(keys)}")
         body = "\n".join(kept).rstrip() + "\n"
         self._write_text(self.dotenv, body, mode=0o600)
 
@@ -232,8 +270,18 @@ def _sandbox_limits() -> dict[str, Any]:
 def view(settings: Settings, store, datasets, pool_status: dict | None) -> dict[str, Any]:
     """What the Settings page shows. No key material: masked keys and counts only."""
     keys = settings.masked_keys()
+    active = settings.active_provider()
+    providers = []
+    for name, spec in PROVIDERS.items():
+        pkeys = settings.masked_keys(name)
+        providers.append({
+            "name": name, "label": spec.label, "multi_key": spec.multi_key, "key_hint": spec.key_hint,
+            "keys": pkeys, "configured": bool(pkeys), "endpoint_set": bool(spec.resolve_base_url()),
+            "models": list(spec.models()), "ready": bool(pkeys) and spec.usable(), "active": name == active,
+        })
     return {
         "nim": {"configured": bool(keys), "keys": keys, "models": list(DEFAULT_CHAIN), "pool": pool_status},
+        "llm": {"provider": active, "providers": providers, "pool": pool_status},
         "agent": settings.values()["agent"],
         "context": settings.values()["context"],
         "defaults": {section: dict(vals) for section, vals in DEFAULTS.items()},

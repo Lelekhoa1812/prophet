@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from prophet_agent.nim import Exhausted, NimClient, NimError, NotConfigured, SchemaViolation, load_keys
+from prophet_agent.nim.transport import ATTEMPT_BUDGET_S, BUDGET_S
 from prophet_agent.nim.transport import COOL_DEFAULT_S, DEMOTE_S, MAX_CONTINUATIONS, RETIRE_S, clean_text
 
 KEYS = ("nvapi-AAAA1111", "nvapi-BBBB2222", "nvapi-CCCC3333")
@@ -513,3 +514,32 @@ def test_probe_reports_status_only_and_never_retries():
 def test_nim_error_messages_are_redacted_on_construction():
     err = NimError("auth failed for nvapi-SECRETVALUE123")
     assert "SECRETVALUE" not in str(err) and "[key]" in str(err)
+
+
+def test_slow_first_model_fails_over_while_time_is_left():
+    # Live run (missions 5a091d2d, b2108a71): the first model in the chain ran past the whole logical budget, so every
+    # later model started with no time and the mission failed with "budget spent" after 426 s. One attempt now has a
+    # slice of the budget, so the next model in the chain still gets its turn.
+    clock = FakeClock()
+
+    def slow_first(request, payload):
+        clock.t += ATTEMPT_BUDGET_S + 30       # the stream runs past its slice before its first line is read
+        return sse(["late"])
+
+    script = Script().on(slow_first, model=M1)
+    client, _ = make(script, clock=clock)
+    reply = client.complete([M1, M2], MSGS)
+    assert reply.model == M2
+    assert reply.text == "ok"
+
+
+def test_a_single_slow_model_still_ends_as_exhausted_not_hangs():
+    clock = FakeClock()
+
+    def slow(request, payload):
+        clock.t += BUDGET_S + 30
+        return sse(["late"])
+
+    client, _ = make(Script().on(slow), clock=clock)
+    with pytest.raises(Exhausted):
+        client.complete([M1], MSGS)

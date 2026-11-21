@@ -112,7 +112,9 @@ export default function App() {
     wasNavOpen.current = navOpen;
   }, [navOpen]);
 
+  // Staged files belong to the view they were added in: switching to another item clears them, so nothing carries over.
   const openNotebook = (id: string) => {
+    if (id !== selectedNotebookId) setAttachments([]);
     setSelectedNotebookId(id);
     setSelectedId(null);
     setNavOpen(false);
@@ -120,6 +122,7 @@ export default function App() {
 
   const openMission = (id: string) => {
     stick.current = true;
+    if (id !== selectedId) setAttachments([]);
     setSelectedNotebookId(null);
     setSelectedId(id);
     setNavOpen(false);
@@ -233,6 +236,7 @@ export default function App() {
         await api.deleteNotebook(id);
         if (selectedNotebookId === id) setSelectedNotebookId(null);
       }
+      setAttachments([]);
       refreshList();
       setNotice({ id: Date.now(), message: kind === "forecast" ? "Forecast deleted." : "Notebook deleted.", tone: "info" });
     } catch (err) {

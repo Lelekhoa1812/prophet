@@ -129,7 +129,7 @@ def test_rolling_backtest_reports_all_models_and_refuses_short_series(stub):
     x = 50 + 10 * np.sin(np.arange(120) * 2 * np.pi / 12) + rng.normal(0, 1, 120)
     out = rolling_backtest(x, 12, n_origins=4, season=12, engine=StubEngine())
     assert out["origins"] == 4 and out["season_used"] == 12
-    assert set(out["models"]) == {"timesfm", "naive", "seasonal_naive", "drift", "mean_last_season"}
+    assert set(out["models"]) == {"timesfm", "naive", "seasonal_naive", "drift", "mean_last_season", "tsb_expected"}
     assert out["models"]["seasonal_naive"]["mase"] < out["models"]["naive"]["mase"]
     assert out["best_baseline"] == "seasonal_naive" and 0 <= out["timesfm_range_coverage_80"] <= 1
     with pytest.raises(ValueError):

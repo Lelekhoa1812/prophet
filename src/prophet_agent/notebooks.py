@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, run_ids_in, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore, MAX_BYTES
 from prophet_agent.runtime.store import ACTIVE, Store
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
@@ -138,13 +139,22 @@ class Notebooks:
             c.execute("UPDATE notebooks SET pinned=? WHERE id=?", (1 if pinned else 0, nid))
 
     def delete(self, nid: str) -> None:
-        """Permanently remove a notebook with its files, questions and kept tables. Source datasets are left in place."""
+        """Permanently remove a notebook: its rows, its kept tables, the run folders of its turns and profiling, and the
+        files it added. A dataset that a quick forecast still uses is kept."""
         self._row(nid)
+        src_ids = [s["id"] for s in self.sources(nid, include_removed=True)]
+        if any(self._profilers[s].is_alive() for s in src_ids if s in self._profilers):
+            raise ValueError("Prophet is still reading this notebook's files; try again in a moment")
         with self.store._tx() as c:
             busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND status IN ('created','running','waiting_user')", (nid,)).fetchone()
             if busy:
                 raise ValueError("Prophet is still working in this notebook; stop it first")
             mission_ids = [r[0] for r in c.execute("SELECT id FROM missions WHERE notebook_id=?", (nid,)).fetchall()]
+            run_ids = mission_run_ids(c, mission_ids)
+            run_ids |= run_ids_in(*(r[0] for r in c.execute(
+                "SELECT v.lineage_json FROM derived_versions v JOIN derived_tables t ON t.id=v.table_id WHERE t.notebook_id=?", (nid,))))
+            run_ids |= {r[0] for r in c.execute("SELECT run_id FROM sources WHERE notebook_id=? AND run_id IS NOT NULL", (nid,))}
+            dataset_ids = [r[0] for r in c.execute("SELECT dataset_id FROM sources WHERE notebook_id=?", (nid,)).fetchall()]
             for mid in mission_ids:
                 for table in ("questions", "tool_calls", "steps", "events"):
                     c.execute(f"DELETE FROM {table} WHERE mission_id=?", (mid,))
@@ -153,6 +163,13 @@ class Notebooks:
             c.execute("DELETE FROM derived_tables WHERE notebook_id=?", (nid,))
             c.execute("DELETE FROM sources WHERE notebook_id=?", (nid,))
             c.execute("DELETE FROM notebooks WHERE id=?", (nid,))
+            orphans = unreferenced_datasets(c, dataset_ids)
+        # Files go after the commit, so a failed delete removes nothing from disk.
+        remove_runs(run_ids)
+        shutil.rmtree(self.root / nid, ignore_errors=True)
+        remove_datasets(self.datasets.root, orphans)
+        for sid in src_ids:
+            self._profilers.pop(sid, None)
 
     def update(self, nid: str, *, title: str | None = None, instructions: str | None = None,
                archived: bool | None = None) -> dict:
@@ -206,8 +223,10 @@ class Notebooks:
     def profile_source(self, sid: str) -> None:
         src = self.source(sid)
         path = self.datasets.path(src["dataset_id"])
+        run_id = None
         try:
             res = run_python(PROFILE_CODE.format(name=path.name), timeout_s=90, mem_mb=2048, inputs={path.name: path})
+            run_id = res.run_id  # kept on the source so deleting the notebook removes this run's folder too
             if not res.ok:
                 raise RuntimeError((res.stderr.strip().splitlines() or ["the profiler stopped"])[-1][:300])
             card, status, error = make_card(json.loads(res.stdout)), "ready", None
@@ -217,8 +236,8 @@ class Notebooks:
         except Exception as exc:
             card, status, error = None, "failed", str(exc)[:300]
         with self.store._tx() as c:
-            c.execute("UPDATE sources SET status=?, card_json=?, error=? WHERE id=?",
-                      (status, json.dumps(card) if card else None, error, sid))
+            c.execute("UPDATE sources SET status=?, card_json=?, error=?, run_id=? WHERE id=?",
+                      (status, json.dumps(card) if card else None, error, run_id, sid))
 
     def wait_profiled(self, timeout: float = 120.0) -> None:
         for t in list(self._profilers.values()):

@@ -164,7 +164,7 @@ export function Sidebar({
             <h2 id={forecastsId} className="text-caption font-semibold text-sand-2">
               Quick forecasts
             </h2>
-            <IconButton label="New quick forecast" icon={<Sparkles aria-hidden="true" className="size-4" />} onClick={onNewForecast} className="size-9" />
+            <IconButton label="Quick" icon={<Sparkles aria-hidden="true" className="size-4" />} onClick={onNewForecast} className="size-9" />
           </div>
 
           {missions.length > 4 && (

@@ -134,7 +134,8 @@ FORECAST_REPORT_SPEC = {
     "description": "Forecast ONE series with TimesFM 3 and produce the deliverables a person opens: a chart (PNG, SVG), a "
                    "spreadsheet (XLSX), a report (DOCX) and a PDF, listed in a sha256 manifest. Use it for the final "
                    "forecast the person asked for, after any checking is done. It takes the same control arguments as "
-                   "timesfm_forecast: pass exactly the configuration that won your backtest, or the pack will show the default forecast.",
+                   "timesfm_forecast: pass exactly the configuration that won your backtest, or the pack will show the default forecast. "
+                   "Backtest-only settings (season, n_origins) belong to backtest_series and are refused here.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
              **CONTROL_HELP},
 }

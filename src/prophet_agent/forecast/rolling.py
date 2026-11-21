@@ -15,9 +15,11 @@ from typing import Any
 
 import numpy as np
 
+from prophet_agent.forecast.tsb import expected_volume
 from prophet_agent.sandbox.prophet_lib import find_season
 
 MIN_HISTORY = 8
+VOLUME_BIAS_NOTE = 15.0     # percent: a total this far from actual is reported as a volume finding, not left to the reader
 
 
 def _snaive(x: np.ndarray, h: int, m: int) -> np.ndarray:
@@ -75,15 +77,18 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
     else:
         cfc = fc
 
-    names = ["timesfm", "naive", "seasonal_naive", "drift", "mean_last_season"] + (["timesfm_default"] if configured else [])
+    names = ["timesfm", "naive", "seasonal_naive", "drift", "mean_last_season", "tsb_expected"] + (
+        ["timesfm_default"] if configured else [])
     errs: dict[str, list[float]] = {nm: [] for nm in names}
     act_sum, abs_err = 0.0, {nm: 0.0 for nm in names}
+    signed = {nm: 0.0 for nm in names}          # sum of (forecast - actual): the volume bias, not the error
     covered, pin = [], []
     qs = np.arange(1, 10) / 10
     for j, o in enumerate(origins):
         hist, actual = x[:o], x[o:o + horizon]
         preds = {"timesfm": cfc.point[j], "naive": np.full(horizon, hist[-1]), "seasonal_naive": _snaive(hist, horizon, m),
-                 "drift": _drift(hist, horizon), "mean_last_season": _mean_last(hist, horizon, m)}
+                 "drift": _drift(hist, horizon), "mean_last_season": _mean_last(hist, horizon, m),
+                 "tsb_expected": expected_volume(hist, horizon)}
         if configured:
             preds["timesfm_default"] = fc.point[j]
         scale = np.mean(np.abs(hist[m:] - hist[:-m])) if len(hist) > m else np.mean(np.abs(np.diff(hist)))
@@ -92,6 +97,7 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             e = np.abs(actual - p)
             errs[nm].append(float(e.mean() / scale) if scale == scale else float("nan"))
             abs_err[nm] += float(e.sum())
+            signed[nm] += float((p - actual).sum())
         act_sum += float(np.abs(actual).sum())
         q = cfc.q[j]
         covered.append(float(((actual >= q[:, 0]) & (actual <= q[:, 8])).mean()))
@@ -99,12 +105,20 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
         pin.append(float(np.mean(np.maximum(qs * d, (qs - 1) * d)) / scale) if scale == scale else float("nan"))
 
     models = {nm: {"mase": round(float(np.nanmean(v)), 4) if len(v) and not np.all(np.isnan(v)) else None,
-                   "wape": round(abs_err[nm] / act_sum, 4) if act_sum > 0 else None} for nm, v in errs.items()}
+                   "wape": round(abs_err[nm] / act_sum, 4) if act_sum > 0 else None,
+                   "volume_bias_pct": round(signed[nm] / act_sum * 100, 1) if act_sum > 0 else None}
+              for nm, v in errs.items()}
     base = {nm: v["mase"] for nm, v in models.items() if nm not in ("timesfm", "timesfm_default") and v["mase"] is not None}
     out: dict[str, Any] = {"points": n, "horizon": horizon, "origins": k, "season_used": m,
                            "models": models,
                            "timesfm_range_coverage_80": round(float(np.mean(covered)), 3),
                            "timesfm_pinball_scaled": round(float(np.nanmean(pin)), 4) if not np.all(np.isnan(pin)) else None}
+    tb = models["timesfm"]["volume_bias_pct"]
+    if tb is not None and abs(tb) >= VOLUME_BIAS_NOTE:
+        out["timesfm_volume_note"] = (
+            f"Over these windows TimesFM's point forecast totals {tb:+.1f}% against what happened. A point forecast is a "
+            "median, and for lumpy or skewed demand a median understates volume. Compare with tsb_expected (the mean under TSB) "
+            "before presenting the point as expected demand, and say which measure the answer uses.")
     if configured:
         out["control"] = control.describe()
         d, c = models["timesfm_default"]["mase"], models["timesfm"]["mase"]

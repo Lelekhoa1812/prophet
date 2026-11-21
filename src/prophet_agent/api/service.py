@@ -10,6 +10,7 @@ come from the notebook at the moment it starts, and it may keep tables for later
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import uuid
@@ -17,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore
 from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
@@ -116,13 +118,24 @@ class MissionService:
     def delete(self, mission_id: str) -> None:
         """Permanently remove a quick forecast and its run history. A running one must be stopped first."""
         with self.store.lock:
-            row = self.store.conn.execute("SELECT status FROM missions WHERE id=? AND notebook_id IS NULL", (mission_id,)).fetchone()
+            row = self.store.conn.execute("SELECT status, budget_json FROM missions WHERE id=? AND notebook_id IS NULL",
+                                          (mission_id,)).fetchone()
             if row is None:
                 raise KeyError(mission_id)
             if row["status"] in ("created", "running", "waiting_user"):
                 raise ValueError("this forecast is still running; stop it first")
+            dataset_ids = json.loads(row["budget_json"]).get("dataset_ids", [])
             with self.store._tx() as c:
+                run_ids = mission_run_ids(c, [mission_id])
                 _purge_missions(c, [mission_id])
+                orphans = unreferenced_datasets(c, dataset_ids)
+        # Files go after the commit: the run folder (outputs, copies of inputs) and any attached file nothing else uses.
+        remove_runs(run_ids)
+        remove_datasets(self.datasets.root, orphans)
+        with self._lock:
+            t = self._threads.get(mission_id)
+            if t is None or not t.is_alive():
+                self._threads.pop(mission_id, None)
 
     # -- notebook turns ------------------------------------------------------------------------------------------
 

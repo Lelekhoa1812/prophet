@@ -1,8 +1,10 @@
-"""NVIDIA NIM access for Prophet. Public surface: NimClient, Reply, load_keys, DEFAULT_CHAIN and the error types."""
+"""Model access for Prophet: NVIDIA NIM (default) plus Claude, ChatGPT, Gemini, Grok and Matilda. Public surface: NimClient,
+Reply, load_keys, the provider registry, DEFAULT_CHAIN and the error types."""
 from .errors import Exhausted, NimError, NotConfigured, SchemaViolation, redact
-from .transport import DEFAULT_CHAIN, PROBE_MODEL, NimClient, Reply, clean_text, load_keys
+from .providers import PROVIDERS, Provider
+from .transport import DEFAULT_CHAIN, PROBE_MODEL, NimClient, Reply, clean_text, load_keys, probe_provider
 
 __all__ = [
-    "DEFAULT_CHAIN", "PROBE_MODEL", "Exhausted", "NimClient", "NimError", "NotConfigured", "Reply",
+    "DEFAULT_CHAIN", "PROBE_MODEL", "PROVIDERS", "Provider", "probe_provider", "Exhausted", "NimClient", "NimError", "NotConfigured", "Reply",
     "SchemaViolation", "clean_text", "load_keys", "redact",
 ]

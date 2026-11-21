@@ -26,6 +26,7 @@ change the outcome, so the loop stops with the best answer it has.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -70,6 +71,7 @@ VIEW_CHARS = 16000        # uncompacted observations shown before the older ones
 KEEP_RECENT = 4           # newest observations never compacted
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
+MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
 SUB_STEPS = 12            # default step budget of a delegated sub-agent
 
 
@@ -136,12 +138,82 @@ def _evidence_lines(history: list[dict], start: int = 1) -> str:
     return "\n".join(f"{n}. {_clip(_view(obs))}" for n, obs in enumerate(history, start=start))
 
 
+def _question_texts(questions: Any) -> list[tuple[str, str]]:
+    """(header, question) pairs from a stored question set. Old ledger entries may lack the questions; they give none."""
+    out = []
+    for q in questions if isinstance(questions, list) else []:
+        if isinstance(q, dict) and isinstance(q.get("question"), str):
+            out.append((str(q.get("header", "")).strip().lower(), " ".join(q["question"].split()).lower()))
+    return out
+
+
+def _decisions(history: list[dict]) -> list[str]:
+    """Every answer the person has given in this mission, verbatim and in order. Kept out of the folded memory on purpose:
+    a decision that compaction drops would be asked again, which is the defect this guards against."""
+    lines = []
+    for h in history:
+        if h.get("kind") not in ("ask_user", "evaluator_question") or not h.get("answers"):
+            continue
+        asked = [q for q in (h.get("questions") or []) if isinstance(q, dict) and q.get("question")]
+        answers = canonical(h["answers"])
+        if len(answers) > 300:
+            answers = answers[:300] + "...[clipped]"
+        topic = " / ".join(" ".join(q["question"].split())[:160] for q in asked) or "(question not stored)"
+        lines.append(f"- {topic} -> {answers}")
+    return lines
+
+
 def _evidence_block(history: list[dict], memo: Memo) -> str:
     parts = []
+    decided = _decisions(history)
+    if decided:
+        parts.append("Decisions the person has already made (verbatim; act on them, and do not ask about these again):\n"
+                     + "\n".join(decided))
     if memo.text:
         parts.append("Memory of earlier steps (compacted; every figure is as a tool printed it):\n" + memo.text)
     parts.append("Evidence so far (oldest first):\n" + _evidence_lines(history[memo.covered:], start=memo.covered + 1))
     return "\n\n".join(parts)
+
+
+# A new question is the same question as an earlier one when its header matches or its wording is nearly identical. Two
+# questions about one decision are one decision: the second is dropped and the earlier answer stands.
+SAME_QUESTION_RATIO = 0.75
+
+
+def _asks_made(history: list[dict]) -> int:
+    """Pauses for the person so far in this mission: every answered question set, planner or evaluator."""
+    return sum(1 for h in history if h.get("kind") in ("ask_user", "evaluator_question") and h.get("answers"))
+
+
+# Values a question is about: dates, and numbers of three or more digits. Two questions that name the same dates and
+# figures are about the same decision even when the wording differs (a re-phrased promo-window question is one decision).
+_ANCHOR = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{2,4}|\d{3,}(?:[.,]\d+)?")
+ANCHOR_SHARE = 0.5
+
+
+def _same_anchors(a: str, b: str) -> bool:
+    """True when two questions name at least two of the same values and most of the values either one names."""
+    xa, xb = set(_ANCHOR.findall(a)), set(_ANCHOR.findall(b))
+    shared = xa & xb
+    return len(shared) >= 2 and len(shared) / len(xa | xb) >= ANCHOR_SHARE
+
+
+def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dict], list[str]]:
+    """Split a new question set into the questions still open and the ones already asked and answered before."""
+    earlier = [pair for h in history if h.get("kind") in ("ask_user", "evaluator_question") and h.get("answers")
+               for pair in _question_texts(h.get("questions"))]
+    if not earlier:
+        return questions, []
+    import difflib
+    open_qs, repeated = [], []
+    for q in questions:
+        head = str(q.get("header", "")).strip().lower()
+        text = " ".join(str(q.get("question", "")).split()).lower()
+        same = any((head and head == eh) or difflib.SequenceMatcher(None, text, et).ratio() >= SAME_QUESTION_RATIO
+                   or _same_anchors(text, et)
+                   for eh, et in earlier)
+        (repeated if same else open_qs).append(q)
+    return open_qs, [str(q.get("question", ""))[:160] for q in repeated]
 
 
 def _calls_used(history: list[dict]) -> int:
@@ -356,14 +428,26 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
         elif plan["action"] == "ask_user":
-            payload = {"questions": plan.get("questions", [])}
-            problems = validate_questions(payload)
-            if problems:
+            open_qs, repeated = _already_asked(plan.get("questions", []) or [], history)
+            payload = {"questions": open_qs}
+            problems = (validate_questions(payload) if open_qs or not repeated
+                        else ["every question was already asked and answered"])
+            asks = _asks_made(history)
+            if asks >= MAX_ASKS:
+                obs = {"kind": "ask_user", "error": f"no more questions: the person has already been asked {asks} times in this "
+                       "mission. Decide with what is known, state each assumption in the answer, and finish."}
+            elif problems and repeated:
+                obs = {"kind": "ask_user", "error": "not asked again, the person already answered: " + "; ".join(repeated)
+                       + ". The decision is in the decisions list; act on it."}
+            elif problems:
                 obs = {"kind": "ask_user", "error": "invalid questions: " + "; ".join(problems)}
             else:
-                # Pauses the run here. The answer, once given, is returned as the step's value.
+                # Pauses the run here. The answer, once given, is returned as the step's value. Questions that repeat an
+                # earlier one are left out; the earlier answer stands.
                 answers = ctx.step(f"ask:{tag}:{i}", lambda c: c.ask(payload))
-                obs = {"kind": "ask_user", "answers": answers}
+                obs = {"kind": "ask_user", "questions": open_qs, "answers": answers}
+                if repeated:
+                    obs["not_asked_again"] = repeated
         elif plan["action"] == "delegate":
             obs = _delegate(ctx, brain, plan, tools, cfg, context)
         else:
@@ -401,6 +485,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # The evaluator may find that one decision by the person would change the answer. It is asked once per run,
         # then the evaluator judges again with the answer in the evidence.
         qs = _usable_questions(verdict) if verdict["verdict"] != "met" else None
+        if qs:
+            qs, _ = _already_asked(qs, history)
         if qs and not any(h.get("kind") == "evaluator_question" for h in history):
             answers = ctx.step(f"evalask:{tag}:{i}", lambda c: c.ask({"questions": qs}))
             history.append({"kind": "evaluator_question", "questions": qs, "answers": answers})
@@ -509,12 +595,12 @@ class NimBrain:
 
     def write(self, messages: list[dict]) -> str:
         """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line)."""
-        reply = self.client.complete(list(self.models or DEFAULT_CHAIN), messages, thinking=False,
+        reply = self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages, thinking=False,
                                      max_tokens=self.write_tokens)
         return reply.text
 
     def decide(self, messages: list[dict], schema: dict, name: str) -> dict:
-        reply = self.client.complete(list(self.models or DEFAULT_CHAIN), messages,
+        reply = self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages,
                                      thinking=self.thinking, max_tokens=self.max_tokens,
                                      schema=schema, schema_name=name)
         return json.loads(reply.text)

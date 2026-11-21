@@ -22,7 +22,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from prophet_agent.config import ROOT
 from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
-from prophet_agent.nim.transport import shared_client
+from prophet_agent.nim.providers import PROVIDERS, planner_problem
+from prophet_agent.nim.transport import probe_provider, shared_client
 from prophet_agent.runtime.store import ACTIVE, LeaseHeld, NotebookBusy
 from prophet_agent.settings import mask
 from prophet_agent.settings import view as settings_view
@@ -172,10 +173,9 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.post("/api/missions", status_code=201)
     def create_mission(body: MissionIn) -> dict:
-        from prophet_agent.nim.transport import load_keys
-        if service.brain_factory is default_brain_factory and not load_keys():
+        if service.brain_factory is default_brain_factory and planner_problem():
             # Refuse before writing a mission row, so no orphan "created" mission is left behind.
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
         try:
             mission_id = service.create(body.goal.strip(), dataset_ids=body.dataset_ids)
         except KeyError:
@@ -183,7 +183,7 @@ def create_app(service: MissionService) -> FastAPI:
         try:
             service.start(mission_id)
         except NotConfigured:
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"id": mission_id}
 
     @app.get("/api/missions/{mission_id}")
@@ -206,7 +206,7 @@ def create_app(service: MissionService) -> FastAPI:
         except LeaseHeld:
             raise HTTPException(409, "mission is already running")
         except NotConfigured:
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"mission_id": mission_id}
 
     @app.get("/api/missions/{mission_id}/artifacts")
@@ -323,9 +323,8 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.post("/api/notebooks/{nid}/turns", status_code=201)
     def create_turn(nid: str, body: TurnIn) -> dict:
-        from prophet_agent.nim.transport import load_keys
-        if service.brain_factory is default_brain_factory and not load_keys():
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+        if service.brain_factory is default_brain_factory and planner_problem():
+            raise HTTPException(503, planner_problem())
         try:
             mission_id = service.create_turn(nid, body.goal.strip())
         except KeyError:
@@ -335,7 +334,7 @@ def create_app(service: MissionService) -> FastAPI:
         try:
             service.start(mission_id)
         except NotConfigured:
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
         service.notebooks.touch(nid)
         return {"id": mission_id, "seq": service.store.mission(mission_id)["seq"]}
 
@@ -366,7 +365,7 @@ def create_app(service: MissionService) -> FastAPI:
         except LeaseHeld:
             raise HTTPException(409, "this mission is already running")
         except NotConfigured:
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"id": mission_id, "status": "running"}
 
     def _checkpoint_action(mission_id: str, action) -> dict:
@@ -379,7 +378,7 @@ def create_app(service: MissionService) -> FastAPI:
         except LeaseHeld:
             raise HTTPException(409, "this mission is already running")
         except NotConfigured:
-            raise HTTPException(503, "NVIDIA NIM keys are not configured; the planner cannot run")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"id": mission_id, "status": "running"}
 
     @app.post("/api/missions/{mission_id}/continue", status_code=202)
@@ -409,28 +408,36 @@ def create_app(service: MissionService) -> FastAPI:
         """A partial update. ``nim.keys`` replaces the key list; a masked entry keeps its stored key. Limits are bounded."""
         patch = dict(body)
         nim = patch.pop("nim", None)
+        providers = patch.pop("providers", None)
         if nim is not None and (not isinstance(nim, dict) or set(nim) - {"keys"}):
             raise HTTPException(422, "nim accepts only keys")
+        if providers is not None and not isinstance(providers, dict):
+            raise HTTPException(422, "providers must map a provider name to {keys: [...]}")
         try:
             service.settings.update(patch)
             if nim is not None and "keys" in nim:
                 service.settings.set_keys(nim["keys"])
+            for name, entry in (providers or {}).items():
+                if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
+                    raise ValueError(f"providers.{name} accepts only keys for a known provider")
+                if "keys" in entry:
+                    service.settings.set_keys(entry["keys"], provider=name)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         return get_settings()
 
     @app.post("/api/settings/test-keys")
-    def test_keys() -> dict:
-        """One 1-token call per key. Returns status codes and timings only; no key material and no generated text."""
+    def test_keys(provider: str = "nim") -> dict:
+        """One 1-token call per key of one provider. Returns status codes and timings only; no key material, no text."""
+        if provider not in PROVIDERS:
+            raise HTTPException(422, f"unknown provider {provider!r}")
         try:
-            client = shared_client()
-        except NotConfigured:
-            raise HTTPException(503, "no NVIDIA NIM keys are configured")
-        rows = []
-        for slot in range(1, len(client.keys) + 1):
-            row = client.probe(slot)
-            rows.append({**row, "masked": mask(client.keys[slot - 1]), "ok": row["status"] == 200})
-        return {"keys": rows}
+            rows = probe_provider(provider)
+        except NotConfigured as exc:
+            raise HTTPException(503, str(exc))
+        keys = service.settings.key_slots(None, provider)
+        return {"provider": provider, "keys": [
+            {**row, "masked": mask(keys[row["slot"] - 1]), "ok": row["status"] == 200} for row in rows]}
 
     @app.get("/api/settings/export")
     def export_data() -> JSONResponse:

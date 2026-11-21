@@ -31,22 +31,17 @@ from typing import Any
 
 import httpx
 
-from ..config import load_dotenv_values
 from .errors import Exhausted, NimError, NotConfigured, SchemaViolation
+from .providers import NIM_BASE_URL, NIM_DEFAULT_CHAIN, PROVIDERS, Provider, active_provider_name, load_provider_keys
 from .schema import STRIP_ALWAYS, is_format_error, strip_schema, unimplemented_keys, validate
 
 log = logging.getLogger("prophet.nim")
 
-BASE_URL = "https://integrate.api.nvidia.com/v1"
+BASE_URL = NIM_BASE_URL
 # NIM.md §2 ranking. Thinking off is the default because it is the speed lever (2-6 s instead of 25-60 s).
-DEFAULT_CHAIN: tuple[str, ...] = (
-    "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-3.5-super-vl-120b-a12b",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-    "poolside/laguna-xs-2.1",
-    "z-ai/glm-5.3-flash",
-)
+DEFAULT_CHAIN: tuple[str, ...] = NIM_DEFAULT_CHAIN
 PROBE_MODEL = "poolside/laguna-xs-2.1"       # NIM.md §8: fastest, cheapest key probe
+_NIM = PROVIDERS["nim"]
 
 MAX_DISPATCH = 7                  # per logical call (NIM.md §4.2)
 MAX_KEYS_PER_MODEL = 3
@@ -63,6 +58,7 @@ MAX_TOKENS_DEFAULT = 16384
 GLM_MIN_TOKENS = 1024             # GLM spends small budgets on reasoning (NIM.md §3)
 STREAM_IDLE_S = 120.0              # longest silence tolerated inside one streamed response, then fail over
 BUDGET_S = 420.0                  # wall-clock budget for one logical call (long schema-bound answers need it)
+ATTEMPT_BUDGET_S = 240.0          # one attempt's slice of that budget: a slow model fails over with time left for the next
 MAX_CONTINUATIONS = 3             # a free-text answer cut mid-stream is continued this many times, each on a new budget
 CONTINUE_PROMPT = ("Your reply was cut off. Continue exactly from where it stopped. Do not repeat anything already "
                    "written and do not add an introduction.")
@@ -118,16 +114,13 @@ class _Outcome:
 
 # -- pure helpers --------------------------------------------------------------------------------------------------
 
-def load_keys(environ: Mapping[str, str] | None = None) -> list[str]:
-    """NVIDIA_NIM_API_KEYS (comma or space list), then NVIDIA_NIM_API_KEY_1..9; de-duplicated, order kept.
+def load_keys(environ: Mapping[str, str] | None = None, provider: str = "nim") -> list[str]:
+    """NVIDIA NIM keys by default: NVIDIA_NIM_API_KEYS (comma or space list), then NVIDIA_NIM_API_KEY_1..9.
+    Other providers read their own variables (see ``providers.py``). De-duplicated, order kept.
 
     The process environment wins over the git-ignored .env file. Values are returned, never printed.
     """
-    if environ is None:
-        environ = {**load_dotenv_values(), **os.environ}
-    raw = _KEY_SPLIT.split(environ.get("NVIDIA_NIM_API_KEYS", ""))
-    raw += [environ.get(f"NVIDIA_NIM_API_KEY_{i}", "") for i in range(1, 10)]
-    return list(dict.fromkeys(k.strip() for k in raw if k and k.strip()))
+    return load_provider_keys(PROVIDERS[provider] if isinstance(provider, str) else provider, environ)
 
 
 def clean_text(raw: str) -> str:
@@ -179,21 +172,23 @@ def _with_schema_hint(messages: Sequence[Mapping[str, Any]], schema: dict) -> li
     return [{"role": "system", "content": hint}, *out]
 
 
-def build_body(model: str, messages: Sequence[Mapping[str, Any]], opts: _Opts, shape: _Shape) -> dict:
-    """The wire body for one attempt (NIM.md §3). Always streams upstream."""
+def build_body(model: str, messages: Sequence[Mapping[str, Any]], opts: _Opts, shape: _Shape,
+               provider: Provider = _NIM) -> dict:
+    """The wire body for one attempt (NIM.md §3). Always streams upstream. Provider fields only change what differs."""
     max_tokens = opts.max_tokens or MAX_TOKENS_DEFAULT
-    is_glm = "glm" in model
+    is_glm = provider.nim_extras and "glm" in model
     if is_glm:
         max_tokens = max(max_tokens, GLM_MIN_TOKENS)
     body: dict[str, Any] = {
         "model": model,
         "messages": [dict(m) for m in messages],
-        "max_tokens": max_tokens,
-        "temperature": 0.2,
+        provider.token_param: max_tokens,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    if opts.thinking is False:
+    if provider.send_temperature:
+        body["temperature"] = 0.2
+    if provider.nim_extras and opts.thinking is False:
         body["chat_template_kwargs"] = {"enable_thinking": False}
     if is_glm:
         body["reasoning_effort"] = "low"
@@ -206,7 +201,7 @@ def build_body(model: str, messages: Sequence[Mapping[str, Any]], opts: _Opts, s
             }} for t in opts.tools
         ]
         body["tool_choice"] = "auto"            # response_format is omitted when tools are present (NIM.md §3)
-    elif opts.schema is not None:
+    elif opts.schema is not None and provider.schema_mode != "prompt":
         if shape.mode == "json_object":
             body["response_format"] = {"type": "json_object"}
         else:
@@ -282,15 +277,20 @@ class NimClient:
     Cooldowns, pacing windows and in-flight counts live on the client, so every mission must share it (see
     ``shared_client``). A client per mission would give each one its own rate window and overrun the keys."""
 
-    def __init__(self, keys: Sequence[str], *, per_minute: int = PER_MINUTE,
+    def __init__(self, keys: Sequence[str], *, provider: Provider = _NIM, per_minute: int = PER_MINUTE,
                  transport: httpx.BaseTransport | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
                  rng: random.Random | None = None):
+        self.provider = provider
         self.keys: list[str] = list(dict.fromkeys(k for k in keys if k))
         if not self.keys:
-            raise NotConfigured("no NVIDIA_NIM_API_KEY_n configured (looked for NVIDIA_NIM_API_KEYS and "
-                                "NVIDIA_NIM_API_KEY_1..9 in the environment and .env)")
+            raise NotConfigured(f"no {provider.label} key configured (looked for {provider.key_hint} in the "
+                                "environment and .env)")
+        base_url = provider.resolve_base_url()
+        if not base_url:
+            raise NotConfigured(f"{provider.label} has no endpoint yet; set {provider.base_url_var} in .env")
+        self.chain: tuple[str, ...] = provider.models()
         self.per_minute = per_minute
         self.clock = clock
         self.sleep = sleep
@@ -302,7 +302,7 @@ class NimClient:
         self.demoted: dict[str, float] = {}       # model -> usable again at
         self.inflight: dict[str, int] = {k: 0 for k in self.keys}   # requests running now, per key
         self.http = httpx.Client(
-            base_url=BASE_URL, transport=transport,
+            base_url=base_url, transport=transport,
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
             timeout=httpx.Timeout(10.0, read=120.0, write=30.0, pool=30.0),
         )
@@ -311,8 +311,13 @@ class NimClient:
     def from_env(cls, **kwargs: Any) -> "NimClient":
         return cls(load_keys(), **kwargs)
 
+    @classmethod
+    def for_provider(cls, name: str, **kwargs: Any) -> "NimClient":
+        provider = PROVIDERS[name]
+        return cls(load_keys(None, name), provider=provider, **kwargs)
+
     def __repr__(self) -> str:                    # never show key material
-        return f"NimClient(keys={len(self.keys)})"
+        return f"NimClient(provider={self.provider.name}, keys={len(self.keys)})"
 
     def close(self) -> None:
         self.http.close()
@@ -355,12 +360,16 @@ class NimClient:
                 reuse = False
                 tried += 1
                 dispatched += 1
+                prompt_only = self.provider.schema_mode == "prompt" or shape.mode == "json_object"
                 msgs = (_with_schema_hint(messages, schema)
-                        if schema is not None and not opts.tools and shape.mode == "json_object"
+                        if schema is not None and not opts.tools and prompt_only
                         else list(messages))
                 attempt_started = self.clock()
+                # One attempt gets a slice of the logical budget. Without the slice, a slow first model spends the whole
+                # budget, every later model starts with no time, and the call fails with nothing tried after it.
+                attempt_deadline = min(deadline, self.clock() + ATTEMPT_BUDGET_S)
                 try:
-                    out = yield from self._attempt(key, model, msgs, opts, shape, deadline)
+                    out = yield from self._attempt(key, model, msgs, opts, shape, attempt_deadline)
                 finally:
                     self._release(key)
                 log.info("nim attempt: model=%s outcome=%s elapsed=%.1fs reason=%s", model, out.kind,
@@ -432,15 +441,17 @@ class NimClient:
                        for m, until in sorted(self.demoted.items()) if until > now]
         return {"keys": keys, "demoted_models": demoted, "in_flight": sum(k["in_flight"] for k in keys)}
 
-    def probe(self, slot: int, model: str = PROBE_MODEL) -> dict:
+    def probe(self, slot: int, model: str | None = None) -> dict:
         """One raw 1-token chat call on a single key. Returns the status only (NIM.md §8). Never retries."""
         key = self.keys[slot - 1]
+        model = model or self.provider.probe_target() or PROBE_MODEL
         started = self.clock()
         try:
             with self.http.stream("POST", "/chat/completions",
                                   headers={"authorization": f"Bearer {key}", "accept": "text/event-stream"},
                                   json={"model": model, "messages": [{"role": "user", "content": "ping"}],
-                                        "max_tokens": 4, "stream": True},
+                                        self.provider.token_param: 4 if self.provider.nim_extras else 64,
+                                        "stream": True},
                                   timeout=_timeout(30.0)) as r:
                 status = r.status_code
         except httpx.TransportError as exc:
@@ -521,7 +532,7 @@ class NimClient:
         emitted = False
         parts: list[str] = []
         live = opts.schema is None and not opts.tools        # release text as it arrives only when nothing is buffered
-        body = build_body(model, messages, opts, shape)
+        body = build_body(model, messages, opts, shape, self.provider)
         try:
             with self.http.stream("POST", "/chat/completions",
                                   headers={"authorization": f"Bearer {key}", "accept": "text/event-stream"},
@@ -621,18 +632,25 @@ _SHARED_LOCK = threading.Lock()
 
 
 def shared_client() -> NimClient:
-    """The one NIM client of this process, created on first use. Every mission and sub-agent calls through it, so the
-    rate windows, cooldowns and in-flight counts cover all of them together. Raises NotConfigured without keys."""
+    """The one client of this process for the ACTIVE provider (Settings), created on first use. Every mission and
+    sub-agent calls through it, so the rate windows, cooldowns and in-flight counts cover all of them together.
+    Raises NotConfigured without keys or endpoint."""
     global _SHARED
     with _SHARED_LOCK:
         if _SHARED is None:
-            _SHARED = NimClient.from_env()
+            _SHARED = NimClient.for_provider(active_provider_name())
         return _SHARED
 
 
 def reset_shared_client() -> None:
-    """Drop the shared client so the next call re-reads the keys (after a key change in Settings). Calls already in
-    flight keep their reference and finish normally."""
+    """Drop the shared client so the next call re-reads the keys and the active provider (after a change in Settings).
+    Calls already in flight keep their reference and finish normally."""
     global _SHARED
     with _SHARED_LOCK:
         _SHARED = None
+
+
+def probe_provider(name: str) -> list[dict]:
+    """One 1-token call per key of one provider, independent of the active one. Status and timing only, never text."""
+    with NimClient.for_provider(name) as client:
+        return [client.probe(slot) for slot in range(1, len(client.keys) + 1)]

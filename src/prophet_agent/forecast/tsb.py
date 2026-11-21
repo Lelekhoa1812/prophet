@@ -18,6 +18,21 @@ from .metrics import QS
 from .types import Forecast
 
 
+def expected_volume(context: Sequence[float] | np.ndarray, horizon: int, alpha: float = 0.15) -> np.ndarray:
+    """The expected demand per period under TSB: chance of demand times the mean of the last 52 non-zero sizes.
+
+    This is the mean, not the median. For lumpy demand the median is zero, so a point forecast taken from a median can
+    understate the volume the business will actually need by most of its amount. The expectation is exact (the sampler in
+    ``TSB.predict`` draws sizes uniformly from the same window), and it is constant over the horizon, as TSB is."""
+    s = np.nan_to_num(np.asarray(context, dtype=float))
+    p = 0.5
+    for v in s:
+        p = p + alpha * ((1.0 if v > 0 else 0.0) - p)
+    sizes = s[s > 0][-52:]
+    level = float(p * sizes.mean()) if len(sizes) else 0.0
+    return np.full(horizon, level)
+
+
 @dataclass
 class TSB:
     """Chance of demand (smoothed by alpha) times the sizes of the last 52 non-zero orders, sampled per step."""

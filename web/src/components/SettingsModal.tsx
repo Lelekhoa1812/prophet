@@ -118,7 +118,7 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
             <SettingsIcon aria-hidden="true" className="size-5 text-sand-1" />
             Settings
           </h2>
-          <IconButton ref={closeButton} label="Close settings" icon={<X aria-hidden="true" className="size-5" />} onClick={onClose} />
+          <IconButton ref={closeButton} label="Close" icon={<X aria-hidden="true" className="size-5" />} onClick={onClose} />
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
@@ -253,8 +253,8 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
               onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addKey())}
               className="min-h-11 min-w-0 flex-1 rounded-lg border border-sand-2/40 bg-night-0 px-3 font-mono text-meta text-sand-0 placeholder:text-sand-2 focus:border-ember focus:outline-none"
             />
-            <IconButton label={reveal ? "Hide key text" : "Show key text"} icon={reveal ? <EyeOff aria-hidden="true" className="size-5" /> : <Eye aria-hidden="true" className="size-5" />} onClick={() => setReveal((r) => !r)} />
-            <IconButton label="Add key to the list" icon={<Plus aria-hidden="true" className="size-5" />} onClick={addKey} disabled={!draft.trim()} />
+            <IconButton label={reveal ? "Hide" : "Show"} icon={reveal ? <EyeOff aria-hidden="true" className="size-5" /> : <Eye aria-hidden="true" className="size-5" />} onClick={() => setReveal((r) => !r)} />
+            <IconButton label="Add" icon={<Plus aria-hidden="true" className="size-5" />} onClick={addKey} disabled={!draft.trim()} />
           </div>
         </div>
 
@@ -537,7 +537,7 @@ function DataSection({ view, onCleared }: { view: SettingsView; onCleared: () =>
             className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-sand-2/40 px-4 text-base font-semibold text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
           >
             <Download aria-hidden="true" className="size-4" />
-            Export JSON
+            Export
           </a>
         </Row>
 
@@ -558,7 +558,7 @@ function DataSection({ view, onCleared }: { view: SettingsView; onCleared: () =>
             />
             <Button variant="secondary" onClick={() => void clear()} disabled={confirm !== phrase || clearing} className="text-bad hover:border-bad">
               {clearing ? <Spinner /> : <Trash2 aria-hidden="true" className="size-4" />}
-              Delete all data
+              Delete
             </Button>
           </div>
         </Row>

@@ -129,6 +129,8 @@ CREATE TABLE IF NOT EXISTS derived_versions (
 _ORGANISER_COLUMNS = {
     "missions": {"title": "TEXT", "pinned": "INTEGER NOT NULL DEFAULT 0"},
     "notebooks": {"pinned": "INTEGER NOT NULL DEFAULT 0"},
+    # The profiling run's id, so deleting the notebook removes that run folder with the rest.
+    "sources": {"run_id": "TEXT"},
 }
 
 _MISSION_COLUMNS_V2 = {
