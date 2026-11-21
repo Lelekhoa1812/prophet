@@ -70,6 +70,14 @@ MAX_REPAIRS = 2                   # an answer that fails the local schema is re-
 REPAIR_QUOTE_CHARS = 4000         # how much of the refused reply the repair turn shows the model
 REPAIR_PROMPT = ("Your reply was not usable: {reason}. Reply again with only the JSON object the schema asks for. "
                  "No prose, no code fence.")
+OVERLOAD_BASE_S = 30.0            # first 503 on a model: it goes last this long; doubles per repeat inside the window
+OVERLOAD_MAX_S = 300.0
+OVERLOAD_WINDOW_S = 600.0         # repeats further apart than this start again at the base
+RESET_CAP_S = 86400.0             # a limit that names its own reset may cool a key until then, never longer
+BILLING_COOL_S = 3600.0           # a spend cap or billing refusal is not a rate limit: do not retry for a long while
+DEPLETED_WAIT_S = 3600.0          # when the soonest key is further away than this, the provider is spent: report it
+MAX_TRUNCATION_RETRIES = 2        # a schema-bound reply cut by max_tokens is asked again with a larger allowance this often
+TRUNCATION_TOKEN_CAP = 32768
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
 # Error codes a gateway puts in an in-stream error frame, mapped to the HTTP status they stand for (FreeRouter's
 # envelope: free-router src/lib/http.ts). An unknown code is treated as a 502: the key cools briefly and the call moves on.
@@ -269,6 +277,82 @@ def _retry_after(value: str | None, default: float) -> float:
     return max(0.0, min(RETRY_AFTER_CAP_S, seconds))
 
 
+_DAILY = re.compile(r"per[ _-]?day|daily|free-models-per-day|requests?_per_day", re.I)
+_BILLING = re.compile(r"enforced_spend_limit|insufficient_quota|billing|spend[ _]limit", re.I)
+_RETRY_DELAY = re.compile(r'"retryDelay"\s*:\s*"([0-9.]+)s"')
+
+
+def _seconds_to_utc_midnight(now_epoch: float) -> float:
+    return 86400.0 - (now_epoch % 86400.0)
+
+
+def _header_reset_seconds(headers: Mapping[str, str] | None, now_epoch: float) -> float | None:
+    """Seconds until the window the response says it is spent in reopens. Only read when the response says nothing
+    remains. Reset may be seconds from now, epoch seconds or epoch milliseconds, so the size of the number decides."""
+    if not headers:
+        return None
+    low = {k.lower(): v for k, v in headers.items()}
+    remaining = low.get("x-ratelimit-remaining")
+    reset = low.get("x-ratelimit-reset")
+    try:
+        if reset is None or (remaining is not None and float(remaining) > 0):
+            return None
+        value = float(reset)
+    except ValueError:
+        return None
+    if value > 1e11:
+        value /= 1000.0               # epoch milliseconds
+    if value > 1e8:
+        value -= now_epoch            # epoch seconds
+    return value if value > 0 else None
+
+
+def rate_cooldown(retry_after: str | None, raw: str, headers: Mapping[str, str] | None, now_epoch: float) -> float:
+    """How long a key rests after a 429, read from the strongest signal the provider gave. Order: a billing or spend-cap
+    refusal (long, it is not a rate limit); a daily quota (until the day resets); a reset header that says nothing remains;
+    Google's retryDelay; Retry-After; the default. Capped at a day."""
+    text = raw or ""
+    if _BILLING.search(text):
+        return BILLING_COOL_S
+    if _DAILY.search(text):
+        return min(RESET_CAP_S, _seconds_to_utc_midnight(now_epoch))
+    reset = _header_reset_seconds(headers, now_epoch)
+    if reset is not None:
+        return min(RESET_CAP_S, reset)
+    m = _RETRY_DELAY.search(text)
+    if m:
+        return min(RETRY_AFTER_CAP_S * 2.5, float(m.group(1)) + 1.0)
+    return _retry_after(retry_after, COOL_429_S)
+
+
+def repair_hint(reason: str) -> str:
+    """What to tell the model beyond the validator's line, by what went wrong. The line itself already names the path."""
+    r = reason.lower()
+    if "not valid json" in r:
+        return " Start with { and end with }; do not write a sentence before or after the JSON, and do not explain."
+    if "required" in r:
+        return " Include every field the schema marks required."
+    if "additional properties" in r or "unexpected" in r:
+        return " Remove every field the schema does not list."
+    if "is not of type" in r or "is not one of" in r:
+        return " Use the exact type, or one of the exact values, the schema allows."
+    return ""
+
+
+def _diagnose(reason: str) -> str:
+    """A short category for a refused reply, for the log: what kind of failure it was."""
+    r = reason.lower()
+    if "not valid json" in r:
+        return "not_json"
+    if "required" in r:
+        return "missing_field"
+    if "additional properties" in r:
+        return "extra_field"
+    if "is not of type" in r or "is not one of" in r:
+        return "wrong_type"
+    return "schema_other"
+
+
 def _check_schema(text: str, schema: dict) -> str | None:
     try:
         value = json.loads(text)
@@ -344,6 +428,7 @@ class NimClient:
         self.cool: dict[tuple[str, str], float] = {}
         self.bad: dict[str, float] = {}           # key -> re-admitted at
         self.demoted: dict[str, float] = {}       # model -> usable again at
+        self.overload: dict[str, tuple[int, float]] = {}   # model -> (503s in a row, when the last one came)
         self.inflight: dict[str, int] = {k: 0 for k in self.keys}   # requests running now, per key
         self.http = httpx.Client(
             base_url=base_url, transport=transport,
@@ -417,7 +502,7 @@ class NimClient:
             dispatched, waitable, dead = 0, False, set()
             for model in chain:
                 shape = _Shape("strict")
-                reshapes, tried, key, reuse, repairs = 0, 0, None, False, 0
+                reshapes, tried, key, reuse, repairs, truncations = 0, 0, None, False, 0, 0
                 repair: list[dict] = []   # the model's last reply and the reason it was refused, when repairing
                 while tried < MAX_KEYS_PER_MODEL and dispatched < MAX_DISPATCH:
                     if self.clock() >= deadline:
@@ -444,6 +529,7 @@ class NimClient:
                     log.info("nim attempt: model=%s outcome=%s elapsed=%.1fs reason=%s", model, out.kind,
                              self.clock() - attempt_started, out.reason)
                     if out.kind == "ok":
+                        self.overload.pop(model, None)
                         reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
                         self._record(reply)
                         yield "done", reply
@@ -478,11 +564,19 @@ class NimClient:
                         tried -= 1                    # a reshape re-queues the same key and does not count as a new key
                         reuse = True
                         continue
+                    if out.kind == "truncated" and truncations < MAX_TRUNCATION_RETRIES and opts.max_tokens < TRUNCATION_TOKEN_CAP:
+                        # Cut by the allowance, not wrong: asking the model to shorten itself would only lose content. Ask
+                        # again with more room on the same key.
+                        truncations += 1
+                        opts = replace(opts, max_tokens=min(TRUNCATION_TOKEN_CAP, (opts.max_tokens or MAX_TOKENS_DEFAULT) * 2))
+                        tried -= 1
+                        reuse = True
+                        continue
                     if out.invalid and repairs < MAX_REPAIRS:
                         # The model answered, but not in the schema. Show it that reply and the reason, on the same key.
                         repairs += 1
                         repair = [{"role": "assistant", "content": out.text[:REPAIR_QUOTE_CHARS]},
-                                  {"role": "user", "content": REPAIR_PROMPT.format(reason=out.reason)}]
+                                  {"role": "user", "content": REPAIR_PROMPT.format(reason=out.reason) + repair_hint(out.reason)}]
                         tried -= 1
                         reuse = True
                         continue
@@ -543,7 +637,10 @@ class NimClient:
         for model in chain:
             key_wait = min(max(0.0, self._ready_at(k, model, now) - now) for k in usable)
             waits.append(max(key_wait, max(0.0, self.demoted.get(model, 0.0) - now)))
-        return min(max(1.0, min(waits)), RATE_WAIT_MAX_S)
+        soonest = min(waits)
+        if soonest > DEPLETED_WAIT_S:
+            return None                  # every key is at a daily or billing limit that resets hours from now: report it
+        return min(max(1.0, soonest), RATE_WAIT_MAX_S)
 
     def complete(self, models: Sequence[str], messages: Sequence[Mapping[str, Any]], **kwargs: Any) -> Reply:
         done: Reply | None = None
@@ -692,6 +789,16 @@ class NimClient:
         with self.lock:
             self.demoted[model] = self.clock() + seconds
 
+    def _overload_duration(self, model: str) -> float:
+        """A model that keeps answering 503 rests longer each time (30 s, 60 s, ... 300 s), and starts again from 30 s once it
+        has been quiet for a while or has answered once."""
+        with self.lock:
+            now = self.clock()
+            count, last = self.overload.get(model, (0, float("-inf")))
+            count = 1 if now - last > OVERLOAD_WINDOW_S else count + 1
+            self.overload[model] = (count, now)
+            return min(OVERLOAD_MAX_S, OVERLOAD_BASE_S * 2 ** (count - 1))
+
     def _attempt(self, key: str, model: str, messages: list[dict], opts: _Opts, shape: _Shape,
                  deadline: float) -> Iterator[tuple[str, Any]]:
         """One HTTP attempt. Yields visible deltas; returns an _Outcome (the generator's return value)."""
@@ -711,7 +818,7 @@ class NimClient:
                 if status >= 400:
                     raw = r.read().decode("utf-8", "replace")
                     out = self._classify_http(key, model, slot, status, r.headers.get("retry-after"), raw,
-                                              opts, shape, started)
+                                              opts, shape, started, headers=r.headers)
                     out.status, out.detail = status, redact(raw, limit=200)
                     return out
                 acc: dict[int, dict] = {}
@@ -768,6 +875,12 @@ class NimClient:
                      "on" if opts.thinking else "off", status, elapsed)
         text = clean_text("".join(parts))
         calls = _tool_calls(acc)
+        if finish == "error" and not text and not calls:
+            # Some gateways report a limit or an upstream fault inside a 200 stream as finish_reason "error", with no
+            # text. That is a refusal to classify, not an empty answer that should demote the model.
+            return self._stream_error(key, model, slot, {"code": "upstream_unavailable",
+                                                         "message": "the stream ended with finish_reason error"},
+                                      emitted, parts, opts, shape, started)
         if not text and not calls:
             if emitted:
                 raise NimError("nim stream ended with no answer after output began; no failover")
@@ -778,10 +891,12 @@ class NimClient:
             err = _check_schema(text, opts.schema)
             if err:
                 # What the model sent is what a repair needs to see; the log keeps a short redacted head and tail.
-                log.warning("nim: %s reply refused locally (%s); finish=%s len=%d head=%r tail=%r", model, err, finish, len(text),
-                            redact(text[:160]), redact(text[-120:]))
-                return _Outcome("model", f"{model}: local schema check failed: {err}", invalid=True, status=status,
-                                text=text)
+                truncated = finish == "length"
+                log.warning("nim: %s reply refused locally (%s); category=%s finish=%s len=%d max_tokens=%s shape=%s "
+                            "head=%r tail=%r", model, err, "truncated" if truncated else _diagnose(err), finish, len(text),
+                            opts.max_tokens, shape.mode, redact(text[:160]), redact(text[-120:]))
+                return _Outcome("truncated" if truncated else "model", f"{model}: local schema check failed: {err}",
+                                invalid=True, status=status, text=text)
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,
                       usage=_usage(usage), key_slot=slot, elapsed_s=round(elapsed, 2))
         return _Outcome("ok", reply=reply, status=status)
@@ -799,14 +914,17 @@ class NimClient:
         return self._classify_http(key, model, slot, status, None, raw, opts, shape, started)
 
     def _classify_http(self, key: str, model: str, slot: int, status: int, retry_after: str | None, raw: str,
-                       opts: _Opts, shape: _Shape, started: float) -> _Outcome:
+                       opts: _Opts, shape: _Shape, started: float, headers: Mapping[str, str] | None = None) -> _Outcome:
         """NIM.md §4.2, one row per branch. Reason strings carry the model and status, never the key."""
         note = f"{model}: HTTP {status}"
         log.warning("nim: %s slot=%d HTTP %s after %.1fs", model, slot, status, self.clock() - started)
         if status in (401, 403):                 # NIM answers 403, not 401, to a bad key on chat
             self._retire(key)
             return _Outcome("retire", note)
-        if status in (404, 410, 503):
+        if status == 503:
+            self._demote(model, self._overload_duration(model))      # repeated overloads rest the model longer each time
+            return _Outcome("model", note)
+        if status in (404, 410):
             return _Outcome("model", note, demote=True)
         if status == 413:                        # this request is too large for this model's limit, not the model's health
             return _Outcome("model", note)
@@ -819,7 +937,7 @@ class NimClient:
                     return _Outcome("reshape", note, shape=_Shape("json_object", shape.drop))
             return _Outcome("model", note)       # the request may be at fault; do not demote the model globally
         if status == 429:
-            wait = _retry_after(retry_after, COOL_429_S)
+            wait = rate_cooldown(retry_after, raw, headers, time.time())
         elif status in (408, 425):
             wait = COOL_KEY_S
         elif status == 402:

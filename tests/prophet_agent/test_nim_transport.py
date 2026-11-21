@@ -216,14 +216,94 @@ def test_request_too_large_moves_on_without_demoting_the_model():
     assert M1 not in client.demoted, "a 413 is about this request, so the model stays first in the chain"
 
 
-@pytest.mark.parametrize("code", [404, 410, 503])
-def test_model_errors_demote_the_model_and_move_on(code):
+@pytest.mark.parametrize("code, rest", [(404, DEMOTE_S), (410, DEMOTE_S), (503, 30.0)])
+def test_model_errors_demote_the_model_and_move_on(code, rest):
     script = Script().on(status(code), model=M1)
     client, clock = make(script)
     reply = client.complete([M1, M2], MSGS)
     assert reply.model == M2
     assert [m for _, m in script.sequence()] == [M1, M2]  # one attempt per model: a model error is not a key error
-    assert client.demoted[M1] - 1000.0 == pytest.approx(DEMOTE_S)
+    assert client.demoted[M1] - 1000.0 == pytest.approx(rest)
+
+
+def test_repeated_overloads_rest_a_model_longer_each_time_and_one_success_resets_it():
+    client, clock = make(Script())
+    assert [client._overload_duration(M1) for _ in range(6)] == [30.0, 60.0, 120.0, 240.0, 300.0, 300.0]
+    clock.t += 601.0
+    assert client._overload_duration(M1) == 30.0, "quiet for a while: start again from the base"
+    client._overload_duration(M1)
+    client.complete([M1], MSGS)                            # a success clears the count
+    assert client._overload_duration(M1) == 30.0
+
+
+def test_a_daily_quota_429_cools_the_key_until_the_day_resets_not_for_thirty_seconds():
+    from prophet_agent.nim.transport import rate_cooldown
+
+    body = '{"error": {"message": "Rate limit exceeded: free-models-per-day"}}'
+    midnight_in = rate_cooldown(None, body, None, now_epoch=86400.0 * 10 + 3600.0)       # 01:00 UTC
+    assert midnight_in == pytest.approx(86400.0 - 3600.0)
+    assert rate_cooldown("5", '{"error": "slow down"}', None, 0.0) == 5.0                 # plain Retry-After still wins
+    assert rate_cooldown(None, '{"error": "x"}', None, 0.0) == 30.0                       # no signal: the default
+
+
+def test_a_spend_cap_429_is_not_waited_on_like_a_rate_limit():
+    from prophet_agent.nim.transport import BILLING_COOL_S, rate_cooldown
+
+    assert rate_cooldown("1", '{"error": {"code": "enforced_spend_limit_reached"}}', None, 0.0) == BILLING_COOL_S
+    assert rate_cooldown(None, '{"error": {"type": "insufficient_quota"}}', None, 0.0) == BILLING_COOL_S
+
+
+def test_google_retry_delay_and_reset_headers_set_the_cooldown():
+    from prophet_agent.nim.transport import rate_cooldown
+
+    google = '{"error": {"details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "34s"}]}}'
+    assert rate_cooldown(None, google, None, 0.0) == pytest.approx(35.0)
+    now = 1_700_000_000.0
+    headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(int((now + 90) * 1000))}   # epoch milliseconds
+    assert rate_cooldown(None, "{}", headers, now) == pytest.approx(90.0, abs=1.0)
+    still_open = {"X-RateLimit-Remaining": "3", "X-RateLimit-Reset": str(int((now + 90) * 1000))}
+    assert rate_cooldown(None, "{}", still_open, now) == 30.0, "capacity remains, so the reset time says nothing"
+
+
+def test_a_provider_whose_keys_all_rest_for_hours_is_reported_not_waited_on():
+    client, clock = make(Script())
+    for key in KEYS:
+        client._cool(key, M1, 7200.0)
+    assert client._rate_wait([M1]) is None
+
+
+def test_finish_reason_error_with_no_text_is_a_provider_fault_not_an_empty_answer():
+    script = Script().on(lambda request, payload: sse([], finish="error"), model=M1)
+    client, clock = make(script)
+    assert client.complete([M1, M2], MSGS).model == M2
+    assert M1 in client.demoted, "classified like an upstream outage (503), so the overload rule applies"
+
+
+def test_a_schema_reply_cut_by_the_token_allowance_is_asked_again_with_more_room_not_repaired():
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    replies = iter([('{"a": ', "length"), ('{"a": 7}', "stop")])
+    seen = []
+
+    def respond(request, payload):
+        text, finish = next(replies)
+        seen.append((payload.get("max_tokens"), [m["role"] for m in payload["messages"]]))
+        return sse([text], finish=finish)
+
+    client, _ = make(Script().on(respond))
+    reply = client.complete([M1], MSGS, schema=schema, max_tokens=1000)
+    assert json.loads(reply.text) == {"a": 7}
+    assert seen[1][0] == 2000, "the allowance doubled"
+    assert seen[1][1] == seen[0][1], "no refused reply was quoted back: the model was not asked to shorten itself"
+
+
+def test_the_repair_prompt_names_what_to_fix_by_failure_kind():
+    from prophet_agent.nim.transport import repair_hint
+
+    assert "Start with {" in repair_hint("output is not valid JSON")
+    assert "required" in repair_hint("'a' is a required property")
+    assert "schema does not list" in repair_hint("Additional properties are not allowed ('z' was unexpected)")
+    assert "exact type" in repair_hint("'x' is not of type 'integer'")
+    assert repair_hint("something else") == ""
 
 
 def test_demoted_model_moves_last_but_is_never_dropped():
