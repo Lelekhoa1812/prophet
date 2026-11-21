@@ -1,10 +1,10 @@
-import { AlertCircle, CheckCircle2, ChevronRight, Download, FileSpreadsheet } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronRight, Download, FileSpreadsheet, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, tableDownloadUrl, type KeptTable, type Source } from "../lib/api";
 import { errorMessage, truncate } from "../lib/format";
 import type { Uploads } from "../lib/useUploads";
 import { cn, formatBytes } from "../lib/utils";
-import { Button, Spinner } from "./ui";
+import { IconButton, Spinner } from "./ui";
 
 // Every file in the notebook, with its own state. A file that cannot be used says why, in words, and is never dropped.
 // Adding files happens elsewhere (drop anywhere, or the attach button); this is where you decide which ones are read.
@@ -39,7 +39,7 @@ export function SourcesPanel({
 
   return (
     <section aria-label="Files in this notebook" className="grid gap-4 rounded-2xl border border-sand-2/20 bg-night-1/70 p-4 sm:p-5">
-      <p className="text-[0.9375rem] text-sand-2">
+      <p className="text-caption text-sand-2">
         {usable} of {sources.length} included in answers. Files that are not included are never read.
       </p>
 
@@ -63,13 +63,13 @@ export function SourcesPanel({
 
       {tables.length > 0 && (
         <div className="grid gap-2 border-t border-sand-2/20 pt-4">
-          <h3 className="text-[0.9375rem] font-semibold text-sand-2">Kept tables</h3>
+          <h3 className="text-caption font-semibold text-sand-2">Kept tables</h3>
           <ul className="grid gap-2">
             {tables.map((t) => (
               <li key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-night-0/40 p-3">
                 <span className="grid min-w-0 gap-0.5">
                   <span className="text-base font-semibold text-sand-0 [overflow-wrap:anywhere]">{t.name}</span>
-                  <span className="text-[0.9375rem] text-sand-2">
+                  <span className="text-caption text-sand-2">
                     Version {t.version} · {t.rows.toLocaleString("en-AU")} rows · {t.columns.length} columns
                     {t.description ? ` · ${truncate(t.description, 120)}` : ""}
                   </span>
@@ -77,10 +77,11 @@ export function SourcesPanel({
                 <a
                   href={tableDownloadUrl(notebookId, t.name)}
                   download={`${t.name}.csv`}
-                  className="inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-[0.9375rem] text-sand-0 hover:bg-night-2"
+                  aria-label={`Download ${t.name} as CSV`}
+                  title={`Download ${t.name} as CSV`}
+                  className="grid size-10 shrink-0 place-items-center rounded-lg text-sand-1 transition-[background-color,color,transform] duration-150 hover:bg-night-2 hover:text-sand-0 active:scale-95 motion-reduce:transition-none"
                 >
                   <Download aria-hidden="true" className="size-4" />
-                  Download CSV
                 </a>
               </li>
             ))}
@@ -116,7 +117,7 @@ function SourceRow({ source: s, busy, onToggle, onRemove }: { source: Source; bu
         <FileSpreadsheet aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-sand-2" />
         <div className="grid min-w-0 flex-1 gap-0.5">
           <span className="text-base font-semibold text-sand-0 [overflow-wrap:anywhere]">{s.name}</span>
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.9375rem] text-sand-2">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-sand-2">
             <span>{formatBytes(s.bytes)}</span>
             <span aria-hidden="true">·</span>
             <span className={cn("inline-flex items-center gap-1.5", state.tone)}>
@@ -126,16 +127,16 @@ function SourceRow({ source: s, busy, onToggle, onRemove }: { source: Source; bu
             {s.duplicate && <span>· already in this notebook</span>}
           </span>
           {s.status === "needs_attention" && firstIssue && firstIssue !== s.error && (
-            <span className="text-[0.9375rem] text-sand-1 [overflow-wrap:anywhere]">{truncate(firstIssue, 220)}</span>
+            <span className="text-caption text-sand-1 [overflow-wrap:anywhere]">{truncate(firstIssue, 220)}</span>
           )}
           {(s.status === "failed" || s.status === "needs_attention") && s.error && (
-            <span className="text-[0.9375rem] text-bad [overflow-wrap:anywhere]">{truncate(s.error, 220)}</span>
+            <span className="text-caption text-bad [overflow-wrap:anywhere]">{truncate(s.error, 220)}</span>
           )}
         </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 pl-8">
-        <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-[0.9375rem] text-sand-0">
+        <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-caption text-sand-0">
           <input
             type="checkbox"
             checked={s.included}
@@ -145,18 +146,16 @@ function SourceRow({ source: s, busy, onToggle, onRemove }: { source: Source; bu
           />
           Include in answers
         </label>
-        <Button variant="ghost" size="sm" onClick={onRemove} disabled={busy} aria-label={`Remove ${s.name}`}>
-          Remove
-        </Button>
+        <IconButton tone="danger" label={`Remove ${s.name}`} icon={<Trash2 aria-hidden="true" className="size-4" />} onClick={onRemove} disabled={busy} />
       </div>
 
       {s.card && s.card.sheets.length > 0 && (
         <details className="pl-8">
-          <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1 text-[0.9375rem] text-sand-2 hover:text-sand-0">
+          <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1 text-caption text-sand-2 hover:text-sand-0">
             <ChevronRight aria-hidden="true" className="size-3.5 transition-transform [details[open]>summary_&]:rotate-90" />
             What Prophet found
           </summary>
-          <div className="mt-2 grid gap-3 text-[0.9375rem]">
+          <div className="mt-2 grid gap-3 text-caption">
             {s.card.sheets.map((sh, i) => (
               <div key={`${sh.sheet ?? "table"}-${i}`} className="grid gap-1">
                 <span className="font-semibold text-sand-0">

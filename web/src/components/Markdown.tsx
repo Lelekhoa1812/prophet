@@ -57,7 +57,7 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
         <span>{lang || "text"}</span>
         <CopyButton text={code} label={`Copy ${lang || "text"} snippet`} />
       </figcaption>
-      <pre className="m-0 max-h-96 overflow-auto p-4 text-[0.9375rem] leading-snug text-sand-0">
+      <pre className="m-0 max-h-96 overflow-auto p-4 text-caption leading-snug text-sand-0">
         <code>{code}</code>
       </pre>
     </figure>
@@ -155,7 +155,7 @@ function Table({ children }: { children: ReactNode }) {
   });
   return (
     <div className="overflow-x-auto rounded-xl border border-sand-2/20" tabIndex={0} role="region" aria-label="Table">
-      <table ref={ref} className="w-full min-w-max border-collapse text-left text-[0.9375rem]">
+      <table ref={ref} className="w-full min-w-max border-collapse text-left text-caption">
         {children}
       </table>
     </div>
@@ -226,7 +226,7 @@ const components: Components = {
   ),
   section({ children, className }) {
     if (className?.includes("footnotes"))
-      return <section className="mt-1 grid gap-1 border-t border-sand-2/25 pt-3 text-[0.9375rem] text-sand-1">{children}</section>;
+      return <section className="mt-1 grid gap-1 border-t border-sand-2/25 pt-3 text-caption text-sand-1">{children}</section>;
     return <section>{children}</section>;
   },
   sup: ({ children }) => <sup className="text-[0.75em] leading-none">{children}</sup>,

@@ -5,6 +5,12 @@
   --font-sans: "IBM Plex Sans", system-ui, "Helvetica Neue", Arial, sans-serif;
   --font-display: "Cormorant Garamond", "Times New Roman", Times, serif;
   --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  /* One type scale for the whole console. Use these names; do not add arbitrary rem sizes in components. */
+  --text-micro: 0.8125rem;      /* 13 px: tiny labels, mono detail */
+  --text-meta: 0.875rem;        /* 14 px: code and hash detail */
+  --text-caption: 0.9375rem;    /* 15 px: secondary text, hints, metadata */
+  --text-body: 1.0625rem;       /* 17 px: composer, chat text */
+  --text-lead: 1.125rem;        /* 18 px: answers */
   --color-night-0: #0f0d0b;
   --color-night-1: #171410;
   --color-night-2: #211c16;

@@ -154,6 +154,16 @@ export const api = {
     }),
   artifacts: (id: string) => req<ArtifactRun[]>(`/api/missions/${id}/artifacts`),
   cancel: (missionId: string) => req<{ status: string }>(`/api/missions/${missionId}/cancel`, { method: "POST" }),
+  // A checkpoint is a pause, not a failure: continue gives the work another part, answer-now writes what is established.
+  continueMission: (missionId: string) => req<{ id: string; status: string }>(`/api/missions/${missionId}/continue`, { method: "POST" }),
+  answerNow: (missionId: string) => req<{ id: string; status: string }>(`/api/missions/${missionId}/answer-now`, { method: "POST" }),
+
+  settings: () => req<SettingsView>("/api/settings"),
+  saveLimits: (patch: Partial<Record<SettingsSection, Record<string, number>>>) =>
+    req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
+  saveKeys: (keys: string[]) => req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ nim: { keys } }) }),
+  testKeys: () => req<{ keys: KeyProbe[] }>("/api/settings/test-keys", { method: "POST" }),
+  clearData: (confirm: string) => req<{ removed: Record<string, number> }>("/api/settings/clear-data", { method: "POST", body: JSON.stringify({ confirm }) }),
 
   notebooks: () => req<NotebookRow[]>("/api/notebooks"),
   createNotebook: (title: string) =>
@@ -173,6 +183,51 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ goal }),
     }),
+};
+
+export type SettingsSection = "agent" | "context";
+
+export type KeyProbe = {
+  slot: number;
+  model: string;
+  status: number | null;
+  error: string | null;
+  elapsed_s: number;
+  masked: string;
+  ok: boolean;
+};
+
+export type PoolKey = {
+  slot: number;
+  in_flight: number;
+  sent_last_minute: number;
+  per_minute: number;
+  retired: boolean;
+  retired_for_s: number;
+  cooling: { model: string; for_s: number }[];
+};
+
+export type SettingsView = {
+  nim: {
+    configured: boolean;
+    keys: { slot: number; masked: string }[];
+    models: string[];
+    pool: { keys: PoolKey[]; demoted_models: { model: string; for_s: number }[]; in_flight: number } | null;
+  };
+  agent: Record<string, number>;
+  context: Record<string, number>;
+  defaults: Record<SettingsSection, Record<string, number>>;
+  bounds: Record<SettingsSection, Record<string, [number, number]>>;
+  timesfm: { checkpoint: string; engine_installed: boolean; licence: string };
+  sandbox: {
+    timeout_s: number;
+    mem_mb: number;
+    file_mb: number;
+    memory_limit_enforced: boolean;
+    isolation: string;
+  };
+  data: { missions: number; notebooks: number; datasets: number; bytes: number };
+  about: { name: string; licence: string; clear_phrase: string };
 };
 
 export function artifactUrl(runId: string, path: string): string {

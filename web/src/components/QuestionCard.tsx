@@ -1,9 +1,9 @@
-import { MessageCircleQuestion } from "lucide-react";
+import { MessageCircleQuestion, SkipForward } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { api, type OpenQuestion } from "../lib/api";
 import { errorMessage } from "../lib/format";
 import { cn } from "../lib/utils";
-import { Button, Card, Spinner } from "./ui";
+import { Button, Card, IconButton, Spinner } from "./ui";
 
 type Answers = Record<string, string | string[]>;
 
@@ -70,7 +70,7 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
             {specs.length === 1 ? "A quick question" : `${specs.length} quick questions`}
           </h3>
           {specs.length > 1 && (
-            <span className="text-[0.9375rem] text-sand-1 tabular-nums">
+            <span className="text-caption text-sand-1 tabular-nums">
               {answered} of {specs.length} answered
             </span>
           )}
@@ -83,14 +83,12 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
             <fieldset key={`${spec.header}-${si}`} className="grid min-w-0 gap-2.5">
               <legend className="mb-1 flex w-full flex-wrap items-baseline justify-between gap-2">
                 <span className="text-base font-semibold text-sand-0 text-balance">{spec.question}</span>
-                <button
-                  type="button"
+                <IconButton
+                  label={`Skip this question: ${spec.question}`}
+                  icon={<SkipForward aria-hidden="true" className="size-4" />}
                   onClick={() => setAnswers((p) => ({ ...p, [spec.header]: spec.multiSelect ? [SKIPPED] : SKIPPED }))}
-                  aria-label={`Skip this question: ${spec.question}`}
-                  className="inline-flex min-h-10 items-center text-[0.9375rem] text-sand-1 underline underline-offset-4 hover:text-sand-0 sm:min-h-0"
-                >
-                  Skip this question
-                </button>
+                  className="size-9"
+                />
               </legend>
               <div className="grid gap-2">
                 {[...spec.options.map((o) => ({ label: o.label, description: o.description })), { label: OTHER, description: "" }].map(
@@ -134,7 +132,7 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
                         </span>
                         <span className="grid min-w-0 flex-1 gap-0.5">
                           <span className="text-base text-sand-0">{isOtherOpt ? "Something else" : opt.label}</span>
-                          {opt.description && <span className="text-[0.9375rem] text-sand-1">{opt.description}</span>}
+                          {opt.description && <span className="text-caption text-sand-1">{opt.description}</span>}
                           {isOtherOpt && isOther && (
                             <input
                               type="text"
@@ -153,7 +151,7 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
                 )}
               </div>
               {(sel === SKIPPED || (Array.isArray(sel) && sel[0] === SKIPPED)) && (
-                <p className="text-[0.9375rem] text-sand-1">Skipped. Prophet will use its best judgement.</p>
+                <p className="text-caption text-sand-1">Skipped. Prophet will use its best judgement.</p>
               )}
             </fieldset>
           );
@@ -166,7 +164,7 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-[0.9375rem] text-sand-1">{complete ? "Ready to send" : "Answer or skip each question to continue"}</p>
+          <p className="text-caption text-sand-1">{complete ? "Ready to send" : "Answer or skip each question to continue"}</p>
           <Button type="submit" disabled={!complete || busy}>
             {busy && <Spinner />}
             {busy ? "Sending" : "Send answers"}

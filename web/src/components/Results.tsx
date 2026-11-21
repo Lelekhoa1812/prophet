@@ -2,7 +2,7 @@ import { Download, File, FileImage, FileSpreadsheet, FileText } from "lucide-rea
 import { artifactUrl, type ArtifactFile, type ArtifactRun } from "../lib/api";
 import { formatNumber, shortHash } from "../lib/format";
 import { formatBytes } from "../lib/utils";
-import { Card, ResearchNotice } from "./ui";
+import { Card } from "./ui";
 
 const W = 640;
 const H = 260;
@@ -78,7 +78,7 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
           {hist.length ? "Forecast starts" : "Forecast"}
         </text>
       </svg>
-      <figcaption className="grid gap-2 text-[0.9375rem] text-sand-1">
+      <figcaption className="grid gap-2 text-caption text-sand-1">
         <span className="flex flex-wrap gap-x-5 gap-y-1">
           {hist.length > 0 && (
             <span><span aria-hidden="true" className="mr-1.5 inline-block h-0.5 w-5 bg-sand-1 align-middle" />Your data</span>
@@ -116,12 +116,12 @@ function FileRow({ runId, file }: { runId: string; file: ArtifactFile }) {
         <kind.Icon aria-hidden="true" className="size-6 shrink-0 text-sand-1" />
         <span className="grid min-w-0 flex-1">
           <span className="truncate text-base text-sand-0">{name}</span>
-          <span className="text-[0.9375rem] text-sand-2">
+          <span className="text-caption text-sand-2">
             {kind.label} · {ext.toUpperCase()} · {formatBytes(file.bytes)}
             {file.sha256 && (
               <>
                 {" · "}
-                <span className="font-mono text-[0.875rem]" title={`sha256 ${file.sha256}`}>
+                <span className="font-mono text-meta" title={`sha256 ${file.sha256}`}>
                   sha256 {shortHash(file.sha256)}
                 </span>
               </>
@@ -143,7 +143,7 @@ function ChartFigure({ runId, file }: { runId: string; file: ArtifactFile }) {
       <a href={url} target="_blank" rel="noopener noreferrer" title="Open the chart full size" className="block overflow-hidden rounded-xl border border-sand-2/25 bg-white">
         <img src={url} alt={`Chart ${name}`} loading="lazy" className="block h-auto w-full" />
       </a>
-      <figcaption className="text-[0.9375rem] text-sand-2">{name}</figcaption>
+      <figcaption className="text-caption text-sand-2">{name}</figcaption>
     </figure>
   );
 }
@@ -154,7 +154,6 @@ export function Results({ runs }: { runs: ArtifactRun[] }) {
     <div className="grid gap-4">
       {runs.map((run) => (
         <Card key={run.run_id} className="grid gap-5 p-4 sm:p-5">
-          {run.forecast && <ResearchNotice />}
           {run.forecast?.point && run.forecast.q10 && run.forecast.q90 && (
             <ForecastChart history={run.history ?? []} fc={run.forecast} />
           )}

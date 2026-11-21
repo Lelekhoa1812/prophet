@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, ChevronDown, FileSpreadsheet, Paperclip, Upload, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, FileSpreadsheet, Paperclip, SlidersHorizontal, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { api, type Source, type ToolInfo } from "../lib/api";
 import { errorMessage } from "../lib/format";
@@ -8,7 +8,7 @@ import { cn, isWorking } from "../lib/utils";
 import { Composer } from "./Composer";
 import { NotebookTurn } from "./NotebookTurn";
 import { SourcesPanel } from "./SourcesPanel";
-import { ResearchNotice, Spinner } from "./ui";
+import { IconButton, Spinner } from "./ui";
 
 export const THREAD_SCROLL_ID = "thread-scroll";
 
@@ -183,7 +183,7 @@ export function NotebookView({
                       onClick={() => setManage(true)}
                       title={`${s.name} · ${st.text}${s.included ? "" : " · not in use"}`}
                       className={cn(
-                        "inline-flex min-h-10 max-w-full items-center gap-2 rounded-full border border-sand-2/30 bg-night-1 px-3.5 text-[0.9375rem] text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2",
+                        "inline-flex min-h-10 max-w-full items-center gap-2 rounded-full border border-sand-2/30 bg-night-1 px-3.5 text-caption text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2",
                         !s.included && "opacity-55",
                       )}
                     >
@@ -196,21 +196,19 @@ export function NotebookView({
                     </button>
                   );
                 })}
-                <button
-                  type="button"
-                  onClick={() => setManage((v) => !v)}
+                <IconButton
+                  label={manage ? "Close file manager" : "Manage files"}
                   aria-expanded={manage}
-                  className="inline-flex min-h-10 items-center gap-1 rounded-full px-3 text-[0.9375rem] text-sand-1 hover:bg-night-2 hover:text-sand-0"
-                >
-                  Manage
-                  <ChevronDown aria-hidden="true" className={cn("size-4 transition-transform", manage && "rotate-180")} />
-                </button>
+                  icon={<SlidersHorizontal aria-hidden="true" className="size-5" />}
+                  onClick={() => setManage((v) => !v)}
+                  className={cn(manage && "bg-night-2 text-sand-0")}
+                />
               </div>
             )}
           </header>
 
           {uploads.uploading && (
-            <p role="status" className="flex items-center gap-2 text-[0.9375rem] text-sand-1">
+            <p role="status" className="flex items-center gap-2 text-caption text-sand-1">
               <Spinner />
               Adding {uploads.uploading.name} ({uploads.uploading.done + 1} of {uploads.uploading.total})
             </p>
@@ -219,7 +217,7 @@ export function NotebookView({
           {uploads.notes.length > 0 && (
             <ul className="grid gap-2" aria-label="File messages">
               {uploads.notes.map((n) => (
-                <li key={n.id} role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-bad/40 p-3 text-[0.9375rem]">
+                <li key={n.id} role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-bad/40 p-3 text-caption">
                   <span className="min-w-0 [overflow-wrap:anywhere]">
                     <span className="font-semibold text-sand-0">{n.name}: </span>
                     <span className="text-bad">{n.message}</span>
@@ -310,7 +308,6 @@ export function NotebookView({
             stopping={stopping}
             placeholder={notebook.turns.length === 0 ? "Ask a question about your files" : "Ask a follow-up question"}
           />
-          <ResearchNotice className="px-4 pt-1.5" />
         </div>
       </div>
 

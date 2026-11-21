@@ -16,8 +16,11 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   met: { label: "Done", tone: "ok" },
   failed: { label: "Couldn't finish", tone: "bad" },
   outcome_unknown: { label: "Paused for review", tone: "bad" },
-  budget_exhausted: { label: "Reached its limit", tone: "bad" },
-  iteration_budget: { label: "Reached its limit", tone: "bad" },
+  // A checkpoint is a planned pause: the work so far is kept and the person decides whether to carry on.
+  checkpoint: { label: "Paused at a checkpoint", tone: "ember" },
+  // Runs from before checkpoints ended at a limit. They are still shown, with the same wording as the checkpoint.
+  budget_exhausted: { label: "Paused at a checkpoint", tone: "ember" },
+  iteration_budget: { label: "Paused at a checkpoint", tone: "ember" },
   partial: { label: "Partly answered", tone: "ember" },
   stalled: { label: "Stuck", tone: "bad" },
   impossible: { label: "Not possible with this data", tone: "bad" },
@@ -33,6 +36,13 @@ export function statusInfo(status: string) {
 
 export function isWorking(status: string): boolean {
   return status === "created" || status === "running";
+}
+
+// Mirrors RESUMABLE_AT_CHECKPOINT in the API service: these can be continued or answered now.
+export const RESUMABLE_STATUSES = ["checkpoint", "budget_exhausted", "iteration_budget"] as const;
+
+export function isCheckpoint(status: string): boolean {
+  return (RESUMABLE_STATUSES as readonly string[]).includes(status);
 }
 
 export function formatBytes(n: number): string {

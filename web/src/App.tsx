@@ -1,31 +1,15 @@
-import { Menu, Plus, X } from "lucide-react";
+import { Menu, Plus, Settings as SettingsIcon, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Composer } from "./components/Composer";
 import { NotebookView } from "./components/NotebookView";
+import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
-import { Button, Card, ResearchNotice, Spinner } from "./components/ui";
+import { Button, Card, IconButton, Spinner } from "./components/ui";
 import { api, type ArtifactRun, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
 import { errorMessage } from "./lib/format";
 import { useMission } from "./lib/useMission";
 import { cn, isWorking } from "./lib/utils";
-
-// Starting points that carry their own data, so a first-time visitor can see a full run without preparing a file.
-// They are demonstration data and are labelled "Sample data" on screen.
-const EXAMPLES: { label: string; text: string }[] = [
-  {
-    label: "Weekly sales, next 8 weeks",
-    text: "Forecast the next 8 weeks from these weekly sales: 120, 132, 128, 141, 150, 147, 160, 171, 168, 180, 176, 190, 185, 198, 204, 199.",
-  },
-  {
-    label: "Monthly revenue, next 6 months",
-    text: "Here is monthly revenue for two years: 310, 295, 330, 352, 371, 365, 380, 402, 388, 410, 455, 520, 335, 322, 349, 375, 396, 391, 405, 428, 415, 439, 486, 551. Forecast the next 6 months and show the likely range.",
-  },
-  {
-    label: "Weekly units, sample region",
-    text: "Weekly units sold in a sample region: 0, 0, 3, 0, 0, 0, 5, 0, 0, 2, 0, 0, 0, 0, 4, 0, 0, 0, 6, 0, 0, 3. Forecast the next 8 weeks and show the likely range.",
-  },
-];
 
 // One notice slot above the main column. Errors are never swallowed: they land here until dismissed.
 type Notice = { id: number; message: string; tone: "error" | "info"; action?: { label: string; run: () => void } };
@@ -38,6 +22,7 @@ export default function App() {
   const [health, setHealth] = useState<{ ok: boolean; nim_keys_configured: boolean } | null>(null);
   const [tools, setTools] = useState<Record<string, ToolInfo>>({});
   const [navOpen, setNavOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [sending, setSending] = useState(false);
@@ -51,6 +36,12 @@ export default function App() {
   const wasNavOpen = useRef(false);
 
   const showError = (message: string) => setNotice({ id: Date.now(), message, tone: "error" });
+
+  // Keys can change in Settings, so the header's "model key" state is read again when the page closes.
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    api.health().then(setHealth).catch(() => undefined);
+  };
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null));
@@ -219,7 +210,10 @@ export default function App() {
   return (
     <div className="flex h-dvh bg-night-0 text-sand-0">
       <aside className="hidden w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4 lg:flex" inert={navOpen}>
-        <h1 className="px-2 font-display text-2xl font-semibold">Prophet</h1>
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="px-2 font-display text-2xl font-semibold">Prophet</h1>
+          <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
+        </div>
         <div className="min-h-0 flex-1">{sidebar}</div>
       </aside>
 
@@ -234,9 +228,10 @@ export default function App() {
           >
             <div className="flex items-center justify-between">
               <span className="px-2 font-display text-2xl font-semibold">Prophet</span>
-              <Button ref={closeButton} variant="ghost" size="icon" aria-label="Close menu" onClick={() => setNavOpen(false)}>
-                <X aria-hidden="true" className="size-5" />
-              </Button>
+              <div className="flex items-center">
+                <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
+                <IconButton ref={closeButton} label="Close menu" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(false)} />
+              </div>
             </div>
             <div className="min-h-0 flex-1">{sidebar}</div>
           </div>
@@ -245,13 +240,12 @@ export default function App() {
 
       <div className="flex min-w-0 flex-1 flex-col" inert={navOpen}>
         <header className="flex items-center justify-between gap-2 border-b border-sand-2/20 px-3 py-2 lg:hidden">
-          <Button ref={menuButton} variant="ghost" size="icon" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
-            <Menu aria-hidden="true" className="size-5" />
-          </Button>
+          <IconButton ref={menuButton} label="Open menu" aria-expanded={navOpen} icon={<Menu aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(true)} />
           <span className="font-display text-xl font-semibold">Prophet</span>
-          <Button variant="ghost" size="icon" aria-label="New notebook" onClick={() => void newNotebook()}>
-            <Plus aria-hidden="true" className="size-5" />
-          </Button>
+          <div className="flex items-center">
+            <IconButton label="New notebook" icon={<Plus aria-hidden="true" className="size-5" />} onClick={() => void newNotebook()} />
+            <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
+          </div>
         </header>
 
         {notice && (
@@ -259,20 +253,16 @@ export default function App() {
             <div
               role={notice.tone === "error" ? "alert" : "status"}
               className={cn(
-                "mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border bg-night-1 p-3 text-[0.9375rem]",
+                "mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border bg-night-1 p-3 text-caption",
                 notice.tone === "error" ? "border-bad/40" : "border-sand-2/30",
               )}
             >
               <p className={cn("min-w-0 [overflow-wrap:anywhere]", notice.tone === "error" ? "text-bad" : "text-sand-0")}>{notice.message}</p>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
                 {notice.action && (
-                  <Button variant="secondary" size="sm" onClick={notice.action.run}>
-                    {notice.action.label}
-                  </Button>
+                  <IconButton label={notice.action.label} icon={<Undo2 aria-hidden="true" className="size-5" />} onClick={notice.action.run} />
                 )}
-                <Button variant="ghost" size="sm" onClick={() => setNotice(null)}>
-                  Dismiss
-                </Button>
+                <IconButton label="Dismiss message" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNotice(null)} />
               </div>
             </div>
           </div>
@@ -282,13 +272,13 @@ export default function App() {
           <div className="px-4 pt-4 sm:px-6">
             <Card role="alert" className="mx-auto grid w-full max-w-3xl gap-2 border-bad/40 p-4">
               <p className="text-base font-bold">{apiDown ? "Prophet isn't running" : "Prophet needs a model key"}</p>
-              <p className="text-[0.9375rem] text-sand-1">
+              <p className="text-caption text-sand-1">
                 {apiDown
                   ? "Start the Prophet server, then reload this page."
                   : "Prophet cannot run yet: no model key is set. Ask the person who set up this app to add one, then reload."}
               </p>
               {noKeys && (
-                <details className="text-[0.9375rem] text-sand-1">
+                <details className="text-caption text-sand-1">
                   <summary className="inline-flex min-h-10 cursor-pointer items-center text-sand-2 hover:text-sand-0 sm:min-h-0">Details</summary>
                   <p className="pt-1">Technical detail: add your NVIDIA key to the .env file in the project folder, then restart the server.</p>
                 </details>
@@ -300,7 +290,7 @@ export default function App() {
         {pollError && (
           <div className="px-4 pt-4 sm:px-6">
             <Card role="alert" className="mx-auto grid w-full max-w-3xl gap-1 border-bad/40 p-4">
-              <p className="text-[0.9375rem] text-sand-0">
+              <p className="text-caption text-sand-0">
                 Lost contact with Prophet. Retrying every few seconds. Progress will update when the connection is back.
               </p>
             </Card>
@@ -341,23 +331,6 @@ export default function App() {
                       </Button>
                     </div>
                   </div>
-                  <div className="grid gap-2">
-                    <p className="text-[0.9375rem] font-semibold text-sand-2">Or try a quick forecast</p>
-                    <ul className="flex flex-wrap gap-2">
-                      {EXAMPLES.map((ex) => (
-                        <li key={ex.label}>
-                          <button
-                            type="button"
-                            onClick={() => setDraft(ex.text)}
-                            className="inline-flex min-h-10 items-center gap-2.5 rounded-full border border-sand-2/40 px-4 text-base text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
-                          >
-                            {ex.label}
-                            <span className="rounded-full border border-sand-2/40 px-2 py-px text-[0.8125rem] text-sand-1">Sample data</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
                 </section>
               ) : current ? (
                 <Turn
@@ -390,11 +363,21 @@ export default function App() {
                 initial={draft}
                 placeholder={selectedId === null ? "Describe a quick forecast" : "Describe another forecast"}
               />
-              <ResearchNotice className="px-4 pt-1.5" />
             </div>
           </div>
         )}
       </div>
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={closeSettings}
+        onDataChanged={() => {
+          setSelectedId(null);
+          setSelectedNotebookId(null);
+          refreshList();
+          api.health().then(setHealth).catch(() => undefined);
+        }}
+      />
     </div>
   );
 }

@@ -1,9 +1,9 @@
-import { AlertTriangle, Check, ChevronRight, Copy, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, Play, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { ArtifactRun, Mission, ToolInfo } from "../lib/api";
-import { formatDuration, truncate } from "../lib/format";
+import { api, type ArtifactRun, type Mission, type ToolInfo } from "../lib/api";
+import { errorMessage, formatDuration, truncate } from "../lib/format";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
-import { cn, isWorking } from "../lib/utils";
+import { cn, isCheckpoint, isWorking } from "../lib/utils";
 import { Markdown } from "./Markdown";
 import { QuestionCard } from "./QuestionCard";
 import { Results } from "./Results";
@@ -25,22 +25,22 @@ function StepRow({ step }: { step: StepView }) {
         </span>
         <div className="grid min-w-0 flex-1 gap-0.5">
           <span className="text-base font-semibold text-sand-0">{step.title}</span>
-          {step.note && <span className="text-[0.9375rem] text-sand-1 [overflow-wrap:anywhere]">{step.note}</span>}
+          {step.note && <span className="text-caption text-sand-1 [overflow-wrap:anywhere]">{step.note}</span>}
           {step.error && step.state === "failed" && (
-            <span className="text-[0.9375rem] text-bad [overflow-wrap:anywhere]">{truncate(step.error, 220)}</span>
+            <span className="text-caption text-bad [overflow-wrap:anywhere]">{truncate(step.error, 220)}</span>
           )}
-          {step.followUp && <span className="text-[0.9375rem] text-sand-2">Not there yet: {truncate(step.followUp, 200)}</span>}
+          {step.followUp && <span className="text-caption text-sand-2">Not there yet: {truncate(step.followUp, 200)}</span>}
         </div>
       </div>
       {hasDetails && (
         <details className="ml-7">
-          <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1 text-[0.9375rem] text-sand-2 hover:text-sand-0 sm:min-h-0">
+          <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1 text-caption text-sand-2 hover:text-sand-0 sm:min-h-0">
             <ChevronRight aria-hidden="true" className="size-3.5 transition-transform [details[open]>summary_&]:rotate-90" />
             Details
           </summary>
           <div className="mt-2 grid gap-3">
             {step.facts.length > 0 && (
-              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[0.9375rem]">
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-caption">
                 {step.facts.map(([k, v]) => (
                   <div key={k} className="contents">
                     <dt className="text-sand-2">{k}</dt>
@@ -51,23 +51,23 @@ function StepRow({ step }: { step: StepView }) {
             )}
             {step.code && (
               <div className="grid gap-1">
-                <span className="text-[0.9375rem] text-sand-2">Code that ran</span>
-                <pre className="max-h-72 overflow-auto rounded-lg bg-night-0 p-3 text-[0.9375rem] leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-0">
+                <span className="text-caption text-sand-2">Code that ran</span>
+                <pre className="max-h-72 overflow-auto rounded-lg bg-night-0 p-3 text-caption leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-0">
                   {step.code}
                 </pre>
               </div>
             )}
             {step.output && (
               <div className="grid gap-1">
-                <span className="text-[0.9375rem] text-sand-2">What it printed</span>
-                <pre className="max-h-60 overflow-auto rounded-lg bg-night-0 p-3 text-[0.9375rem] leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-1">
+                <span className="text-caption text-sand-2">What it printed</span>
+                <pre className="max-h-60 overflow-auto rounded-lg bg-night-0 p-3 text-caption leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-1">
                   {truncate(step.output, 4000)}
                 </pre>
               </div>
             )}
             <details>
-              <summary className="inline-flex min-h-10 cursor-pointer items-center text-[0.9375rem] text-sand-2 hover:text-sand-0 sm:min-h-0">Full record</summary>
-              <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-night-0 p-3 font-mono text-[0.875rem] leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-1">
+              <summary className="inline-flex min-h-10 cursor-pointer items-center text-caption text-sand-2 hover:text-sand-0 sm:min-h-0">Full record</summary>
+              <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-night-0 p-3 font-mono text-meta leading-snug whitespace-pre-wrap [overflow-wrap:anywhere] text-sand-1">
                 {JSON.stringify(step.raw, null, 2)}
               </pre>
             </details>
@@ -105,7 +105,7 @@ function StepsPanel({ steps, working }: { steps: StepView[]; working: boolean })
       }}
       className="group"
     >
-      <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg pr-3 text-[0.9375rem] text-sand-2 transition-colors hover:text-sand-0">
+      <summary className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg pr-3 text-caption text-sand-2 transition-colors hover:text-sand-0">
         <ChevronRight aria-hidden="true" className="size-4 transition-transform [details[open]>summary_&]:rotate-90" />
         {summary}
       </summary>
@@ -131,7 +131,7 @@ function AnswerActions({ text, seconds }: { text: string; seconds: number }) {
     }
   }
   return (
-    <div className="-mt-1 flex items-center gap-1 text-[0.9375rem] text-sand-2">
+    <div className="-mt-1 flex items-center gap-1 text-caption text-sand-2">
       <button
         type="button"
         onClick={() => void copy()}
@@ -152,6 +152,8 @@ function AnswerActions({ text, seconds }: { text: string; seconds: number }) {
 type Problem = { what: string; why: string; next: string; action: "retry" | "edit" | "none" };
 
 function problemFor(mission: Mission): Problem | null {
+  // A checkpoint is not a problem: it has its own card with Continue and Answer now.
+  if (isCheckpoint(mission.status)) return null;
   const answer = mission.answer && typeof mission.answer === "object" ? (mission.answer as Record<string, any>) : {};
   const failedEvent = [...mission.events].reverse().find((e) => e.kind === "mission.failed");
   switch (mission.status) {
@@ -176,14 +178,6 @@ function problemFor(mission: Mission): Problem | null {
         next: "Add more history or more detail, or change what you are asking for.",
         action: "retry",
       };
-    case "iteration_budget":
-    case "budget_exhausted":
-      return {
-        what: "Prophet reached its working limit before it was sure of the answer.",
-        why: "Each request has a fixed amount of work so it cannot run forever.",
-        next: "Ask again with a narrower question, or break the work into two requests.",
-        action: "retry",
-      };
     case "cancelled":
       return {
         what: "You stopped this question.",
@@ -201,6 +195,54 @@ function problemFor(mission: Mission): Problem | null {
     default:
       return null;
   }
+}
+
+// A part of the work ended on purpose. Every step is kept; the person decides whether Prophet keeps going with a fresh
+// allowance, or writes the answer now from the evidence it already has.
+function CheckpointCard({ mission, onChanged }: { mission: Mission; onChanged: () => void }) {
+  const [busy, setBusy] = useState<"continue" | "answer" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const which = [...mission.events].reverse().find((e) => e.kind === "mission.checkpoint")?.payload.which;
+  const cause =
+    which === "max_seconds" ? "This part of the work used its time allowance." : "This part of the work used its tool-call allowance.";
+
+  async function run(kind: "continue" | "answer") {
+    setBusy(kind);
+    setError(null);
+    try {
+      if (kind === "continue") await api.continueMission(mission.id);
+      else await api.answerNow(mission.id);
+      onChanged();
+    } catch (err) {
+      setError(errorMessage(err, "Couldn't continue. Try again."));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card role="status" className="grid gap-3 border-ember/40 p-4 sm:p-5">
+      <p className="text-base font-bold text-sand-0">Paused at a checkpoint</p>
+      <p className="text-caption text-sand-1">
+        {cause} Every step so far is kept. Continue to let Prophet keep going, or answer now with what it has found.
+      </p>
+      {error && (
+        <p role="alert" className="text-caption text-bad">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button onClick={() => void run("continue")} disabled={busy !== null}>
+          {busy === "continue" ? <Spinner /> : <Play aria-hidden="true" className="size-4" />}
+          Continue
+        </Button>
+        <Button variant="secondary" onClick={() => void run("answer")} disabled={busy !== null}>
+          {busy === "answer" ? <Spinner /> : <CheckCheck aria-hidden="true" className="size-4" />}
+          Answer now
+        </Button>
+      </div>
+    </Card>
+  );
 }
 
 export function Turn({
@@ -244,6 +286,7 @@ export function Turn({
     seen.current = { status: mission.status, answered: text !== "" };
     if (!prev) return;
     if (mission.status === "waiting_user" && prev.status !== "waiting_user") setAnnounce("Prophet needs your answer.");
+    else if (isCheckpoint(mission.status) && !isCheckpoint(prev.status)) setAnnounce("Paused at a checkpoint. Continue or answer now.");
     else if (text !== "" && !prev.answered) setAnnounce("Answer ready.");
   }, [mission.status, text]);
 
@@ -255,6 +298,8 @@ export function Turn({
 
       <div className="grid gap-4">
         <StepsPanel steps={steps} working={working} />
+
+        {isCheckpoint(mission.status) && <CheckpointCard mission={mission} onChanged={onAnswered} />}
 
         {working && (
           <div className="flex items-center gap-2.5 text-base text-sand-0">
@@ -276,14 +321,14 @@ export function Turn({
         {answer?.status === "partial" && (
           <Card role="status" className="grid gap-1.5 border-ember/40 p-4">
             <p className="text-base font-bold text-sand-0">This is a partial answer.</p>
-            {typeof answer.reason === "string" && answer.reason && <p className="text-[0.9375rem] text-sand-1">{answer.reason}</p>}
+            {typeof answer.reason === "string" && answer.reason && <p className="text-caption text-sand-1">{answer.reason}</p>}
             {unverified.length > 0 && (
-              <p className="text-[0.9375rem] text-sand-1">Not found in the results: {unverified.join(", ")}</p>
+              <p className="text-caption text-sand-1">Not found in the results: {unverified.join(", ")}</p>
             )}
           </Card>
         )}
 
-        {text && <Markdown text={text} className="text-[1.125rem] leading-[1.7]" />}
+        {text && <Markdown text={text} className="text-lead leading-[1.7]" />}
 
         <Results runs={runs} />
 
@@ -295,8 +340,8 @@ export function Turn({
               <AlertTriangle aria-hidden="true" className="mt-1 size-4 shrink-0 text-bad" />
               {problem.what}
             </p>
-            <p className="text-[0.9375rem] text-sand-1">{problem.why}</p>
-            <p className="text-[0.9375rem] text-sand-0">{problem.next}</p>
+            <p className="text-caption text-sand-1">{problem.why}</p>
+            <p className="text-caption text-sand-0">{problem.next}</p>
             {problem.action !== "none" && (
               <div className="pt-1">
                 {problem.action === "retry" ? (

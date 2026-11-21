@@ -103,7 +103,7 @@ export function Composer({
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
-          className="max-h-56 min-h-11 flex-1 resize-none bg-transparent px-2 py-2.5 text-[1.0625rem] leading-snug text-sand-0 placeholder:text-sand-2 focus:outline-none"
+          className="max-h-56 min-h-11 flex-1 resize-none bg-transparent px-2 py-2.5 text-body leading-snug text-sand-0 placeholder:text-sand-2 focus:outline-none"
         />
         {showStop ? (
           <button
@@ -128,7 +128,7 @@ export function Composer({
           </button>
         )}
       </div>
-      <div className="flex min-h-5 flex-wrap items-baseline justify-between gap-x-4 px-4 text-[0.9375rem] text-sand-2">
+      <div className="flex min-h-5 flex-wrap items-baseline justify-between gap-x-4 px-4 text-caption text-sand-2">
         <p className="min-w-0" role={error ? "alert" : undefined}>
           {error ? <span className="text-bad">{error}</span> : note}
         </p>
