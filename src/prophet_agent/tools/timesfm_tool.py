@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
+from prophet_agent.forecast.health import assess
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
 from prophet_agent.forecast.tsb import expected_volume
 from prophet_agent.runtime.runner import Tool
@@ -40,15 +41,23 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
     # For intermittent demand the median is zero or near it, so the point is the expected demand (mean under TSB).
     # The TimesFM median stays visible as median_point.
     shown = [round(float(v), 4) for v in expected_volume(series, horizon)] if lumpy else median
+    ctx_used = min(len(series), (control.context_points if control is not None and control.context_points else engine.global_context))
+    if lumpy:
+        health = {"verdict": "flat_expected", "reason": "intermittent demand: the point is the expected demand, a level by design; "
+                                                        "the information is in the interval and the probability of demand"}
+    else:
+        health = assess(series, point, q[:, 0], q[:, 8], context_used=ctx_used,
+                        context_points=control.context_points if control is not None else None)
     return {
         "point": shown,
+        "health": health,
         **({"median_point": median} if lumpy else {}),
         "quantiles": {f"{lvl:.1f}": [round(float(v), 4) for v in q[:, i]] for i, lvl in enumerate(QUANTILE_LEVELS)},
         "config": {
             "checkpoint": engine.checkpoint or CHECKPOINT,
             "backend": "mlx",
             "global_context": engine.global_context,
-            "context_used": min(len(series), (control.context_points if control is not None and control.context_points else engine.global_context)),
+            "context_used": ctx_used,
             "horizon": horizon,
             "quantile_levels": QUANTILE_LEVELS,
             "history_points": len(series),
@@ -101,6 +110,7 @@ def _thin(v: list[float]) -> list[float]:
 def _compact(r: dict) -> dict:
     q = r["quantiles"]
     out = {"config": {k: v for k, v in r["config"].items() if k != "quantile_levels"},
+           "health": r.get("health"),
            "point": _thin(r["point"]), "q10": _thin(q["0.1"]), "q90": _thin(q["0.9"])}
     if len(r["point"]) > SHOWN:
         out["note"] = f"{len(r['point'])} periods; every ~{len(r['point']) // SHOWN}th shown"
@@ -128,7 +138,9 @@ TIMESFM_TOOL_SPEC = {
     "description": "Forecast one or more series with TimesFM 3 (a pretrained time-series model, used as it is). Returns "
                    "point and 10 to 90 percent quantile forecasts and the configuration used. Forecasts are floored at zero "
                    "only when the history never went below zero. For intermittent demand (sales in fewer than about three in four periods) the point is the expected demand (the mean under TSB) and the TimesFM median is returned as median_point. Pass the series as given; clean or reshape it in an "
-                   "analysis step first when it needs that. The optional control arguments change how the model reads "
+                   "analysis step first when it needs that. Every result carries a health verdict: ok, check, flat_expected "
+                   "(a flat median is the honest forecast; present the interval) or flat_unexpected (the history has a "
+                   "cycle the forecast lost; read causes and try, fix the input, forecast again). The optional control arguments change how the model reads "
                    "the series (history window, points to ignore, known drivers such as promotions or holidays). They "
                    "are choices, not improvements: run backtest_series with the same arguments and keep one only if it "
                    "beats the default.",

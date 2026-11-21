@@ -86,6 +86,21 @@ def _method_note(config: dict) -> str:
     return "TimesFM 3: " + "; ".join(parts) + "."
 
 
+def _health_note(health: dict | None) -> str:
+    """A sentence for the document when the forecast is flat or the check found a cause, so the file explains itself."""
+    if not health:
+        return ""
+    v = health.get("verdict")
+    if v == "flat_expected":
+        return (" The median is close to flat because the history shows no repeating pattern to carry forward; read the shaded "
+                "interval, not the line, for how far values can move.")
+    if v == "flat_unexpected":
+        return " Warning: the history repeats on a cycle that this forecast does not reproduce: " + "; ".join(health.get("causes", [])[:2]) + "."
+    if v == "check" and health.get("causes"):
+        return " Check: " + "; ".join(health["causes"][:2]) + "."
+    return ""
+
+
 def _run(args: dict, key: str) -> dict[str, Any]:
     extra = sorted(set(args) - ALLOWED_ARGS)
     if extra:
@@ -105,7 +120,7 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     ahead = _future_dates(hist_dates, len(fc["point"])) if hist_dates else None
     q = fc["quantiles"]
     pack = build_forecast_pack(history=values, point=fc["point"], q10=q["0.1"], q90=q["0.9"], title=title,
-                               note=_method_note(fc["config"]), dates=hist_dates if ahead else None, future_dates=ahead,
+                               note=_method_note(fc["config"]) + _health_note(fc.get("health")), dates=hist_dates if ahead else None, future_dates=ahead,
                                events=_event_spans(args, len(values), len(fc["point"])),
                                ignored=args.get("ignore_ranges"), q30=q.get("0.3"), q70=q.get("0.7"))
     if not pack.ok:
