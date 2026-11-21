@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from prophet_agent.sandbox import prophet_stats as ps
 from prophet_agent.skills import SKILLS_DIR, list_skills, read_skill
 from prophet_agent.tools.skill_tool import ANALYST_SKILL_SPEC, _run, skill_tool
 from prophet_agent.tools.timesfm_tool import TIMESFM_TOOL_SPEC
@@ -14,9 +15,13 @@ EXPECTED = {
     "first-contact-profile", "missing-data-and-gaps", "outliers-and-level-shifts", "zeros-censoring-and-intermittent",
     "seasonality-and-calendar", "smoothing-without-leakage", "choose-model-by-backtest", "timesfm-control-and-flat-forecasts",
     "drivers-and-covariates", "intervals-and-trust-statement", "deliverables-and-handover",
+    "knn-and-analogue-imputation", "kalman-and-gradient-features", "bayesian-shrinkage-hierarchies",
+    "forecast-combination-and-conformal", "changepoints-and-regimes",
 }
 PS_NAMES = {"hampel", "stl_outliers", "impute", "smooth", "changepoints", "derivative_features", "censoring_check",
-            "seasonal_strength", "stationarity", "backtest_treatment", "isolation_outliers", "Ledger"}
+            "seasonal_strength", "stationarity", "backtest_treatment", "isolation_outliers", "Ledger",
+            "knn_impute", "kalman_smooth", "savgol_smooth", "rolling_slope_features", "shrink_to_group",
+            "combine_forecasts", "conformal_interval", "fuse_report", "causal_canary"}
 PL_NAMES = {"load", "profile", "build_series", "prepare_series", "save_series", "dominant_period", "find_season",
             "detect_anomalies", "event_covariate", "holiday_covariate", "list_holidays", "chart", "query", "size_report",
             "read_table", "to_number", "to_datetime"}
@@ -88,6 +93,24 @@ def test_every_helper_named_in_a_skill_is_in_the_allowed_lists():
         for module, fn in HELPER.findall(_body(path)):
             allowed = PS_NAMES if module == "ps" else PL_NAMES
             assert fn in allowed, f"{path.name} names {module}.{fn}, which is not in the allowed list"
+
+
+NEW_SKILLS = {
+    "knn-and-analogue-imputation", "kalman-and-gradient-features", "bayesian-shrinkage-hierarchies",
+    "forecast-combination-and-conformal", "changepoints-and-regimes",
+}
+
+
+def test_every_ps_callable_named_in_a_skill_exists_and_is_callable():
+    for path in _files():
+        for fn in re.findall(r"\bps\.([A-Za-z_]\w*)", _body(path)):
+            assert hasattr(ps, fn) and callable(getattr(ps, fn)), (path.name, fn)
+
+
+def test_each_new_skill_names_at_least_one_callable():
+    for path in _files():
+        if path.stem in NEW_SKILLS:
+            assert re.findall(r"\bps\.[A-Za-z_]\w*", _body(path)), path.name
 
 
 def test_list_skills_returns_names_and_summaries():

@@ -628,6 +628,7 @@ def changepoints(
             "shift_in_sd": (shift / sd) if sd > 0 else None,
         })
     report["n_changes"] = len(changes)
+    report.update({"diagnostic_only": True, "leak_warning": "fitted on every row you pass, including later ones: use it to look at the history, not to build model input or a backtest arm"})
     return _py(changes), _py(report)
 
 
@@ -1014,6 +1015,9 @@ def isolation_outliers(
     they are errors; a flag is a prompt to look, not a reason to delete. Requires scikit-learn, and raises ImportError
     without it.
 
+    Not causal: the forest is fitted on every row passed, so a flag at time t depends on later rows (the canary shows it).
+    Treat it as a diagnostic on history; the report says so (diagnostic_only).
+
     Returns (flags, report) with flags the length of the input's rows.
     """
     from sklearn.ensemble import IsolationForest  # lazy: scikit-learn is optional for the rest of the module
@@ -1045,6 +1049,7 @@ def isolation_outliers(
         "rows_skipped_missing": int(matrix.shape[0] - n_ok),
         "features": int(matrix.shape[1]),
     }
+    report.update({"diagnostic_only": True, "leak_warning": "fitted on every row you pass, including later ones: use it to look at the history, not to build model input or a backtest arm"})
     return flags, _py(report)
 
 
@@ -1085,3 +1090,833 @@ class Ledger:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         return str(target)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Advanced helpers. Each returns the transformed data and a report of what it changed. None is proven to help a
+# pretrained forecaster: test each one with a walk-forward backtest against the same forecast without it before keeping it.
+# ---------------------------------------------------------------------------------------------------------------------
+
+_KNN_K = 5  # neighbours per gap; the common default of KNN imputers, not tuned here, so calibrate it on a backtest
+_KNN_LAGS = (1, 7)  # previous point and same weekday; a lag of 1 needs no seasonal knowledge
+_MIN_SCALE_OBS = 10  # observed values needed before a row to estimate its scale; fewer and that row has no features
+_KALMAN_DIFFUSE = 1e6  # starting variance as a multiple of the series variance; large enough that the first point sets the start
+_KALMAN_BURN_IN = 10  # points after the start that are not judged: the diffuse start gives them gains near one
+_KALMAN_MIN_R_RATIO = 1e-9  # floor on the observation variance relative to the series variance, so a noiseless series does not divide by zero
+_OUTLIER_Z = 3.0  # standardised innovation beyond which a point is reported as an outlier; about 0.3 percent of Gaussian draws
+_RATE_FLOOR = 1e-6  # smallest rate used for the Poisson variance of a zero rate, so the variance stays positive
+_FEATURE_WINDOWS = (3, 7, 28)  # a few days, one week and about one month, matching derivative_features
+_SLOPE_MIN_WINDOW = 3  # a curvature needs three points; a slope alone would need two
+_CONFORMAL_ALPHA = 0.1  # the 90 percent interval is a reporting convention, not a finding
+_COMBINE_METHODS = ("mean", "median", "inverse_error")
+_CONFORMAL_METHODS = ("split", "rolling")
+_CALIBRATION_FRACTION = 0.5  # causal kalman_smooth fits its noise on the first half of the series it is given, so no later value sets it
+_CANARY_TOL = 1e-9  # absolute tolerance for float noise between two runs that read the same numbers in the same order
+_KALMAN_LEAK_WARNING = (
+    "Diagnostic only: the backward pass reads values after each point, so the output at earlier times changes when later "
+    "data change. Never use it as a model input or in a backtest."
+)
+_SG_LEAK_WARNING = (
+    "Diagnostic only: the centred filter reads values after each point, so the output at earlier times changes when later "
+    "data change. Never use it as a model input or in a backtest."
+)
+
+
+def knn_impute(
+    df: pd.DataFrame,
+    cols: list[str],
+    k: int = _KNN_K,
+    seasonal_lags: tuple[int, ...] | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Fill interior gaps in ``cols`` from the most similar earlier rows (causal K-nearest-neighbour imputation).
+
+    Each row's features are the z-scored lags of every column in ``cols`` at ``seasonal_lags`` (default (1, 7)), plus the
+    sine and cosine of the day of week when the index is a DatetimeIndex. A value is z-scored with the mean and standard
+    deviation of that column over the rows before it, so no later value sets its scale. A row with fewer than
+    _MIN_SCALE_OBS earlier observations has no features.
+
+    For a gap at position t the donors are rows before t whose target is observed. The fill is the mean target of the
+    k donors nearest to t, where distance is the mean squared feature difference over the features both rows share.
+    Nothing at or after t is read, so the fill is a function of history and is safe inside a backtest origin. Fills are
+    never used as donors for other gaps, so the result does not depend on the order of the gaps.
+
+    Failure modes: a gap with fewer than k donors is filled from those donors and listed in donor_shortfalls. A gap with
+    no earlier donor or no shared feature stays NaN and is listed in unfilled. Leading gaps stay NaN, and trailing
+    missing values are not filled because they are not gaps. Cost grows with gaps times rows, so keep tables to tens of
+    thousands of rows.
+
+    Returns (filled, report). ``filled`` is a copy; the input is not changed. The report has method, k, seasonal_lags,
+    causal (always True), count (total fills), positions and unfilled (dicts from column to integer positions),
+    donor_shortfalls (dict from column to positions) and calendar_features.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("knn_impute needs a table (DataFrame) so that its columns can be read together")
+    cols = [cols] if isinstance(cols, str) else list(cols)
+    if not cols:
+        raise ValueError("knn_impute needs at least one column name in cols")
+    absent = [c for c in cols if c not in df.columns]
+    if absent:
+        raise ValueError(f"these columns are not in the table: {absent}")
+    k = int(k)
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    lags = tuple(int(v) for v in (_KNN_LAGS if seasonal_lags is None else seasonal_lags))
+    if not lags or min(lags) < 1:
+        raise ValueError("seasonal_lags must be positive whole numbers, for example (1, 7)")
+    if len(df) < 2:
+        raise ValueError("knn_impute needs at least 2 rows")
+
+    values = {c: _values(df[c]) for c in cols}
+    features: list[np.ndarray] = []
+    for c in cols:
+        a = values[c]
+        ser = pd.Series(a)
+        mean_before = ser.expanding(min_periods=_MIN_SCALE_OBS).mean().shift(1).to_numpy(dtype=float)
+        sd_before = ser.expanding(min_periods=_MIN_SCALE_OBS).std().shift(1).to_numpy(dtype=float)
+        sd_before = np.where(sd_before > 0, sd_before, np.nan)  # zero spread gives no usable scale
+        for lag in lags:
+            features.append((_shifted(a, -lag) - mean_before) / sd_before)
+    calendar = isinstance(df.index, pd.DatetimeIndex)
+    if calendar:
+        dow = np.asarray(df.index.day_of_week, dtype=float)
+        features.append(np.sin(2 * np.pi * dow / 7))
+        features.append(np.cos(2 * np.pi * dow / 7))
+    matrix = np.column_stack(features)
+
+    out = df.copy()
+    positions: dict[str, list[int]] = {}
+    unfilled: dict[str, list[int]] = {}
+    shortfalls: dict[str, list[int]] = {}
+    for c in cols:
+        target = values[c]
+        observed = np.isfinite(target)
+        has_feature = np.isfinite(matrix).any(axis=1)
+        donor_ok = observed & has_feature
+        filled_vals = target.copy()
+        done: list[int] = []
+        stuck: list[int] = []
+        short: list[int] = []
+        last = int(np.flatnonzero(observed)[-1]) if observed.any() else -1
+        for t in np.flatnonzero(~observed):
+            t = int(t)
+            if t > last:
+                continue  # trailing missing values are not gaps
+            query = matrix[t]
+            cand = np.flatnonzero(donor_ok[:t])
+            if not np.isfinite(query).any() or cand.size == 0:
+                stuck.append(t)
+                continue
+            diff = matrix[cand] - query
+            shared = np.isfinite(diff)
+            count = shared.sum(axis=1)
+            comparable = count > 0
+            if not comparable.any():
+                stuck.append(t)
+                continue
+            cand = cand[comparable]
+            dist = np.where(shared, diff**2, 0.0).sum(axis=1)[comparable] / count[comparable]
+            chosen = cand[np.argsort(dist, kind="stable")[:k]]
+            filled_vals[t] = float(np.mean(target[chosen]))
+            done.append(t)
+            if chosen.size < k:
+                short.append(t)
+        out[c] = filled_vals
+        positions[c] = done
+        unfilled[c] = stuck
+        shortfalls[c] = short
+
+    report = {
+        "method": "knn_causal",
+        "k": k,
+        "seasonal_lags": list(lags),
+        "calendar_features": calendar,
+        "causal": True,
+        "count": int(sum(len(v) for v in positions.values())),
+        "positions": positions,
+        "unfilled": unfilled,
+        "donor_shortfalls": shortfalls,
+    }
+    return out, _py(report)
+
+
+def _noise_moments(arr: np.ndarray, series_var: float) -> tuple[float, float]:
+    """Observation variance R from the negative lag-1 autocovariance of first differences, and the variance of the differences."""
+    diffs = np.diff(arr)
+    pair = np.isfinite(diffs[:-1]) & np.isfinite(diffs[1:])
+    if pair.sum() < 2:
+        raise ValueError("kalman_smooth needs at least two pairs of consecutive observations to estimate the noise")
+    d_prev = diffs[:-1][pair]
+    d_next = diffs[1:][pair]
+    lag1 = float(np.mean((d_prev - d_prev.mean()) * (d_next - d_next.mean())))
+    obs_var = max(-lag1, _KALMAN_MIN_R_RATIO * series_var)
+    return obs_var, float(np.var(diffs[np.isfinite(diffs)]))
+
+
+def _kalman_filter(
+    arr: np.ndarray, start: int, stop: int, obs_var: float, level_var: float, diffuse: float
+) -> tuple[np.ndarray, ...]:
+    """Forward local-level Kalman filter over positions start..stop-1, using only earlier and current values.
+
+    Returns predicted and filtered levels and their variances, innovations, innovation variances and gains. Positions
+    outside the run are NaN. A missing value gives the predicted level as the filtered level.
+    """
+    n = arr.size
+    a_pred, p_pred, a_filt, p_filt, innov, innov_var, gain = (np.full(n, np.nan) for _ in range(7))
+    level = float(arr[start])
+    var_level = diffuse
+    for t in range(start, stop):
+        if t > start:
+            level_p, var_p = level, var_level + level_var
+        else:
+            level_p, var_p = level, var_level
+        a_pred[t], p_pred[t] = level_p, var_p
+        if np.isfinite(arr[t]):
+            v = float(arr[t]) - level_p
+            f = var_p + obs_var
+            k_gain = var_p / f
+            level = level_p + k_gain * v
+            var_level = (1.0 - k_gain) * var_p
+            innov[t], innov_var[t], gain[t] = v, f, k_gain
+        else:
+            level, var_level = level_p, var_p
+        a_filt[t], p_filt[t] = level, var_level
+    return a_pred, p_pred, a_filt, p_filt, innov, innov_var, gain
+
+
+def _outlier_summary(
+    index: pd.Index, arr: np.ndarray, innov: np.ndarray, innov_var: np.ndarray, gain: np.ndarray, start: int, stop: int
+) -> tuple[list[dict], float | None, int | None]:
+    """Points whose standardised innovation exceeds _OUTLIER_Z, the largest level influence, and where it occurs."""
+    start = start + _KALMAN_BURN_IN
+    if start >= stop:
+        return [], None, None
+    span = slice(start, stop)
+    z = innov[span] / np.sqrt(innov_var[span])
+    influence = gain[span] * np.abs(innov[span])
+    flagged = np.flatnonzero(np.isfinite(z) & (np.abs(z) > _OUTLIER_Z)) + start
+    outliers = [
+        {"position": int(p), "label": str(index[p]), "z": float(z[p - start]), "influence": float(influence[p - start])}
+        for p in flagged
+    ]
+    if not np.isfinite(influence).any():
+        return outliers, None, None
+    peak = int(np.nanargmax(influence)) + start
+    return outliers, float(influence[peak - start]), peak
+
+
+def _kalman_causal(arr: np.ndarray, index: pd.Index, name: Any, q_ratio: float | None, start: int) -> tuple[pd.Series, dict]:
+    """Filtered local level. The noise is estimated from the first half of the series only (positions before the cut)."""
+    n = arr.size
+    cut = int(n * _CALIBRATION_FRACTION)
+    cal = arr[:cut]
+    cal_obs = cal[np.isfinite(cal)]
+    if cal_obs.size < 3:
+        raise ValueError(
+            "causal kalman_smooth estimates its noise from the first half of the series, which needs at least 3 "
+            f"observed points there; got {cal_obs.size}"
+        )
+    cal_var = float(np.var(cal_obs))
+    if cal_var == 0:
+        raise ValueError("the first half of the series is constant, so its noise cannot be estimated; pass a longer history")
+    obs_var, var_d = _noise_moments(cal, cal_var)
+    if q_ratio is None:
+        level_var = max(var_d - 2.0 * obs_var, 0.0)
+        q_used, q_source = level_var / obs_var, "first_half_moments"
+    else:
+        q_used, q_source = float(q_ratio), "given"
+        level_var = q_used * obs_var
+    _, _, a_filt, _, innov, innov_var, gain = _kalman_filter(arr, start, n, obs_var, level_var, _KALMAN_DIFFUSE * cal_var)
+    out = np.full(n, np.nan)
+    out[start:] = a_filt[start:]
+    outliers, max_inf, max_pos = _outlier_summary(index, arr, innov, innov_var, gain, start, n)
+    report = {
+        "method": "local_level_kalman_filter",
+        "causal": True,
+        "diagnostic_only": False,
+        "q_ratio": q_used,
+        "q_ratio_source": q_source,
+        "calibration_end": cut,
+        "calibration_points": int(cal_obs.size),
+        "obs_variance": obs_var,
+        "level_variance": level_var,
+        "observed": int(np.isfinite(arr).sum()),
+        "missing_from_past": int((~np.isfinite(arr[start:])).sum()),
+        "outlier_count": len(outliers),
+        "outlier_z": _OUTLIER_Z,
+        "outliers": outliers,
+        "outliers_kept": True,
+        "max_influence": max_inf,
+        "max_influence_position": max_pos,
+    }
+    return pd.Series(out, index=index, name=name), _py(report)
+
+
+def _kalman_diagnostic(
+    arr: np.ndarray, index: pd.Index, name: Any, q_ratio: float | None, start: int, obs: np.ndarray
+) -> tuple[pd.Series, dict]:
+    """Two-sided local level (Rauch-Tung-Striebel). Noise is fitted on the whole series, so it is diagnostic only."""
+    n = arr.size
+    last = int(obs[-1])
+    y_obs = arr[obs]
+    series_var = float(np.var(y_obs))
+    out = np.full(n, np.nan)
+    if series_var == 0:
+        out[start : last + 1] = float(y_obs[0])
+        report = {
+            "method": "local_level_constant", "causal": False, "diagnostic_only": True,
+            "leak_warning": _KALMAN_LEAK_WARNING, "q_ratio": None, "q_ratio_source": "constant series",
+            "obs_variance": 0.0, "level_variance": 0.0, "outlier_count": 0, "outliers": [],
+            "max_influence": None, "max_influence_position": None,
+        }
+        return pd.Series(out, index=index, name=name), _py(report)
+    obs_var, var_d = _noise_moments(arr, series_var)
+    if q_ratio is None:
+        level_var = max(var_d - 2.0 * obs_var, 0.0)
+        q_used, q_source = level_var / obs_var, "full_series_moments"
+    else:
+        q_used, q_source = float(q_ratio), "given"
+        level_var = q_used * obs_var
+    a_pred, p_pred, a_filt, p_filt, innov, innov_var, gain = _kalman_filter(
+        arr, start, last + 1, obs_var, level_var, _KALMAN_DIFFUSE * series_var
+    )
+    smoothed = a_filt.copy()
+    for t in range(last - 1, start - 1, -1):
+        j = t + 1
+        step = p_filt[t] / p_pred[j]
+        smoothed[t] = a_filt[t] + step * (smoothed[j] - a_pred[j])
+    out[start : last + 1] = smoothed[start : last + 1]
+    outliers, max_inf, max_pos = _outlier_summary(index, arr, innov, innov_var, gain, start, last + 1)
+    report = {
+        "method": "local_level_kalman_rts",
+        "causal": False,
+        "diagnostic_only": True,
+        "leak_warning": _KALMAN_LEAK_WARNING,
+        "q_ratio": q_used,
+        "q_ratio_source": q_source,
+        "obs_variance": obs_var,
+        "level_variance": level_var,
+        "observed": int(obs.size),
+        "interior_state_filled": int((~np.isfinite(arr[start : last + 1])).sum()),
+        "outlier_count": len(outliers),
+        "outlier_z": _OUTLIER_Z,
+        "outliers": outliers,
+        "outliers_kept": True,
+        "max_influence": max_inf,
+        "max_influence_position": max_pos,
+    }
+    return pd.Series(out, index=index, name=name), _py(report)
+
+
+def kalman_smooth(series: Any, q_ratio: float | None = None, causal: bool = True) -> tuple[pd.Series, dict]:
+    """Local-level Kalman smoothing in plain numpy: causal filter by default, two-sided smoother as a diagnostic.
+
+    Model: level_t = level_{t-1} + w_t (variance Q) and y_t = level_t + v_t (variance R). R comes from the negative lag-1
+    autocovariance of first differences. Without ``q_ratio``, Q = max(var(diff) - 2R, 0), so q_ratio = Q / R is fitted by
+    moments. With ``q_ratio``, Q = q_ratio * R.
+
+    Causal (default): the output is the filtered level, which uses only the current and earlier values. The noise is
+    estimated from the first half of the series given (positions before len // 2), so the output at any time never reads
+    a value from the second half of the series before that cut. Pass history only; a backtest origin at or after the cut
+    is safe. Missing values take the predicted level. Outliers are reported, not removed: each observation has a
+    standardised innovation z and an influence (the level change it caused), and points with |z| above _OUTLIER_Z are
+    listed.
+
+    Diagnostic (causal=False): the Rauch-Tung-Striebel smoother, which reads values after each point and fits the noise
+    on the whole series. The report carries diagnostic_only True and a leak warning. Never use it as a model input.
+
+    A local level has no trend: a steady ramp is followed only with a large q_ratio. A constant series returns that
+    constant in diagnostic mode; in causal mode the first half must not be constant.
+
+    Failure modes: needs at least 3 observed points, and at least two pairs of consecutive observations for the noise.
+    q_ratio must be zero or more.
+
+    Returns (smoothed, report). The report has method, causal, diagnostic_only, q_ratio and its source, obs_variance,
+    level_variance, outlier_count, outlier_z, outliers (position, label, z, influence), max_influence and
+    max_influence_position. Causal reports add calibration_end and missing_from_past; diagnostic reports add
+    interior_state_filled and leak_warning.
+    """
+    arr = _values(series)
+    index = _index_of(series, arr.size)
+    name = getattr(series, "name", None)
+    if q_ratio is not None and (not math.isfinite(float(q_ratio)) or float(q_ratio) < 0):
+        raise ValueError("q_ratio must be zero or more: the ratio of level variance to observation variance")
+    obs = np.flatnonzero(np.isfinite(arr))
+    if obs.size < 3:
+        raise ValueError(f"kalman_smooth needs at least 3 observed points; got {obs.size}")
+    start = int(obs[0])
+    if causal:
+        return _kalman_causal(arr, index, name, q_ratio, start)
+    return _kalman_diagnostic(arr, index, name, q_ratio, start, obs)
+
+
+def _trailing_fit_end(arr: np.ndarray, w: int, degree: int) -> np.ndarray:
+    """Value at the right edge of a least-squares polynomial of ``degree`` over each trailing window of w points.
+
+    Uses only the window ending at each position. Rows before the first full window, and windows holding a missing
+    value, are NaN.
+    """
+    from numpy.lib.stride_tricks import sliding_window_view  # numpy's own helper; lazy import keeps the module header unchanged
+
+    n = arr.size
+    out = np.full(n, np.nan)
+    if n < w:
+        return out
+    t = np.arange(w, dtype=float) - (w - 1)  # the window's last point is t = 0
+    design = np.vander(t, degree + 1, increasing=True)
+    edge_weights = np.linalg.pinv(design)[0]  # intercept of the fit centred at the window end = value at t = 0
+    windows = sliding_window_view(arr, w)
+    vals = windows @ edge_weights
+    vals[~np.isfinite(windows).all(axis=1)] = np.nan
+    out[w - 1 :] = vals
+    return out
+
+
+def savgol_smooth(series: Any, window: int, order: int, causal: bool = True) -> tuple[pd.Series, dict]:
+    """Savitzky-Golay smoothing, causal by default.
+
+    Causal (default): each output is the polynomial of degree ``order`` fitted to the trailing ``window`` points, read
+    at the window's right edge. Only that point and earlier ones are used, so the output at any time is unchanged when
+    later data change. The first window - 1 points are NaN (warm-up), and a window holding a missing value gives NaN.
+    Missing inputs stay missing. A straight line with order 1 or more is reproduced exactly after warm-up.
+
+    Diagnostic (causal=False): scipy's centred filter with edge polynomials, after linear interpolation of interior gaps.
+    It reads values after each point, so the report carries diagnostic_only True and a leak warning. Never feed it to a
+    model or a backtest.
+
+    Failure modes: window must be odd and at least 3, and order must be at least 0 and below the window. The diagnostic
+    path needs at least ``window`` points between the first and last observed value.
+
+    Returns (smoothed, report). The report has method, causal, diagnostic_only, window, order, warmup_points,
+    missing_kept, smoothed_points and, for the diagnostic path, leak_warning.
+    """
+    arr = _values(series)
+    index = _index_of(series, arr.size)
+    name = getattr(series, "name", None)
+    window, order = int(window), int(order)
+    if window < 3 or window % 2 == 0:
+        raise ValueError("savgol_smooth needs an odd window of at least 3 points")
+    if order < 0 or order >= window:
+        raise ValueError(f"order must be at least 0 and below the window ({window}); got {order}")
+    missing = ~np.isfinite(arr)
+    if causal:
+        out = _trailing_fit_end(arr, window, order)
+        out[missing] = np.nan
+        report = {
+            "method": "savgol_trailing",
+            "causal": True,
+            "diagnostic_only": False,
+            "window": window,
+            "order": order,
+            "warmup_points": window - 1,
+            "missing_kept": int(missing.sum()),
+            "smoothed_points": int(np.isfinite(out).sum()),
+            "edge_handling": "each value is the trailing polynomial read at the window's right edge",
+        }
+        return pd.Series(out, index=index, name=name), _py(report)
+
+    span = _core(arr)
+    if span is None:
+        raise ValueError("savgol_smooth needs at least one observed value; the series is empty or entirely missing")
+    a, b = span
+    core = pd.Series(arr[a:b])
+    if core.size < window:
+        raise ValueError(
+            f"savgol_smooth needs at least {window} points between the first and last observed value; got {core.size}"
+        )
+    n_interp = int(core.isna().sum())
+    filled_core = core.interpolate(method="linear", limit_area="inside").to_numpy(dtype=float)
+    smoothed = _signal.savgol_filter(filled_core, window_length=window, polyorder=order, mode="interp")
+    out = np.full(arr.size, np.nan)
+    out[a:b] = smoothed
+    out[missing] = np.nan
+    report = {
+        "method": "savgol_centred",
+        "causal": False,
+        "diagnostic_only": True,
+        "leak_warning": _SG_LEAK_WARNING,
+        "window": window,
+        "order": order,
+        "span": [a, b],
+        "interpolated_for_filter": n_interp,
+        "missing_kept": int(missing.sum()),
+        "smoothed_points": int(np.isfinite(out).sum()),
+        "edge_points_each_side": window // 2,
+    }
+    return pd.Series(out, index=index, name=name), _py(report)
+
+
+def _trailing_poly(arr: np.ndarray, w: int) -> np.ndarray:
+    """Least-squares quadratic c0 + c1 t + c2 t^2 over each trailing window of w points, t = 0 at the window's last point.
+
+    Returns an (n, 3) array. Rows before the first full window, and windows holding a missing value, are NaN. Only values
+    at or before each row are used.
+    """
+    from numpy.lib.stride_tricks import sliding_window_view  # numpy's own helper; lazy import keeps the top of the module unchanged
+
+    n = arr.size
+    out = np.full((n, 3), np.nan)
+    if n < w:
+        return out
+    t = np.arange(w, dtype=float) - (w - 1)
+    design = np.column_stack([np.ones(w), t, t**2])
+    coef_map = np.linalg.pinv(design)  # (3, w): coefficients are coef_map @ window
+    windows = sliding_window_view(arr, w)
+    coef = windows @ coef_map.T
+    coef[~np.isfinite(windows).all(axis=1)] = np.nan
+    out[w - 1 :] = coef
+    return out
+
+
+def rolling_slope_features(series: Any, windows: tuple[int, ...] = _FEATURE_WINDOWS) -> pd.DataFrame:
+    """Causal rate-of-change features: first and second differences, trailing slope and curvature, and change z-scores.
+
+    Columns: diff1 (change from the previous point), diff2 (change in that change), and for each window w: slope_w (the
+    trailing least-squares slope per step, from a quadratic fit over the last w points), curvature_w (twice the quadratic
+    term of that fit, the second derivative at the latest point), and change_z_w (diff1 minus the mean of the previous w
+    first differences, divided by their standard deviation; NaN where that spread is zero).
+
+    Every column uses the current and earlier points only, so changing a later value never changes an earlier row. A
+    window holding a missing value gives NaN for that row only. The quadratic fit means the slope is slightly lagged for
+    curved series; a straight line is recovered exactly.
+
+    Failure modes: every window needs at least 3 points (a curvature needs three) and the series needs at least as many
+    points as the longest window, else ValueError. Outliers inside a window move the slope and the curvature, so check the
+    flags from hampel first if the series has spikes.
+
+    Returns a DataFrame with the input's index. The input is not changed.
+    """
+    arr = _values(series)
+    index = _index_of(series, arr.size)
+    wins = tuple(int(w) for w in windows)
+    if not wins:
+        raise ValueError("windows must list at least one window length, for example (3, 7, 28)")
+    if min(wins) < _SLOPE_MIN_WINDOW:
+        raise ValueError(f"each window needs at least {_SLOPE_MIN_WINDOW} points (a curvature needs three)")
+    if arr.size < max(wins):
+        raise ValueError(f"rolling_slope_features needs at least {max(wins)} points for the longest window; got {arr.size}")
+
+    s = pd.Series(arr, index=index)
+    d1 = s.diff()
+    cols: dict[str, pd.Series] = {"diff1": d1, "diff2": d1.diff()}
+    prev_d1 = d1.shift(1)
+    for w in dict.fromkeys(wins):
+        coef = _trailing_poly(arr, w)
+        cols[f"slope_{w}"] = pd.Series(coef[:, 1], index=index)
+        cols[f"curvature_{w}"] = pd.Series(2.0 * coef[:, 2], index=index)
+        mean_prev = prev_d1.rolling(w, min_periods=w).mean()
+        sd_prev = prev_d1.rolling(w, min_periods=w).std().replace(0.0, np.nan)
+        cols[f"change_z_{w}"] = (d1 - mean_prev) / sd_prev
+    return pd.DataFrame(cols, index=index)
+
+
+def shrink_to_group(
+    estimates: Any,
+    group_mean: float | None = None,
+    n_obs: Any = None,
+    within_var: Any = None,
+) -> tuple[np.ndarray, dict]:
+    """Empirical-Bayes (normal-normal) shrinkage of per-series means or rates toward the group mean.
+
+    Each estimate x_i has sampling variance s_i = within_var / n_i. The between-series variance tau^2 is estimated by the
+    method of moments: tau^2 = max(0, var(x) - mean(s_i)) with ddof 1. Each series keeps the share (1 - B_i) of its own
+    estimate and takes B_i = s_i / (s_i + tau^2) from the group, so the shrunk value is (1 - B_i) x_i + B_i mu. A noisy
+    series (large s_i) is pulled hard; a precise one is left alone.
+
+    Defaults: ``n_obs`` (exposure or count behind each estimate) defaults to 1 for every series. ``within_var`` defaults to
+    the Poisson rate assumption, s_i = max(x_i, _RATE_FLOOR) / n_i, which suits counts divided by exposure. For continuous
+    means, pass the within-series variance. ``group_mean`` defaults to the n-weighted mean of the estimates.
+
+    Leak note: the group mean and tau^2 are estimated from the estimates given. In a backtest, compute them from history
+    only at each origin. Non-finite estimates are returned as NaN and counted as skipped.
+
+    Failure modes: needs at least two series with finite estimates to estimate the spread, else ValueError. n_obs must be positive,
+    and within_var must be positive. A zero tau^2 pulls every series fully to the group mean (factor 1).
+
+    Returns (shrunk, report). The report has method, group_mean, group_mean_source, between_series_variance, variance_source,
+    shrinkage_factors (0 keeps the own estimate, 1 uses the group mean; a list in input order, None where skipped),
+    mean_shrinkage, series and skipped.
+    """
+    est = _values(estimates)
+    m = est.size
+    if m < 2:
+        raise ValueError("shrink_to_group needs at least two series to estimate the spread between them")
+    n_arr = np.ones(m) if n_obs is None else np.broadcast_to(np.asarray(n_obs, dtype=float), (m,)).astype(float)
+    if np.any(~np.isfinite(n_arr)) or np.any(n_arr <= 0):
+        raise ValueError("n_obs must be positive numbers, one per series (or a single number for all)")
+    if within_var is None:
+        var_source = "poisson_rate"
+        s_i = np.maximum(np.where(np.isfinite(est), est, 0.0), _RATE_FLOOR) / n_arr
+    else:
+        var_source = "within_var"
+        wv = np.broadcast_to(np.asarray(within_var, dtype=float), (m,)).astype(float)
+        if np.any(~np.isfinite(wv)) or np.any(wv <= 0):
+            raise ValueError("within_var must be positive numbers")
+        s_i = wv / n_arr
+
+    valid = np.isfinite(est)
+    if valid.sum() < 2:
+        raise ValueError("shrink_to_group needs at least two finite estimates")
+    if group_mean is None:
+        mu = float(np.average(est[valid], weights=n_arr[valid]))
+        mu_source = "n_weighted_mean"
+    else:
+        mu = float(group_mean)
+        if not math.isfinite(mu):
+            raise ValueError("group_mean must be a finite number")
+        mu_source = "given"
+    tau2 = max(float(np.var(est[valid], ddof=1)) - float(np.mean(s_i[valid])), 0.0)
+    factor = np.where(valid, s_i / (s_i + tau2), np.nan)
+    shrunk = np.where(valid, (1.0 - factor) * est + factor * mu, np.nan)
+    report = {
+        "method": "normal_normal_empirical_bayes",
+        "group_mean": mu,
+        "group_mean_source": mu_source,
+        "between_series_variance": tau2,
+        "variance_source": var_source,
+        "shrinkage_factors": [None if np.isnan(f) else float(f) for f in factor],
+        "mean_shrinkage": float(np.nanmean(factor)),
+        "series": int(m),
+        "skipped": int(m - valid.sum()),
+    }
+    return shrunk, _py(report)
+
+
+def combine_forecasts(
+    forecasts: Any,
+    weights: str = "mean",
+    errors: Any = None,
+) -> tuple[np.ndarray, dict]:
+    """Combine forecasts from several models, one value per horizon step, with the weights used reported.
+
+    ``forecasts`` is models by horizon: a 2-D array, a table with one row per model, or a list of equal-length 1-D
+    arrays. Methods: "mean" (equal weights, the default because it is the hardest to beat in the forecast-combination
+    literature), "median" (the middle forecast at each step, with no weights), and "inverse_error" (weights proportional
+    to 1 / errors, where ``errors`` holds one positive error per model, such as backtest MSE or MASE).
+
+    A missing forecast drops that model from the step it is missing in, and the remaining weights are renormalised for
+    that step. A step with no forecast stays NaN. The weights are reported for the case where every model is present;
+    partial_steps counts the steps where some model was missing.
+
+    Failure modes: inverse_error needs errors, one per model, all finite and above zero. Infinite forecasts are refused.
+    Forecasts are not weighted by any look at the actuals, so the weights only use the errors passed in: calculate those
+    from a backtest on history before the forecast origin.
+
+    Returns (combined, report). ``combined`` is a float array of the horizon length. The report has method, models,
+    horizon, weights (None for median), partial_steps, missing_cells and dropped_models.
+    """
+    if weights not in _COMBINE_METHODS:
+        raise ValueError(f"weights must be one of {_COMBINE_METHODS}; got {weights!r}")
+    if isinstance(forecasts, pd.DataFrame):
+        mat = forecasts.to_numpy(dtype=float)
+        names = [str(c) for c in forecasts.index]
+    elif isinstance(forecasts, (list, tuple)):
+        rows = [_values(f) for f in forecasts]
+        if not rows or len({r.size for r in rows}) != 1:
+            raise ValueError("a list of forecasts needs one or more arrays, all the same length")
+        mat = np.vstack(rows)
+        names = [f"model_{i}" for i in range(len(rows))]
+    else:
+        mat = np.asarray(forecasts, dtype=float)
+        if mat.ndim != 2:
+            raise ValueError("forecasts must be models by horizon: a 2-D array, a table with one row per model, or a list")
+        names = [f"model_{i}" for i in range(mat.shape[0])]
+    if mat.shape[0] < 1 or mat.shape[1] < 1:
+        raise ValueError("combine_forecasts needs at least one model and one horizon step")
+    if np.isinf(mat).any():
+        raise ValueError("forecasts contain infinite values; replace them before combining")
+    m, h = mat.shape
+    usable = np.isfinite(mat)
+    dropped = [names[i] for i in range(m) if not usable[i].any()]
+    missing_cells = int((~usable).sum())
+    partial_steps = int(np.sum(usable.sum(axis=0) < m))
+
+    if weights == "median":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)  # a step with no forecast is NaN, reported below
+            combined = np.nanmedian(mat, axis=0)
+        out_weights = None
+    else:
+        if weights == "mean":
+            base = np.full(m, 1.0 / m)
+        else:
+            if errors is None:
+                raise ValueError("inverse_error weights need errors, one per model, such as backtest MSE")
+            err = _values(errors)
+            if err.size != m:
+                raise ValueError(f"errors needs one value per model: {m} models, {err.size} errors")
+            if np.any(~np.isfinite(err)) or np.any(err <= 0):
+                raise ValueError("errors must be finite and above zero for every model")
+            inv = 1.0 / err
+            base = inv / inv.sum()
+        numer = np.where(usable, base[:, None] * np.where(usable, mat, 0.0), 0.0).sum(axis=0)
+        denom = np.where(usable, base[:, None], 0.0).sum(axis=0)
+        combined = np.where(denom > 0, numer / np.where(denom > 0, denom, 1.0), np.nan)
+        out_weights = [float(w) for w in base]
+
+    report = {
+        "method": weights,
+        "models": int(m),
+        "horizon": int(h),
+        "weights": out_weights,
+        "partial_steps": partial_steps,
+        "missing_cells": missing_cells,
+        "dropped_models": dropped,
+    }
+    return np.asarray(combined, dtype=float), _py(report)
+
+
+def conformal_interval(
+    residuals: Any,
+    point: Any,
+    alpha: float = _CONFORMAL_ALPHA,
+    method: str = "split",
+    window: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Symmetric prediction intervals from past out-of-sample residuals (split conformal, optionally rolling).
+
+    The half-width q is the k-th smallest absolute residual, with k = ceil((n + 1)(1 - alpha)). Under exchangeable errors
+    the interval point +/- q covers a new actual with probability at least 1 - alpha. "split" uses all the residuals
+    given. "rolling" uses only the most recent ``window`` residuals, so the width follows recent error size; pass residuals
+    that end at the forecast origin.
+
+    The report gives empirical_coverage: the share of the calibration residuals inside [-q, q]. That is a check that the
+    rank was applied, not an out-of-sample test. Test coverage on held-out origins before trusting an interval.
+
+    Failure modes: alpha must be between 0 and 1. Needs at least ceil((1 - alpha) / alpha) finite residuals (9 for
+    alpha = 0.1), else the quantile is infinite and ValueError is raised. Non-finite residuals are dropped and counted.
+    Exchangeability fails under drift and regime change, so use "rolling" for a moving series. A single width ignores
+    heteroskedasticity, so the intervals are too wide in calm periods and too narrow in volatile ones.
+
+    Returns (lower, upper, report). The report has method, alpha, target_coverage, half_width, rank, calibration_size,
+    dropped_residuals, window, empirical_coverage and points_missing.
+    """
+    res = _values(residuals)
+    dropped = int(np.isnan(res).sum())
+    res = res[np.isfinite(res)]
+    if not (0.0 < float(alpha) < 1.0):
+        raise ValueError("alpha must be between 0 and 1, for example 0.1 for a 90 percent interval")
+    if method not in _CONFORMAL_METHODS:
+        raise ValueError(f"method must be one of {_CONFORMAL_METHODS}; got {method!r}")
+    if method == "rolling":
+        if window is None or int(window) < 1:
+            raise ValueError("rolling conformal needs window, the number of most recent residuals to use")
+        window = int(window)
+        if window > res.size:
+            raise ValueError(f"window of {window} asks for more residuals than the {res.size} finite ones available")
+        cal = res[-window:]
+    else:
+        window = None
+        cal = res
+    n = int(cal.size)
+    needed = math.ceil((1.0 - alpha) / alpha)
+    if n < needed:
+        raise ValueError(f"conformal_interval needs at least {needed} finite residuals for alpha={alpha}; got {n}")
+    rank = math.ceil((n + 1) * (1.0 - alpha))
+    scores = np.sort(np.abs(cal))
+    half = float(scores[rank - 1])
+    covered = float(np.mean(scores <= half))
+    pts = _values(point)
+    lower = pts - half
+    upper = pts + half
+    report = {
+        "method": method,
+        "alpha": float(alpha),
+        "target_coverage": 1.0 - float(alpha),
+        "half_width": half,
+        "rank": int(rank),
+        "calibration_size": n,
+        "dropped_residuals": dropped,
+        "window": window,
+        "empirical_coverage": covered,
+        "points_missing": int(np.isnan(pts).sum()),
+    }
+    return lower, upper, _py(report)
+
+
+def fuse_report(*reports: dict) -> dict:
+    """Merge change reports from several helpers into one dict for the Ledger, without changing the inputs.
+
+    Each step keeps its report under the name taken from the report's method (or name) field, in the order given, and
+    changed_total adds up the change counts the reports carry (count, filled_count, n_changes, outlier_count). Reports are
+    copied as plain JSON-safe data, so later changes to a source dict do not reach the merged report.
+
+    Failure modes: at least one report is needed, and each must be a dict as the helpers return them. A report with no
+    count field contributes nothing to changed_total.
+
+    Returns a dict with steps (a list of step, name and report), steps_count and changed_total.
+    """
+    if not reports:
+        raise ValueError("fuse_report needs at least one report to merge")
+    steps: list[dict] = []
+    total = 0
+    for i, rep in enumerate(reports, start=1):
+        if not isinstance(rep, dict):
+            raise ValueError(f"report {i} is not a dict; pass the report each helper returns")
+        name = str(rep.get("method") or rep.get("name") or f"step_{i}")
+        steps.append({"step": i, "name": name, "report": _py(rep)})
+        for key in ("count", "filled_count", "n_changes", "outlier_count"):
+            value = rep.get(key)
+            if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+                total += int(value)
+                break
+    return _py({"steps": steps, "steps_count": len(steps), "changed_total": total})
+
+
+def _as_float_array(out: Any) -> np.ndarray:
+    """Any output the canary receives as a float array with the length of the input first."""
+    if isinstance(out, (pd.Series, pd.DataFrame)):
+        arr = out.to_numpy(dtype=float)
+    else:
+        arr = np.asarray(out, dtype=float)
+    if arr.ndim == 0:
+        raise ValueError("the function must return one value per input point, not a single number")
+    return arr.reshape(arr.shape[0], -1)
+
+
+def causal_canary(fn: Callable[[pd.Series], Any], series: Any, origin: int | None = None, shift: float = 500.0) -> dict:
+    """Leak test: does a function's output before ``origin`` change when the data at and after ``origin`` change?
+
+    The series is run through ``fn`` as given, then again with every value from position ``origin`` onward raised by
+    ``shift``. The two outputs are compared at positions before ``origin``. A causal function gives identical numbers there
+    (up to _CANARY_TOL). Any difference means an earlier output read a later value.
+
+    ``fn`` takes one pd.Series and returns an array, a Series or a DataFrame with one row per input point. The default
+    origin is the middle of the series. A NaN that appears in one run and not the other counts as an infinite difference.
+    Passing a centred moving average fails; a trailing one passes.
+
+    Failure modes: the series needs at least 4 points, origin must lie between 1 and len - 1, and shift must be finite and
+    non-zero. A function whose output has the wrong length raises ValueError. The canary tests one origin and one shift,
+    so a pass is evidence, not proof, of causality.
+
+    Returns {"causal": bool, "max_abs_diff_before_origin": float, "origin": int, "shift": float}.
+    """
+    arr = _values(series)
+    n = arr.size
+    if n < 4:
+        raise ValueError(f"causal_canary needs at least 4 points; got {n}")
+    origin = n // 2 if origin is None else int(origin)
+    if not 1 <= origin < n:
+        raise ValueError(f"origin must be between 1 and {n - 1}; got {origin}")
+    shift = float(shift)
+    if not math.isfinite(shift) or shift == 0.0:
+        raise ValueError("shift must be a finite, non-zero number")
+    moved = arr.copy()
+    moved[origin:] += shift
+    before = _as_float_array(fn(pd.Series(arr)))
+    after = _as_float_array(fn(pd.Series(moved)))
+    if before.shape[0] != n or after.shape[0] != n:
+        raise ValueError("the function must return one value per input point")
+    b, a = before[:origin], after[:origin]
+    nan_b, nan_a = np.isnan(b), np.isnan(a)
+    if np.any(nan_b != nan_a):
+        max_diff = float("inf")
+    else:
+        both = ~nan_b
+        diffs = np.abs(b[both] - a[both])
+        max_diff = float(diffs.max()) if diffs.size else 0.0
+    return {
+        "causal": bool(max_diff <= _CANARY_TOL),
+        "max_abs_diff_before_origin": max_diff,
+        "origin": origin,
+        "shift": shift,
+    }
