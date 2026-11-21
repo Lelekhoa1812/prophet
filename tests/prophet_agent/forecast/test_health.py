@@ -70,3 +70,20 @@ def test_a_long_run_of_zeros_at_the_floor_of_a_count_is_not_a_filled_gap():
 def test_short_history_is_a_check_not_a_verdict():
     out = assess(np.arange(10.0), np.arange(5.0))
     assert out["verdict"] == "check"
+
+
+def test_a_window_far_shorter_than_a_cycle_cannot_be_called_flat_on_shape_alone():
+    # Measured on the daily CO2 record: 60 days of a 364-day cycle looked "flat" in 7 of 13 holdouts, and TimesFM beat seasonal
+    # naive in all 13. Shape over a sixth of a cycle is noise, so the verdict is "check" and points to the backtest.
+    hist = _cycle(3000, 200, amp=10.0)
+    flat = np.full(20, hist[-1])
+    out = assess(hist, flat, context_used=len(hist))
+    assert out["verdict"] == "check" and out["shape_reliable"] is False
+    assert any("too short a window" in c for c in out["causes"])
+    assert any("backtest_series" in t for t in out["try"])
+
+
+def test_a_window_of_a_quarter_cycle_or_more_is_still_judged_on_shape():
+    hist = _cycle(3000, 200, amp=10.0)
+    out = assess(hist, np.full(120, hist[-1]), context_used=len(hist))
+    assert out["verdict"] == "flat_unexpected"

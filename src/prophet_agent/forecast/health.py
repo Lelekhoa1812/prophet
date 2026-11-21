@@ -27,6 +27,7 @@ MIN_CYCLES = 3                # cycles of history the model needs to see to pick
 RECENT_CYCLES = 8             # cycles the expected cycle is averaged over
 SHAPE_FLAT = 0.5              # forecast shape below this share of the expected shape is flat
 LEVEL_FLAT = 0.30             # without a cycle: forecast moves less than this share of the recent history's own movement
+SHORT_WINDOW = 0.25           # a horizon under this share of a cycle shows too little of it to judge the forecast's shape
 CONST_RUN = 7                 # identical consecutive values at the end of a history that suggest a filled gap
 
 
@@ -124,7 +125,20 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
         causes.append(f"the horizon ({horizon}) is longer than half the context ({ctx}); long horizons drift toward the mean")
         fixes.append("forecast a shorter horizon, or say how far ahead the forecast can be trusted")
 
-    if flat and structured:
+    # Measured on the daily CO2 record (13 holdouts, 60-day horizon, full history): the shape ratio read below 0.5 in 7 of 13, yet
+    # TimesFM's error was below seasonal naive's in all 13. A window of a sixth of a cycle is nearly a straight line once detrended,
+    # so its curvature is noise. Over so short a window the shape check cannot call a forecast flat; the backtest against
+    # seasonal naive is the test.
+    short_window = bool(period) and horizon < SHORT_WINDOW * period
+    if short_window:
+        out["shape_reliable"] = False
+    if flat and structured and short_window:
+        verdict = "check"
+        causes.insert(0, f"the forecast has {out['shape_ratio']:.0%} of the history's {period}-step cycle shape, but {horizon} steps "
+                         f"is only {horizon / period:.0%} of one cycle, too short a window to judge shape")
+        fixes.append("do not call this forecast flat on shape alone: run backtest_series with season set to the period and trust "
+                     "its error against seasonal naive")
+    elif flat and structured:
         verdict = "flat_unexpected"
         causes.insert(0, f"the history repeats every {period} steps (strength {strength:.2f}) but the forecast has "
                          f"{out['shape_ratio']:.0%} of that shape")

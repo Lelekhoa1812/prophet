@@ -33,6 +33,8 @@ Each criterion is done only when its check passes and its evidence is recorded i
 | G11 | Charts and documents (PNG/SVG, XLSX, DOCX, PDF) produced from the sandbox and listed in a manifest | live forecast-pack mission; downloads re-hashed | **[LIVE]** 5 files from mission `1a1639de…`; each download's sha256 matched the manifest (2026-11-20) |
 | G12 | Chat UI with artefact panel, Dune-meets-space identity, works at 375 px with no horizontal scroll | browser check with screenshots and console | **[LIVE]** 375 px: no horizontal overflow (scroll width 375), artefacts card renders. 1280 px: three columns, fan chart and file list render. Console not re-read after the last fix |
 | G13 | TimesFM evaluation on the synthetic twin vs baselines, reported honestly against the 15 % bar | `scripts/backtest_twin.py` (written to `data/backtests/`, git-ignored) | **[LIVE]** SYNTHETIC REPLAY. The 15 % bar is **not met**: see the result below |
+| G15 | Provider routing never shows a rate-limit, overload, truncation or schema error to the person: key and model rotation, quota groups, diagnosed repair | transport tests (73) and live NIM and Gemini pressure runs | **[TEST]** per branch. **[LIVE]** Gemini 3.5 Flash and NIM completed hourly-load missions with no provider error shown (2026-11-21). One live failure found and fixed: Google answers a bad key with HTTP 400, which killed a Gemini mission; the key is now retired |
+| G16 | The agent works like a principal analyst: funnel, atomic breakdown, cause-led treatment, leakage-safe cleaning, deterministic checks before "met" | `docs/prophet/ANALYST_PLAYBOOK.md`; `runtime/contracts.py`; `sandbox/prophet_stats.py`; 11 skills | **[TEST]** 74 contract, 39 stats and 17 skill tests. **[LIVE]** NIM read playbooks mid-mission and repaired its own steps (r8 runs). Whether any cleaning step helps TimesFM is **unmeasured** (see below) |
 | G14 | No key or secret reaches logs, errors, transcripts or git | redaction tests plus a whole-tree scan before each commit | **[TEST]** redaction; **[LIVE]** whole-tree scan on 2026-11-20 (below) |
 
 ### Evidence for G13 (synthetic replay, 2026-11-20)
@@ -46,6 +48,23 @@ Each criterion is done only when its check passes and its evidence is recorded i
 - The 15 % bar is **not met**. TimesFM 3 under-forecasts on this set (bias −0.25 across all series). The 80 % band
   covers 81.7 % of head-set actuals, close to nominal.
 - Output: `data/backtests/twin_backtest_20261120-205503.json`. Not committed (`data/` is git-ignored).
+
+### Evidence for G15 and G16 (2026-11-21; live runs are real public series through the real API, forecasts by TimesFM 3)
+
+- Hourly UCI electricity load, NIM: 8 windows of 48 h, TimesFM MASE 1.385 against seasonal naive 2.779, WAPE 5.74 % against 11.54 %,
+  80 % band held 75 % of the time. Gemini 3.5 Flash earlier gave the same MASE figures but missed the clock-change defects that
+  NIM found (three spring-forward rows), with only 3 tool calls. That depth gap is what planner.v11, the skills tool and the
+  finish gate target.
+- Health check calibration on the daily CO2 record (13 holdouts, 60-day horizon, full history, TimesFM 3): the shape ratio read
+  flat in 7 of 13, yet TimesFM's MAE was below seasonal naive's in 13 of 13. A window of a sixth of a cycle cannot show shape.
+  The verdict is now "check" for horizons under a quarter of the cycle. Before the fix a NIM mission looped on a false
+  flat_unexpected and ended partial.
+- The finish gate sends a forecast with no baseline backtest or no prior data inspection back to the planner (twice at most), then
+  labels the answer partial. It is covered by three goal-loop tests.
+- Open: figures the model derives itself (a ratio of two printed numbers) are still listed as unverified, which makes good
+  answers "partial". Grounding does not yet accept a figure computable from two evidenced figures.
+- Open: no measurement yet of whether smoothing, outlier replacement or imputation improves a TimesFM backtest. The
+  research found none. Each step must earn its place on the synthetic twin with a no-cleaning arm.
 
 ### Evidence for the live planner defects fixed on 2026-11-20
 

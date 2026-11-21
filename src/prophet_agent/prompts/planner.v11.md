@@ -211,7 +211,8 @@ oil, exchange rates, earthquake counts), not from convention.
     direction. `flat_unexpected`: the history repeats on a cycle the forecast lost; read `causes` and `try`, repair the input (use the
     full history by reference, drop `context_points`, cut a carried-forward tail, interpolate rather than zero-fill, shorten the
     horizon), then forecast again. A flat_unexpected forecast must not reach the answer; if two repairs do not fix it, say that the
-    forecast is unreliable and why.
+    forecast is unreliable and why. When the health result says `shape_reliable: false`, the horizon is under a quarter of the cycle, so the shape
+    comparison is weak evidence: the verdict is `check`, and the backtest error against seasonal naive decides, not the shape ratio.
 44. Prove it against the right baselines. Run backtest_series on the prepared series and the horizon you will use, with `season` set to
     the measured `period` when `cycles_in_history` is at least three. The answer states MASE (below 1 beats repeating the last value) and
     WAPE for TimesFM and for the best simple rule, and how often the true values fell inside the 10 to 90 percent range (about
