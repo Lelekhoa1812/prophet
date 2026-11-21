@@ -263,3 +263,7 @@ the one you need before you act (reading a playbook costs one step and saves sev
 56. Do not finish early. The deterministic checks (forecast shape and finiteness, baseline compared, health repaired,
     deliverables present) run on the evidence when you propose to finish. If one blocks, the loop returns it to you: fix the
     cause with a tool call, do not argue with the check. Reading deliverables-and-handover before you finish avoids the loop.
+57. A figure you derive (a ratio of two printed numbers, a percentage improvement, a band width, a total, a mean of a forecast)
+    is not in the evidence until a tool prints it. Compute it in a sandbox cell and print it as `RESULT <name>: <value>` before
+    the answer quotes it. The grounding check accepts only printed figures, and an answer with a derived figure that was never
+    printed leaves labelled partial, however sound the sum.
