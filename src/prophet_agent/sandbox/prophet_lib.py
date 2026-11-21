@@ -713,9 +713,17 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
     for name in df.columns:
         col = df[name]
         info: dict[str, Any] = {"name": str(name), "unique": int(col.nunique(dropna=True)), "sample": [str(v)[:30] for v in col.head(3)]}
+        blank = col.astype(str).str.strip().str.lower().isin(_NA_TOKENS)
+        filled = max(int((~blank).sum()), 1)
+        if blank.all():
+            info.update(kind="empty", missing=int(len(col)))
+            out["issues"].append(f"column {name!r} is empty in every row; it carries no information and is ignored")
+            out["columns"].append(info)
+            continue
         num, ninfo = to_number(col)
-        share = float(num.notna().mean())
-        if share >= 0.9:
+        # The share is of the cells that hold something, as in pl.load: a numeric column that is 28% empty is still numeric.
+        share = float(num.notna().sum()) / filled
+        if share >= CONVERT_SHARE and num.notna().any():
             v = num.dropna()
             info.update(kind="number", missing=int(num.isna().sum()), min=_r(v.min()), max=_r(v.max()), mean=_r(v.mean()),
                         median=_r(v.median()), zero_share=round(float((v == 0).mean()), 3), negatives=int((v < 0).sum()))
@@ -738,7 +746,7 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
             # A column whose day and month orders are mixed is still a date column: it is read, with the conflict reported,
             # rather than falling back to text and hiding the problem.
             mixed = bool(tinfo.get("order_conflict")) and ts.notna().mean() >= 0.5
-            if (ts.notna().mean() >= 0.9 or mixed) and col.nunique() > 1:
+            if ((float(ts.notna().sum()) / filled >= CONVERT_SHARE and ts.notna().any()) or mixed) and col.nunique() > 1:
                 info.update(kind="time", **_regularity(ts), parsed_as=tinfo.get("format"))
                 times[str(name)] = ts
                 if mixed:
@@ -785,11 +793,13 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
 def _outlier_facts(out: dict, nums: dict[str, pd.Series], ts: pd.Series) -> None:
     """Values far from their neighbours in a single time-ordered series, reported as a fact. They may be entry errors or
     real events; the caller decides. Skipped when so many points qualify that 'unusual' stops meaning anything."""
-    order = np.argsort(ts.to_numpy(dtype="datetime64[ns]"), kind="stable")
+    stamps = ts.to_numpy(dtype="datetime64[ns]")
+    order = np.argsort(stamps, kind="stable")
+    dated = ~np.isnat(stamps[order])           # a row with no readable date (a total, a footer) is not part of the series
     by_name = {c["name"]: c for c in out["columns"]}
     for name, num in list(nums.items())[:5]:
         x = num.to_numpy(dtype=float)[order]
-        keep = np.isfinite(x)
+        keep = np.isfinite(x) & dated
         if keep.sum() < 30:
             continue
         rows = np.flatnonzero(keep)

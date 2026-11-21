@@ -172,3 +172,47 @@ def test_mission_with_an_uploaded_file_runs_inspect_data_through_the_api(tmp_pat
     assert snap["datasets"][0]["name"] == "sales.csv"
     step = next(s for s in snap["steps"] if s["name"].startswith("act"))
     assert step["output"]["result"]["rows"] == 28 and step["output"]["result"]["columns"], "the planner sees a compact profile"
+
+
+def test_profile_reads_a_numeric_column_with_many_blanks_as_numbers_not_text(tmp_path):
+    # Live defect: the CO2 record (11% blank) and the yield curve (28% blank in some columns) were described as text, because the
+    # share was taken over all cells. The planner then saw "text" for the column it had to forecast.
+    from prophet_agent.sandbox import prophet_lib as pl
+    rows = ["date,value,sparse"]
+    for i in range(100):
+        v = "" if i % 5 == 0 else f"{100 + i * 0.5:.1f}"
+        sp = "" if i % 4 else f"{i}.5"
+        rows.append(f"2024-01-{i % 28 + 1:02d},{v},{sp}")
+    f = tmp_path / "blanks.csv"
+    f.write_text("\n".join(rows))
+    cols = {c["name"]: c for c in pl.profile(f)["columns"]}
+    assert cols["value"]["kind"] == "number" and cols["value"]["missing"] == 20
+    assert cols["sparse"]["kind"] == "number" and cols["sparse"]["missing"] == 75
+
+
+def test_profile_reads_a_date_column_with_blank_rows_as_time(tmp_path):
+    from prophet_agent.sandbox import prophet_lib as pl
+    rows = ["when,v"] + [("" if i % 4 == 0 else f"2024-03-{i % 28 + 1:02d}") + f",{i}" for i in range(80)]
+    f = tmp_path / "blank_dates.csv"
+    f.write_text("\n".join(rows))
+    assert {c["name"]: c["kind"] for c in pl.profile(f)["columns"]}["when"] == "time"
+
+
+def test_profile_marks_an_all_empty_column_and_does_not_call_it_a_grouping_column(tmp_path):
+    from prophet_agent.sandbox import prophet_lib as pl
+    f = tmp_path / "empties.csv"
+    f.write_text("date,v,blank1,blank2\n" + "\n".join(f"2024-02-{i % 28 + 1:02d},{i},," for i in range(60)))
+    p = pl.profile(f)
+    kinds = {c["name"]: c["kind"] for c in p["columns"]}
+    assert kinds["blank1"] == "empty" and kinds["blank2"] == "empty"
+    assert not any("grouping" in h for h in p["layout_hints"])
+    assert any("blank1" in i for i in p["issues"])
+
+
+def test_outlier_facts_ignore_a_totals_row_with_no_date(tmp_path):
+    from prophet_agent.sandbox import prophet_lib as pl
+    f = tmp_path / "totals.csv"
+    lines = [f"2024-01-{i % 28 + 1:02d},{10 + (i % 7)}" for i in range(60)]
+    f.write_text("date,units\n" + "\n".join(lines) + "\nTotal,99999\n")
+    issues = pl.profile(f)["issues"]
+    assert not any("NaT" in i for i in issues)

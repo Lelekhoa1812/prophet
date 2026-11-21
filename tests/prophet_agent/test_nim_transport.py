@@ -323,6 +323,20 @@ def test_invalid_json_is_repaired_on_the_same_model_and_the_repaired_answer_is_r
     assert [m for _, m in script.sequence()] == [M1, M1]
 
 
+def test_bare_prose_on_a_schema_call_is_quoted_back_and_repaired_on_the_same_model():
+    # Regression: Matilda sometimes answers a schema-bound call with a sentence and no JSON object at all.
+    prose = "Setting the spikes to near zero, since they look like source artefacts rather than real demand."
+    replies = iter([prose, '{"ok": true}'])
+    script = Script().on(lambda request, payload: sse([next(replies)]))
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    client, _ = make(script)
+    reply = client.complete([M1, M2], MSGS, schema=schema)
+    assert reply.model == M1 and reply.text == '{"ok": true}'
+    assert [m for _, m in script.sequence()] == [M1, M1]
+    repair_turn = script.calls[1]["body"]["messages"]
+    assert repair_turn[-2]["content"] == prose
+
+
 def test_rate_limit_on_every_key_waits_and_goes_round_again_until_it_clears():
     clock = FakeClock()
     answers = {"left": 9}
