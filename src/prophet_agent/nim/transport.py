@@ -424,7 +424,9 @@ class NimClient:
         self.sleep = sleep
         self.rng = rng or random.Random()
         self.lock = threading.Lock()
-        self.sent: dict[str, deque[float]] = {k: deque() for k in self.keys}
+        # Pacing window per key; one shared window when the vendor's limit belongs to the account (see Provider.shared_quota).
+        shared_window: deque[float] = deque()
+        self.sent: dict[str, deque[float]] = {k: (shared_window if provider.shared_quota else deque()) for k in self.keys}
         self.cool: dict[tuple[str, str], float] = {}
         self.bad: dict[str, float] = {}           # key -> re-admitted at
         self.demoted: dict[str, float] = {}       # model -> usable again at
@@ -945,6 +947,9 @@ class NimClient:
         else:
             wait = COOL_DEFAULT_S
         self._cool(key, model, wait)
+        if status == 429 and self.provider.shared_quota:      # an account-wide limit binds every key, so rest them all
+            for other in self.keys:
+                self._cool(other, model, wait)
         return _Outcome("key", note)
 
 

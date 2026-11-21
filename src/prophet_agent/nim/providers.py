@@ -98,6 +98,9 @@ class Provider:
     key_aliases: tuple[str, ...] = ()      # other names read the same way (list and indexed); the primary name is written
     rpm: int | None = None                 # requests per minute allowed per key; None uses the transport default (30)
     extra_headers: tuple[tuple[str, str], ...] = ()   # fixed request headers the vendor asks for, e.g. OpenRouter's X-Title
+    # True when the vendor's limit belongs to the account, not the key (OpenRouter: more keys do not add capacity). All keys then
+    # share one pacing window and one cooldown per model, so four keys never send four times the allowed rate.
+    shared_quota: bool = False
 
     @property
     def multi_key(self) -> bool:
@@ -191,7 +194,7 @@ PROVIDERS: dict[str, Provider] = {
         name="openrouter", label="OpenRouter", key_list_var="OPEN_ROUTER_API_KEY", key_prefix="OPEN_ROUTER_API_KEY",
         base_url="https://openrouter.ai/api/v1", default_models=catalog_ids("openrouter"),
         probe_model="nvidia/nemotron-3.5-super-vl:free", schema_mode="prompt", rpm=20,
-        extra_headers=(("X-Title", "Prophet"),),
+        extra_headers=(("X-Title", "Prophet"),), shared_quota=True,
     ),
     # FreeRouter (free-router-olive.vercel.app): a self-hosted OpenAI-compatible gateway in front of several upstream
     # vendors. One key (sk-fr-...) from FREEROUTE_API_KEY; the endpoint is fixed and FREEROUTE_BASE_URL overrides it.

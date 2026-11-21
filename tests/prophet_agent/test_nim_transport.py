@@ -779,3 +779,52 @@ def test_a_json_value_wrapped_in_prose_is_cut_out_before_the_schema_check():
     client, _ = make(script)
     reply = client.complete([M1], MSGS, schema=schema)
     assert json.loads(reply.text) == {"a": 1}
+
+
+# -- quota groups: an account-wide limit is one bucket, however many keys ----------------------------------------------
+
+def _account_wide(per_minute: int):
+    import dataclasses
+
+    from prophet_agent.nim.providers import PROVIDERS
+    return dataclasses.replace(PROVIDERS["nim"], shared_quota=True, rpm=per_minute)
+
+
+def test_keys_of_an_account_wide_provider_share_one_pacing_window():
+    script = Script()
+    client, clock = make(script, provider=_account_wide(2))
+    start = clock.t
+    for _ in range(3):
+        client.complete([M1], MSGS)
+    assert len(script.calls) == 3
+    assert clock.t - start >= 59.0, "the third request in a minute must wait for the shared window, not borrow another key's"
+
+
+def test_per_key_pacing_is_unchanged_when_the_limit_belongs_to_the_key():
+    import dataclasses
+
+    from prophet_agent.nim.providers import PROVIDERS
+    script = Script()
+    client, clock = make(script, provider=dataclasses.replace(PROVIDERS["nim"], rpm=1))
+    start = clock.t
+    for _ in range(3):
+        client.complete([M1], MSGS)
+    assert clock.t - start < 1.0, "three keys each have a request in hand"
+
+
+def test_an_account_wide_429_rests_every_key_for_that_model():
+    script = Script()
+    refused: list[int] = []
+
+    def once(request, payload):
+        if not refused:
+            refused.append(1)
+            return httpx.Response(429, text="", headers={"Retry-After": "20"})
+        return sse(["ok"])
+    script.on(once, slot=1, model=M1)
+    client, clock = make(script, provider=_account_wide(30))
+    start = clock.t
+    reply = client.complete([M1], MSGS)
+    assert reply.text == "ok"
+    assert [s for s, _ in script.sequence()][0] == 1
+    assert clock.t - start >= 19.0, "keys 2 and 3 share the account limit, so they were not tried straight away"
