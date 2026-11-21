@@ -30,6 +30,7 @@ from prophet_agent.tools.notebook_tools import NotebookBinding
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
 DEFAULT_BUDGET = {"max_tool_calls": 20, "max_seconds": 900}
+AUTO_CONTINUE_PARTS = 2   # parts a mission may start by itself after the first; a proposal, set per mission with budget["auto_continue"]
 # Statuses a person can continue or answer now from. The two legacy names are missions that stopped at a limit before
 # checkpoints existed; their stored steps are intact, so they resume the same way instead of being stranded.
 RESUMABLE_AT_CHECKPOINT = ("checkpoint", "budget_exhausted", "iteration_budget")
@@ -199,6 +200,17 @@ class MissionService:
 
     # -- running -------------------------------------------------------------------------------------------------
 
+    def _build_program(self, mission: dict) -> Callable:
+        """The goal program for a mission as its budget stands now (segment, tool allowance, answer-now flag)."""
+        budget = mission["budget"]
+        base = self.settings.goal_config(self.goal_cfg) if self._use_settings else self.goal_cfg
+        cfg = replace(base, tool_budget=budget.get("max_tool_calls"),
+                      segment=int(budget.get("segment", 0)), finish_now=bool(budget.get("finish_now", False)))
+        # A mission with a chosen model gets a brain for that model alone; without one the factory is called as before.
+        model = budget.get("model")
+        brain = self.brain_factory(model) if model else self.brain_factory()
+        return goal_program(mission["goal"], self.tools_for(mission), brain, cfg, self.files_context(mission))
+
     def start(self, mission_id: str) -> None:
         """Run (or resume) the mission on a background thread. Raises LeaseHeld if it is already running."""
         mission = self.store.mission(mission_id)
@@ -206,14 +218,7 @@ class MissionService:
             live = self._threads.get(mission_id)
             if live is not None and live.is_alive():
                 raise LeaseHeld(f"mission {mission_id} is already running")
-            budget = mission["budget"]
-            base = self.settings.goal_config(self.goal_cfg) if self._use_settings else self.goal_cfg
-            cfg = replace(base, tool_budget=budget.get("max_tool_calls"),
-                          segment=int(budget.get("segment", 0)), finish_now=bool(budget.get("finish_now", False)))
-            # A mission with a chosen model gets a brain for that model alone; without one the factory is called as before.
-            model = budget.get("model")
-            brain = self.brain_factory(model) if model else self.brain_factory()
-            program = goal_program(mission["goal"], self.tools_for(mission), brain, cfg, self.files_context(mission))
+            program = self._build_program(mission)
             # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
             runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
             t = threading.Thread(target=self._run, args=(runtime, mission_id, program), daemon=True)
@@ -222,11 +227,37 @@ class MissionService:
 
     def _run(self, runtime: Runtime, mission_id: str, program: Callable) -> None:
         try:
-            runtime.run(mission_id, program)
+            while True:
+                runtime.run(mission_id, program)
+                program = self._next_part(mission_id)
+                if program is None:
+                    return
+                runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
         except LeaseHeld:
             return
         except Exception as exc:  # the runtime records its own failures; this guards against bugs in the service
             self.store.append_event(mission_id, "service.error", {"error": type(exc).__name__})
+
+    def _next_part(self, mission_id: str) -> Callable | None:
+        """A durable mission keeps going by itself: when a part ends at a checkpoint and the mission may still start parts on
+        its own (``auto_continue``, default AUTO_CONTINUE_PARTS), the next part starts here with the stored steps replayed.
+        None when the mission is done, waiting for the person, cancelled, or out of automatic parts. The person can still
+        Continue or Answer now at the checkpoint that follows the last automatic part."""
+        mission = self.store.mission(mission_id)
+        if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
+            return None
+        budget = dict(mission["budget"])
+        used = int(budget.get("auto_continued", 0))
+        if used >= int(budget.get("auto_continue", AUTO_CONTINUE_PARTS)):
+            return None
+        budget["auto_continued"] = used + 1
+        budget["segment"] = int(budget.get("segment", 0)) + 1
+        budget["max_tool_calls"] = self.store.count_tool_calls(mission_id) + int(self.default_budget()["max_tool_calls"])
+        budget["finish_now"] = False
+        self.store.set_budget(mission_id, budget)
+        self.store.append_event(mission_id, "mission.auto_continue", {"part": budget["segment"] + 1,
+                                                                      "automatic_parts_used": used + 1})
+        return self._build_program(self.store.mission(mission_id))
 
     def cancel(self, mission_id: str) -> str:
         """Ask a mission to stop. A running mission stops at its next step; one with no live runner (waiting for an

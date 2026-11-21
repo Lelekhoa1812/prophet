@@ -246,7 +246,7 @@ def test_a_checkpointed_mission_continues_into_its_next_part_and_completes(tmp_p
                           [{"verdict": "not_met", "reason": "need more"}, {"verdict": "met", "reason": "ok", "answer": "Done."}])
     service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
     client = TestClient(create_app(service), base_url="http://127.0.0.1:8000")
-    mid = service.store.create_mission("forecast", {})
+    mid = service.store.create_mission("forecast", {"auto_continue": 0})
     service.start(mid)
     service.wait(mid, timeout=10)
     assert client.get(f"/api/missions/{mid}").json()["status"] == "checkpoint"
@@ -264,13 +264,41 @@ def test_answer_now_writes_the_best_answer_from_a_checkpoint_as_partial(tmp_path
     brain = ScriptedBrain([{"action": "finish", "rationale": "a"}], [{"verdict": "not_met", "reason": "need more"}])
     service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
     client = TestClient(create_app(service), base_url="http://127.0.0.1:8000")
-    mid = service.store.create_mission("forecast", {})
+    mid = service.store.create_mission("forecast", {"auto_continue": 0})
     service.start(mid)
     service.wait(mid, timeout=10)
     assert client.post(f"/api/missions/{mid}/answer-now").status_code == 202
     service.wait(mid, timeout=10)
     assert client.get(f"/api/missions/{mid}").json()["status"] == "partial"
     assert client.post("/api/missions/does-not-exist/continue").status_code == 404
+
+
+def test_a_durable_mission_starts_its_next_part_by_itself_and_reaches_a_verdict(tmp_path):
+    """The harness keeps a mission going: a spent part is followed by the next without the person pressing Continue."""
+    from prophet_agent.runtime.goal import GoalConfig
+    brain = ScriptedBrain([{"action": "finish", "rationale": "a"}, {"action": "finish", "rationale": "b"}],
+                          [{"verdict": "not_met", "reason": "need more"}, {"verdict": "met", "reason": "ok", "answer": "Done."}])
+    service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
+    mid = service.store.create_mission("forecast", {})
+    service.start(mid)
+    service.wait(mid, timeout=10)
+    snap = service.snapshot(mid)
+    assert snap["status"] == "completed" and snap["answer"]["status"] == "met"
+    assert brain.plans == [], "the stored first part replayed; only the new step was planned"
+    assert [e["payload"]["automatic_parts_used"] for e in snap["events"] if e["kind"] == "mission.auto_continue"] == [1]
+
+
+def test_automatic_parts_are_capped_and_the_person_gets_the_checkpoint_after_them(tmp_path):
+    from prophet_agent.runtime.goal import GoalConfig
+    brain = ScriptedBrain([{"action": "finish", "rationale": "a"}] * 3, [{"verdict": "not_met", "reason": "need more"}] * 3)
+    service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
+    mid = service.store.create_mission("forecast", {"auto_continue": 2})
+    service.start(mid)
+    service.wait(mid, timeout=10)
+    snap = service.snapshot(mid)
+    assert snap["status"] == "checkpoint", "after the automatic parts the person decides: Continue or Answer now"
+    assert sum(1 for e in snap["events"] if e["kind"] == "mission.auto_continue") == 2
+    assert snap["budget"]["auto_continued"] == 2
 
 
 def test_settings_show_masked_keys_and_bounded_limits_and_refuse_bad_input(tmp_path):
