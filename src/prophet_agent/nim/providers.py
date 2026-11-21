@@ -86,14 +86,21 @@ PROVIDERS: dict[str, Provider] = {
         base_url=NIM_BASE_URL, default_models=NIM_DEFAULT_CHAIN, probe_model="poolside/laguna-xs-2.1",
         nim_extras=True,
     ),
+    # Anthropic's OpenAI-compatible endpoint (verified 2026-11-21, platform.claude.com/docs/en/api/openai-sdk). Sonnet 5.5
+    # and later reject any temperature below 1 with a 400, so temperature is not sent. Schema is checked locally (prompt
+    # mode): the compatibility layer accepts json_schema strict, but its docs say strict tool schemas are ignored.
     "claude": Provider(
         name="claude", label="Claude", key_list_var="ANTHROPIC_API_KEY", key_prefix=None,
-        base_url="https://api.anthropic.com/v1",           # Anthropic's OpenAI-compatible endpoint
-        default_models=("claude-sonnet-5-5", "claude-haiku-5-5"), schema_mode="prompt",
+        base_url="https://api.anthropic.com/v1", default_models=("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"),
+        send_temperature=False, schema_mode="prompt",
     ),
+    # OpenAI (verified 2026-11-21, developers.openai.com model pages). GPT-6 models are reasoning models: chat completions
+    # takes max_completion_tokens and the pages say to omit temperature. Chat completions supports function calling and
+    # structured outputs for these models.
     "openai": Provider(
         name="openai", label="ChatGPT", key_list_var="OPENAI_API_KEY", key_prefix=None,
-        base_url="https://api.openai.com/v1", default_models=("gpt-5", "gpt-5-mini"),
+        base_url="https://api.openai.com/v1",
+        default_models=("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-luna"),
         token_param="max_completion_tokens", send_temperature=False,
     ),
     "gemini": Provider(
@@ -101,9 +108,11 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         default_models=("gemini-2.5-pro", "gemini-2.5-flash"),
     ),
+    # xAI (verified 2026-11-21, docs.x.ai): Bearer auth at https://api.x.ai/v1; chat completions documents tools and
+    # response_format json_schema. Streaming on the raw endpoint is not stated in the docs; confirm live.
     "grok": Provider(
         name="grok", label="Grok", key_list_var="XAI_API_KEY", key_prefix=None,
-        base_url="https://api.x.ai/v1", default_models=("grok-4", "grok-3-mini"),
+        base_url="https://api.x.ai/v1", default_models=("grok-4.7", "grok-4.3"),
     ),
     "matilda": Provider(
         name="matilda", label="Matilda", key_list_var="MATILDA_API_KEY", key_prefix="MATILDA_API_KEY",
