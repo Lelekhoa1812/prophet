@@ -13,7 +13,7 @@ Mode: Operate. Precision and restraint carry the identity; the starfield is the 
 | --sand-1 | #b9a682 | secondary text (contrast ≥ 7:1) |
 | --sand-2 | #9a8b6f | captions, labels and rules. Passes 4.5:1 on night-2 (5.07), night-3 (4.59) and ember-soft (4.60), so it is usable for captions; never for the primary text |
 | --ember | #ef7a3a | primary action, focus ring, the agent's live state |
-| --ember-soft | #3a2116 | ember-tinted backgrounds for question cards |
+| --ember-soft | #34201a | ember-tinted backgrounds for question cards |
 | --ok | #8fbf9a | completed |
 | --bad | #e0675c | failed, outcome unknown |
 
