@@ -49,7 +49,7 @@ def test_gemini_uses_the_openai_compatible_endpoint_and_the_verified_chain():
     assert gemini.probe_target({}) == "gemini-3.5-flash-lite", "a model that verified, so a 403 means the key"
 
 
-def test_gemini_request_shape_uses_max_tokens_and_a_strict_json_schema():
+def test_gemini_request_shape_uses_max_tokens_and_leaves_the_schema_to_the_prompt():
     schema = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
     opts = _Opts(thinking=False, max_tokens=500, schema=schema, schema_name="plan", tools=None)
     body = build_body("gemini-3.6-flash", [{"role": "user", "content": "hi"}], opts, _Shape("strict"),
@@ -58,8 +58,7 @@ def test_gemini_request_shape_uses_max_tokens_and_a_strict_json_schema():
     assert body["max_tokens"] == 500 and "max_completion_tokens" not in body
     assert body["temperature"] == 0.2
     assert "chat_template_kwargs" not in body and "reasoning_effort" not in body, "NIM-only fields stay out"
-    assert body["response_format"] == {"type": "json_schema", "json_schema": {
-        "name": "plan", "schema": schema, "strict": True}}
+    assert "response_format" not in body, "the schema travels in the prompt (see the free-form object test below)"
 
 
 def test_gemini_client_sends_one_bearer_key_and_fails_over_past_a_rejected_key():
@@ -269,3 +268,15 @@ def test_planner_names_the_active_provider_when_it_cannot_run(tmp_path, monkeypa
     problem = planner_problem(tmp_path, environ={})
     assert problem == "Grok keys are not configured; the planner cannot run"
     assert planner_problem(tmp_path, environ={"XAI_API_KEY": "xai-123456789"}) is None
+
+
+def test_gemini_sends_the_schema_in_the_prompt_because_strict_mode_drops_free_form_objects():
+    # Live, 3 of 3 calls: with response_format json_schema the plan's free-form `args` came back as {} every time, so the
+    # planner called sandbox_python with no code. With the schema in the prompt the code arrives.
+    from prophet_agent.nim.providers import PROVIDERS
+    from prophet_agent.nim.transport import _Opts, _Shape, build_body
+    gemini = PROVIDERS["gemini"]
+    assert gemini.schema_mode == "prompt"
+    body = build_body("gemini-3.5-flash", [{"role": "user", "content": "x"}],
+                      _Opts(False, 256, {"type": "object"}, "plan", None), _Shape("strict"), gemini)
+    assert "response_format" not in body

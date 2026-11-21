@@ -20,57 +20,14 @@ from typing import Any
 
 import numpy as np
 
+from prophet_agent.sandbox.prophet_lib import _detrend, dominant_period   # one implementation, also used inside the sandbox
+
 MIN_POINTS = 24
-MAX_LAG = 800                 # longest period looked for; an annual cycle of daily data is 365
-PEAK_MIN = 0.25               # autocorrelation a lag needs to count as a repeating cycle
 MIN_CYCLES = 3                # cycles of history the model needs to see to pick a cycle up
 RECENT_CYCLES = 8             # cycles the expected cycle is averaged over
 SHAPE_FLAT = 0.5              # forecast shape below this share of the expected shape is flat
 LEVEL_FLAT = 0.30             # without a cycle: forecast moves less than this share of the recent history's own movement
 CONST_RUN = 7                 # identical consecutive values at the end of a history that suggest a filled gap
-
-
-def _detrend(x: np.ndarray) -> np.ndarray:
-    t = np.arange(len(x), dtype=float)
-    if len(x) < 3:
-        return x - x.mean()
-    return x - np.polyval(np.polyfit(t, x, 1), t)
-
-
-def _acf(x: np.ndarray, max_lag: int) -> np.ndarray:
-    """Autocorrelation at lags 0..max_lag by FFT, normalised so lag 0 is 1. Zero for a constant series."""
-    x = x - x.mean()
-    var = float(x @ x)
-    if var < 1e-12:
-        return np.zeros(max_lag + 1)
-    n = len(x)
-    size = 1 << (2 * n - 1).bit_length()
-    f = np.fft.rfft(x, size)
-    ac = np.fft.irfft(f * np.conj(f), size)[: max_lag + 1]
-    # Unbiased at long lags: fewer pairs contribute, so scale back up (capped so the tail does not explode).
-    scale = n / np.maximum(n - np.arange(max_lag + 1), n * 0.25)
-    return (ac / var) * scale
-
-
-def dominant_period(history: np.ndarray) -> tuple[int | None, float]:
-    """The shortest lag at which the detrended history clearly repeats, and how strongly. (None, strength) if none does."""
-    x = np.asarray(history, dtype=float)
-    if len(x) < MIN_POINTS:
-        return None, 0.0
-    d = _detrend(x[-20000:])
-    max_lag = min(MAX_LAG, len(d) // 3)
-    if max_lag < 3:
-        return None, 0.0
-    ac = _acf(d, max_lag)
-    peaks = [k for k in range(2, max_lag) if ac[k] >= PEAK_MIN and ac[k] >= ac[k - 1] and ac[k] > ac[k + 1]]
-    if not peaks:
-        return None, float(ac[2:max_lag].max()) if max_lag > 2 else 0.0
-    best = max(peaks, key=lambda k: ac[k])
-    # Prefer the shortest period that explains the cycle: a multiple of it has nearly the same autocorrelation.
-    for k in sorted(peaks):
-        if k < best and ac[k] >= 0.8 * ac[best] and abs(best / k - round(best / k)) < 0.06:
-            return k, float(ac[k])
-    return best, float(ac[best])
 
 
 def _expected_path(history: np.ndarray, period: int, horizon: int) -> np.ndarray | None:

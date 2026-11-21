@@ -63,7 +63,7 @@ SANDBOX_PYTHON_SPEC = {
                    "secrets, one minute. The person's uploaded files are in in/ (read-only). `import prophet_lib as pl` "
                    "gives pl.load(path, sheet) (one typed DataFrame: numbers and dates converted, blanks missing; the "
                    "report is df.attrs['report']), pl.profile(path), pl.as_number(s), pl.as_dates(s, dayfirst=None), pl.tidy_text(s) (merge spellings that differ only in case or spacing), "
-                   "pl.build_series(...), pl.find_season(values) and pl.save_series(series, 'out/series.json', covariates={name: values}). "
+                   "pl.prepare_series(df, value, time) (returns the series and a report: step, gaps, empty edges, carried-forward tail, repeating period, cycles in the history), pl.build_series(...), pl.find_season(values), pl.dominant_period(values) and pl.save_series(series, 'out/series.json', covariates={name: values}). "
                    "For events and spikes: pl.detect_anomalies(values, season) (candidates and ignore_ranges, to be explained before use), "
                    "pl.list_holidays(country, subdiv, start, end), pl.holiday_covariate(index, country, subdiv, horizon) and "
                    "pl.event_covariate(index, [(first_day, last_day), ...], horizon) (0 to 1 drivers as long as the history plus horizon). "

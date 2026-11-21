@@ -897,6 +897,195 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     return path
 
 
+# ------------------------------------------------------------------------------------ repeating cycles --
+PERIOD_MIN_POINTS = 24
+PERIOD_MAX_LAG = 800          # longest period looked for; an annual cycle of daily data is 365
+PERIOD_PEAK_MIN = 0.25        # autocorrelation a lag needs to count as a repeating cycle
+
+
+def _detrend(x: np.ndarray) -> np.ndarray:
+    t = np.arange(len(x), dtype=float)
+    if len(x) < 3:
+        return x - x.mean()
+    return x - np.polyval(np.polyfit(t, x, 1), t)
+
+
+def _acf(x: np.ndarray, max_lag: int) -> np.ndarray:
+    """Autocorrelation at lags 0..max_lag by FFT, normalised so lag 0 is 1. Zero for a constant series."""
+    x = x - x.mean()
+    var = float(x @ x)
+    if var < 1e-12:
+        return np.zeros(max_lag + 1)
+    n = len(x)
+    size = 1 << (2 * n - 1).bit_length()
+    f = np.fft.rfft(x, size)
+    ac = np.fft.irfft(f * np.conj(f), size)[: max_lag + 1]
+    # Unbiased at long lags: fewer pairs contribute, so scale back up (capped so the tail does not explode).
+    scale = n / np.maximum(n - np.arange(max_lag + 1), n * 0.25)
+    return (ac / var) * scale
+
+
+def dominant_period(history: np.ndarray) -> tuple[int | None, float]:
+    """The shortest lag at which the detrended history clearly repeats, and how strongly. (None, strength) if none does."""
+    x = np.asarray(history, dtype=float)
+    if len(x) < PERIOD_MIN_POINTS:
+        return None, 0.0
+    d = _detrend(x[-20000:])
+    max_lag = min(PERIOD_MAX_LAG, len(d) // 3)
+    if max_lag < 3:
+        return None, 0.0
+    ac = _acf(d, max_lag)
+    peaks = [k for k in range(2, max_lag) if ac[k] >= PERIOD_PEAK_MIN and ac[k] >= ac[k - 1] and ac[k] > ac[k + 1]]
+    if not peaks:
+        return None, float(ac[2:max_lag].max()) if max_lag > 2 else 0.0
+    best = max(peaks, key=lambda k: ac[k])
+    # Prefer the shortest period that explains the cycle: a multiple of it has nearly the same autocorrelation.
+    for k in sorted(peaks):
+        if k < best and ac[k] >= 0.8 * ac[best] and abs(best / k - round(best / k)) < 0.06:
+            return k, float(ac[k])
+    return best, float(ac[best])
+
+
+# ------------------------------------------------------------------------------------ preparing a series --
+# What a senior analyst does before any forecast: find the step the data really has, make the calendar complete, decide
+# what each gap is, and cut off a tail that was filled rather than observed. Every choice comes back in the report.
+
+_STEP_ALIASES = ((1, "min"), (60, "h"), (1440, "D"))        # minutes per step for the sub-daily and daily cases
+
+
+def _infer_freq(idx: pd.DatetimeIndex) -> str | None:
+    """A pandas alias for the step of a sorted, de-duplicated index; None when the spacing is irregular."""
+    if len(idx) < 3:
+        return None
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        found = pd.infer_freq(idx)
+    if found:
+        return found
+    # Real files have holes, so infer_freq fails. Use the typical step and check it against the weekday pattern.
+    step = pd.Series(idx).diff().dropna().median()
+    minutes = step / pd.Timedelta(minutes=1)
+    if minutes < 1440:
+        for m, alias in _STEP_ALIASES[:2]:
+            if abs(minutes - m) < 0.5 * m:
+                return alias
+        return None
+    days = minutes / 1440
+    if abs(days - 1) < 0.01:
+        weekend = int(((idx.day_of_week >= 5)).sum())
+        return "B" if weekend == 0 and len(idx) > 20 else "D"
+    if abs(days - 7) < 0.01:
+        return "W-" + ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][int(idx.day_of_week.value_counts().idxmax())]
+    if 27 <= days <= 32:
+        return "MS" if int(idx.day.value_counts().idxmax()) == 1 else "ME"
+    if 88 <= days <= 93:
+        return "QS"
+    if 360 <= days <= 370:
+        return "YS"
+    return None
+
+
+def prepare_series(data: Any, value: str | None = None, time: str | None = None, *, freq: str | None = None, agg: str = "sum",
+                   max_short_gap: int | None = None, trim_tail: bool = True) -> tuple[pd.Series, dict]:
+    """A forecast-ready series and a report of every choice made. ``data`` is a frame of strings (give ``value`` and
+    ``time``) or a Series with a date index.
+
+    The step is inferred from the dates unless ``freq`` is given; rows that share a period are combined with ``agg``.
+    Missing periods stay missing until the end: a gap is never turned into zero. Leading and trailing gaps are cut off
+    (a tail that is not observed is not data; ``trim_tail=False`` keeps it, and the report says what was dropped). A gap
+    inside the series is filled by straight-line interpolation, and one longer than ``max_short_gap`` periods is also
+    listed in ``ignore_ranges`` (positions in the returned series) so the forecast can be told not to read it. The report
+    also holds duplicates, the observed share, the run of identical values at the end, and the strength of any repeating
+    cycle. It decides nothing about meaning: whether a zero or a gap is real is the caller's judgement.
+    """
+    notes: list[str] = []
+    if isinstance(data, pd.Series):
+        raw = data.astype(float)
+        raw = raw[raw.index.notna()].sort_index()
+    else:
+        if value is None or time is None:
+            raise ValueError("give value= and time= column names when passing a table")
+        num, _ = to_number(data[value])
+        ts, _ = to_datetime(data[time])
+        raw = pd.Series(num.values, index=ts)       # rows with no value stay: an empty edge is a fact the report states
+        raw = raw[raw.index.notna()].sort_index()
+    if not isinstance(raw.index, pd.DatetimeIndex):
+        raise ValueError("the series has no date index; pass dates or build it with time=")
+    n_raw = int(raw.size)
+    dupes = int(raw.index.duplicated().sum())
+    if dupes:
+        notes.append(f"{dupes} rows share a date with another row and are combined with {agg}")
+    uniq = raw.index.unique()
+    freq = freq or _infer_freq(uniq)
+    if freq is None:
+        raise ValueError("the dates are not evenly spaced enough to infer a step; pass freq= (for example 'D', 'W', 'MS') "
+                         "or aggregate first")
+    grouped = raw.groupby(pd.Grouper(freq=freq))
+    s = grouped.sum(min_count=1) if agg == "sum" else getattr(grouped, agg)()
+    s = s.astype(float)
+    n_periods = int(s.size)
+    observed = s.notna()
+    first, last = (int(np.argmax(observed.values)), int(len(s) - np.argmax(observed.values[::-1]) - 1)) if observed.any() else (0, -1)
+    lead = first
+    tail = int(len(s) - 1 - last) if observed.any() else 0
+    if lead:
+        notes.append(f"{lead} empty periods at the start were cut off")
+    if tail:
+        if trim_tail:
+            notes.append(f"{tail} empty periods at the end were cut off; the last observed period is {s.index[last].date()}")
+        else:
+            notes.append(f"{tail} empty periods at the end were kept")
+    end = last + 1 if trim_tail else len(s)
+    s = s.iloc[first:end]
+    missing = s.isna().values
+    gaps: list[list[int]] = []
+    i = 0
+    while i < len(s):
+        if missing[i]:
+            j = i
+            while j < len(s) and missing[j]:
+                j += 1
+            gaps.append([i, j])
+            i = j
+        else:
+            i += 1
+    n = len(s)
+    limit = max_short_gap if max_short_gap is not None else max(3, min(30, n // 50))
+    long_gaps = [g for g in gaps if g[1] - g[0] > limit]
+    if gaps:
+        s = s.interpolate(limit_direction="both")
+        notes.append(f"{int(missing.sum())} gaps in {len(gaps)} runs were filled by straight-line interpolation (never zero)")
+    if long_gaps:
+        notes.append(f"{len(long_gaps)} runs are longer than {limit} periods; they are filled but listed in ignore_ranges so the "
+                     "forecast does not learn from them")
+    vals = s.values
+    run = 0
+    while run < len(vals) and vals[-1 - run] == vals[-1]:
+        run += 1
+    floor_tail = bool(len(vals)) and vals[-1] == float(np.nanmin(vals))
+    tail_const = run if run >= 7 and not floor_tail else 0
+    if tail_const:
+        notes.append(f"the last {tail_const} values are identical; check whether they were observed or carried forward")
+    zeros = int((vals == 0).sum()) if len(vals) else 0
+    report = {
+        "freq": freq, "rows_read": n_raw, "duplicate_dates": dupes, "periods": int(n), "periods_before_trim": n_periods,
+        "first": str(s.index[0].date()) if n else None, "last": str(s.index[-1].date()) if n else None,
+        "observed_share": round(float(1 - missing.sum() / n), 4) if n else 0.0,
+        "gap_runs": len(gaps), "filled_periods": int(missing.sum()), "short_gap_limit": int(limit),
+        "long_gaps": [{"start": str(s.index[a].date()), "end": str(s.index[b - 1].date()), "periods": b - a} for a, b in long_gaps],
+        "ignore_ranges": [list(g) for g in long_gaps], "dropped_leading": lead, "dropped_tail": tail if trim_tail else 0,
+        "constant_tail": tail_const, "zero_periods": zeros, "notes": notes,
+    }
+    period, strength = dominant_period(vals) if n else (None, 0.0)
+    report["period"] = period                              # periods per repeating cycle, found from the data; None when nothing repeats
+    report["cycle_strength"] = round(strength, 3) if period else None
+    report["cycles_in_history"] = round(n / period, 1) if period else None
+    if period and n / period < 3:
+        notes.append(f"the history holds only {n / period:.1f} cycles of length {period}; a model cannot learn a cycle from fewer than three")
+    return s, report
+
+
 # -------------------------------------------------------------------------- events, holidays, anomalies --
 # Known-ahead drivers and suspicious points, built here so the agent states each choice in code and can chart it. These
 # report facts and build arrays; whether a spike is an error to ignore or an event to explain is the caller's decision.

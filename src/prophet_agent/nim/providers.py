@@ -148,6 +148,9 @@ PROVIDERS: dict[str, Provider] = {
         # Measured 2026-11-21: gemini-3.5-flash often sent no byte for 45-60 s while 3.1-flash-lite answered in 1-2 s. A hung model
         # is passed over after 35 s and goes last for ten minutes, so the call reaches a model that answers.
         silence_s=35.0,
+        # Measured 2026-11-21 (gemini-3.1-flash-lite, 3 of 3 calls): with response_format json_schema the free-form `args` object of
+        # the plan schema comes back as {} every time; with the schema in the prompt and a local check it carries the code.
+        schema_mode="prompt",
     ),
     # xAI (verified 2026-11-21, docs.x.ai): Bearer auth at https://api.x.ai/v1; chat completions documents tools and
     # response_format json_schema. Streaming on the raw endpoint is not stated in the docs; confirm live.
