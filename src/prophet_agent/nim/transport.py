@@ -358,10 +358,13 @@ class NimClient:
                 msgs = (_with_schema_hint(messages, schema)
                         if schema is not None and not opts.tools and shape.mode == "json_object"
                         else list(messages))
+                attempt_started = self.clock()
                 try:
                     out = yield from self._attempt(key, model, msgs, opts, shape, deadline)
                 finally:
                     self._release(key)
+                log.info("nim attempt: model=%s outcome=%s elapsed=%.1fs reason=%s", model, out.kind,
+                         self.clock() - attempt_started, out.reason)
                 if out.kind == "ok":
                     reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
                     yield "done", reply
