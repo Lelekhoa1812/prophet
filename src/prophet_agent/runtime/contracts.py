@@ -261,10 +261,9 @@ def _quantile(rec: dict, level: str, key: str) -> Any:
 MIN_LEDGER_STAGES = 4   # distinct analysis stages a forecast's ledger must record (proposed default, to calibrate on live runs)
 
 
-def check_ledger(history, run_root) -> dict | None:
-    """The analyst's ledger: a sandbox step saved ``out/ledger.json`` (``ps.Ledger.save``) with a finding and a decision for at
-    least ``MIN_LEDGER_STAGES`` distinct stages. A forecast whose data was never broken down and decided on leaves no such
-    record. None when ``run_root`` is unknown, so the check is skipped where the sandbox folder cannot be read."""
+def ledger_stages(history, run_root) -> int | None:
+    """The most distinct stages (with a finding and a decision each) any saved ledger in this mission records. None when
+    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look"."""
     if run_root is None:
         return None
     best = 0
@@ -284,12 +283,70 @@ def check_ledger(history, run_root) -> dict | None:
             stages = {str(e.get("stage", "")).strip().lower() for e in entries
                       if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
             best = max(best, len(stages - {""}))
+    return best
+
+
+def check_ledger(history, run_root) -> dict | None:
+    """The analyst's ledger: a sandbox step saved ``out/ledger.json`` (``ps.Ledger.save``) with a finding and a decision for at
+    least ``MIN_LEDGER_STAGES`` distinct stages. A forecast whose data was never broken down and decided on leaves no such
+    record. None when ``run_root`` is unknown, so the check is skipped where the sandbox folder cannot be read."""
+    best = ledger_stages(history, run_root)
+    if best is None:
+        return None
     ok = best >= MIN_LEDGER_STAGES
     return _check("analysis_ledger", ok,
                   f"the analysis ledger records {best} stages with a finding and a decision" if ok else
                   f"the analysis ledger records {best} stages; a forecast needs at least {MIN_LEDGER_STAGES} (time index, coverage, "
                   "zeros and censoring, outliers and level shifts, seasonality) with a finding and a decision each, saved with "
                   "ps.Ledger().save() in a sandbox step")
+
+
+def progress(history, *, run_root=None, wants_files: bool = False) -> list[dict]:
+    """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
+
+    Motivation: a model that sees only what it has done tends to finish when it has done something. Showing the whole list on
+    every step, with the next undone item named, is the same device as a feature list a long-running agent works down. The
+    list is derived, never stored: it cannot drift from the evidence, and a resumed run reads the same list.
+    Logic: items are ordered as an analyst would do them. ``status`` is "done" or "todo"; ``next`` marks the first todo."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    forecasts = [(i, r) for i, h in enumerate(obs) if (r := _forecast_record(h)) is not None]
+    inspected = any(_ok_result(h, t) is not None for h in obs for t in INSPECTION_TOOLS)
+    backtested = any(isinstance(_ok_result(h, "backtest_series"), dict) for h in obs)
+    stages = ledger_stages(obs, run_root)
+    items: list[dict] = [{"item": "inspect the data (sandbox_python or inspect_data)", "status": "done" if inspected else "todo"}]
+    if stages is not None:
+        items.append({"item": f"analysis ledger: at least {MIN_LEDGER_STAGES} stages with a finding and a decision "
+                              "(time index, coverage, zeros and censoring, outliers and level shifts, seasonality)",
+                      "status": "done" if stages >= MIN_LEDGER_STAGES else "todo",
+                      "detail": f"{stages} of {MIN_LEDGER_STAGES} recorded"})
+    items.append({"item": "compare the forecast method with the simple baselines (backtest_series)",
+                  "status": "done" if backtested else "todo"})
+    items.append({"item": "forecast the series (timesfm_forecast)", "status": "done" if forecasts else "todo"})
+    if forecasts:
+        health = forecasts[-1][1].get("health")
+        verdict = health.get("verdict") if isinstance(health, dict) else None
+        items.append({"item": "forecast health is not flat_unexpected", "status": "todo" if verdict == "flat_unexpected" else "done",
+                      "detail": f"health: {verdict or 'not reported'}"})
+    if wants_files:
+        reports = [r for h in obs if isinstance(r := _ok_result(h, "forecast_report"), dict)]
+        items.append({"item": "produce the requested charts, workbook or report (forecast_report)",
+                      "status": "done" if reports else "todo"})
+    first = next((it for it in items if it["status"] == "todo"), None)
+    if first is not None:
+        first["next"] = True
+    return items
+
+
+def render_progress(items: list[dict]) -> str:
+    """The checklist as plain lines for the planner, the next undone item marked."""
+    if not items:
+        return ""
+    lines = []
+    for it in items:
+        mark = "[x]" if it["status"] == "done" else "[ ]"
+        tail = f" ({it['detail']})" if it.get("detail") else ""
+        lines.append(f"{mark} {it['item']}{tail}" + ("   <- next" if it.get("next") else ""))
+    return "Mission checklist (derived from the evidence; finish only when every box is ticked, or say plainly why one cannot be):\n" + "\n".join(lines)
 
 
 def check_evidence(history, *, run_root=None) -> list[dict]:

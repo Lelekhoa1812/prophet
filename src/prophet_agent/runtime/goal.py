@@ -78,6 +78,9 @@ OBS_CHARS = 4000          # one observation, as the planner sees it
 VIEW_CHARS = 16000        # uncompacted observations shown before the older ones fold into the memo
 KEEP_RECENT = 4           # newest observations never compacted
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
+ASKS_KEEP_CHARS = 2000    # head of the memo (the ASKS section) that a cut to fit never removes
+FORECAST_GOAL = re.compile(r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook", re.I)
+FILES_GOAL = re.compile(r"\b(?:chart|graph|plot|workbook|spreadsheet|xlsx|docx|pdf|png|svg|report|deliverable)s?\b", re.I)
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
 DONE_WHEN = ("the evaluator judges the goal met", "the deterministic checks pass on the evidence "
              "(data inspected, forecast compared with baselines, forecast health repaired, deliverables present)",
@@ -352,8 +355,9 @@ def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, t
         text = ctx.step(f"compact:{tag}:{cut}", lambda c: write(_compact_messages(goal, memo.text, chunk)))
     text = str(text or "").strip()
     if len(text) > memory_chars:
-        text = text[-memory_chars:]
-        text = "[earlier memory cut to fit]\n" + text
+        # The head holds the person's asks, copied unchanged from one memory to the next: it is what a cut must not lose.
+        keep_head = min(ASKS_KEEP_CHARS, memory_chars // 3)
+        text = text[:keep_head] + "\n[middle of the memory cut to fit]\n" + text[-(memory_chars - keep_head):]
     memo.text = text
     memo.covered = cut
 
@@ -438,6 +442,19 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
     return {"kind": "tool", "tool": name, "args": args, "result": result}
 
 
+def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: float) -> None:
+    """One small event per step: where the mission stands (step, tool calls, time, checklist). The console and a reader
+    can follow a long run from these without reading the history. Never raises: a status line must not stop the work."""
+    try:
+        done = sum(1 for it in items if it["status"] == "done")
+        nxt = next((it["item"] for it in items if it.get("next")), None)
+        ctx.store.append_event(ctx.mission_id, "mission.progress", {
+            "step": i + 1, "tool_calls": _calls_used(history), "elapsed_s": round(time.time() - started, 1),
+            "checklist_done": done, "checklist_total": len(items), "next": nxt})
+    except Exception:
+        pass
+
+
 def _stalled(history: list[dict], window: int) -> bool:
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
@@ -482,6 +499,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         ctx.step("contracts", record)
     tag = f"d{cfg.depth}"
     seg_len = cfg.max_iterations
+    started = time.time()
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
     contract_blocks = 0       # times a deterministic check sent a "met" answer back for more work
     for i in range(cfg.end):
@@ -494,6 +512,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         _compact(ctx, brain, goal, history, memo, f"{tag}:{i}", view_chars=cfg.view_chars,
                  keep_recent=cfg.keep_recent, memory_chars=cfg.memory_chars)
         note = _budget_note(i, cfg, history)
+        if cfg.depth == 0 and FORECAST_GOAL.search(goal):
+            # The checklist is derived from the evidence on every step, so it cannot drift and a resumed run sees the same one.
+            items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)))
+            note += "\n\n" + contracts.render_progress(items)
+            _status(ctx, i, history, items, started)
         plan = ctx.step(f"plan:{tag}:{i}", lambda c: _decide_plan(brain, goal, tools, history, memo, context, note,
                                                                  finish_now=cfg.finish_now, out_of_calls=out_of_calls))
         if plan["action"] == "finish":
