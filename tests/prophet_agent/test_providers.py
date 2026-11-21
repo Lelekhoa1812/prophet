@@ -61,6 +61,43 @@ def test_request_shape_differs_only_where_the_vendor_differs():
     assert nim["max_tokens"] == 500 and nim["temperature"] == 0.2
 
 
+def test_claude_and_openai_send_no_temperature_and_grok_keeps_the_default_shape():
+    # Claude Sonnet 5.5 and later return 400 for any temperature below 1; GPT-6 pages say to omit it.
+    opts = _Opts(thinking=False, max_tokens=300, schema=None, schema_name="x", tools=None)
+    claude = build_body("claude-sonnet-5-5", [{"role": "user", "content": "hi"}], opts, _Shape("strict"),
+                        PROVIDERS["claude"])
+    assert "temperature" not in claude and claude["max_tokens"] == 300
+    openai = build_body("gpt-6.2-astra", [{"role": "user", "content": "hi"}], opts, _Shape("strict"),
+                        PROVIDERS["openai"])
+    assert "temperature" not in openai and openai["max_completion_tokens"] == 300
+    grok = build_body("grok-4.7", [{"role": "user", "content": "hi"}], opts, _Shape("strict"), PROVIDERS["grok"])
+    assert grok["temperature"] == 0.2 and grok["stream"] is True
+
+
+def test_verified_chains_match_the_current_model_ids():
+    assert PROVIDERS["claude"].default_models == ("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5")
+    assert PROVIDERS["openai"].default_models == ("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-luna")
+    assert PROVIDERS["grok"].default_models == ("grok-4.7", "grok-4.3")
+    assert PROVIDERS["grok"].base_url == "https://api.x.ai/v1"
+    assert PROVIDERS["claude"].base_url == "https://api.anthropic.com/v1"
+
+
+def test_grok_endpoint_and_bearer_header(monkeypatch):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, content=_sse("ok"), headers={"content-type": "text/event-stream"})
+
+    clock, sleep = _clock()
+    client = NimClient(["xai-000000000"], provider=PROVIDERS["grok"], transport=httpx.MockTransport(handler),
+                       clock=clock, sleep=sleep)
+    assert client.complete(["grok-4.7"], [{"role": "user", "content": "hi"}]).text == "ok"
+    assert seen["url"] == "https://api.x.ai/v1/chat/completions"
+    assert seen["auth"] == "Bearer xai-000000000"
+
+
 def test_client_sends_bearer_key_to_the_vendor_endpoint_and_returns_the_answer():
     seen: dict = {}
 
