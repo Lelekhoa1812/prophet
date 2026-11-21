@@ -86,7 +86,43 @@ class MissionService:
             for did in dataset_ids:
                 self.datasets.get(did)          # KeyError for an unknown id, before any mission row exists
             budget["dataset_ids"] = list(dataset_ids)
-        return self.store.create_mission(goal, budget)
+        mission_id = self.store.create_mission(goal, budget)
+        self._name(mission_id, goal)
+        return mission_id
+
+    def _name(self, mission_id: str, text: str) -> None:
+        """Save a fallback name now and let the model improve it in the background."""
+        from prophet_agent.api.titles import fallback_title, name_in_background
+
+        self.set_title(mission_id, fallback_title(text), _quiet=True)
+        name_in_background(text, lambda t: self.set_title(mission_id, t, _quiet=True))
+
+    def set_title(self, mission_id: str, title: str, *, _quiet: bool = False) -> None:
+        """Rename a quick forecast. Raises KeyError for an unknown one and ValueError for an empty name."""
+        clean = " ".join(title.split())[:60]
+        if not clean:
+            raise ValueError("a name cannot be empty")
+        with self.store.lock:
+            cur = self.store.conn.execute("UPDATE missions SET title=? WHERE id=? AND notebook_id IS NULL", (clean, mission_id))
+            if cur.rowcount == 0 and not _quiet:
+                raise KeyError(mission_id)
+
+    def set_pinned(self, mission_id: str, pinned: bool) -> None:
+        with self.store.lock:
+            cur = self.store.conn.execute("UPDATE missions SET pinned=? WHERE id=? AND notebook_id IS NULL", (1 if pinned else 0, mission_id))
+            if cur.rowcount == 0:
+                raise KeyError(mission_id)
+
+    def delete(self, mission_id: str) -> None:
+        """Permanently remove a quick forecast and its run history. A running one must be stopped first."""
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT status FROM missions WHERE id=? AND notebook_id IS NULL", (mission_id,)).fetchone()
+            if row is None:
+                raise KeyError(mission_id)
+            if row["status"] in ("created", "running", "waiting_user"):
+                raise ValueError("this forecast is still running; stop it first")
+            with self.store._tx() as c:
+                _purge_missions(c, [mission_id])
 
     # -- notebook turns ------------------------------------------------------------------------------------------
 
@@ -95,8 +131,29 @@ class MissionService:
         self.notebooks.get(notebook_id)
         last = self.store.conn.execute(
             "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
-        return self.store.create_mission(goal, self.default_budget(), notebook_id=notebook_id,
-                                         parent_turn_id=last["id"] if last else None)
+        turn_id = self.store.create_mission(goal, self.default_budget(), notebook_id=notebook_id,
+                                            parent_turn_id=last["id"] if last else None)
+        if last is None:
+            self._name_notebook(notebook_id, goal)
+        return turn_id
+
+    def _name_notebook(self, notebook_id: str, goal: str) -> None:
+        """Name an untitled notebook after its first question. A notebook already named (for example after its first file) keeps its name."""
+        from prophet_agent.api.titles import fallback_title, name_in_background
+
+        row = self.store.conn.execute("SELECT title FROM notebooks WHERE id=?", (notebook_id,)).fetchone()
+        if row is None or row["title"] != "New notebook":
+            return
+        fallback = fallback_title(goal)
+        with self.store._tx() as c:
+            c.execute("UPDATE notebooks SET title=? WHERE id=? AND title='New notebook'", (fallback, notebook_id))
+
+        def improve(title: str) -> None:
+            # Replace the fallback only while it is still there, so a rename made in the meantime wins.
+            with self.store._tx() as c:
+                c.execute("UPDATE notebooks SET title=? WHERE id=? AND title=?", (title, notebook_id, fallback))
+
+        name_in_background(goal, improve)
 
     # -- what a mission runs with --------------------------------------------------------------------------------
 
@@ -237,6 +294,16 @@ class MissionService:
     def list(self, limit: int = 20) -> list[dict]:
         with self.store.lock:
             rows = self.store.conn.execute(
-                "SELECT id, goal, status, created, updated FROM missions WHERE notebook_id IS NULL AND archived=0 "
-                "ORDER BY created DESC LIMIT ?", (int(limit),)).fetchall()
-        return [dict(r) for r in rows]
+                "SELECT id, goal, COALESCE(title, goal) AS title, status, created, updated, pinned FROM missions "
+                "WHERE notebook_id IS NULL AND archived=0 ORDER BY pinned DESC, created DESC LIMIT ?", (int(limit),)).fetchall()
+        return [{**dict(r), "pinned": bool(r["pinned"])} for r in rows]
+
+
+def _purge_missions(c, mission_ids: list[str]) -> None:
+    """Delete missions and everything that refers to them, children first. Caller holds the transaction."""
+    for mid in mission_ids:
+        c.execute("DELETE FROM questions WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM tool_calls WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM steps WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM events WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM missions WHERE id=?", (mid,))

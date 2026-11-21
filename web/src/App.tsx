@@ -1,13 +1,15 @@
-import { Menu, Plus, Settings as SettingsIcon, Undo2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Composer } from "./components/Composer";
+import { BarChart3, BookOpen, Menu, Plus, ScanSearch, Settings as SettingsIcon, Undo2, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import logo from "./public/logo.png";
+import { Composer, type Attachment } from "./components/Composer";
 import { NotebookView } from "./components/NotebookView";
 import { SettingsModal } from "./components/SettingsModal";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, type ItemKind } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
 import { Button, Card, IconButton, Spinner } from "./components/ui";
 import { api, type ArtifactRun, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
 import { errorMessage } from "./lib/format";
+import { SKILLS } from "./lib/skills";
 import { useMission } from "./lib/useMission";
 import { cn, isWorking } from "./lib/utils";
 
@@ -26,6 +28,10 @@ export default function App() {
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [sending, setSending] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const attachSeq = useRef(0);
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const { mission, error: pollError, refresh } = useMission(selectedId);
@@ -106,7 +112,7 @@ export default function App() {
 
   const newNotebook = async () => {
     try {
-      const nb = await api.createNotebook("New notebook");
+      const nb = await api.createNotebook("Notebook");
       openNotebook(nb.id);
       refreshList();
     } catch (err) {
@@ -142,15 +148,93 @@ export default function App() {
     }
   };
 
-  const start = async (goal: string) => {
+  // Files are added to the quick forecast as data sets. Each one uploads in the background; the question waits for them.
+  const addAttachments = (files: File[]) => {
+    const usable = files.filter((f) => f.name && !f.name.startsWith("."));
+    if (usable.length === 0) return;
+    const items = usable.map((file) => ({ key: `att-${++attachSeq.current}`, file }));
+    setAttachments((prev) => [...prev, ...items.map(({ key, file }) => ({ key, name: file.name, status: "uploading" as const }))]);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const { key, file } = items[next++];
+        try {
+          const meta = await api.uploadDataset(file);
+          setAttachments((prev) => prev.map((a) => (a.key === key ? { ...a, status: "ready" as const, datasetId: meta.id } : a)));
+        } catch (err) {
+          const message = errorMessage(err, "Couldn't add this file.");
+          setAttachments((prev) => prev.map((a) => (a.key === key ? { ...a, status: "failed" as const, message } : a)));
+        }
+      }
+    };
+    // Three at a time: quick enough for folders with many files, and gentle on the local server.
+    void Promise.all([worker(), worker(), worker()]);
+  };
+
+  const removeAttachment = (key: string) => setAttachments((prev) => prev.filter((a) => a.key !== key));
+  const readyDatasetIds = () => attachments.flatMap((a) => (a.status === "ready" && a.datasetId ? [a.datasetId] : []));
+
+  const renameItem = async (kind: ItemKind, id: string, title: string) => {
+    try {
+      if (kind === "forecast") await api.renameMission(id, title);
+      else await api.patchNotebook(id, { title });
+      refreshList();
+    } catch (err) {
+      showError(errorMessage(err, "Couldn't rename this. Try again."));
+    }
+  };
+
+  const pinItem = async (kind: ItemKind, id: string, pinned: boolean) => {
+    try {
+      if (kind === "forecast") await api.pinMission(id, pinned);
+      else await api.patchNotebook(id, { pinned });
+      refreshList();
+    } catch (err) {
+      showError(errorMessage(err, "Couldn't change the pin. Try again."));
+    }
+  };
+
+  const archiveItem = (kind: ItemKind, id: string) => {
+    if (kind === "forecast") {
+      void hideMission(id);
+      return;
+    }
+    api
+      .patchNotebook(id, { archived: true })
+      .then(() => {
+        if (selectedNotebookId === id) setSelectedNotebookId(null);
+        refreshList();
+        setNotice({ id: Date.now(), message: "Notebook archived.", tone: "info" });
+      })
+      .catch((err) => showError(errorMessage(err, "Couldn't archive this notebook. Try again.")));
+  };
+
+  const deleteItem = async (kind: ItemKind, id: string) => {
+    try {
+      if (kind === "forecast") {
+        await api.deleteMission(id);
+        if (selectedId === id) setSelectedId(null);
+      } else {
+        await api.deleteNotebook(id);
+        if (selectedNotebookId === id) setSelectedNotebookId(null);
+      }
+      refreshList();
+      setNotice({ id: Date.now(), message: kind === "forecast" ? "Forecast deleted." : "Notebook deleted.", tone: "info" });
+    } catch (err) {
+      showError(errorMessage(err, "Couldn't delete this. Try again."));
+    }
+  };
+
+  const start = async (goal: string, datasetIds: string[] = []) => {
     setSending(true);
     try {
-      const { id } = await api.createMission(goal);
+      const { id } = await api.createMission(goal, datasetIds);
       stick.current = true;
       setSelectedNotebookId(null);
       setSelectedId(id);
       setDraft(undefined);
       setNavOpen(false);
+      if (datasetIds.length > 0) setAttachments([]);
       refreshList();
     } catch (err) {
       throw new Error(errorMessage(err, "Couldn't start the forecast. Try again."));
@@ -185,13 +269,16 @@ export default function App() {
   const current = mission && mission.id === selectedId ? mission : null;
   const inNotebook = selectedNotebookId !== null;
   const waitingOnYou = current?.status === "waiting_user";
+  const uploading = attachments.some((a) => a.status === "uploading");
   const blockedReason = noKeys
     ? "Prophet needs a model key before it can start."
     : waitingOnYou
       ? "Answer the question above to continue."
       : current && isWorking(current.status)
         ? "Prophet is working. Press Stop to interrupt it."
-        : null;
+        : uploading
+          ? "Adding your files. You can ask once they are done."
+          : null;
 
   const sidebar = (
     <Sidebar
@@ -203,7 +290,10 @@ export default function App() {
       onSelectMission={openMission}
       onNewNotebook={() => void newNotebook()}
       onNewForecast={newForecast}
-      onHideMission={(id) => void hideMission(id)}
+      onRename={(kind, id, title) => void renameItem(kind, id, title)}
+      onPin={(kind, id, pinned) => void pinItem(kind, id, pinned)}
+      onArchive={archiveItem}
+      onDelete={(kind, id) => void deleteItem(kind, id)}
     />
   );
 
@@ -211,7 +301,10 @@ export default function App() {
     <div className="flex h-dvh bg-night-0 text-sand-0">
       <aside className="hidden w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4 lg:flex" inert={navOpen}>
         <div className="flex items-center justify-between gap-2">
-          <h1 className="px-2 font-display text-2xl font-semibold">Prophet</h1>
+          <div className="flex min-w-0 items-center gap-2.5 px-2">
+            <img src={logo} alt="" aria-hidden="true" className="size-8 shrink-0 rounded-md object-cover" />
+            <h1 className="font-display text-2xl font-semibold">Prophet</h1>
+          </div>
           <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
         </div>
         <div className="min-h-0 flex-1">{sidebar}</div>
@@ -227,7 +320,10 @@ export default function App() {
             className="absolute inset-y-0 left-0 flex w-[86%] max-w-80 flex-col gap-4 bg-night-1 p-4"
           >
             <div className="flex items-center justify-between">
-              <span className="px-2 font-display text-2xl font-semibold">Prophet</span>
+              <span className="flex items-center gap-2.5 px-2">
+                <img src={logo} alt="" aria-hidden="true" className="size-8 shrink-0 rounded-md object-cover" />
+                <span className="font-display text-2xl font-semibold">Prophet</span>
+              </span>
               <div className="flex items-center">
                 <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
                 <IconButton ref={closeButton} label="Close menu" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(false)} />
@@ -241,9 +337,9 @@ export default function App() {
       <div className="flex min-w-0 flex-1 flex-col" inert={navOpen}>
         <header className="flex items-center justify-between gap-2 border-b border-sand-2/20 px-3 py-2 lg:hidden">
           <IconButton ref={menuButton} label="Open menu" aria-expanded={navOpen} icon={<Menu aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(true)} />
-          <span className="font-display text-xl font-semibold">Prophet</span>
+          <span className="flex items-center gap-2"><img src={logo} alt="" aria-hidden="true" className="size-7 rounded-md object-cover" /><span className="font-display text-xl font-semibold">Prophet</span></span>
           <div className="flex items-center">
-            <IconButton label="New notebook" icon={<Plus aria-hidden="true" className="size-5" />} onClick={() => void newNotebook()} />
+            <IconButton label="Notebook" icon={<Plus aria-hidden="true" className="size-5" />} onClick={() => void newNotebook()} />
             <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
           </div>
         </header>
@@ -321,16 +417,42 @@ export default function App() {
                 <section aria-label="Start" className="grid gap-8 pt-6 sm:pt-14">
                   <div className="grid gap-3">
                     <h2 className="font-display text-3xl leading-tight font-semibold text-balance sm:text-4xl">What would you like to work on?</h2>
-                    <p className="text-lg text-sand-1">
+                    <p className="text-base text-sand-1">
                       Start a notebook to add spreadsheets and ask questions about them, or ask a quick forecast below.
                     </p>
                     <div>
                       <Button onClick={() => void newNotebook()}>
                         <Plus aria-hidden="true" className="size-4" />
-                        New notebook
+                        Notebook
                       </Button>
                     </div>
                   </div>
+                  <ul className="grid gap-3 sm:grid-cols-2" aria-label="Quick actions">
+                    <QuickCard
+                      icon={<Upload aria-hidden="true" className="size-4" />}
+                      title="Forecast from files"
+                      body="Add a spreadsheet or a whole folder, then ask for the next period."
+                      onClick={() => fileInput.current?.click()}
+                    />
+                    <QuickCard
+                      icon={<BookOpen aria-hidden="true" className="size-4" />}
+                      title="Work in a notebook"
+                      body="Keep files together and ask follow-up questions over time."
+                      onClick={() => void newNotebook()}
+                    />
+                    <QuickCard
+                      icon={<BarChart3 aria-hidden="true" className="size-4" />}
+                      title={SKILLS[1].title}
+                      body={SKILLS[1].description}
+                      onClick={() => setDraft(SKILLS[1].prompt)}
+                    />
+                    <QuickCard
+                      icon={<ScanSearch aria-hidden="true" className="size-4" />}
+                      title={SKILLS[2].title}
+                      body={SKILLS[2].description}
+                      onClick={() => setDraft(SKILLS[2].prompt)}
+                    />
+                  </ul>
                 </section>
               ) : current ? (
                 <Turn
@@ -354,7 +476,16 @@ export default function App() {
           <div className={cn("border-t border-sand-2/15 bg-night-0 px-4 pt-3 pb-3 sm:px-6")}>
             <div className="mx-auto w-full max-w-3xl">
               <Composer
-                onSend={start}
+                onSend={(text) => start(text, readyDatasetIds())}
+                quick={{
+                  attachments,
+                  tools: Object.values(tools),
+                  skills: SKILLS,
+                  onRemoveAttachment: removeAttachment,
+                  onAddFiles: addAttachments,
+                  onOpenFiles: () => fileInput.current?.click(),
+                  onOpenFolder: () => folderInput.current?.click(),
+                }}
                 busy={sending}
                 blockedReason={blockedReason}
                 working={current !== null && isWorking(current.status)}
@@ -368,6 +499,29 @@ export default function App() {
         )}
       </div>
 
+      {/* Hidden pickers behind the composer's + menu and the start-screen cards. Folders use the browser's folder picker. */}
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          addAttachments(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={folderInput}
+        type="file"
+        multiple
+        className="hidden"
+        {...({ webkitdirectory: "" } as Record<string, string>)}
+        onChange={(e) => {
+          addAttachments(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+      />
+
       <SettingsModal
         open={settingsOpen}
         onClose={closeSettings}
@@ -379,5 +533,22 @@ export default function App() {
         }}
       />
     </div>
+  );
+}
+
+// Start-screen action card: an icon, a short title and one line of help. The whole card is the button.
+function QuickCard({ icon, title, body, onClick }: { icon: ReactNode; title: string; body: string; onClick: () => void }) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        className="group grid h-full min-h-28 w-full content-start gap-2 rounded-xl border border-sand-2/25 bg-night-1 p-4 text-left transition-colors hover:border-ember/60 hover:bg-night-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember"
+      >
+        <span className="grid size-8 place-items-center rounded-lg bg-ember-soft text-ember">{icon}</span>
+        <span className="text-base font-semibold text-sand-0">{title}</span>
+        <span className="text-caption text-sand-1">{body}</span>
+      </button>
+    </li>
   );
 }

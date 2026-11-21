@@ -126,6 +126,11 @@ CREATE TABLE IF NOT EXISTS derived_versions (
   UNIQUE(table_id, version)
 );
 """
+_ORGANISER_COLUMNS = {
+    "missions": {"title": "TEXT", "pinned": "INTEGER NOT NULL DEFAULT 0"},
+    "notebooks": {"pinned": "INTEGER NOT NULL DEFAULT 0"},
+}
+
 _MISSION_COLUMNS_V2 = {
     "notebook_id": "TEXT",
     "seq": "INTEGER",
@@ -189,6 +194,12 @@ class Store:
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE missions ADD COLUMN {col} {decl}")
             self.conn.executescript(_DDL_V2)
+            # Organiser columns (sidebar title and pin) for quick forecasts and notebooks. Guarded, so older databases upgrade in place.
+            for table, cols in _ORGANISER_COLUMNS.items():
+                present = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                for col, decl in cols.items():
+                    if col not in present:
+                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             self.conn.execute("CREATE INDEX IF NOT EXISTS missions_by_notebook ON missions(notebook_id, seq)")
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 

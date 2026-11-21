@@ -48,7 +48,9 @@ class MissionIn(BaseModel):
 
 
 class MissionPatch(BaseModel):
-    archived: bool
+    archived: bool | None = None
+    title: str | None = Field(default=None, max_length=60)
+    pinned: bool | None = None
 
 
 class AnswerIn(BaseModel):
@@ -63,6 +65,7 @@ class NotebookPatch(BaseModel):
     title: str | None = Field(default=None, max_length=120)
     instructions: str | None = Field(default=None, max_length=2000)
     archived: bool | None = None
+    pinned: bool | None = None
 
 
 class SourcePatch(BaseModel):
@@ -113,7 +116,10 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.post("/api/datasets", status_code=201)
     async def upload_dataset(request: Request, name: str = "data") -> dict:
-        """Raw file bytes in the body, the file name in ?name=. Parsing happens later, in the sandbox."""
+        """Raw file bytes in the body; the name in the X-File-Name header (or ?name= for scripts). Parsing happens later."""
+        from urllib.parse import unquote
+        if request.headers.get("x-file-name"):
+            name = unquote(request.headers["x-file-name"])
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_BYTES:
             raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
@@ -141,12 +147,28 @@ def create_app(service: MissionService) -> FastAPI:
     @app.patch("/api/missions/{mission_id}")
     def patch_mission(mission_id: str, body: MissionPatch) -> dict:
         try:
-            service.archive(mission_id, body.archived)
+            if body.archived is not None:
+                service.archive(mission_id, body.archived)
+            if body.title is not None:
+                service.set_title(mission_id, body.title)
+            if body.pinned is not None:
+                service.set_pinned(mission_id, body.pinned)
         except KeyError:
             raise HTTPException(404, "no such quick forecast")
         except ValueError as exc:
             raise HTTPException(409, str(exc))
-        return {"id": mission_id, "archived": body.archived}
+        changed = body.model_dump(exclude_none=True)
+        return {"id": mission_id, **changed}
+
+    @app.delete("/api/missions/{mission_id}")
+    def delete_mission(mission_id: str) -> dict:
+        try:
+            service.delete(mission_id)
+        except KeyError:
+            raise HTTPException(404, "no such quick forecast")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        return {"id": mission_id, "deleted": True}
 
     @app.post("/api/missions", status_code=201)
     def create_mission(body: MissionIn) -> dict:
@@ -247,8 +269,18 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.patch("/api/notebooks/{nid}")
     def patch_notebook(nid: str, body: NotebookPatch) -> dict:
+        if body.pinned is not None:
+            _nb(service.notebooks.set_pinned, nid, body.pinned)
         return _nb(service.notebooks.update, nid, title=body.title, instructions=body.instructions,
                    archived=body.archived)
+
+    @app.delete("/api/notebooks/{nid}")
+    def delete_notebook(nid: str) -> dict:
+        try:
+            _nb(service.notebooks.delete, nid)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        return {"id": nid, "deleted": True}
 
     @app.post("/api/notebooks/{nid}/sources", status_code=201)
     async def add_source(nid: str, request: Request, name: str = "data") -> dict:

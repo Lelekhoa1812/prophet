@@ -22,7 +22,7 @@ export type Mission = {
   questions: OpenQuestion[];
 };
 
-export type MissionRow = { id: string; goal: string; status: string; created: number; updated: number };
+export type MissionRow = { id: string; goal: string; title: string; status: string; created: number; updated: number; pinned: boolean };
 
 export type ToolInfo = { name: string; title: string; activity: string; description: string };
 
@@ -112,6 +112,7 @@ export type Notebook = {
 export type NotebookRow = {
   id: string;
   title: string;
+  pinned: boolean;
   created: number;
   updated: number;
   turns: number;
@@ -146,7 +147,18 @@ export const api = {
   archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
   unarchiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: false }) }),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
-  createMission: (goal: string) => req<{ id: string }>("/api/missions", { method: "POST", body: JSON.stringify({ goal }) }),
+  createMission: (goal: string, datasetIds: string[] = []) =>
+    req<{ id: string }>("/api/missions", { method: "POST", body: JSON.stringify({ goal, dataset_ids: datasetIds }) }),
+  renameMission: (id: string, title: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+  pinMission: (id: string, pinned: boolean) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ pinned }) }),
+  deleteMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "DELETE" }),
+  // Uploads a quick-chat file as a dataset. The name travels in a header, so it never appears in a URL.
+  uploadDataset: (file: File) =>
+    send<{ id: string; name: string; bytes: number }>("/api/datasets", {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+    }),
   answer: (questionId: string, answers: Record<string, string | string[]>) =>
     req<{ mission_id: string }>(`/api/questions/${questionId}/answer`, {
       method: "POST",
@@ -176,6 +188,9 @@ export const api = {
       body: file,
       headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
     }),
+  patchNotebook: (nid: string, body: { title?: string; pinned?: boolean; archived?: boolean }) =>
+    req<NotebookRow>(`/api/notebooks/${nid}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteNotebook: (nid: string) => req<{ id: string }>(`/api/notebooks/${nid}`, { method: "DELETE" }),
   patchSource: (notebookId: string, sourceId: string, body: { included?: boolean; removed?: boolean }) =>
     req<Source>(`/api/notebooks/${notebookId}/sources/${sourceId}`, { method: "PATCH", body: JSON.stringify(body) }),
   createTurn: (notebookId: string, goal: string) =>

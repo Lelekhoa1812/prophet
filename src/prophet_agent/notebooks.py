@@ -125,12 +125,34 @@ class Notebooks:
     def list(self, limit: int = 50) -> list[dict]:
         with self.store.lock:
             rows = self.store.conn.execute(
-                "SELECT n.id, n.title, n.created, n.updated, "
+                "SELECT n.id, n.title, n.created, n.updated, n.pinned, "
                 "(SELECT COUNT(*) FROM missions m WHERE m.notebook_id=n.id) AS turns, "
                 "(SELECT COUNT(*) FROM sources s WHERE s.notebook_id=n.id AND s.removed=0) AS sources, "
                 "(SELECT status FROM missions m WHERE m.notebook_id=n.id ORDER BY seq DESC LIMIT 1) AS status "
-                "FROM notebooks n WHERE n.archived=0 ORDER BY n.updated DESC LIMIT ?", (int(limit),)).fetchall()
-        return [dict(r) for r in rows]
+                "FROM notebooks n WHERE n.archived=0 ORDER BY n.pinned DESC, n.updated DESC LIMIT ?", (int(limit),)).fetchall()
+        return [{**dict(r), "pinned": bool(r["pinned"])} for r in rows]
+
+    def set_pinned(self, nid: str, pinned: bool) -> None:
+        self._row(nid)
+        with self.store._tx() as c:
+            c.execute("UPDATE notebooks SET pinned=? WHERE id=?", (1 if pinned else 0, nid))
+
+    def delete(self, nid: str) -> None:
+        """Permanently remove a notebook with its files, questions and kept tables. Source datasets are left in place."""
+        self._row(nid)
+        with self.store._tx() as c:
+            busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND status IN ('created','running','waiting_user')", (nid,)).fetchone()
+            if busy:
+                raise ValueError("Prophet is still working in this notebook; stop it first")
+            mission_ids = [r[0] for r in c.execute("SELECT id FROM missions WHERE notebook_id=?", (nid,)).fetchall()]
+            for mid in mission_ids:
+                for table in ("questions", "tool_calls", "steps", "events"):
+                    c.execute(f"DELETE FROM {table} WHERE mission_id=?", (mid,))
+                c.execute("DELETE FROM missions WHERE id=?", (mid,))
+            c.execute("DELETE FROM derived_versions WHERE table_id IN (SELECT id FROM derived_tables WHERE notebook_id=?)", (nid,))
+            c.execute("DELETE FROM derived_tables WHERE notebook_id=?", (nid,))
+            c.execute("DELETE FROM sources WHERE notebook_id=?", (nid,))
+            c.execute("DELETE FROM notebooks WHERE id=?", (nid,))
 
     def update(self, nid: str, *, title: str | None = None, instructions: str | None = None,
                archived: bool | None = None) -> dict:
