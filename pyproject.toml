@@ -12,6 +12,8 @@ dependencies = [
   "python-calamine==0.9.1",   # reads xls, xlsb and ods; MIT
   "scipy",
   "statsmodels",
+  "scikit-learn",   # KNN and iterative imputation, robust scaling, isolation forest in the analysis sandbox
+  "seaborn",        # statistical diagnostics charts in the analysis sandbox
   "holidays",   # public-holiday calendars for event covariates; MIT
   "python-docx",
   "reportlab",

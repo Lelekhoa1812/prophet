@@ -38,6 +38,8 @@ SANDBOX_ROOT = DATA / "sandbox"
 OUT_DIR = "out"
 IN_DIR = "in"
 LIB_SOURCE = Path(__file__).with_name("prophet_lib.py")
+# Every prophet_*.py next to this file is importable in the sandbox (prophet_lib, prophet_stats, ...).
+LIB_DIR = Path(__file__).parent
 MAX_STREAM_CHARS = 20_000
 
 _BOOT = r"""
@@ -172,7 +174,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data).
 
     ``inputs`` maps a file name to a path on disk; each is copied to ``in/<name>``, which the program can read but not
-    change. ``prophet_lib`` is importable from ``lib/``.
+    change. ``prophet_lib`` and the other ``prophet_*`` modules are importable from ``lib/``.
     """
     run_id = uuid.uuid4().hex
     wd = (SANDBOX_ROOT / run_id).resolve()
@@ -181,7 +183,8 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     (wd / IN_DIR).mkdir()
     (wd / "lib").mkdir()
     home.mkdir()
-    shutil.copy2(LIB_SOURCE, wd / "lib" / "prophet_lib.py")
+    for module in sorted(LIB_DIR.glob("prophet_*.py")):
+        shutil.copy2(module, wd / "lib" / module.name)
     for name, src in (inputs or {}).items():
         parts = name.split("/")
         if name.startswith(".") or len(parts) > 2 or (len(parts) == 2 and parts[0] != "derived") or not parts[-1]:
