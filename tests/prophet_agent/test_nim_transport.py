@@ -620,3 +620,68 @@ def test_a_single_slow_model_still_ends_as_exhausted_not_hangs():
     client, _ = make(Script().on(slow), clock=clock)
     with pytest.raises(Exhausted):
         client.complete([M1], MSGS)
+
+
+# -- hung models, cancellable waits, progress notes, JSON inside prose -------------------------------------------------
+
+def _silent_provider(seconds: float = 35.0):
+    from dataclasses import replace
+    from prophet_agent.nim.providers import PROVIDERS
+    return replace(PROVIDERS["nim"], silence_s=seconds)
+
+
+def test_a_model_that_sends_nothing_is_passed_over_without_rotating_keys_and_goes_last():
+    # Measured on Gemini 3.5 Flash: no first byte for 45-60 s on several keys. Trying each key would repeat the wait.
+    script = Script().on(raise_(httpx.ReadTimeout("no bytes")), model=M1)
+    client, _ = make(script, provider=_silent_provider())
+    reply = client.complete([M1, M2], MSGS)
+    assert reply.model == M2
+    assert [m for _, m in script.sequence()] == [M1, M2]      # one try on the silent model, not one per key
+    script.calls.clear()
+    client.complete([M1, M2], MSGS)                 # the hung model now goes last, so the next call does not wait on it first
+    assert [m for _, m in script.sequence()] == [M2]
+
+
+def test_a_cancel_raised_by_the_checkpoint_stops_a_rate_limit_wait():
+    class Stop(Exception):
+        pass
+
+    clock = FakeClock()
+    seen = []
+
+    def checkpoint():
+        seen.append(clock.t)
+        if clock.t > 1000 + 90:
+            raise Stop()
+
+    client, _ = make(Script().on(status(429)), clock=clock)
+    with pytest.raises(Stop):
+        client.complete([M1], MSGS, checkpoint=checkpoint)
+    assert len(seen) > 5                            # it was consulted while waiting, not once
+
+
+def test_with_a_checkpoint_the_wait_has_no_ceiling_and_the_person_is_told_it_is_waiting():
+    clock = FakeClock()
+    notes = []
+    until = 1000 + RATE_WAIT_LIMIT_S + 600
+
+    def busy_then_ok(request, payload):
+        return httpx.Response(429, text="rate") if clock.t < until else sse(["ok"])
+
+    client, _ = make(Script().on(busy_then_ok), clock=clock)
+    reply = client.complete([M1], MSGS, checkpoint=lambda: None, on_wait=notes.append)
+    assert reply.text == "ok"
+    assert notes and set(notes[0]) == {"provider", "seconds", "waited", "reason"}
+    assert "nvapi" not in json.dumps(notes)
+
+    client2, clock2 = make(Script().on(lambda r, p: httpx.Response(429, text="rate")))
+    with pytest.raises(Exhausted):                  # without a checkpoint nobody can stop the wait, so the ceiling holds
+        client2.complete([M1], MSGS)
+
+
+def test_a_json_value_wrapped_in_prose_is_cut_out_before_the_schema_check():
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    script = Script().on(answer('Sure, here is the plan: {"a": 1} Let me know if that helps.'))
+    client, _ = make(script)
+    reply = client.complete([M1], MSGS, schema=schema)
+    assert json.loads(reply.text) == {"a": 1}

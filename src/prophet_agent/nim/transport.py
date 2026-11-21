@@ -65,6 +65,7 @@ CONTINUE_PROMPT = ("Your reply was cut off. Continue exactly from where it stopp
 RATE_STATUSES = frozenset({429, 503})   # rate limit or overload: waited out until the provider is depleted, never final
 RATE_WAIT_MAX_S = 60.0            # longest single sleep while every usable key and model is rate-limited; then a new pass
 RATE_WAIT_LIMIT_S = 1800.0        # one logical call waits at most this long on rate limits before it reports the refusal
+SILENCE_DEMOTE_S = 600.0          # a model that sent nothing within the provider's silence limit goes last this long
 MAX_REPAIRS = 2                   # an answer that fails the local schema is re-asked on the same model this many times
 REPAIR_QUOTE_CHARS = 4000         # how much of the refused reply the repair turn shows the model
 REPAIR_PROMPT = ("Your reply was not usable: {reason}. Reply again with only the JSON object the schema asks for. "
@@ -119,6 +120,7 @@ class _Outcome:
     partial: str = ""                  # "cut" only: the raw text that was already released before the stream broke
     status: int | None = None          # the HTTP status of the attempt, when one was received
     detail: str = ""                   # redacted, shortened response body for a failed attempt (model checks show it)
+    hung: bool = False                 # the provider sent nothing within its silence limit (not a refusal)
     text: str = ""                     # "model" with invalid=True: the reply that failed the schema, for the repair turn
 
 
@@ -268,10 +270,29 @@ def _check_schema(text: str, schema: dict) -> str | None:
     return validate(value, schema)
 
 
-def _timeout(remaining: float) -> httpx.Timeout:
+def _json_slice(text: str) -> str:
+    """A reply that is a JSON value followed or preceded by prose (a lead-in, a closing remark) is cut down to the value.
+    Text that is already JSON, or holds no JSON value, comes back unchanged. Structure decides, not wording."""
+    try:
+        json.loads(text)
+        return text
+    except ValueError:
+        pass
+    decoder = json.JSONDecoder()
+    for start, ch in enumerate(text):
+        if ch in "{[":
+            try:
+                _, end = decoder.raw_decode(text, start)
+            except ValueError:
+                continue
+            return text[start:end]
+    return text
+
+
+def _timeout(remaining: float, silence: float | None = None) -> httpx.Timeout:
     # `read` is the longest silence between two bytes, not the whole response: a long answer keeps streaming up to the
     # wall-clock budget, while a stalled one fails over after STREAM_IDLE_S instead of holding the call until the end.
-    return httpx.Timeout(connect=min(10.0, remaining), read=min(STREAM_IDLE_S, remaining), write=min(30.0, remaining),
+    return httpx.Timeout(connect=min(10.0, remaining), read=min(silence or STREAM_IDLE_S, remaining), write=min(30.0, remaining),
                          pool=min(30.0, remaining))
 
 
@@ -349,7 +370,8 @@ class NimClient:
                thinking: bool | None = False, max_tokens: int = MAX_TOKENS_DEFAULT,
                schema: dict | None = None, schema_name: str = "output",
                tools: Sequence[Mapping[str, Any]] | None = None,
-               budget_s: float = BUDGET_S) -> Iterator[tuple[str, Any]]:
+               budget_s: float = BUDGET_S, checkpoint: Callable[[], None] | None = None,
+               on_wait: Callable[[dict], None] | None = None) -> Iterator[tuple[str, Any]]:
         """Yield ("delta", text) while output is released, then one ("done", Reply).
 
         With a schema or tools, nothing is released early: the answer is buffered, validated and then returned in
@@ -358,6 +380,11 @@ class NimClient:
         A rate limit (429) or an overload (503) is not a failure of the request. When a pass over the chain met only those,
         the call waits for the soonest key or model to be ready and goes round again, until the provider is depleted (every
         key rejected) or RATE_WAIT_LIMIT_S has passed. A model that refuses the request for good is dropped for this call.
+
+        ``checkpoint`` is called at least once a second while the call waits and before each attempt; it may raise to stop the
+        call (a cancelled mission, a spent time allowance), and the exception passes through. With a checkpoint the
+        RATE_WAIT_LIMIT_S ceiling does not apply, because the caller can stop the wait. ``on_wait`` receives a plain-language
+        dict ({"provider", "seconds", "waited", "reason"}) each time the call starts a wait, so a person sees "busy, retrying".
         Raises Exhausted (or SchemaViolation if the last failure was a local schema check) once the chain is spent.
         """
         chain = self._order(models)
@@ -387,6 +414,8 @@ class NimClient:
                 while tried < MAX_KEYS_PER_MODEL and dispatched < MAX_DISPATCH:
                     if self.clock() >= deadline:
                         raise Exhausted(f"nim budget spent before a usable answer; last: {last}")
+                    if checkpoint is not None:
+                        checkpoint()
                     key = self._acquire(model, deadline, only=key if reuse else None)
                     reuse = False
                     tried += 1
@@ -414,6 +443,8 @@ class NimClient:
                     last, last_invalid = out.reason, out.invalid
                     if out.status in RATE_STATUSES:
                         waitable = True
+                    if out.hung:
+                        waited += self.clock() - attempt_started    # time lost to a silent model counts toward the ceiling
                     if out.kind == "cut":
                         # The stream broke after text had already been released. Continue from that text on a fresh budget
                         # rather than failing: the model sees its own partial reply and writes only the rest. Bounded.
@@ -456,25 +487,42 @@ class NimClient:
                     # "key" or "retire": try the next key for this model
             # The pass is over. Models that refused for good are dropped; rate limits and overloads wait, then go round again.
             chain = [m for m in chain if m not in dead]
-            if not waitable or not chain or waited >= RATE_WAIT_LIMIT_S:
+            ceiling = RATE_WAIT_LIMIT_S if checkpoint is None else float("inf")
+            if not waitable or not chain or waited >= ceiling:
                 break
             wait = self._rate_wait(chain)
             if wait is None:
                 break                                  # every key is rejected: the provider is depleted
-            wait = min(wait, RATE_WAIT_LIMIT_S - waited)
+            wait = min(wait, ceiling - waited)
             log.warning("nim: rate limited or overloaded on every usable model; waiting %.0fs then trying again (%s)",
                         wait, last)
+            if on_wait is not None:
+                try:
+                    on_wait({"provider": self.provider.label, "seconds": round(wait), "waited": round(waited),
+                             "reason": "busy"})
+                except Exception:                      # a progress note must never stop the call
+                    log.debug("on_wait failed", exc_info=True)
             waited += wait
-            self.sleep(wait)
+            self._wait(wait, checkpoint)
             deadline = max(deadline, self.clock() + budget_s)   # waiting for a rate limit does not spend the work budget
 
-        if waited >= RATE_WAIT_LIMIT_S:
+        if checkpoint is None and waited >= RATE_WAIT_LIMIT_S:
             message = f"nim-rate-limited: still refused after {waited:.0f}s of waiting; last: {last}"
         else:
             message = f"nim-exhausted: {last}"
         if last_invalid:
             raise SchemaViolation(message)
         raise Exhausted(message)
+
+    def _wait(self, seconds: float, checkpoint: Callable[[], None] | None) -> None:
+        """Sleep in slices of at most a second, calling the checkpoint between them so a cancel or a spent allowance is felt."""
+        left = seconds
+        while left > 0:
+            if checkpoint is not None:
+                checkpoint()
+            step = min(1.0, left)
+            self.sleep(step)
+            left -= step
 
     def _rate_wait(self, chain: Sequence[str]) -> float | None:
         """Seconds until the soonest (key, model) pair in the chain can be used again, capped at RATE_WAIT_MAX_S. None when
@@ -631,9 +679,9 @@ class NimClient:
         with self.lock:
             self.bad[key] = self.clock() + RETIRE_S
 
-    def _demote(self, model: str) -> None:
+    def _demote(self, model: str, seconds: float = DEMOTE_S) -> None:
         with self.lock:
-            self.demoted[model] = self.clock() + DEMOTE_S
+            self.demoted[model] = self.clock() + seconds
 
     def _attempt(self, key: str, model: str, messages: list[dict], opts: _Opts, shape: _Shape,
                  deadline: float) -> Iterator[tuple[str, Any]]:
@@ -647,7 +695,8 @@ class NimClient:
         try:
             with self.http.stream("POST", "/chat/completions",
                                   headers={"authorization": f"Bearer {key}", "accept": "text/event-stream"},
-                                  json=body, timeout=_timeout(max(0.1, deadline - self.clock()))) as r:
+                                  json=body,
+                                  timeout=_timeout(max(0.1, deadline - self.clock()), self.provider.silence_s)) as r:
                 status = r.status_code
                 if status >= 400:
                     raw = r.read().decode("utf-8", "replace")
@@ -683,6 +732,15 @@ class NimClient:
                 # Text has been released, so this attempt cannot fail over; the caller continues it on a new budget.
                 return _Outcome("cut", f"{model}: budget spent while streaming", partial="".join(parts))
             return _Outcome("budget", f"{model}: budget spent while reading")
+        except httpx.ReadTimeout as exc:
+            if emitted:
+                return _Outcome("cut", f"{model}: stream interrupted ({type(exc).__name__})", partial="".join(parts))
+            if self.provider.silence_s:
+                # Silence is a slow or hung model, not a bad key: rotating keys on the same model would repeat the wait.
+                self._demote(model, SILENCE_DEMOTE_S)
+                return _Outcome("model", f"{model}: no reply within {self.provider.silence_s:.0f}s", status=503, hung=True)
+            self._cool(key, model, COOL_KEY_S)
+            return _Outcome("key", f"{model}: {type(exc).__name__}")
         except (httpx.TransportError, ValueError) as exc:  # ValueError covers unreadable JSON in a stream
             if emitted:
                 return _Outcome("cut", f"{model}: stream interrupted ({type(exc).__name__})",
@@ -702,8 +760,12 @@ class NimClient:
             return _Outcome("model", f"{model}: empty reply (finish_reason={finish})", demote=finish != "length",
                             status=status)
         if opts.schema is not None and not opts.tools:
+            text = _json_slice(text)
             err = _check_schema(text, opts.schema)
             if err:
+                # What the model sent is what a repair needs to see; the log keeps a short redacted head and tail.
+                log.warning("nim: %s reply refused locally (%s); finish=%s len=%d head=%r tail=%r", model, err, finish, len(text),
+                            redact(text[:160]), redact(text[-120:]))
                 return _Outcome("model", f"{model}: local schema check failed: {err}", invalid=True, status=status,
                                 text=text)
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,

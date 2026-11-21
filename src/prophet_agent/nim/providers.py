@@ -82,6 +82,7 @@ class Provider:
     token_param: str = "max_tokens"        # OpenAI's newer models need max_completion_tokens
     send_temperature: bool = True          # reasoning-model endpoints reject a custom temperature
     schema_mode: str = "json_schema"       # "prompt": no response_format; the schema goes into the prompt and is checked locally
+    silence_s: float | None = None         # longest wait for the first or next bytes before the model is treated as hung and the call moves on
     key_aliases: tuple[str, ...] = ()      # other names read the same way (list and indexed); the primary name is written
 
     @property
@@ -144,6 +145,9 @@ PROVIDERS: dict[str, Provider] = {
         key_aliases=("GEMINI_API_KEY",),
         base_url="https://generativelanguage.googleapis.com/v1beta/openai", default_models=catalog_ids("gemini"),
         probe_model="gemini-3.5-flash-lite",     # verified 200 in the one-call check; 3.1-flash-lite gave 403
+        # Measured 2026-11-21: gemini-3.5-flash often sent no byte for 45-60 s while 3.1-flash-lite answered in 1-2 s. A hung model
+        # is passed over after 35 s and goes last for ten minutes, so the call reaches a model that answers.
+        silence_s=35.0,
     ),
     # xAI (verified 2026-11-21, docs.x.ai): Bearer auth at https://api.x.ai/v1; chat completions documents tools and
     # response_format json_schema. Streaming on the raw endpoint is not stated in the docs; confirm live.

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -567,6 +568,18 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
 
     def program(ctx: Ctx) -> dict:
         history: list[dict] = []
+        bind = getattr(brain, "bind", None)
+        if bind is not None:
+            # A provider that is busy is waited out inside a step. The checkpoint lets that wait feel a cancel or a spent
+            # time allowance (and keeps the lease alive); the note tells the person plainly that the wait is happening.
+            last_note = [0.0]
+
+            def note(info: dict) -> None:
+                if time.time() - last_note[0] >= 20.0:
+                    last_note[0] = time.time()
+                    ctx.store.append_event(ctx.mission_id, "provider.waiting", info)
+
+            bind(ctx._guard_time, note)
         return _ground_result(_run(ctx, brain, goal, tools, cfg, context, history), history, goal)
 
     return program
@@ -600,15 +613,29 @@ class NimBrain:
         self.models = models
         self.thinking = thinking
         self.max_tokens = max_tokens
+        self.checkpoint: Callable[[], None] | None = None
+        self.on_wait: Callable[[dict], None] | None = None
+
+    def bind(self, checkpoint: Callable[[], None] | None, on_wait: Callable[[dict], None] | None = None) -> None:
+        """Let a provider wait be stopped (cancel, spent time allowance) and reported. Called by the goal program."""
+        self.checkpoint, self.on_wait = checkpoint, on_wait
+
+    def _extra(self) -> dict:
+        extra: dict = {}
+        if self.checkpoint is not None:
+            extra["checkpoint"] = self.checkpoint
+        if self.on_wait is not None:
+            extra["on_wait"] = self.on_wait
+        return extra
 
     def write(self, messages: list[dict]) -> str:
         """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line)."""
         reply = self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages, thinking=False,
-                                     max_tokens=self.write_tokens)
+                                     max_tokens=self.write_tokens, **self._extra())
         return reply.text
 
     def decide(self, messages: list[dict], schema: dict, name: str) -> dict:
         reply = self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages,
                                      thinking=self.thinking, max_tokens=self.max_tokens,
-                                     schema=schema, schema_name=name)
+                                     schema=schema, schema_name=name, **self._extra())
         return json.loads(reply.text)
