@@ -197,8 +197,8 @@ export function Composer({
     if (files.length) quick.onAddFiles(files);
   }
 
-  const hint = isTouchPointer() ? "Tap the arrow to send" : "Enter to send · Shift+Enter for a new line";
-  const note = error ?? blockedReason ?? (trimmed.length > 0 ? hint : null);
+  // Only errors and blocking reasons are shown under the box. The send hint is hidden.
+  const note = error ?? blockedReason ?? null;
   const activeId = listOpen ? `${listId}-${active}` : undefined;
   // Options keep one flat index (for the arrow keys) but render under their group heading.
   const groups = options.reduce<{ name: string; items: { option: Option; index: number }[] }[]>((acc, option, index) => {
@@ -292,10 +292,11 @@ export function Composer({
           </ul>
         )}
 
-        <div className="flex items-end gap-1">
+        <div className="flex items-center gap-1">
           {quick ? (
             <ActionMenu
               label="Add files, folders, skills or tools"
+              triggerClassName="shrink-0 rounded-full bg-night-2 text-sand-1 hover:bg-night-3 hover:text-sand-0 sm:size-8"
               trigger={<Plus aria-hidden="true" className="size-4" />}
               items={[
                 { key: "files", label: "Add files", icon: <Paperclip className="size-4" />, onSelect: quick.onOpenFiles },

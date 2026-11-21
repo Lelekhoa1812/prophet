@@ -1,5 +1,15 @@
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
+
+// The theme's custom type sizes (index.css @theme). Without this, tailwind-merge reads `text-fine` as a colour and
+// drops it whenever a colour such as `text-sand-1` follows, so the text silently falls back to body size.
+const twMerge = extendTailwindMerge({
+  extend: {
+    classGroups: {
+      "font-size": [{ text: ["micro", "meta", "caption", "fine", "body", "lead"] }],
+    },
+  },
+});
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));

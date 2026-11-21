@@ -17,6 +17,7 @@ export function ActionMenu({
   items,
   trigger,
   className,
+  triggerClassName,
   panelClassName,
   onOpenChange,
 }: {
@@ -24,6 +25,7 @@ export function ActionMenu({
   items: MenuItem[];
   trigger?: ReactNode;
   className?: string;
+  triggerClassName?: string;
   panelClassName?: string;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -109,7 +111,10 @@ export function ActionMenu({
           e.stopPropagation();
           setOpenState(!open);
         }}
-        className="grid size-10 place-items-center rounded-md text-sand-2 transition-colors hover:bg-night-3 hover:text-sand-0 focus-visible:text-sand-0 sm:size-8"
+        className={cn(
+          "grid size-10 place-items-center rounded-md text-sand-2 transition-colors hover:bg-night-3 hover:text-sand-0 focus-visible:text-sand-0 sm:size-8",
+          triggerClassName,
+        )}
       >
         {trigger ?? <MoreHorizontal aria-hidden="true" className="size-4" />}
       </button>
