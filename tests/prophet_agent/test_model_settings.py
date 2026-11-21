@@ -33,7 +33,7 @@ def settings(tmp_path, monkeypatch):
 
 def test_catalog_has_the_agreed_models_per_provider():
     counts = Counter(m.provider for m in CATALOG)
-    assert counts == {"nim": 5, "claude": 4, "openai": 4, "grok": 3, "gemini": 6, "matilda": 1, "openrouter": 3, "freerouter": 4}
+    assert counts == {"nim": 5, "claude": 4, "openai": 4, "grok": 3, "gemini": 6, "matilda": 1, "openrouter": 6, "freerouter": 4}
     ids = [m.id for m in CATALOG]
     assert len(ids) == len(set(ids)), "model ids must be unique across providers"
     assert model_info("claude-haiku-5-5").provider == "claude"

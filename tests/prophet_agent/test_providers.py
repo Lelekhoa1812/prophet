@@ -425,13 +425,16 @@ def test_freerouter_alias_can_be_pinned_for_the_planner_and_is_not_the_default(t
 OR_KEY_1, OR_KEY_2 = "sk-or-v1-test-111111", "sk-or-v1-test-222222"
 
 
-def test_openrouter_is_three_live_free_models_at_the_verified_endpoint_with_multi_key_pacing():
+def test_openrouter_is_six_live_free_models_at_the_verified_endpoint_with_multi_key_pacing():
     spec = PROVIDERS["openrouter"]
     assert spec.label == "OpenRouter" and spec.key_list_var == "OPEN_ROUTER_API_KEY" and spec.multi_key
     assert spec.resolve_base_url() == "https://openrouter.ai/api/v1"
-    # Live-checked 2026-11-21: Dots 3 Note Preview and North Mini Code now return 404 "no longer available", so they are dropped.
+    # Live-checked 2026-11-21 through NimClient. Dots 3 Note Preview, North Mini Code and Xing 4.0 return 404 and
+    # Nemotron 3.5 Lightning returns reasoning-only output, so they are not listed.
     assert spec.models({}) == ("nvidia/nemotron-3.5-super-vl:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-                               "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+                               "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                               "google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free",
+                               "recursive/flint-v1.0:free")
     assert all(m.endswith(":free") for m in spec.models({}))
     assert spec.rpm == 20, "free-router's documented per-key limit"
     assert spec.schema_mode == "prompt", "free-router records JSON Schema as unavailable on these models"
@@ -445,7 +448,6 @@ def test_openrouter_loads_numbered_keys_and_ignores_other_providers(monkeypatch)
 
 
 def test_openrouter_request_sends_title_header_bearer_key_and_prompt_mode_body(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -470,7 +472,6 @@ def test_openrouter_request_sends_title_header_bearer_key_and_prompt_mode_body(m
 
 
 def test_openrouter_rotates_past_a_rate_limited_key_to_the_next_key(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     first_key: list[str] = []
     used: list[str] = []
 
