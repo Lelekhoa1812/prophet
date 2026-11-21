@@ -28,14 +28,58 @@ def _clock():
 
 
 def test_key_variables_follow_the_brief():
-    env = {"GOOGLE_API_KEY": "AIza-one,AIza-two", "GOOGLE_API_KEY_3": "AIza-three", "GOOGLE_API_KEY_1": "AIza-two",
+    env = {"GEMINI_API_KEY": "AIza-one,AIza-two", "GEMINI_API_KEY_3": "AIza-three", "GEMINI_API_KEY_1": "AIza-two",
            "ANTHROPIC_API_KEY": "sk-ant-1234567890", "ANTHROPIC_API_KEY_2": "sk-ant-NOT-READ",
            "MATILDA_API_KEY_1": "mat-key-111111", "OPENAI_API_KEY": "sk-openai-0000000"}
     assert load_provider_keys(PROVIDERS["gemini"], env) == ["AIza-one", "AIza-two", "AIza-three"]
+    assert load_provider_keys(PROVIDERS["gemini"], {"GOOGLE_API_KEY": "AIza-not-read"}) == [], \
+        "Gemini reads GEMINI_API_KEY, the name in the working .env and free-router"
     assert load_provider_keys(PROVIDERS["claude"], env) == ["sk-ant-1234567890"], "Claude is a single key"
     assert load_provider_keys(PROVIDERS["matilda"], env) == ["mat-key-111111"]
     assert load_provider_keys(PROVIDERS["openai"], env) == ["sk-openai-0000000"]
     assert load_provider_keys(PROVIDERS["grok"], env) == []
+
+
+def test_gemini_uses_the_openai_compatible_endpoint_and_the_verified_chain():
+    gemini = PROVIDERS["gemini"]
+    assert gemini.resolve_base_url({}) == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert gemini.models({}) == ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+    assert not any(m.startswith("gemini-2.5") for m in gemini.models({})), "2.5 models were retired on 3 Nov 2026"
+    assert gemini.probe_target({}) == "gemini-3.1-flash-lite", "the cheapest model is the key probe"
+
+
+def test_gemini_request_shape_uses_max_tokens_and_a_strict_json_schema():
+    schema = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+    opts = _Opts(thinking=False, max_tokens=500, schema=schema, schema_name="plan", tools=None)
+    body = build_body("gemini-3.6-flash", [{"role": "user", "content": "hi"}], opts, _Shape("strict"),
+                      PROVIDERS["gemini"])
+    assert body["model"] == "gemini-3.6-flash" and body["stream"] is True
+    assert body["max_tokens"] == 500 and "max_completion_tokens" not in body
+    assert body["temperature"] == 0.2
+    assert "chat_template_kwargs" not in body and "reasoning_effort" not in body, "NIM-only fields stay out"
+    assert body["response_format"] == {"type": "json_schema", "json_schema": {
+        "name": "plan", "schema": schema, "strict": True}}
+
+
+def test_gemini_client_sends_one_bearer_key_and_fails_over_past_a_rejected_key():
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization")
+        seen.append((str(request.url), auth))
+        if auth == "Bearer AIza-rejected-0000":
+            return httpx.Response(403, json={"error": {"status": "PERMISSION_DENIED"}})
+        return httpx.Response(200, content=_sse("pong"), headers={"content-type": "text/event-stream"})
+
+    clock, sleep = _clock()
+    client = NimClient(["AIza-rejected-0000", "AIza-good-1111"], provider=PROVIDERS["gemini"],
+                       transport=httpx.MockTransport(handler), clock=clock, sleep=sleep)
+    reply = client.complete(["gemini-3.6-flash"], [{"role": "user", "content": "hi"}])
+    assert reply.text == "pong" and reply.key_slot in (1, 2)
+    assert {url for url, _ in seen} == {"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"}
+    assert all(auth and auth.startswith("Bearer ") for _, auth in seen), "Gemini's OpenAI layer takes a Bearer key"
+    assert ("Bearer AIza-good-1111") in {auth for _, auth in seen}, "the good key answered after the rejection"
+    assert "AIza-" not in repr(client), "the client never shows key material"
 
 
 def test_gemini_and_matilda_are_multi_key_and_the_others_are_not():
@@ -194,12 +238,12 @@ def test_active_provider_persists_across_limit_updates(tmp_path):
 
 def test_keys_are_written_per_provider_and_never_shown_whole(tmp_path):
     dotenv = tmp_path / ".env"
-    dotenv.write_text("OTHER=1\nGOOGLE_API_KEY_2=AIza-old-0000\nOPENAI_API_KEY=sk-openai-OLD0000\n")
+    dotenv.write_text("OTHER=1\nGEMINI_API_KEY_2=AIza-old-0000\nOPENAI_API_KEY=sk-openai-OLD0000\n")
     settings = Settings(data_root=tmp_path, dotenv=dotenv)
     settings.set_keys(["AIza-new-1111aaaa", "AIza-new-2222bbbb"], provider="gemini")
     text = dotenv.read_text()
-    assert "GOOGLE_API_KEY=AIza-new-1111aaaa,AIza-new-2222bbbb" in text
-    assert "GOOGLE_API_KEY_2" not in text, "indexed Gemini keys are replaced, not kept beside the new list"
+    assert "GEMINI_API_KEY=AIza-new-1111aaaa,AIza-new-2222bbbb" in text
+    assert "GEMINI_API_KEY_2" not in text, "indexed Gemini keys are replaced, not kept beside the new list"
     assert "OPENAI_API_KEY=sk-openai-OLD0000" in text, "other providers' lines are left alone"
     assert "OTHER=1" in text
     masked = settings.masked_keys("gemini")

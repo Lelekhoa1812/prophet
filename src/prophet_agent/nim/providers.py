@@ -103,10 +103,13 @@ PROVIDERS: dict[str, Provider] = {
         default_models=("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-luna"),
         token_param="max_completion_tokens", send_temperature=False,
     ),
+    # Google AI Studio. Keys are GEMINI_API_KEY (list) or GEMINI_API_KEY_1..9, the names free-router uses. Quotas apply per
+    # Google project, so keys from different projects add capacity. free-router removed the 2.5 models as unavailable on
+    # 3 Nov 2026 (its OPERATIONS.md); the chain holds the 3.x models it lists as ready.
     "gemini": Provider(
-        name="gemini", label="Gemini", key_list_var="GOOGLE_API_KEY", key_prefix="GOOGLE_API_KEY",
+        name="gemini", label="Gemini", key_list_var="GEMINI_API_KEY", key_prefix="GEMINI_API_KEY",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        default_models=("gemini-2.5-pro", "gemini-2.5-flash"),
+        default_models=("gemini-3.5-flash-lite", "gemini-3.1-flash-lite"),
     ),
     # xAI (verified 2026-11-21, docs.x.ai): Bearer auth at https://api.x.ai/v1; chat completions documents tools and
     # response_format json_schema. Streaming on the raw endpoint is not stated in the docs; confirm live.
