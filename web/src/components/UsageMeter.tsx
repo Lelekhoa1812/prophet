@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { AlertCircle, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { UsageModel } from "../lib/api";
 import { useDismiss } from "../lib/useDismiss";
@@ -120,8 +120,7 @@ export function UsageMeter({
       : loading
         ? "Token budget, loading"
         : "Token budget, no budget set";
-  const visible = failed ? "Usage unavailable" : reading ? `${Math.round(reading.pct)}%` : loading ? "" : "N/A";
-
+  // The pill is icon-only. Its state is in the aria-label and the popover; the words stay out of the composer.
   return (
     <div ref={wrap} className="relative min-w-0">
       <button
@@ -133,12 +132,15 @@ export function UsageMeter({
         title="Token budgets"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "inline-flex min-h-11 min-w-0 items-center gap-1.5 rounded-lg px-2 text-micro font-semibold tabular-nums transition-colors hover:bg-night-2 hover:text-sand-0",
+          "inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg px-2 transition-colors hover:bg-night-2 hover:text-sand-0",
           open ? "bg-night-2 text-sand-0" : "text-sand-1",
         )}
       >
-        {!failed && <Ring pct={reading ? reading.pct : null} loading={loading} />}
-        {visible && <span aria-hidden="true" className="max-w-24 truncate">{visible}</span>}
+        {failed ? (
+          <AlertCircle aria-hidden="true" className="size-6 shrink-0 text-bad" />
+        ) : (
+          <Ring pct={reading ? reading.pct : null} loading={loading} />
+        )}
       </button>
 
       {open && (

@@ -17,7 +17,7 @@ import { useModelCatalog, useSelectedModel } from "./lib/useModels";
 import { cn, isWorking } from "./lib/utils";
 
 // One notice slot above the main column. Errors are never swallowed: they land here until dismissed.
-type Notice = { id: number; message: string; tone: "error" | "info"; action?: { label: string; run: () => void } };
+type Notice = { id: number; message: string; tone: "error" | "info"; action?: { label: string; run: () => void }; ttlMs?: number };
 
 export default function App() {
   const [missions, setMissions] = useState<MissionRow[]>([]);
@@ -52,6 +52,14 @@ export default function App() {
   const attachSeq = useRef(0);
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // A notice with ttlMs clears itself. Only the notice it was set for is cleared, so a newer one is never removed early.
+  const noticeId = notice?.id;
+  const noticeTtl = notice?.ttlMs;
+  useEffect(() => {
+    if (noticeId === undefined || !noticeTtl) return;
+    const timer = window.setTimeout(() => setNotice((n) => (n?.id === noticeId ? null : n)), noticeTtl);
+    return () => window.clearTimeout(timer);
+  }, [noticeId, noticeTtl]);
   const { mission, error: pollError, refresh } = useMission(selectedId);
   // The model for the next forecast is chosen under the composer and remembered per browser.
   const catalog = useModelCatalog();
@@ -245,7 +253,7 @@ export default function App() {
       }
       setAttachments([]);
       refreshList();
-      setNotice({ id: Date.now(), message: kind === "forecast" ? "Forecast deleted." : "Notebook deleted.", tone: "info" });
+      setNotice({ id: Date.now(), message: kind === "forecast" ? "Forecast deleted." : "Notebook deleted.", tone: "info", ttlMs: 2000 });
     } catch (err) {
       showError(errorMessage(err, "Couldn't delete this. Try again."));
     }
@@ -392,7 +400,7 @@ export default function App() {
                 {notice.action && (
                   <IconButton label={notice.action.label} icon={<Undo2 aria-hidden="true" className="size-5" />} onClick={notice.action.run} />
                 )}
-                <IconButton label="Dismiss message" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNotice(null)} />
+                <IconButton label="Dismiss" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNotice(null)} />
               </div>
             </div>
           </div>

@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Circle,
-  Cpu,
   Download,
   Eye,
   EyeOff,
@@ -68,6 +67,34 @@ function Section({ id, title, description, children }: { id: string; title: stri
         {description && <p className="text-caption text-sand-1">{description}</p>}
       </div>
       <Card className="p-4 sm:p-5">{children}</Card>
+    </section>
+  );
+}
+
+// A top-level section that stays closed until opened. The body stays mounted while closed, so an unsaved edit survives.
+function CollapsibleSection({ id, title, description, children }: { id: string; title: string; description?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  return (
+    <section aria-labelledby={id} className="grid gap-3">
+      <h3 id={id} className="text-lg font-bold text-sand-0">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((o) => !o)}
+          className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg text-left transition-colors hover:text-ember"
+        >
+          {title}
+          <ChevronDown aria-hidden="true" className={cn("size-5 shrink-0 text-sand-2 transition-transform duration-150 motion-reduce:transition-none", open && "rotate-180")} />
+        </button>
+      </h3>
+      <div id={panelId} hidden={!open}>
+        <Card className="p-4 sm:p-5">
+          {description && <p className="mb-4 text-caption text-sand-1">{description}</p>}
+          {children}
+        </Card>
+      </div>
     </section>
   );
 }
@@ -146,7 +173,6 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
               <LimitsSection view={view} onSaved={setView} />
               <SandboxSection view={view} />
               <DataSection view={view} onCleared={() => { void load(); onDataChanged(); }} />
-              <AboutSection view={view} />
             </div>
           )}
         </div>
@@ -416,6 +442,8 @@ function ProviderPanel({
   const pendingDraft = canAdd && draft.trim() !== "";
   const dirty = JSON.stringify(values) !== JSON.stringify(savedValues) || pendingDraft;
   const enabledModels = p.models.filter((m) => m.enabled).length;
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const modelsPanelId = useId();
   const endpointEnv = ENDPOINT_ENV[p.name] ?? null;
   const probeSummary = probes
     ? `Tested ${probes.length} ${probes.length === 1 ? "key" : "keys"}: ${probes.filter((r) => r.ok).length} valid, ${probes.filter((r) => !r.ok).length} invalid.`
@@ -668,10 +696,24 @@ function ProviderPanel({
       </div>
 
       <div className="grid gap-3 border-t border-sand-2/15 pt-4">
-        <div className="grid gap-1">
-          <p className="text-base font-semibold text-sand-0">Models</p>
-          <p className="text-caption text-sand-2">Disabled models are not used by the planner.</p>
-        </div>
+        <button
+          type="button"
+          aria-expanded={modelsOpen}
+          aria-controls={modelsPanelId}
+          onClick={() => setModelsOpen((o) => !o)}
+          className="flex min-h-11 items-center justify-between gap-3 rounded-lg text-left"
+        >
+          <span className="grid gap-0.5">
+            <span className="text-base font-semibold text-sand-0">Models</span>
+            <span className="text-caption text-sand-2">
+              {p.models.length === 0 ? `No models listed for ${p.label}` : `${enabledModels} of ${p.models.length} enabled`}
+            </span>
+          </span>
+          <ChevronDown aria-hidden="true" className={cn("size-5 shrink-0 text-sand-2 transition-transform duration-150 motion-reduce:transition-none", modelsOpen && "rotate-180")} />
+        </button>
+      <div id={modelsPanelId} hidden={!modelsOpen}>
+      <div className="grid gap-3">
+        <p className="text-caption text-sand-2">Disabled models are not used by the planner.</p>
         {p.models.length === 0 ? (
           <p className="text-caption text-sand-2">No models are listed for {p.label} yet.</p>
         ) : (
@@ -706,6 +748,8 @@ function ProviderPanel({
             })}
           </ul>
         )}
+      </div>
+      </div>
       </div>
     </>
   );
@@ -780,7 +824,7 @@ function LimitsSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Set
   }
 
   return (
-    <Section
+    <CollapsibleSection
       id={headingId}
       title="Limits and memory"
       description="How much work Prophet does before it pauses. Pausing is never a failure: you can continue from the same place."
@@ -833,7 +877,7 @@ function LimitsSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Set
           Save limits
         </Button>
       </div>
-    </Section>
+    </CollapsibleSection>
   );
 }
 
@@ -899,7 +943,7 @@ function DataSection({ view, onCleared }: { view: SettingsView; onCleared: () =>
   }
 
   return (
-    <Section id={headingId} title="Your data" description="Everything Prophet has stored on this machine.">
+    <CollapsibleSection id={headingId} title="Your data" description="Everything Prophet has stored on this machine.">
       <dl className="grid grid-cols-2 gap-3 text-caption text-sand-1 sm:grid-cols-4">
         <div className="grid gap-0.5">
           <dt className="text-sand-2">Forecasts</dt>
@@ -964,20 +1008,7 @@ function DataSection({ view, onCleared }: { view: SettingsView; onCleared: () =>
           </p>
         )}
       </div>
-    </Section>
+    </CollapsibleSection>
   );
 }
 
-// -- About --------------------------------------------------------------------------------------------------------------
-
-function AboutSection({ view }: { view: SettingsView }) {
-  const headingId = useId();
-  return (
-    <Section id={headingId} title="About">
-      <p className="flex items-center gap-2 text-base font-semibold text-sand-0">
-        <Cpu aria-hidden="true" className="size-4 text-sand-1" />
-        {view.about.name}
-      </p>
-    </Section>
-  );
-}
