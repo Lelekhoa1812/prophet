@@ -1,6 +1,6 @@
 import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, FileText, Play, RotateCcw, SkipForward } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type AnsweredQuestion, type ArtifactRun, type Mission, type ToolInfo } from "../lib/api";
+import { api, type AnsweredQuestion, type ArtifactRun, type DatasetRef, type Mission, type ToolInfo } from "../lib/api";
 import { errorMessage, formatDuration, truncate } from "../lib/format";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
 import { cn, formatBytes, isCheckpoint, isWorking } from "../lib/utils";
@@ -296,8 +296,9 @@ export function Turn({
   tools: Record<string, ToolInfo>;
   runs: ArtifactRun[];
   onAnswered: () => void;
-  onRetry: (goal: string) => void;
-  onEdit: (goal: string) => void;
+  // A retry or an edit keeps the files the forecast was made from, so they are not silently dropped.
+  onRetry: (goal: string, datasetIds: string[]) => void;
+  onEdit: (goal: string, datasets: DatasetRef[]) => void;
 }) {
   const working = isWorking(mission.status);
   const steps = buildSteps(mission, tools);
@@ -411,12 +412,12 @@ export function Turn({
             {problem.action !== "none" && (
               <div className="pt-1">
                 {problem.action === "retry" ? (
-                  <Button onClick={() => onRetry(mission.goal)}>
+                  <Button onClick={() => onRetry(mission.goal, datasets.map((d) => d.id))}>
                     <RotateCcw aria-hidden="true" className="size-4" />
                     Try again
                   </Button>
                 ) : (
-                  <Button onClick={() => onEdit(mission.goal)}>
+                  <Button onClick={() => onEdit(mission.goal, datasets)}>
                     <RotateCcw aria-hidden="true" className="size-4" />
                     Edit and ask again
                   </Button>

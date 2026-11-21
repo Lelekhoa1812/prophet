@@ -502,8 +502,15 @@ export default function App() {
                   tools={tools}
                   runs={runs}
                   onAnswered={refresh}
-                  onRetry={(g) => void start(g).catch((err) => showError(errorMessage(err, "Couldn't start the forecast. Try again.")))}
-                  onEdit={(g) => setDraft(g)}
+                  onRetry={(g, ids) => void start(g, ids).catch((err) => showError(errorMessage(err, "Couldn't start the forecast. Try again.")))}
+                  onEdit={(g, ds) => {
+                    setDraft(g);
+                    // The files come back as attachments, so the person can see them and send them again.
+                    setAttachments((prev) => [
+                      ...prev,
+                      ...ds.map((d) => ({ key: `att-${++attachSeq.current}`, name: d.name, status: "ready" as const, datasetId: d.id })),
+                    ]);
+                  }}
                 />
               ) : (
                 <p role="status" className="flex items-center gap-2 text-base text-sand-1">
