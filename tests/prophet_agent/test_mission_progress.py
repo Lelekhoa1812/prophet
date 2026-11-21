@@ -10,7 +10,7 @@ from prophet_agent.runtime.goal import ASKS_KEEP_CHARS, GoalConfig, goal_program
 from tests.prophet_agent.test_goal_loop import ScriptedBrain, _tool, call, finish, met, run, store  # noqa: F401
 
 
-def _sandbox_ok(run_id="r1", outputs=("out/ledger.json",)):
+def _sandbox_ok(run_id="r1", outputs=("out/ledger.json", "out/scan.json")):
     return {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"run_id": run_id, "outputs": list(outputs)}}
 
 
@@ -127,3 +127,26 @@ def test_compactor_v2_has_fixed_sections_and_is_current():
     for head in ("ASKS:", "FOUND:", "DONE AND DECIDED:", "ERRORS:", "OPEN:", "SUB-AGENTS:", "NEXT:"):
         assert head in c.text
     assert ASKS_KEEP_CHARS > 0
+
+
+def test_a_crashed_analysis_cell_counts_as_a_failure_in_the_streak():
+    from prophet_agent.runtime.goal import _budget_note, _failure_streak
+    crash = {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {
+        "ok": False, "stderr_tail": "Traceback (most recent call last):\n  File x\nKeyError: 'message'"}}
+    history = [crash, dict(crash), dict(crash)]
+    streak, err, kind = _failure_streak(history)
+    assert streak == 3 and "KeyError: 'message'" in err and kind == "tool"
+    note = _budget_note(0, GoalConfig(), history)
+    assert "print the structure" in note.replace("only prints the structure", "print the structure")
+    assert _failure_streak(history + [{"kind": "tool", "tool": "sandbox_python", "result": {"ok": True}}])[0] == 0
+
+
+def test_a_forecast_whose_data_was_never_scanned_is_blocked(tmp_path):
+    _ledger(tmp_path, ["a", "b", "c", "d"])
+    fc = {"kind": "tool", "tool": "timesfm_forecast", "args": {}, "result": {"health": {"verdict": "ok"}, "point": [1.0],
+                                                                          "config": {"horizon": 1}}}
+    no_scan = [_sandbox_ok(outputs=("out/ledger.json",)), fc]
+    blocked = {c["name"] for c in contracts.blocking(contracts.check_evidence(no_scan, run_root=tmp_path))}
+    assert "data_scanned" in blocked
+    with_scan = [_sandbox_ok(outputs=("out/ledger.json", "out/scan.json (900 bytes)")), fc]
+    assert "data_scanned" not in {c["name"] for c in contracts.blocking(contracts.check_evidence(with_scan, run_root=tmp_path))}

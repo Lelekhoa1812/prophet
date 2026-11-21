@@ -753,7 +753,7 @@ def _gate_tools():
     bt = {"horizon": 3, "best_baseline": "seasonal_naive",
           "models": {"naive": {"mase": 1.0}, "seasonal_naive": {"mase": 0.9}, "timesfm": {"mase": 0.8}}}
     return {"sandbox_python": _tool("sandbox_python", lambda a, k: {"ok": True, "stdout": "n=40", "run_id": "runledger",
-                                                                      "outputs": ["out/ledger.json (300 bytes)"]}),
+                                                                      "outputs": ["out/ledger.json (300 bytes)", "out/scan.json (900 bytes)"]}),
             "timesfm_forecast": _tool("timesfm_forecast", lambda a, k: fc),
             "backtest_series": _tool("backtest_series", lambda a, k: bt)}
 

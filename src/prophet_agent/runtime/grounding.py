@@ -15,7 +15,7 @@ import json
 import re
 
 # A number as people write it: optional sign, digits with thousands separators, optional decimals, optional per cent.
-_NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?%?(?!\d|(?:st|nd|rd|th)\b)")
+_NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?(?:[  ]?%)?(?!\d|(?:st|nd|rd|th)\b)")
 # A date is a label, not a figure: "2026-01-19", "Jan 2026" and "3 June 2027" are dropped whole.
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 _DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_MONTH}\s+\d{{4}}\b|\b(\d{{4}})-\d{{1,2}}(?:-\d{{1,2}})?\b|\b\d{{1,2}}/\d{{1,2}}/(\d{{2,4}})\b|\b\d{{1,2}}:\d{{2}}(?::\d{{2}})?\b")
@@ -35,7 +35,7 @@ _DASHES = {ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2212"}
 
 def _parse(token: str) -> tuple[float, int, bool]:
     pct = token.endswith("%")
-    raw = token.rstrip("%").replace(",", "").rstrip(",")
+    raw = token.rstrip("%").strip().replace(",", "").rstrip(",")
     decimals = len(raw.split(".")[1]) if "." in raw else 0
     return float(raw), decimals, pct
 

@@ -58,7 +58,7 @@ def test_every_finding_has_the_contract_fields():
     r = _scan(df)
     assert r["findings"], "expected at least one finding on a table with zeros"
     for f in r["findings"]:
-        assert set(f) == {"id", "severity", "scope", "evidence", "decision_needed", "next_step"}
+        assert set(f) == {"id", "severity", "scope", "message", "evidence", "decision_needed", "next_step"}
         assert f["severity"] in ("blocker", "major", "minor", "info")
         assert isinstance(f["scope"], str)
         assert f["decision_needed"] is None or isinstance(f["decision_needed"], str)
@@ -534,3 +534,11 @@ def test_real_gaps_on_weekdays_are_still_reported_on_a_business_day_series():
     ids = {f["id"]: f for f in sc.scan(df, "date", "v")["findings"]}
     assert "calendar.business_days" in ids and "gaps.missing" in ids
     assert ids["gaps.missing"]["evidence"]["longest_steps"] >= 20
+
+
+def test_a_guessed_key_names_the_keys_that_exist():
+    r = _scan(_clean_frame())
+    finding = r["findings"][0] if r["findings"] else sc._finding("x", "info", "all", {}, None, None)
+    with pytest.raises(KeyError, match="its keys are"):
+        finding["text"]
+    assert isinstance(finding["message"], str) and finding["id"] in finding["message"]

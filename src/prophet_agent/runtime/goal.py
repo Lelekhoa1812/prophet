@@ -245,6 +245,20 @@ def _corrections(history: list[dict]) -> int:
     return sum(1 for h in history if h.get("kind") == "evaluation" and h.get("unverified"))
 
 
+def _failure_text(h: dict) -> str | None:
+    """Why a tool step failed, or None when it did not. A tool that raised has ``error``; an analysis cell that crashed
+    returns normally with ``ok`` false and a traceback, which is a failure all the same (live: the same KeyError was sent six
+    times because only raised errors were counted)."""
+    if h.get("error"):
+        return str(h["error"])[:200]
+    res = h.get("result")
+    if isinstance(res, dict) and res.get("ok") is False:
+        tail = str(res.get("stderr_tail") or res.get("error") or "the step reported ok=false")
+        lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+        return (lines[-1] if lines else "the step reported ok=false")[:200]
+    return None
+
+
 def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
     """How many of the latest tool calls or questions were refused in a row, the latest error, and the kind of step.
 
@@ -255,10 +269,11 @@ def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
     for h in reversed(history):
         if h.get("kind") not in ("tool", "ask_user"):
             continue
-        if not h.get("error"):
+        why = _failure_text(h)
+        if why is None:
             break
         streak += 1
-        last = last or str(h["error"])[:200]
+        last = last or why
         kind = kind or str(h["kind"])
     return streak, last, kind
 
@@ -272,6 +287,10 @@ def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
     if streak >= 2 and kind == "ask_user":
         note += (f" The last {streak} questions were refused ({err}). Do not send that question again. Fix its shape, or "
                  "decide without asking and say what you assumed.")
+    elif streak >= 3:
+        note += (f" The last {streak} calls failed in a row ({err}). Stop writing the large step again. Run one small cell "
+                 "that only prints the structure that failed (print(type(x)); print(list(x)[:20]) or x.keys()), read it, "
+                 "then fix that one line; keep the part that worked in a separate cell so it is not re-run.")
     elif streak >= 2:
         note += (f" The last {streak} calls failed ({err}). Do not repeat them: change the arguments or the approach, "
                  "or ask the person.")

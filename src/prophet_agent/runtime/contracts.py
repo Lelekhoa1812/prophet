@@ -286,6 +286,28 @@ def ledger_stages(history, run_root) -> int | None:
     return best
 
 
+def scan_ran(history) -> bool:
+    """True when an analysis step saved the dataset scan (``prophet_scan.write_scan`` writes ``out/scan.json``). A step that
+    saved it and failed later in the cell still saved it: the listed output is the evidence."""
+    for h in history:
+        res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
+        if isinstance(res, dict) and "out/scan.json" in [str(o).split(" (")[0] for o in (res.get("outputs") or [])]:
+            return True
+    return False
+
+
+def check_scan(history, run_root) -> dict | None:
+    """The forecast's data was scanned: duplicates, grid, gaps, scale, censoring, breaks and the rest ran as one battery and
+    its findings were saved. None when ``run_root`` is unknown, as for the ledger."""
+    if run_root is None:
+        return None
+    ok = scan_ran(history)
+    return _check("data_scanned", ok,
+                  "the dataset scan was run and saved" if ok else
+                  "the dataset scan was never saved; run `import prophet_scan as sc; r = sc.scan(df, time_col, value_col); "
+                  "sc.write_scan(r)` in a sandbox step, read every blocker and major finding, and record a ledger decision for each")
+
+
 def check_ledger(history, run_root) -> dict | None:
     """The analyst's ledger: a sandbox step saved ``out/ledger.json`` (``ps.Ledger.save``) with a finding and a decision for at
     least ``MIN_LEDGER_STAGES`` distinct stages. A forecast whose data was never broken down and decided on leaves no such
@@ -314,6 +336,9 @@ def progress(history, *, run_root=None, wants_files: bool = False) -> list[dict]
     backtested = any(isinstance(_ok_result(h, "backtest_series"), dict) for h in obs)
     stages = ledger_stages(obs, run_root)
     items: list[dict] = [{"item": "inspect the data (sandbox_python or inspect_data)", "status": "done" if inspected else "todo"}]
+    if run_root is not None:
+        items.append({"item": "scan the data and save it (prophet_scan: sc.scan(...) then sc.write_scan(r))",
+                      "status": "done" if scan_ran(obs) else "todo"})
     if stages is not None:
         items.append({"item": f"analysis ledger: at least {MIN_LEDGER_STAGES} stages with a finding and a decision "
                               "(time index, coverage, zeros and censoring, outliers and level shifts, seasonality)",
@@ -408,6 +433,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
                                          horizon=horizon, history=hist_vals if _numbers(hist_vals) is not None else None))
 
     if forecasts:
+        scan = check_scan(obs, run_root)
+        if scan is not None:
+            checks.append(scan)
         ledger = check_ledger(obs, run_root)
         if ledger is not None:
             checks.append(ledger)

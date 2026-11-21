@@ -149,16 +149,26 @@ def _jsonable(obj: Any) -> Any:
     return str(obj)
 
 
+class Finding(dict):
+    """A finding is a plain dict whose missing-key error names the keys that exist: a model that guesses a key (``message``,
+    ``text``) reads the fix in the traceback instead of repeating the call."""
+
+    def __missing__(self, key: Any) -> Any:
+        raise KeyError(f"a finding has no key {key!r}; its keys are {sorted(self)} (use 'message' for a one-line summary)")
+
+
 def _finding(fid: str, severity: str, scope: Any, evidence: Any, decision: str | None, next_step: str | None) -> dict:
     """One typed finding. ``scope`` is an entity name or "all"."""
-    return {
+    ev = _jsonable(evidence)
+    return Finding({
         "id": fid,
         "severity": severity,
         "scope": str(scope),
-        "evidence": _jsonable(evidence),
+        "message": f"{fid} ({scope}): {decision}" if decision else f"{fid} ({scope})",
+        "evidence": ev,
         "decision_needed": decision,
         "next_step": next_step,
-    }
+    })
 
 
 def _result(findings: list[dict], summary: dict) -> dict:
@@ -494,10 +504,10 @@ class _Battery:
             present = np.zeros(grid["n"], dtype=bool)
             present[grid["pos"][on]] = True
             absent = np.flatnonzero(~present)
-            days = np.array([grid["label"](k).dayofweek for k in absent])
+            days = np.array([grid["label"](k).day_of_week for k in absent])
             # A weekday-only calendar is one where (nearly) every Saturday and Sunday in range has no record. Judged on the
             # weekend days themselves, so a long outage on weekdays does not hide it.
-            all_days = np.array([grid["label"](k).dayofweek for k in range(grid["n"])])
+            all_days = np.array([grid["label"](k).day_of_week for k in range(grid["n"])])
             weekend_total = int((all_days >= 5).sum())
             weekend = float((days >= 5).sum() / weekend_total) if weekend_total else 0.0
             if weekend >= _WEEKEND_GAP_SHARE:

@@ -39,3 +39,10 @@ def test_a_number_inside_a_compact_json_list_is_a_figure_of_its_own():
     assert unverified("The last forecast week is 375", hist, "forecast") == []
     assert unverified("The total is 1,205", [{"kind": "tool", "result": {"total": 1205}}], "g") == []
     assert unverified("The total is 1,204", [{"kind": "tool", "result": {"total": 1205}}], "g") == ["1,204"]
+
+
+def test_a_percentage_written_with_a_space_matches_a_printed_fraction():
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "tool": "backtest_series", "result": {"coverage": 0.82}}]
+    assert unverified("The interval held in 82 % of windows and 82% of folds.", history, "") == []
+    assert unverified("The interval held in 71 % of windows.", history, "") == ["71 %"]

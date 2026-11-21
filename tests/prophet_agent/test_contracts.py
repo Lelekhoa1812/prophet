@@ -52,7 +52,7 @@ def _tool(name, result=None, args=None, error=None):
 
 
 def _inspect():
-    return _tool("sandbox_python", {"ok": True, "stdout": "rows 12", "run_id": "insp1", "outputs": ["out/ledger.json (400 bytes)"]},
+    return _tool("sandbox_python", {"ok": True, "stdout": "rows 12", "run_id": "insp1", "outputs": ["out/ledger.json (400 bytes)", "out/scan.json (900 bytes)"]},
                  {"code": "print(1)"})
 
 
