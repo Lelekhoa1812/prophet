@@ -65,7 +65,7 @@ class Brain(Protocol):
 
 @dataclass
 class GoalConfig:
-    max_iterations: int = 14
+    max_iterations: int = 20
     stall_window: int = 3
     tool_budget: int | None = None     # tool calls the runtime allows; the planner is told how many are left
 
@@ -273,6 +273,12 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                 return {"status": "partial", "iterations": i + 1, "answer": written if written is not None else verdict["answer"],
                         "reason": verdict["reason"], "evidence": history}
             if final:
+                # No draft from the evaluator: the writer still turns the evidence into what is established and what is
+                # missing, so a spent budget does not end with nothing to show. It is labelled partial.
+                written = _compose(ctx, brain, f"compose:{i}", goal, history, context, verdict.get("reason", ""))
+                if written is not None and written.strip():
+                    return {"status": "partial", "iterations": i + 1, "answer": written, "reason": verdict["reason"],
+                            "evidence": history}
                 return {"status": "iteration_budget", "iterations": i + 1, "evidence": history}
             history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]})
         return {"status": "iteration_budget", "iterations": cfg.max_iterations, "evidence": history}

@@ -481,3 +481,18 @@ def test_grounding_reads_a_counting_first_column_as_row_labels_only():
     assert figures(real) == ["5", "9", "12"]
     # too short to be a numbering: still checked
     assert figures("| 1 | 10 |\n| 2 | 20 |") == ["1", "10", "2", "20"]
+
+
+class FixedWriterBrain(ScriptedBrain):
+    def write(self, messages):
+        self.calls["write"] = self.calls.get("write", 0) + 1
+        return "Established: 7 units. Missing: the forecast."
+
+
+def test_a_spent_budget_with_no_draft_still_writes_what_is_established(store):
+    brain = FixedWriterBrain(plans=[call("a")], evals=[{"verdict": "not_met", "reason": "no forecast yet"}])
+    program = goal_program("g", {"a": _tool("a", lambda args, key: {"n": 7})}, brain, GoalConfig(max_iterations=1))
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert out["result"]["answer"].startswith("Established: 7 units")
+    assert out["result"]["reason"] == "no forecast yet"
