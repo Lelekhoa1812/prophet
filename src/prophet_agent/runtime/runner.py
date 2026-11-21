@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from prophet_agent.nim.errors import redact
 
-from .store import LeaseHeld, OutcomeUnknown, Store, idem_key
+from .store import LeaseHeld, LeaseLost, OutcomeUnknown, Store, idem_key
 
 
 class Paused(Exception):
@@ -97,6 +97,10 @@ class Ctx:
             return rec.result
         if rec is not None and rec.status == "started" and not tool.idempotent:
             raise OutcomeUnknown(f"{tool.name} started in an earlier run and its outcome was not recorded")
+        if rec is not None and rec.status == "failed" and not tool.idempotent:
+            # The tool already ran and failed; it may have changed something before failing. Not re-run on resume.
+            raise OutcomeUnknown(f"{tool.name} failed in an earlier run and is not idempotent, so it is not retried: "
+                                 f"{rec.error or 'no detail'}")
         self._guard_budget()
         self._guard_time()
         self.store.tool_start(self.mission_id, self.step_idx, tool.name, args, key)
@@ -159,6 +163,9 @@ class Runtime:
             self.store.set_status(mission_id, "cancelled")
             self.store.release_lease(mission_id, self.owner)
             return {"status": "cancelled"}
+        except LeaseLost:
+            # Another runtime took the mission over. This one stops and writes nothing more: the new owner decides.
+            return {"status": "lease_lost"}
         except OutcomeUnknown as exc:
             self.store.set_status(mission_id, "outcome_unknown")
             self.store.append_event(mission_id, "mission.outcome_unknown", {"reason": redact(str(exc))})

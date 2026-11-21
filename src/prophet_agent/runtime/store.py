@@ -149,6 +149,10 @@ class LeaseHeld(RuntimeError):
     """Another runtime holds the mission lease and it has not expired."""
 
 
+class LeaseLost(RuntimeError):
+    """This runtime's lease on a mission expired and was taken over. It must stop without writing further results."""
+
+
 class NotebookBusy(RuntimeError):
     """A turn was started in a notebook that already has an active turn."""
 
@@ -207,7 +211,17 @@ class Store:
 
             def __exit__(self, exc_type, exc, tb):
                 try:
-                    store.conn.execute("ROLLBACK" if exc_type else "COMMIT")
+                    if exc_type:
+                        store.conn.execute("ROLLBACK")
+                    else:
+                        try:
+                            store.conn.execute("COMMIT")
+                        except BaseException:
+                            # A failed COMMIT (disk full, I/O error, busy) leaves the transaction open; roll it back so
+                            # the shared connection is not wedged for every later write.
+                            if store.conn.in_transaction:
+                                store.conn.execute("ROLLBACK")
+                            raise
                 finally:
                     store.lock.release()
                 return False
@@ -283,9 +297,30 @@ class Store:
                 raise LeaseHeld(f"mission {mission_id} is leased by another runtime")
 
     def renew_lease(self, mission_id: str, owner: str, ttl_s: float) -> None:
+        """Extend the lease. Raises LeaseLost when this runtime no longer holds it (it expired and another runtime
+        took the mission), so the old runtime stops instead of running on beside the new one."""
         with self._tx() as c:
-            c.execute("UPDATE missions SET lease_until=? WHERE id=? AND lease_owner=?",
-                      (time.time() + ttl_s, mission_id, owner))
+            cur = c.execute("UPDATE missions SET lease_until=? WHERE id=? AND lease_owner=?",
+                            (time.time() + ttl_s, mission_id, owner))
+            if cur.rowcount != 1:
+                raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
+
+    def interrupt_orphans(self) -> list[str]:
+        """At startup: a mission left as created or running by a process that died, whose lease has lapsed, is
+        marked interrupted. That frees its notebook (active turns block new ones) and lets it be started again;
+        a non-idempotent call left started is still stopped as outcome_unknown when the mission resumes."""
+        now = time.time()
+        with self._tx() as c:
+            ids = [r["id"] for r in c.execute(
+                "SELECT id FROM missions WHERE status IN ('created','running') "
+                "AND (lease_owner IS NULL OR lease_until<?)", (now,)).fetchall()]
+            for mid in ids:
+                c.execute("UPDATE missions SET status='interrupted', lease_owner=NULL, lease_until=0, updated=? "
+                          "WHERE id=?", (now, mid))
+        for mid in ids:
+            self.append_event(mid, "mission.status", {"status": "interrupted",
+                                                      "reason": "the runtime stopped before this mission finished"})
+        return ids
 
     def release_lease(self, mission_id: str, owner: str) -> None:
         with self._tx() as c:

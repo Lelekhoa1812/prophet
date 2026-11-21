@@ -92,3 +92,13 @@ def test_real_timesfm_forecast_through_the_durable_runtime(tmp_path):
         assert [r["status"] for r in tool_rows] == ["done"]
     finally:
         store.close()
+
+
+def test_every_forecast_result_carries_the_licence_terms(monkeypatch):
+    from prophet_agent.tools.timesfm_tool import LICENCE_NOTE, _one
+    import numpy as np
+    class E:
+        checkpoint = "google/timesfm-3.0-pytorch"
+        global_context = 512
+    out = _one(np.arange(10.0), np.zeros(3), np.zeros((3, 9)), 3, E())
+    assert out["config"]["licence"] == LICENCE_NOTE and "Research use only" in LICENCE_NOTE

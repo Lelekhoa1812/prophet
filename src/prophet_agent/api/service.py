@@ -11,6 +11,7 @@ come from the notebook at the moment it starts, and it may keep tables for later
 from __future__ import annotations
 
 import threading
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +41,8 @@ class MissionService:
         self.goal_cfg = goal_cfg or GoalConfig()
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+        # Missions a previous process left running would otherwise block their notebook forever.
+        self.interrupted_at_start = self.store.interrupt_orphans()
 
     # -- one-off missions ----------------------------------------------------------------------------------------
 
@@ -96,7 +99,8 @@ class MissionService:
             cfg = replace(self.goal_cfg, tool_budget=mission["budget"].get("max_tool_calls"))
             program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), cfg,
                                    self.files_context(mission))
-            runtime = Runtime(self.store, owner=f"api-{mission_id[:8]}")
+            # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
+            runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
             t = threading.Thread(target=self._run, args=(runtime, mission_id, program), daemon=True)
             self._threads[mission_id] = t
             t.start()

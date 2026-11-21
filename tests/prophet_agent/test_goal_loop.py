@@ -415,8 +415,26 @@ def test_grounding_treats_month_and_year_labels_as_labels():
 
 def test_grounding_does_not_ask_the_evidence_for_a_bare_year():
     from prophet_agent.runtime.grounding import unverified
-    assert unverified("Rose each year, 2023 to 2026, to 1,389 units", [{"n": 1389}], "") == []
-    assert unverified("Sold 1,390 units in 2026", [{"n": 1389}], "") == ["1,390"]
+    evidence = [{"kind": "tool", "result": {"n": 1389}}]
+    assert unverified("Rose each year, 2023 to 2026, to 1,389 units", evidence, "") == []
+    assert unverified("Sold 1,390 units in 2026", evidence, "") == ["1,390"]
+
+
+def test_the_models_own_arguments_and_rationale_are_not_evidence():
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "tool": "a", "args": {"horizon": 1390}, "result": {"n": 1}, "rationale": "use 1390"},
+               {"kind": "evaluation", "verdict": "not_met", "missing": "a 1390 figure is needed"}]
+    assert unverified("Sold 1,390 units", history, "") == ["1,390"], "a figure the model only typed in is not evidence"
+    assert unverified("Sold 1 unit", history, "") == []
+
+
+def test_a_partial_stalled_answer_is_grounded_and_its_unsupported_figures_listed(store):
+    brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
+                         writes=["**North 99 so far.**"])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert out["result"]["unverified"] == ["99"], "a partial answer is grounded too, not only a met one"
 
 
 def test_a_met_verdict_without_an_answer_is_written_from_its_reason(store):

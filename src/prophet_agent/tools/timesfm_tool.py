@@ -3,10 +3,10 @@
 Motivation vs Logic
 Motivation: a forecast is only useful if the reader can see which model, context and horizon produced it.
 Logic: the tool is pure (same input, same output), so it is marked idempotent and a crashed call can be re-run safely.
-Every result carries the checkpoint, the context actually used, the horizon and the quantile levels. The series comes
-from ``values`` or by reference from an analysis run (see series_io). The licence note lives in NOTICE.md and the
-README, not in results, so it never reaches the console or an answer. The model is loaded lazily on the first call, so
-importing the runtime never loads MLX.
+Every result carries the checkpoint, the context actually used, the horizon, the quantile levels and the licence
+terms of the weights, so the planner, the report and the written answer all see that the forecast is research use
+only. The series comes from ``values`` or by reference from an analysis run (see series_io). The model is loaded
+lazily on the first call, so importing the runtime never loads MLX.
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
             "context_used": min(len(series), engine.global_context),
             "horizon": horizon,
             "quantile_levels": QUANTILE_LEVELS,
+            "licence": LICENCE_NOTE,
             "history_points": len(series),
         },
     }

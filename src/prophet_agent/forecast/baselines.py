@@ -9,11 +9,17 @@ import numpy as np
 Z = np.array([-1.2816, -0.8416, -0.5244, -0.2533, 0.0, 0.2533, 0.5244, 0.8416, 1.2816])
 
 
-def _band(point: np.ndarray, resid_sd: float) -> np.ndarray:
-    """point (h,) -> quantiles (h, 9), widening with sqrt of lead, floored at zero."""
+def _nonneg(series: np.ndarray) -> bool:
+    """A history that never goes below zero (stock, sales, counts) keeps its bands above zero. One that does (a
+    balance, a temperature, a margin) is left unclipped: flooring it would bend a legitimate band."""
+    return bool(len(series) == 0 or (series >= 0).all())
+
+
+def _band(point: np.ndarray, resid_sd: float, floor: bool = True) -> np.ndarray:
+    """point (h,) -> quantiles (h, 9), widening with sqrt of lead; floored at zero only when ``floor``."""
     h = np.arange(1, len(point) + 1)[:, None]
     q = point[:, None] + Z[None, :] * resid_sd * np.sqrt(h)
-    return np.clip(q, 0, None)
+    return np.clip(q, 0, None) if floor else q
 
 
 def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray, np.ndarray]:
@@ -27,7 +33,7 @@ def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray,
     else:
         sd = float(np.std(s)) if len(s) > 1 else 0.0
     p = np.full(h, level)
-    return p, _band(p, sd)
+    return p, _band(p, sd, floor=_nonneg(s))
 
 
 def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4) -> tuple[np.ndarray, np.ndarray]:
@@ -43,7 +49,7 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4) -> tuple
         p[i] = s[idx].mean() if len(idx) else s[-season:].mean()
     resid = s[season:] - s[:-season]
     sd = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
-    return p, _band(p, sd)
+    return p, _band(p, sd, floor=_nonneg(s))
 
 
 def seasonal_year(series: np.ndarray, h: int, season: int = 52) -> tuple[np.ndarray, np.ndarray]:
@@ -57,4 +63,4 @@ def seasonal_year(series: np.ndarray, h: int, season: int = 52) -> tuple[np.ndar
     ratio = float(np.clip(ratio, 0.5, 2.0))
     p = np.array([s[len(s) + i - season] for i in range(h)]) * ratio
     sd = float(np.std(s[-26:] - s[-26 - season:-season] * ratio)) if len(s) > season + 26 else float(np.std(s))
-    return p, _band(p, sd)
+    return p, _band(p, sd, floor=_nonneg(s))

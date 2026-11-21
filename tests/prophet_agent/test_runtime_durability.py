@@ -229,3 +229,91 @@ def test_start_never_downgrades_a_finished_call(store):
     store.tool_start(mid, 0, "t", {}, key)
     rec = store.tool_get(key)
     assert rec.status == "done" and rec.result == {"ok": 1}
+
+
+def test_failed_non_idempotent_tool_is_terminal_and_not_rerun_on_resume(store):
+    mid = _mission(store)
+    runs = {"n": 0}
+
+    def flaky(args, key):
+        runs["n"] += 1
+        raise ConnectionError("timeout after the write may have landed")
+
+    tool = Tool("charge", flaky, idempotent=False)
+    program = lambda ctx: ctx.step("x", lambda c: c.call(tool, {"qty": 1}))  # noqa: E731
+    first = Runtime(store, owner="r1").run(mid, program)
+    assert first["status"] == "failed"
+    second = Runtime(store, owner="r2").run(mid, program)
+    assert second["status"] == "outcome_unknown", "a failed side-effecting call is not retried on resume"
+    assert runs["n"] == 1
+
+
+def test_failed_idempotent_tool_is_retried_on_resume(store):
+    mid = _mission(store)
+    runs = {"n": 0}
+
+    def flaky(args, key):
+        runs["n"] += 1
+        if runs["n"] == 1:
+            raise ConnectionError("transient")
+        return {"ok": True}
+
+    tool = Tool("read", flaky, idempotent=True)
+    program = lambda ctx: ctx.step("x", lambda c: c.call(tool, {}))  # noqa: E731
+    assert Runtime(store, owner="r1").run(mid, program)["status"] == "failed"
+    assert Runtime(store, owner="r2").run(mid, program)["status"] == "completed"
+    assert runs["n"] == 2
+
+
+def test_a_runtime_that_lost_its_lease_stops_and_writes_nothing(store):
+    mid = _mission(store)
+    seen = {}
+
+    def program(ctx: Ctx):
+        ctx.step("a", lambda c: 1)
+        # another runtime takes the mission over while this one is still working
+        store.conn.execute("UPDATE missions SET lease_owner='intruder', lease_until=? WHERE id=?",
+                           (__import__("time").time() + 3600, mid))
+        seen["status_before"] = store.mission(mid)["status"]
+        return ctx.step("b", lambda c: 2)                   # the guard renews the lease and finds it lost
+
+    result = Runtime(store, owner="old").run(mid, program)
+    assert result == {"status": "lease_lost"}
+    assert store.mission(mid)["status"] == seen["status_before"] == "running", "the lost runtime wrote no status"
+
+
+def test_orphaned_running_mission_is_interrupted_at_startup_and_can_resume(tmp_path):
+    s = Store(tmp_path / "p.sqlite")
+    mid = s.create_mission("forecast", {})
+    s.acquire_lease(mid, "dead-process", ttl_s=-1)       # the process died; its lease has lapsed
+    s.set_status(mid, "running")
+    waiting = s.create_mission("needs an answer", {})
+    s.set_status(waiting, "waiting_user")                # waiting for a person: left alone
+    assert s.interrupt_orphans() == [mid]
+    assert s.mission(mid)["status"] == "interrupted" and s.mission(waiting)["status"] == "waiting_user"
+    s.close()
+    s = Store(tmp_path / "p.sqlite")
+    done = Runtime(s, owner="fresh").run(mid, lambda ctx: ctx.step("x", lambda c: 1))
+    assert done["status"] == "completed"
+    s.close()
+
+
+def test_a_live_lease_is_not_interrupted_at_startup(tmp_path):
+    s = Store(tmp_path / "p.sqlite")
+    mid = s.create_mission("forecast", {})
+    s.acquire_lease(mid, "other-live-runtime", ttl_s=3600)
+    s.set_status(mid, "running")
+    assert s.interrupt_orphans() == []
+    s.close()
+
+
+def test_a_failed_transaction_rolls_back_and_the_connection_keeps_working(store):
+    mid = _mission(store)
+    with pytest.raises(RuntimeError):
+        with store._tx() as c:
+            c.execute("UPDATE missions SET goal='half-written' WHERE id=?", (mid,))
+            raise RuntimeError("boom mid-write")
+    assert not store.conn.in_transaction
+    assert store.mission(mid)["goal"] == "forecast demand", "the half-written change was rolled back"
+    store.set_status(mid, "created")                       # later writes still work
+    assert store.mission(mid)["status"] == "created"

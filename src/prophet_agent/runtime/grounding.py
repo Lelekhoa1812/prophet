@@ -65,9 +65,23 @@ def _near(value: float, target: float, decimals: int) -> bool:
     return abs(value - target) <= 0.5 * 10 ** -decimals + 1e-12
 
 
+def evidence_text(history: list, goal: str) -> str:
+    """What a figure may be checked against: what the tools returned, what the person answered, and the goal they
+    wrote. Not the model's own words. Its tool arguments, rationale, questions and draft reasons are excluded, because a
+    model that checks its figures against its own output would verify any number it made up."""
+    parts = [goal or ""]
+    for h in history:
+        kind = h.get("kind")
+        if kind == "tool" and "result" in h:
+            parts.append(canonical(h["result"]))
+        elif kind in ("ask_user", "evaluator_question") and "answers" in h:
+            parts.append(canonical(h["answers"]))
+    return "\n".join(parts)
+
+
 def unverified(answer: str, history: list, goal: str) -> list[str]:
     """Figures in the answer that no number in the evidence or the goal supports. Empty means grounded."""
-    pool = [_parse(t)[0] for t in figures(canonical(history) + "\n" + goal)]
+    pool = [_parse(t)[0] for t in figures(evidence_text(history, goal))]
     missing: list[str] = []
     for token in figures(answer):
         if _YEAR.fullmatch(token):

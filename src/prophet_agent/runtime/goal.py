@@ -170,11 +170,10 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                  context: str = "") -> Callable[[Ctx], dict]:
     cfg = cfg or GoalConfig()
 
-    def program(ctx: Ctx) -> dict:
+    def loop(ctx: Ctx, history: list[dict]) -> dict:
         # Which instructions this mission ran under, recorded once so a resumed run reads it back unchanged.
         ctx.step("contracts", lambda c: {n: {"version": prompts.current(n).version, "sha256": prompts.current(n).sha256}
                                          for n in prompts.CURRENT})
-        history: list[dict] = []
         for i in range(cfg.max_iterations):
             out_of_calls = cfg.tool_budget is not None and _calls_used(history) >= cfg.tool_budget
             if out_of_calls:
@@ -278,7 +277,29 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
             history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]})
         return {"status": "iteration_budget", "iterations": cfg.max_iterations, "evidence": history}
 
+    def program(ctx: Ctx) -> dict:
+        history: list[dict] = []
+        return _ground_result(loop(ctx, history), history, goal)
+
     return program
+
+
+def _ground_result(result: dict, history: list[dict], goal: str) -> dict:
+    """Every exit path is checked, not only the "met" one: a stalled, budget-capped or impossible answer carries
+    figures too. Figures that the evidence does not support are listed on the result. A "met" result that fails the
+    check is downgraded to partial, so it is never presented as fully grounded."""
+    bad: list[str] = []
+    for text in (result.get("answer") or "", result.get("reason") or ""):
+        for token in unverified(text, history, goal):
+            if token not in bad:
+                bad.append(token)
+    if not bad:
+        return result
+    out = {**result, "unverified": bad}
+    if out.get("status") == "met":
+        out["status"] = "partial"
+        out["reason"] = "Some figures in this answer could not be matched to the analysis output."
+    return out
 
 
 def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
