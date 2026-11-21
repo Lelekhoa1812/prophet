@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -41,6 +42,20 @@ def _clean(name: str, raw: Any) -> np.ndarray:
         raise ValueError(f"series {name!r} has {bad} missing or non-finite values; fill or drop them in the analysis "
                          "step and save again, so the choice is explicit")
     return arr
+
+
+def source_path(args: dict) -> Path:
+    """The file a ``source`` argument names, after the same checks as resolve_series: a hex run id and a file inside the
+    run's ``out/`` folder. Raises ValueError with the fix when either check fails."""
+    source = args.get("source")
+    if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
+        raise ValueError("source needs run_id (the 32-character id of the analysis run that wrote the file)")
+    rel = str(source.get("file", f"{OUT_DIR}/series.json"))
+    base = (SANDBOX_ROOT / source["run_id"]).resolve()
+    target = (base / rel).resolve()
+    if not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
+        raise ValueError(f"no file {rel!r} in the outputs of run {source['run_id']}")
+    return target
 
 
 def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:

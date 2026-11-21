@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .data_tools import BACKTEST_SPEC, INSPECT_DATA_SPEC, backtest_tool, inspect_data_tool
+from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_drivers_tool, detect_anomalies_tool)
 from .notebook_tools import SAVE_TABLE_SPEC, NotebookBinding, save_table_tool
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .sandbox_tool import SANDBOX_PYTHON_SPEC, sandbox_python_tool
@@ -24,6 +25,8 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         "backtest_series": (backtest_tool(), BACKTEST_SPEC),
         "forecast_report": (forecast_report_tool(), FORECAST_REPORT_SPEC),
         "sandbox_python": (sandbox_python_tool(datasets), SANDBOX_PYTHON_SPEC),
+        "build_drivers": (build_drivers_tool(), BUILD_DRIVERS_SPEC),
+        "detect_anomalies": (detect_anomalies_tool(), DETECT_ANOMALIES_SPEC),
     }
     if datasets:
         specs["inspect_data"] = (inspect_data_tool(datasets), INSPECT_DATA_SPEC)
@@ -38,6 +41,6 @@ def tool_catalogue() -> dict:
     return default_tools({"example.csv": Path("example.csv")}, binding=NotebookBinding(None, "", ""))
 
 
-__all__ = ["BACKTEST_SPEC", "FORECAST_REPORT_SPEC", "INSPECT_DATA_SPEC", "LICENCE_NOTE", "NotebookBinding",
+__all__ = ["BACKTEST_SPEC", "BUILD_DRIVERS_SPEC", "DETECT_ANOMALIES_SPEC", "FORECAST_REPORT_SPEC", "INSPECT_DATA_SPEC", "LICENCE_NOTE", "NotebookBinding",
            "QUANTILE_LEVELS", "SAVE_TABLE_SPEC", "SANDBOX_PYTHON_SPEC", "TIMESFM_TOOL_SPEC", "default_tools",
-           "forecast_report_tool", "sandbox_python_tool", "save_table_tool", "timesfm_tool", "tool_catalogue"]
+           "build_drivers_tool", "detect_anomalies_tool", "forecast_report_tool", "sandbox_python_tool", "save_table_tool", "timesfm_tool", "tool_catalogue"]
