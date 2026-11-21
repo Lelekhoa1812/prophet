@@ -96,10 +96,13 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.openai.com/v1", default_models=("gpt-5", "gpt-5-mini"),
         token_param="max_completion_tokens", send_temperature=False,
     ),
+    # Google AI Studio. Keys are GEMINI_API_KEY (list) or GEMINI_API_KEY_1..9, the names free-router uses. Quotas apply per
+    # Google project, so keys from different projects add capacity. free-router removed the 2.5 models as unavailable on
+    # 3 Nov 2026 (its OPERATIONS.md); the chain holds the 3.x models it lists as ready.
     "gemini": Provider(
-        name="gemini", label="Gemini", key_list_var="GOOGLE_API_KEY", key_prefix="GOOGLE_API_KEY",
+        name="gemini", label="Gemini", key_list_var="GEMINI_API_KEY", key_prefix="GEMINI_API_KEY",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        default_models=("gemini-2.5-pro", "gemini-2.5-flash"),
+        default_models=("gemini-3.5-flash-lite", "gemini-3.1-flash-lite"),
     ),
     "grok": Provider(
         name="grok", label="Grok", key_list_var="XAI_API_KEY", key_prefix=None,
