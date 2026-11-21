@@ -147,8 +147,12 @@ export const api = {
   archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
   unarchiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: false }) }),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
-  createMission: (goal: string, datasetIds: string[] = []) =>
-    req<{ id: string }>("/api/missions", { method: "POST", body: JSON.stringify({ goal, dataset_ids: datasetIds }) }),
+  // The model id is sent only when one is selected, so the server default applies otherwise.
+  createMission: (goal: string, datasetIds: string[] = [], model?: string) =>
+    req<{ id: string }>("/api/missions", {
+      method: "POST",
+      body: JSON.stringify({ goal, dataset_ids: datasetIds, ...(model ? { model } : {}) }),
+    }),
   renameMission: (id: string, title: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   pinMission: (id: string, pinned: boolean) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ pinned }) }),
   deleteMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "DELETE" }),
@@ -171,6 +175,10 @@ export const api = {
   answerNow: (missionId: string) => req<{ id: string; status: string }>(`/api/missions/${missionId}/answer-now`, { method: "POST" }),
 
   settings: () => req<SettingsView>("/api/settings"),
+  // Token usage per model for the composer's meter. Counts are prompt plus completion tokens summed.
+  usage: () => req<UsageView>("/api/usage"),
+  // The models a person may choose from. Read from /api/settings and normalised, so a malformed entry is dropped.
+  modelCatalog: async () => readCatalog(await req<unknown>("/api/settings")),
   saveLimits: (patch: Partial<Record<SettingsSection, Record<string, number>>>) =>
     req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
   // Keys: masked values echoed back keep the stored key. Only newly typed keys are sent in full.
@@ -289,6 +297,58 @@ export type SettingsView = {
   data: { missions: number; notebooks: number; datasets: number; bytes: number };
   about: { name: string; licence: string; clear_phrase: string };
 };
+
+// -- Model choice and token budgets (composer) --------------------------------------------------------------------------
+
+export type ModelWindow = "1d" | "7d" | "30d";
+export type WindowValues<T> = Record<ModelWindow, T>;
+
+export type UsageModel = {
+  id: string;
+  provider: string;
+  label: string;
+  used: WindowValues<number>;
+  // Null means no budget is set for that window.
+  budget: WindowValues<number | null>;
+  // ISO timestamps for when each window next resets.
+  resets: WindowValues<string>;
+};
+
+export type UsageView = { models: UsageModel[] };
+
+export type CatalogModel = { id: string; label: string; enabled: boolean; status: string; checked_at: string | null };
+export type CatalogProvider = { name: string; label: string; enabled: boolean; ready: boolean; models: CatalogModel[] };
+export type ModelCatalog = { providers: CatalogProvider[] };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Only object entries count. A bare string model (the older settings shape) has no enabled flag, so it is never selectable.
+function readCatalog(raw: unknown): ModelCatalog {
+  const providers = isRecord(raw) && isRecord(raw.llm) && Array.isArray(raw.llm.providers) ? raw.llm.providers : [];
+  return {
+    providers: providers.filter(isRecord).map((p) => {
+      const models = Array.isArray(p.models) ? p.models : [];
+      return {
+        name: String(p.name ?? ""),
+        label: String(p.label ?? p.name ?? ""),
+        enabled: p.enabled === true,
+        ready: p.ready === true,
+        models: models
+          .filter(isRecord)
+          .map((m) => ({
+            id: String(m.id ?? ""),
+            label: String(m.label ?? m.id ?? ""),
+            enabled: m.enabled === true,
+            status: String(m.status ?? ""),
+            checked_at: typeof m.checked_at === "string" ? m.checked_at : null,
+          }))
+          .filter((m) => m.id !== ""),
+      };
+    }),
+  };
+}
 
 export function artifactUrl(runId: string, path: string): string {
   return `/api/artifacts/${runId}/${path.replace(/^out\//, "")}`;

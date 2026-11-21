@@ -2,7 +2,9 @@ import { BarChart3, BookOpen, Menu, PanelLeft, PanelLeftClose, Plus, ScanSearch,
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import logo from "./public/logo.png";
 import { Composer, type Attachment } from "./components/Composer";
+import { ModelSwitcher } from "./components/ModelSwitcher";
 import { NotebookView } from "./components/NotebookView";
+import { UsageMeter } from "./components/UsageMeter";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar, type ItemKind } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
@@ -11,6 +13,7 @@ import { api, type ArtifactRun, type MissionRow, type NotebookRow, type ToolInfo
 import { errorMessage } from "./lib/format";
 import { SKILLS } from "./lib/skills";
 import { useMission } from "./lib/useMission";
+import { useModelCatalog, useSelectedModel } from "./lib/useModels";
 import { cn, isWorking } from "./lib/utils";
 
 // One notice slot above the main column. Errors are never swallowed: they land here until dismissed.
@@ -50,6 +53,9 @@ export default function App() {
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const { mission, error: pollError, refresh } = useMission(selectedId);
+  // The model for the next forecast is chosen under the composer and remembered per browser.
+  const catalog = useModelCatalog();
+  const { model, choose: chooseModel } = useSelectedModel(catalog.selectable);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -62,6 +68,7 @@ export default function App() {
   const closeSettings = () => {
     setSettingsOpen(false);
     api.health().then(setHealth).catch(() => undefined);
+    catalog.reload();
   };
 
   useEffect(() => {
@@ -247,7 +254,7 @@ export default function App() {
   const start = async (goal: string, datasetIds: string[] = []) => {
     setSending(true);
     try {
-      const { id } = await api.createMission(goal, datasetIds);
+      const { id } = await api.createMission(goal, datasetIds, model?.id);
       stick.current = true;
       setSelectedNotebookId(null);
       setSelectedId(id);
@@ -518,6 +525,22 @@ export default function App() {
                 working={current !== null && isWorking(current.status)}
                 onStop={() => void stopForecast()}
                 stopping={stopping}
+                footer={
+                  <>
+                    <ModelSwitcher
+                      models={catalog.selectable}
+                      selected={model}
+                      catalogStatus={catalog.status}
+                      onSelect={chooseModel}
+                      onOpenSettings={() => setSettingsOpen(true)}
+                    />
+                    <UsageMeter
+                      modelId={model?.id ?? null}
+                      modelLabel={model?.label ?? null}
+                      onManageBudgets={() => setSettingsOpen(true)}
+                    />
+                  </>
+                }
                 initial={draft}
                 placeholder={selectedId === null ? "Describe a quick forecast" : "Describe another forecast"}
               />
@@ -557,6 +580,7 @@ export default function App() {
           setSelectedNotebookId(null);
           refreshList();
           api.health().then(setHealth).catch(() => undefined);
+          catalog.reload();
         }}
       />
     </div>
