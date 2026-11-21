@@ -418,3 +418,78 @@ def test_freerouter_alias_can_be_pinned_for_the_planner_and_is_not_the_default(t
     both = {**env, "NVIDIA_NIM_API_KEYS": "nvapi-test-0000000000"}
     assert planner_problem(tmp_path, environ=both) is None
     assert settings.planner_choice(environ=both)[0] == "nim"
+
+
+# --- OpenRouter ----------------------------------------------------------------------------------------------------------
+
+OR_KEY_1, OR_KEY_2 = "sk-or-v1-test-111111", "sk-or-v1-test-222222"
+
+
+def test_openrouter_is_three_live_free_models_at_the_verified_endpoint_with_multi_key_pacing():
+    spec = PROVIDERS["openrouter"]
+    assert spec.label == "OpenRouter" and spec.key_list_var == "OPEN_ROUTER_API_KEY" and spec.multi_key
+    assert spec.resolve_base_url() == "https://openrouter.ai/api/v1"
+    # Live-checked 2026-11-21: Dots 3 Note Preview and North Mini Code now return 404 "no longer available", so they are dropped.
+    assert spec.models({}) == ("nvidia/nemotron-3.5-super-vl:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
+                               "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+    assert all(m.endswith(":free") for m in spec.models({}))
+    assert spec.rpm == 20, "free-router's documented per-key limit"
+    assert spec.schema_mode == "prompt", "free-router records JSON Schema as unavailable on these models"
+    assert spec.extra_headers == (("X-Title", "Prophet"),)
+
+
+def test_openrouter_loads_numbered_keys_and_ignores_other_providers(monkeypatch):
+    monkeypatch.delenv("OPEN_ROUTER_API_KEY", raising=False)
+    env = {"OPEN_ROUTER_API_KEY_1": OR_KEY_1, "OPEN_ROUTER_API_KEY_2": OR_KEY_2, "OPENAI_API_KEY": "sk-openai-0000000"}
+    assert load_provider_keys(PROVIDERS["openrouter"], env) == [OR_KEY_1, OR_KEY_2]
+
+
+def test_openrouter_request_sends_title_header_bearer_key_and_prompt_mode_body(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"], seen["auth"], seen["title"] = str(request.url), request.headers.get("authorization"), request.headers.get("x-title")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse_text('{"status": "ok"}'), headers={"content-type": "text/event-stream"})
+
+    schema = {"type": "object", "properties": {"status": {"type": "string"}}, "required": ["status"]}
+    clock, sleep = _clock()
+    client = NimClient([OR_KEY_1], provider=PROVIDERS["openrouter"], transport=httpx.MockTransport(handler), clock=clock, sleep=sleep)
+    model = PROVIDERS["openrouter"].models({})[0]
+    reply = client.complete([model], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=50,
+                            schema=schema, schema_name="status_reply")
+    assert reply.text == '{"status": "ok"}' and reply.model == model
+    assert seen["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert seen["auth"] == f"Bearer {OR_KEY_1}" and seen["title"] == "Prophet"
+    body = seen["body"]
+    assert body["model"] == model and body["stream"] is True and body["max_tokens"] == 50
+    assert "response_format" not in body, "schema is checked locally for OpenRouter, not sent"
+    assert client.per_minute == 20, "pacing follows the provider's rpm when the caller does not set one"
+    assert OR_KEY_1 not in repr(client), "the client never shows key material"
+
+
+def test_openrouter_rotates_past_a_rate_limited_key_to_the_next_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    first_key: list[str] = []
+    used: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization", "")
+        key = auth.removeprefix("Bearer ")
+        if not first_key:
+            first_key.append(key)
+        used.append(key)
+        if key == first_key[0]:
+            return httpx.Response(429, json={"error": {"message": "rate limited"}}, headers={"retry-after": "1"})
+        return httpx.Response(200, content=_sse_text('{"status": "ok"}'), headers={"content-type": "text/event-stream"})
+
+    schema = {"type": "object", "properties": {"status": {"type": "string"}}, "required": ["status"]}
+    clock, sleep = _clock()
+    client = NimClient([OR_KEY_1, OR_KEY_2], provider=PROVIDERS["openrouter"], transport=httpx.MockTransport(handler),
+                       clock=clock, sleep=sleep)
+    model = PROVIDERS["openrouter"].models({})[0]
+    reply = client.complete([model], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=50,
+                            schema=schema, schema_name="status_reply")
+    assert reply.text == '{"status": "ok"}'
+    assert used[0] != used[-1] and used[-1] in (OR_KEY_1, OR_KEY_2), "the second key answered after the first was limited"

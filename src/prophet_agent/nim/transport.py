@@ -315,7 +315,7 @@ class NimClient:
     Cooldowns, pacing windows and in-flight counts live on the client, so every mission must share it (see
     ``shared_client``). A client per mission would give each one its own rate window and overrun the keys."""
 
-    def __init__(self, keys: Sequence[str], *, provider: Provider = _NIM, per_minute: int = PER_MINUTE,
+    def __init__(self, keys: Sequence[str], *, provider: Provider = _NIM, per_minute: int | None = None,
                  transport: httpx.BaseTransport | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
@@ -334,7 +334,8 @@ class NimClient:
         if not base_url:
             raise NotConfigured(f"{provider.label} has no endpoint yet; set {provider.base_url_var} in .env")
         self.chain: tuple[str, ...] = provider.models()
-        self.per_minute = per_minute
+        # Pacing per key: the caller's value, else the provider's documented limit, else the NIM default.
+        self.per_minute = per_minute or provider.rpm or PER_MINUTE
         self.clock = clock
         self.sleep = sleep
         self.rng = rng or random.Random()
@@ -614,7 +615,8 @@ class NimClient:
         started = self.clock()
         try:
             with self.http.stream("POST", "/chat/completions",
-                                  headers={"authorization": f"Bearer {key}", "accept": "text/event-stream"},
+                                  headers={"authorization": f"Bearer {key}", "accept": "text/event-stream",
+                                          **dict(self.provider.extra_headers)},
                                   json={"model": model, "messages": [{"role": "user", "content": "ping"}],
                                         self.provider.token_param: 4 if self.provider.nim_extras else 64,
                                         "stream": True},
@@ -701,7 +703,8 @@ class NimClient:
         body = build_body(model, messages, opts, shape, self.provider)
         try:
             with self.http.stream("POST", "/chat/completions",
-                                  headers={"authorization": f"Bearer {key}", "accept": "text/event-stream"},
+                                  headers={"authorization": f"Bearer {key}", "accept": "text/event-stream",
+                                          **dict(self.provider.extra_headers)},
                                   json=body,
                                   timeout=_timeout(max(0.1, deadline - self.clock()), self.provider.silence_s)) as r:
                 status = r.status_code

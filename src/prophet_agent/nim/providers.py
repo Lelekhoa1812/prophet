@@ -60,6 +60,11 @@ CATALOG: tuple[ModelInfo, ...] = (
     ModelInfo("grok-4.6", "grok", "Grok 4.6"),
     ModelInfo("grok-4.3", "grok", "Grok 4.3"),
     ModelInfo("matilda", "matilda", "Matilda"),
+    # OpenRouter free models: the five that free-router lists as ready with text passed (docs/OPERATIONS.md, 2026-11-21).
+    # The ":free" suffix is part of the id. Free models share one account-wide daily request allowance.
+    ModelInfo("nvidia/nemotron-3.5-super-vl:free", "openrouter", "Nemotron 3.5 Super VL (free)"),
+    ModelInfo("nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter", "Nemotron 3 Ultra 550B (free)"),
+    ModelInfo("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "openrouter", "Nemotron 3 Nano Omni 30B (free, reasoning)"),
     ModelInfo("fr-auto", "freerouter", "FreeRouter auto"),
     ModelInfo("fr-fast", "freerouter", "FreeRouter fast"),
     ModelInfo("fr-quality", "freerouter", "FreeRouter quality"),
@@ -74,7 +79,7 @@ def catalog_ids(provider: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Provider:
-    name: str                              # stable id used in settings and the API: nim, claude, openai, gemini, grok, matilda, freerouter
+    name: str                              # stable id used in settings and the API: nim, claude, openai, gemini, grok, matilda, openrouter, freerouter
     label: str                             # what a person reads in Settings
     key_list_var: str                      # env var holding one key or a comma list
     key_prefix: str | None                 # env prefix for indexed keys: <prefix>_1 .. <prefix>_9 (multi-key providers only)
@@ -88,6 +93,8 @@ class Provider:
     schema_mode: str = "json_schema"       # "prompt": no response_format; the schema goes into the prompt and is checked locally
     silence_s: float | None = None         # longest wait for the first or next bytes before the model is treated as hung and the call moves on
     key_aliases: tuple[str, ...] = ()      # other names read the same way (list and indexed); the primary name is written
+    rpm: int | None = None                 # requests per minute allowed per key; None uses the transport default (30)
+    extra_headers: tuple[tuple[str, str], ...] = ()   # fixed request headers the vendor asks for, e.g. OpenRouter's X-Title
 
     @property
     def multi_key(self) -> bool:
@@ -170,6 +177,18 @@ PROVIDERS: dict[str, Provider] = {
         name="matilda", label="Matilda", key_list_var="MATILDA_API_KEY", key_prefix="MATILDA_API_KEY",
         base_url="https://matilda.maincode.com/api/v1", base_url_var="MATILDA_BASE_URL", default_models=catalog_ids("matilda"),
         send_temperature=False,
+    ),
+    # OpenRouter (openrouter.ai/api/v1, OpenAI chat-completions, Bearer auth). Keys: OPEN_ROUTER_API_KEY_1..9, the names
+    # free-router and .env use. Free models are listed with a ":free" suffix and share one account-wide daily request
+    # allowance, so rotating keys adds per-minute capacity, not daily quota. free-router records JSON Schema as unavailable
+    # on several of these models, so schema is checked locally (prompt mode). X-Title names the app; HTTP-Referer is optional
+    # and is not sent. The rpm of 20 is free-router's documented per-key limit (docs/QUOTA_ROUTING.md).
+    # Sources: free-router src/lib/providers/openai.ts (headers), docs/QUOTA_ROUTING.md (limits), docs/OPERATIONS.md (models).
+    "openrouter": Provider(
+        name="openrouter", label="OpenRouter", key_list_var="OPEN_ROUTER_API_KEY", key_prefix="OPEN_ROUTER_API_KEY",
+        base_url="https://openrouter.ai/api/v1", default_models=catalog_ids("openrouter"),
+        probe_model="nvidia/nemotron-3.5-super-vl:free", schema_mode="prompt", rpm=20,
+        extra_headers=(("X-Title", "Prophet"),),
     ),
     # FreeRouter (free-router-olive.vercel.app): a self-hosted OpenAI-compatible gateway in front of several upstream
     # vendors. One key (sk-fr-...) from FREEROUTE_API_KEY; the endpoint is fixed and FREEROUTE_BASE_URL overrides it.
