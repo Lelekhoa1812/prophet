@@ -58,6 +58,7 @@ export function Composer({
   onStop,
   stopping = false,
   quick,
+  footer,
 }: {
   onSend: (text: string) => Promise<void> | void;
   busy: boolean;
@@ -69,6 +70,8 @@ export function Composer({
   onStop?: () => void;
   stopping?: boolean;
   quick?: ComposerQuick;
+  // Controls shown along the bottom of the box, right-aligned (the model switcher and usage meter).
+  footer?: ReactNode;
 }) {
   const [text, setText] = useState(initial ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -337,6 +340,8 @@ export function Composer({
             </button>
           )}
         </div>
+
+        {footer && <div className="flex min-w-0 items-center justify-end gap-1 px-1 pb-0.5">{footer}</div>}
       </div>
       <div className="flex min-h-5 flex-wrap items-baseline justify-between gap-x-4 px-4 text-caption text-sand-2">
         <p className="min-w-0" role={error ? "alert" : undefined}>
