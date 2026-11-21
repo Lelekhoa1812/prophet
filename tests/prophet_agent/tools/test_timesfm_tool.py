@@ -41,6 +41,24 @@ def test_tool_records_configuration_and_context_used(stub_engine):
     assert "licence" not in out["config"] and "research use" not in str(out).lower()  # licence terms live in NOTICE.md only
 
 
+def test_intermittent_demand_reports_expected_demand_as_the_point(stub_engine):
+    from prophet_agent.forecast.tsb import expected_volume
+    from prophet_agent.tools.timesfm_tool import _run
+    x = [0.0] * 20 + [4.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0]   # sells in 3 of 32 periods
+    out = _run({"values": x, "horizon": 3}, "k")
+    assert out["point"] == [round(float(v), 4) for v in expected_volume(np.array(x), 3)]
+    assert out["median_point"] == [5.0, 5.0, 5.0]       # the stub's median, kept visible
+    assert out["config"]["point_basis"].startswith("expected demand")
+
+
+def test_continuous_demand_keeps_the_median_as_the_point(stub_engine):
+    from prophet_agent.tools.timesfm_tool import _run
+    out = _run({"values": [10.0 + i for i in range(40)], "horizon": 3}, "k")   # sells every period
+    assert out["point"] == [49.0, 49.0, 49.0]
+    assert "median_point" not in out
+    assert out["config"]["point_basis"] == "median"
+
+
 @pytest.mark.parametrize("args", [
     {"values": [], "horizon": 3},
     {"values": [1.0], "horizon": 0},

@@ -15,6 +15,7 @@ import numpy as np
 
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
+from prophet_agent.forecast.tsb import expected_volume
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
@@ -22,12 +23,26 @@ QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 MAX_HORIZON = 512
 ALLOWED_ARGS = {"values", "source", "horizon"} | CONTROL_ARGS
 SHOWN = 30      # points of a forecast shown to the planner before it is thinned
+INTERMITTENT_ADI = 1.32   # Syntetos-Boylan cut-off: an average gap above this between periods with demand is intermittent
+
+
+def is_intermittent(series: Any) -> bool:
+    """True when demand is intermittent: the average gap between periods with demand is above INTERMITTENT_ADI."""
+    s = np.nan_to_num(np.asarray(series, dtype=float))
+    sold = int(np.count_nonzero(s > 0))
+    return sold > 0 and len(s) / sold > INTERMITTENT_ADI
 
 
 def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, engine: Any, control: Control | None = None) -> dict[str, Any]:
     cfg_extra = {"control": control.describe()} if control is not None and not control.is_default else {}
+    median = [round(float(v), 4) for v in point]
+    lumpy = is_intermittent(series)
+    # For intermittent demand the median is zero or near it, so the point is the expected demand (mean under TSB).
+    # The TimesFM median stays visible as median_point.
+    shown = [round(float(v), 4) for v in expected_volume(series, horizon)] if lumpy else median
     return {
-        "point": [round(float(v), 4) for v in point],
+        "point": shown,
+        **({"median_point": median} if lumpy else {}),
         "quantiles": {f"{lvl:.1f}": [round(float(v), 4) for v in q[:, i]] for i, lvl in enumerate(QUANTILE_LEVELS)},
         "config": {
             "checkpoint": engine.checkpoint or CHECKPOINT,
@@ -37,6 +52,7 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
             "horizon": horizon,
             "quantile_levels": QUANTILE_LEVELS,
             "history_points": len(series),
+            "point_basis": "expected demand (mean under TSB)" if lumpy else "median",
             **cfg_extra,
         },
     }
@@ -111,7 +127,7 @@ TIMESFM_TOOL_SPEC = {
     "activity": "Forecasting the series",
     "description": "Forecast one or more series with TimesFM 3 (a pretrained time-series model, used as it is). Returns "
                    "point and 10 to 90 percent quantile forecasts and the configuration used. Forecasts are floored at zero "
-                   "only when the history never went below zero. Pass the series as given; clean or reshape it in an "
+                   "only when the history never went below zero. For intermittent demand (sales in fewer than about three in four periods) the point is the expected demand (the mean under TSB) and the TimesFM median is returned as median_point. Pass the series as given; clean or reshape it in an "
                    "analysis step first when it needs that. The optional control arguments change how the model reads "
                    "the series (history window, points to ignore, known drivers such as promotions or holidays). They "
                    "are choices, not improvements: run backtest_series with the same arguments and keep one only if it "
