@@ -250,6 +250,13 @@ class MissionService:
         used = int(budget.get("auto_continued", 0))
         if used >= int(budget.get("auto_continue", AUTO_CONTINUE_PARTS)):
             return None
+        done = self._checklist_done(mission_id)
+        if used >= 1 and done <= int(budget.get("auto_progress", -1)):
+            # The last automatic part added nothing to the checklist: more of the same would only repeat failures.
+            self.store.append_event(mission_id, "mission.auto_continue_stopped",
+                                    {"reason": "no checklist progress in the last automatic part", "checklist_done": done})
+            return None
+        budget["auto_progress"] = done
         budget["auto_continued"] = used + 1
         budget["segment"] = int(budget.get("segment", 0)) + 1
         budget["max_tool_calls"] = self.store.count_tool_calls(mission_id) + int(self.default_budget()["max_tool_calls"])
@@ -258,6 +265,14 @@ class MissionService:
         self.store.append_event(mission_id, "mission.auto_continue", {"part": budget["segment"] + 1,
                                                                       "automatic_parts_used": used + 1})
         return self._build_program(self.store.mission(mission_id))
+
+    def _checklist_done(self, mission_id: str) -> int:
+        """Checklist items done at the latest progress event (0 when the mission has none)."""
+        done = 0
+        for ev in self.store.events(mission_id):
+            if ev["kind"] == "mission.progress":
+                done = int(ev["payload"].get("checklist_done", done))
+        return done
 
     def cancel(self, mission_id: str) -> str:
         """Ask a mission to stop. A running mission stops at its next step; one with no live runner (waiting for an

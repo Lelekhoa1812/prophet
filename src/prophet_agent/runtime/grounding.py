@@ -168,12 +168,14 @@ def evidence_text(history: list, goal: str) -> str:
 
 def unverified(answer: str, history: list, goal: str) -> list[str]:
     """Figures in the answer that no number in the evidence or the goal supports. Empty means grounded."""
-    pool = [_parse(t)[0] for t in figures(evidence_text(history, goal))]
+    # Magnitudes: "a loss of 1,683.5" or "-\u00a31,683.5" is the printed -1683.5, whose sign the prose carries in its words.
+    pool = [abs(_parse(t)[0]) for t in figures(evidence_text(history, goal))]
     missing: list[str] = []
     for token, approximate in _figures_in_context(answer):
         if _YEAR.fullmatch(token):
             continue                  # a bare year such as 2026 names a period; a forecast period is not in the evidence
         value, decimals, pct = _parse(token)
+        value = abs(value)
         candidates = [value / 100.0] if pct else []
         if any(_near(v, value, decimals) for v in pool) or any(_near(v, c, decimals + 2) for v in pool for c in candidates):
             continue

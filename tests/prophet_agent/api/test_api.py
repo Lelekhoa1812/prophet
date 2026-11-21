@@ -292,6 +292,8 @@ def test_automatic_parts_are_capped_and_the_person_gets_the_checkpoint_after_the
     from prophet_agent.runtime.goal import GoalConfig
     brain = ScriptedBrain([{"action": "finish", "rationale": "a"}] * 3, [{"verdict": "not_met", "reason": "need more"}] * 3)
     service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
+    counter = iter(range(1, 100))
+    service._checklist_done = lambda mission_id: next(counter)      # the checklist advances in every part
     mid = service.store.create_mission("forecast", {"auto_continue": 2})
     service.start(mid)
     service.wait(mid, timeout=10)
@@ -299,6 +301,21 @@ def test_automatic_parts_are_capped_and_the_person_gets_the_checkpoint_after_the
     assert snap["status"] == "checkpoint", "after the automatic parts the person decides: Continue or Answer now"
     assert sum(1 for e in snap["events"] if e["kind"] == "mission.auto_continue") == 2
     assert snap["budget"]["auto_continued"] == 2
+
+
+def test_automatic_parts_stop_when_the_checklist_did_not_advance(tmp_path):
+    """More automatic parts of a mission that is not moving would repeat the same failures: the person decides instead."""
+    from prophet_agent.runtime.goal import GoalConfig
+    brain = ScriptedBrain([{"action": "finish", "rationale": "a"}] * 3, [{"verdict": "not_met", "reason": "need more"}] * 3)
+    service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
+    service._checklist_done = lambda mission_id: 2                  # never advances
+    mid = service.store.create_mission("forecast", {"auto_continue": 2})
+    service.start(mid)
+    service.wait(mid, timeout=10)
+    snap = service.snapshot(mid)
+    assert snap["status"] == "checkpoint"
+    assert sum(1 for e in snap["events"] if e["kind"] == "mission.auto_continue") == 1
+    assert any(e["kind"] == "mission.auto_continue_stopped" for e in snap["events"])
 
 
 def test_settings_show_masked_keys_and_bounded_limits_and_refuse_bad_input(tmp_path):

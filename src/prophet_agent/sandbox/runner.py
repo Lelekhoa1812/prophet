@@ -187,8 +187,8 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         shutil.copy2(module, wd / "lib" / module.name)
     for name, src in (inputs or {}).items():
         parts = name.split("/")
-        if name.startswith(".") or len(parts) > 2 or (len(parts) == 2 and parts[0] != "derived") or not parts[-1]:
-            raise ValueError("input names are plain file names, or derived/<name> for tables created earlier")
+        if name.startswith(".") or len(parts) > 2 or (len(parts) == 2 and parts[0] not in ("derived", "carried")) or not parts[-1]:
+            raise ValueError("input names are plain file names, or derived/<name> or carried/<name> for earlier results")
         (wd / IN_DIR / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, wd / IN_DIR / name)
     for name, data in (files or {}).items():

@@ -46,3 +46,11 @@ def test_a_percentage_written_with_a_space_matches_a_printed_fraction():
     history = [{"kind": "tool", "tool": "backtest_series", "result": {"coverage": 0.82}}]
     assert unverified("The interval held in 82 % of windows and 82% of folds.", history, "") == []
     assert unverified("The interval held in 71 % of windows.", history, "") == ["71 %"]
+
+
+def test_a_loss_written_with_a_currency_sign_matches_the_printed_negative_number():
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "result": {"stdout": "net change -1683.5"}}]
+    assert unverified("The run lost £1,683.5 in total.", history, "") == []
+    assert unverified("The run lost −£1,683.5 in total.", history, "") == []
+    assert unverified("The run lost £1,700.5 in total.", history, "") == ["1,700.5"]

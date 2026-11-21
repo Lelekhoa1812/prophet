@@ -157,6 +157,26 @@ class Finding(dict):
         raise KeyError(f"a finding has no key {key!r}; its keys are {sorted(self)} (use 'message' for a one-line summary)")
 
 
+class ScanResult(dict):
+    """The scan result: a dict with "findings" and "summary", which also reads as ``result.findings`` and
+    ``result.summary``. A wrong key or attribute names the real ones, so one traceback is enough to fix the call."""
+
+    @property
+    def findings(self) -> list:
+        return self["findings"]
+
+    @property
+    def summary(self) -> dict:
+        return self["summary"]
+
+    def __missing__(self, key: Any) -> Any:
+        raise KeyError(f"a scan result has no key {key!r}; its keys are {sorted(self)}")
+
+    def __getattr__(self, name: str) -> Any:
+        raise AttributeError(f"a scan result has no attribute {name!r}; use result['findings'] or result.findings "
+                             f"(a list of findings) and result['summary']")
+
+
 def _finding(fid: str, severity: str, scope: Any, evidence: Any, decision: str | None, next_step: str | None) -> dict:
     """One typed finding. ``scope`` is an entity name or "all"."""
     ev = _jsonable(evidence)
@@ -180,7 +200,7 @@ def _result(findings: list[dict], summary: dict) -> dict:
     out_summary = dict(summary)
     out_summary["severity_counts"] = counts
     out_summary["blocked"] = counts["blocker"] > 0
-    return {"findings": ordered, "summary": _jsonable(out_summary)}
+    return ScanResult({"findings": ordered, "summary": _jsonable(out_summary)})
 
 
 def _ts(ns: Any) -> str:
@@ -1265,8 +1285,11 @@ def _run(df: Any, time_col: Any, value_col: Any, entity_cols: Any, freq: Any, ma
     return _result(findings + battery.findings, summary)
 
 
+_ENTITY_ALIASES = ("entity_col", "entity", "entities", "group_col", "group_cols", "id_col", "id_cols", "key_cols")
+
+
 def scan(df: Any, time_col: str, value_col: str, entity_cols: Any = None, freq: str | None = None,
-         max_entities: int = 200) -> dict:
+         max_entities: int = 200, **aliases: Any) -> dict:
     """Run the principal-analyst battery on a long table and return typed findings. Never raises, never mutates ``df``.
 
     ``entity_cols`` is a column name, a list of names, or None for one series. ``freq`` is a pandas alias such as "D",
@@ -1276,6 +1299,14 @@ def scan(df: Any, time_col: str, value_col: str, entity_cols: Any = None, freq: 
     Returns {"findings": [...], "summary": {...}}. Each finding has id, severity, scope, evidence, decision_needed and
     next_step. Record a ledger decision for every blocker and major finding before any forecast.
     """
+    for name in list(aliases):                      # a near-miss keyword for the entity columns is read, not refused
+        if name in _ENTITY_ALIASES and entity_cols is None:
+            entity_cols = aliases.pop(name)
+    if aliases:
+        return _result([_finding(
+            "schema.bad_argument", "blocker", "all", {"unknown_arguments": sorted(aliases)},
+            "scan() takes df, time_col, value_col, entity_cols, freq and max_entities.",
+            "Call sc.scan(df, 'date', 'value', entity_cols=['sku']).")], {"rows_in": None})
     try:
         return _run(df, time_col, value_col, entity_cols, freq, max_entities)
     except Exception as exc:  # the caller gets a blocker with the reason, never a traceback
