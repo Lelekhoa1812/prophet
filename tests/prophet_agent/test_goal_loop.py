@@ -796,3 +796,12 @@ def test_a_forecast_without_the_analysis_ledger_is_sent_back_until_one_is_saved(
     _, out = run(store, goal_program("forecast", _gate_tools(), brain))
     assert out["result"]["status"] == "partial"
     assert out["result"]["contract_failures"] == ["analysis_ledger"]
+
+
+def test_a_figure_marked_as_approximate_matches_a_printed_one_within_one_percent_and_an_unmarked_one_does_not():
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "result": {"mean_band": 44512.3, "max_band": 70790.1, "bias": 0.1304}}]
+    assert unverified("The band is about 44,500 kW wide, up to ~70,800 kW, and the bias is roughly 13%.", history, "g") == []
+    assert unverified("The band is 44,500 kW wide.", history, "g") == ["44,500"], "unmarked figures stay exact"
+    assert unverified("The band is about 45,900 kW wide.", history, "g") == ["45,900"], "one percent, not any rounding"
+    assert unverified("It ran from 6,600 to 27,400 units.", history, "g") == ["6,600", "27,400"], "a range is not an approximation"

@@ -109,13 +109,29 @@ def _drop_labels(text: str) -> str:
     return text
 
 
-def figures(text: str) -> list[str]:
-    """The numeric tokens in a text, in order of appearance."""
+def _cleaned(text: str) -> str:
     text = _drop_row_indexes((text or "").translate(_DASHES))
     # Dates are read before labels are blanked: "Week 2026-01-05" must not leave "-01" and "05" behind as figures.
     text = _DAY_MONTH.sub("", _DATE.sub("", text or ""))
-    text = _drop_labels(text)
-    return [m.group().rstrip(",") for m in _NUM.finditer(text)]
+    return _drop_labels(text)
+
+
+def figures(text: str) -> list[str]:
+    """The numeric tokens in a text, in order of appearance."""
+    return [m.group().rstrip(",") for m in _NUM.finditer(_cleaned(text))]
+
+
+# A writer who says "about 44,500" or "~13%" has rounded a printed figure, and says so. Such a figure is matched to the evidence
+# within APPROX_TOLERANCE of its value, not to the last written digit. An unmarked figure is still matched exactly.
+APPROX_TOLERANCE = 0.01
+_APPROX = re.compile(r"(?:~|\u2248|\b(?:about|around|roughly|approximately|approx\.?|nearly|almost|circa|near)\b)[\s\u00b1]*(?:[\w\u2013\-\s,.]{0,14}?)$", re.I)
+
+
+def _figures_in_context(text: str) -> list[tuple[str, bool]]:
+    """Each numeric token with whether the words just before it mark it as an approximation."""
+    cleaned = _cleaned(text)
+    return [(m.group().rstrip(","), bool(_APPROX.search(cleaned[max(0, m.start() - 30):m.start()])))
+            for m in _NUM.finditer(cleaned)]
 
 
 def _near(value: float, target: float, decimals: int) -> bool:
@@ -154,12 +170,15 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
     """Figures in the answer that no number in the evidence or the goal supports. Empty means grounded."""
     pool = [_parse(t)[0] for t in figures(evidence_text(history, goal))]
     missing: list[str] = []
-    for token in figures(answer):
+    for token, approximate in _figures_in_context(answer):
         if _YEAR.fullmatch(token):
             continue                  # a bare year such as 2026 names a period; a forecast period is not in the evidence
         value, decimals, pct = _parse(token)
         candidates = [value / 100.0] if pct else []
         if any(_near(v, value, decimals) for v in pool) or any(_near(v, c, decimals + 2) for v in pool for c in candidates):
+            continue
+        if approximate and any(abs(v - t) <= APPROX_TOLERANCE * max(abs(t), 1e-9) for v in pool
+                               for t in ([value] + candidates)):
             continue
         if token not in missing:
             missing.append(token)
