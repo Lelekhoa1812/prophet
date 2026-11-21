@@ -2,6 +2,7 @@ import {
   Activity,
   AlertCircle,
   CheckCircle2,
+  Circle,
   Cpu,
   Download,
   Eye,
@@ -18,7 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { api, type KeyProbe, type SettingsSection, type SettingsView } from "../lib/api";
+import { api, type KeyProbe, type KeyStatus, type ModelStatus, type SettingsSection, type SettingsView } from "../lib/api";
 import { errorMessage } from "../lib/format";
 import { cn, formatBytes } from "../lib/utils";
 import { Button, Card, IconButton, Spinner } from "./ui";
@@ -93,6 +94,9 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
       })
       .catch((err) => setLoadError(errorMessage(err, "Couldn't load settings. Check that Prophet is running.")));
 
+  // Optimistic edits apply to the current view; a failed toggle applies its inverse. Keys and limits are not touched here.
+  const patchView: Patch = (update) => setView((v) => (v ? update(v) : v));
+
   useEffect(() => {
     if (!open) return;
     returnTo.current = document.activeElement as HTMLElement | null;
@@ -134,7 +138,7 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
           )}
           {view && (
             <div className="grid gap-8">
-              <KeysSection view={view} onSaved={setView} />
+              <KeysSection view={view} onPatch={patchView} onSaved={setView} />
               <ModelsAndTimesFm view={view} />
               <LimitsSection view={view} onSaved={setView} />
               <SandboxSection view={view} />
@@ -151,14 +155,101 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
 // -- Model providers ----------------------------------------------------------------------------------------------------
 
 type ProviderView = SettingsView["llm"]["providers"][number];
-type PoolView = NonNullable<SettingsView["llm"]["pool"]>;
+type ProviderKey = ProviderView["keys"][number];
+type ProviderModel = ProviderView["models"][number];
+type KeyRow = { value: string; saved: ProviderKey | null };
+type Patch = (update: (v: SettingsView) => SettingsView) => void;
+type Tone = "ok" | "bad" | "idle";
 
-// One switcher over every provider. Only the selected provider's panel is mounted, so one set of keys is on screen at a time.
-function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: SettingsView) => void }) {
+// Only the endpoint variable is named where we know it. Other providers get generic wording.
+const ENDPOINT_ENV: Record<string, string> = { matilda: "MATILDA_BASE_URL" };
+
+const TONE_CLASS: Record<Tone, string> = { ok: "text-ok", bad: "text-bad", idle: "text-sand-1" };
+const KEY_STATUS: Record<KeyStatus, { tone: Tone; label: string }> = {
+  valid: { tone: "ok", label: "Valid" },
+  invalid: { tone: "bad", label: "Invalid" },
+  untested: { tone: "idle", label: "Not checked" },
+};
+const MODEL_STATUS: Record<ModelStatus, { tone: Tone; label: string }> = {
+  verified: { tone: "ok", label: "Verified" },
+  failed: { tone: "bad", label: "Failed" },
+  untested: { tone: "idle", label: "Not checked" },
+};
+
+const CHECKED_AT = new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+function checkedText(iso: string | null): string | null {
+  const t = iso ? new Date(iso) : null;
+  return t && !Number.isNaN(t.getTime()) ? `Checked ${CHECKED_AT.format(t)}` : null;
+}
+
+// Icon plus word, never colour alone.
+function StatusText({ tone, children }: { tone: Tone; children: ReactNode }) {
+  const Icon = tone === "ok" ? CheckCircle2 : tone === "bad" ? AlertCircle : Circle;
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 text-caption font-semibold", TONE_CLASS[tone])}>
+      <Icon aria-hidden="true" className="size-4 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
+// A real switch: role="switch" with aria-checked. The visible word says the state; the label says what it controls.
+function Switch({ checked, disabled, label, onChange }: { checked: boolean; disabled?: boolean; label: string; onChange: (next: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className="inline-flex min-h-11 shrink-0 items-center gap-2.5 rounded-lg text-base font-semibold disabled:cursor-not-allowed disabled:opacity-45"
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors duration-150 motion-reduce:transition-none",
+          checked ? "border-ember bg-ember" : "border-sand-2/60 bg-night-0",
+        )}
+      >
+        <span
+          className={cn(
+            "ml-1 size-4 rounded-full transition-transform duration-150 motion-reduce:transition-none",
+            checked ? "translate-x-[1.125rem] bg-night-0" : "bg-sand-1",
+          )}
+        />
+      </span>
+      <span className={checked ? "text-sand-0" : "text-sand-1"}>{checked ? "Enabled" : "Disabled"}</span>
+    </button>
+  );
+}
+
+function setProviderFlag(v: SettingsView, name: string, enabled: boolean): SettingsView {
+  return { ...v, llm: { ...v.llm, providers: v.llm.providers.map((p) => (p.name === name ? { ...p, enabled } : p)) } };
+}
+
+function setModelFlag(v: SettingsView, id: string, enabled: boolean): SettingsView {
+  return {
+    ...v,
+    llm: {
+      ...v.llm,
+      providers: v.llm.providers.map((p) => ({ ...p, models: p.models.map((m) => (m.id === id ? { ...m, enabled } : m)) })),
+    },
+  };
+}
+
+function toRows(keys: ProviderKey[]): KeyRow[] {
+  return keys.map((k) => ({ value: k.masked, saved: k }));
+}
+
+// One provider at a time: the tabs choose the panel; each enabled provider is listed above.
+function KeysSection({ view, onPatch, onSaved }: { view: SettingsView; onPatch: Patch; onSaved: (v: SettingsView) => void }) {
   const headingId = useId();
   const providers = view.llm.providers;
-  const activeLabel = providers.find((p) => p.name === view.llm.provider)?.label ?? view.llm.provider;
-  const [selected, setSelected] = useState(view.llm.provider);
+  const enabledLabels = providers.filter((p) => p.enabled).map((p) => p.label);
+  const pool = view.llm.pool;
+  const [selected, setSelected] = useState(() => (providers.find((p) => p.enabled) ?? providers[0])?.name ?? "");
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const current = providers.find((p) => p.name === selected) ?? providers[0];
 
@@ -177,16 +268,31 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
     <Section
       id={headingId}
       title="Model providers"
-      description="Add keys for each provider, then choose the one Prophet uses for planning. Keys are never shown in full."
+      description="Turn on each provider you have a valid key for. Several can be on at once. The planner skips disabled providers, disabled models and invalid keys. Keys are never shown in full."
     >
       <div className="grid gap-4">
-        <p className="text-base text-sand-0">
-          Planning uses: <span className="font-semibold">{activeLabel}</span>
-        </p>
+        <div className="grid gap-1.5">
+          {enabledLabels.length > 0 ? (
+            <p className="text-base text-sand-0">
+              Enabled: <span className="font-semibold">{enabledLabels.join(", ")}</span>
+            </p>
+          ) : (
+            <p className="flex items-center gap-2 text-base text-ember">
+              <AlertCircle aria-hidden="true" className="size-4 shrink-0" />
+              No provider is enabled. Prophet cannot plan until you enable one.
+            </p>
+          )}
+          {pool && (
+            <p className="flex items-center gap-2 text-caption text-sand-1 tabular-nums">
+              <Gauge aria-hidden="true" className="size-4 shrink-0 text-sand-2" />
+              Right now: {pool.in_flight} {pool.in_flight === 1 ? "request" : "requests"} running
+            </p>
+          )}
+        </div>
 
         <div role="tablist" aria-label="Model providers" className="flex flex-wrap gap-2">
           {providers.map((p, i) => {
-            const isSelected = p.name === selected;
+            const isSelected = p.name === current?.name;
             return (
               <button
                 key={p.name}
@@ -207,7 +313,7 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
                 )}
               >
                 {p.label}
-                {p.active && <span className="rounded-full bg-ember/15 px-2 py-0.5 text-micro text-ember">Active</span>}
+                {p.enabled && <span className="rounded-full bg-ok/15 px-2 py-0.5 text-micro text-ok">Enabled</span>}
               </button>
             );
           })}
@@ -220,7 +326,7 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
             aria-labelledby={`${headingId}-tab-${current.name}`}
             className="grid gap-4 border-t border-sand-2/15 pt-4"
           >
-            <ProviderPanel key={current.name} provider={current} pool={current.active ? view.llm.pool : null} onSaved={onSaved} />
+            <ProviderPanel key={current.name} provider={current} onPatch={onPatch} onSaved={onSaved} />
           </div>
         )}
       </div>
@@ -228,35 +334,42 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
   );
 }
 
-function ProviderPanel({ provider: p, pool, onSaved }: { provider: ProviderView; pool: PoolView | null; onSaved: (v: SettingsView) => void }) {
+function ProviderPanel({ provider: p, onPatch, onSaved }: { provider: ProviderView; onPatch: Patch; onSaved: (v: SettingsView) => void }) {
   const id = useId();
-  const [keys, setKeys] = useState<string[]>(() => p.keys.map((k) => k.masked));
+  const [rows, setRows] = useState<KeyRow[]>(() => toRows(p.keys));
   const [draft, setDraft] = useState("");
   const [reveal, setReveal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [activating, setActivating] = useState(false);
   const [probes, setProbes] = useState<KeyProbe[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [modelBusy, setModelBusy] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
-  useEffect(() => setKeys(p.keys.map((k) => k.masked)), [p.keys]);
+  // Rows follow the saved keys. Enable and model toggles keep the same keys array, so unsaved key edits survive them.
+  useEffect(() => setRows(toRows(p.keys)), [p.keys]);
 
+  const values = rows.map((r) => r.value);
+  const savedValues = p.keys.map((k) => k.masked);
   // Single-key providers take one key: the add field only appears while no key is set.
-  const canAdd = p.multi_key || keys.length === 0;
-  const dirty = JSON.stringify(keys) !== JSON.stringify(p.keys.map((k) => k.masked)) || (canAdd && draft.trim() !== "");
-  const setupVars = p.name !== "matilda" ? [] : [
-    ...(!p.endpoint_set ? [{ name: "MATILDA_BASE_URL", help: "the endpoint Matilda is served from" }] : []),
-    ...(p.models.length === 0 ? [{ name: "PROPHET_MATILDA_MODELS", help: "the models Prophet may use" }] : []),
-  ];
+  const canAdd = p.multi_key || rows.length === 0;
+  const pendingDraft = canAdd && draft.trim() !== "";
+  const dirty = JSON.stringify(values) !== JSON.stringify(savedValues) || pendingDraft;
+  const enabledModels = p.models.filter((m) => m.enabled).length;
+  const endpointEnv = ENDPOINT_ENV[p.name] ?? null;
+  const probeSummary = probes
+    ? `Tested ${probes.length} ${probes.length === 1 ? "key" : "keys"}: ${probes.filter((r) => r.ok).length} valid, ${probes.filter((r) => !r.ok).length} invalid.`
+    : null;
 
   function addKey() {
     const value = draft.trim();
     if (!value) return;
-    if (keys.includes(value)) {
+    if (values.includes(value)) {
       setError("That key is already in the list.");
       return;
     }
-    setKeys((k) => [...k, value]);
+    setRows((list) => [...list, { value, saved: null }]);
     setDraft("");
     setError(null);
   }
@@ -265,8 +378,8 @@ function ProviderPanel({ provider: p, pool, onSaved }: { provider: ProviderView;
     setSaving(true);
     setError(null);
     try {
-      const pending = canAdd && draft.trim() ? [...keys, draft.trim()] : keys;
-      onSaved(await api.saveProviderKeys(p.name, pending));
+      const next = pendingDraft ? [...values, draft.trim()] : values;
+      onSaved(await api.saveProviderKeys(p.name, next));
       setDraft("");
       setProbes(null);
     } catch (err) {
@@ -276,11 +389,14 @@ function ProviderPanel({ provider: p, pool, onSaved }: { provider: ProviderView;
     }
   }
 
-  async function test() {
+  // The server stores each result; refetching settings brings the new statuses into the list.
+  async function runTest() {
     setTesting(true);
     setError(null);
     try {
-      setProbes((await api.testKeys(p.name)).keys);
+      const result = await api.testKeys(p.name);
+      setProbes(result.keys);
+      onSaved(await api.settings());
     } catch (err) {
       setError(errorMessage(err, `Couldn't test the ${p.label} keys. Save a key first.`));
     } finally {
@@ -288,80 +404,142 @@ function ProviderPanel({ provider: p, pool, onSaved }: { provider: ProviderView;
     }
   }
 
-  async function useForPlanning() {
-    setActivating(true);
-    setError(null);
+  // Optimistic: the switch moves at once and returns to its old position if the server refuses the change.
+  async function setEnabled(next: boolean) {
+    setToggling(true);
+    setToggleError(null);
+    onPatch((v) => setProviderFlag(v, p.name, next));
     try {
-      onSaved(await api.setProvider(p.name));
+      await api.setProviderEnabled(p.name, next);
     } catch (err) {
-      setError(errorMessage(err, `Couldn't make ${p.label} the planning provider.`));
+      onPatch((v) => setProviderFlag(v, p.name, !next));
+      setToggleError(errorMessage(err, `Couldn't ${next ? "enable" : "disable"} ${p.label}. Try again.`));
     } finally {
-      setActivating(false);
+      setToggling(false);
+    }
+  }
+
+  async function setModel(m: ProviderModel, next: boolean) {
+    setModelBusy(m.id);
+    setToggleError(null);
+    onPatch((v) => setModelFlag(v, m.id, next));
+    try {
+      await api.setModelEnabled(m.id, next);
+    } catch (err) {
+      onPatch((v) => setModelFlag(v, m.id, !next));
+      setToggleError(errorMessage(err, `Couldn't ${next ? "enable" : "disable"} ${m.label}. Try again.`));
+    } finally {
+      setModelBusy(null);
     }
   }
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h4 className="text-lg font-bold text-sand-0">{p.label}</h4>
-          <Badge ok={p.ready} yes="Ready" no={p.configured ? "Not ready" : "No keys yet"} />
-          {p.active && <span className="rounded-full bg-ember/15 px-2.5 py-0.5 text-micro font-semibold text-ember">Active</span>}
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="grid min-w-0 gap-1.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h4 className="text-lg font-bold text-sand-0">{p.label}</h4>
+            <Badge ok={p.ready} yes="Ready" no={p.keys.length > 0 ? "Not ready" : "No keys yet"} />
+          </div>
+          {p.endpoint && (
+            <p className="text-caption text-sand-1 [overflow-wrap:anywhere]">
+              Endpoint: <span className="font-mono text-meta text-sand-0">{p.endpoint}</span>
+            </p>
+          )}
         </div>
-        <Button variant="secondary" onClick={() => void useForPlanning()} disabled={p.active || !p.ready || activating}>
-          {activating && <Spinner />}
-          Use for planning
-        </Button>
+        <Switch
+          checked={p.enabled}
+          disabled={toggling || (!p.enabled && !p.ready)}
+          label={`Enable ${p.label}`}
+          onChange={(next) => void setEnabled(next)}
+        />
       </div>
-      {!p.active && !p.ready && setupVars.length === 0 && (
-        <p className="text-caption text-sand-2">{p.configured ? `${p.label} is not ready yet.` : `Add a key before ${p.label} can be used for planning.`}</p>
+
+      {!p.enabled && !p.ready && <p className="text-caption text-sand-2">Add a valid key to enable {p.label}.</p>}
+      {p.enabled && !p.ready && (
+        <p className="flex items-center gap-2 text-caption text-ember">
+          <AlertCircle aria-hidden="true" className="size-4 shrink-0" />
+          {p.label} is enabled, but none of its keys is valid. The planner skips it until a key passes.
+        </p>
+      )}
+      {p.enabled && p.ready && p.models.length > 0 && enabledModels === 0 && (
+        <p className="flex items-center gap-2 text-caption text-ember">
+          <AlertCircle aria-hidden="true" className="size-4 shrink-0" />
+          No model is enabled, so the planner cannot use {p.label}.
+        </p>
       )}
 
-      {setupVars.length > 0 && (
+      {!p.endpoint && (
         <div role="note" className="grid gap-2 rounded-lg border border-ember/40 bg-night-0/50 p-3">
           <p className="flex items-center gap-2 text-base font-semibold text-ember">
-            <Info aria-hidden="true" className="size-4 shrink-0" /> {p.label} needs setup in .env
+            <Info aria-hidden="true" className="size-4 shrink-0" />
+            No endpoint is set for {p.label}
           </p>
-          <ul className="grid gap-1 text-caption text-sand-1">
-            {setupVars.map((v) => (
-              <li key={v.name}>
-                <span className="font-mono text-sand-0">{v.name}</span> is {v.help}.
-              </li>
-            ))}
-          </ul>
-          <p className="text-caption text-sand-2">Restart Prophet after you change these. Test keys stays off until keys are saved.</p>
+          <p className="text-caption text-sand-1">
+            {endpointEnv ? `Set ${endpointEnv} in .env and restart Prophet.` : "Set its endpoint in .env and restart Prophet."}
+          </p>
         </div>
       )}
 
-      {keys.length === 0 ? (
-        <p className="flex items-center gap-2 text-base text-ember">
-          <AlertCircle aria-hidden="true" className="size-4" />
-          {p.active ? `No key is set. Prophet cannot plan with ${p.label} until you add one.` : `No key is set for ${p.label}.`}
+      {toggleError && (
+        <p role="alert" className="text-caption text-bad">
+          {toggleError}
         </p>
-      ) : (
-        <ul className="grid gap-2" aria-label={`${p.label} keys`}>
-          {keys.map((k, i) => (
-            <li key={`${i}-${k}`} className="flex items-center justify-between gap-3 rounded-lg border border-sand-2/25 bg-night-0/50 px-3 py-2">
-              <span className="flex min-w-0 items-center gap-2.5">
-                <KeyRound aria-hidden="true" className="size-4 shrink-0 text-sand-2" />
-                <span className="font-mono text-meta text-sand-0 [overflow-wrap:anywhere]">
-                  Key {i + 1} · {k}
-                </span>
-              </span>
-              <IconButton
-                tone="danger"
-                label={`Remove key ${i + 1}`}
-                icon={<Trash2 aria-hidden="true" className="size-4" />}
-                onClick={() => setKeys((list) => list.filter((_, j) => j !== i))}
-              />
-            </li>
-          ))}
-        </ul>
       )}
 
-      <div className="grid gap-2">
+      <div className="grid gap-3 border-t border-sand-2/15 pt-4">
+        <p className="text-base font-semibold text-sand-0">Keys</p>
+        {rows.length === 0 ? (
+          <p className="text-caption text-sand-2">No key is set for {p.label}.</p>
+        ) : (
+          <ul className="grid gap-2" aria-label={`${p.label} keys`}>
+            {rows.map((row, i) => {
+              const s = row.saved;
+              const probe = s ? probes?.find((r) => r.slot === s.slot) : undefined;
+              const status = s ? KEY_STATUS[s.status] : { tone: "idle" as Tone, label: "Not saved" };
+              const meta = [s && s.http_status !== null ? `HTTP ${s.http_status}` : null, s ? checkedText(s.checked_at) : null]
+                .filter(Boolean)
+                .join(" · ");
+              // Unsaved keys are masked here too, so a typed key never stays on screen in full.
+              const shown = s ? s.masked : `••••••••${row.value.slice(-4)}`;
+              return (
+                <li
+                  key={`${s?.slot ?? "new"}-${i}`}
+                  className={cn(
+                    "grid gap-2 rounded-lg border bg-night-0/50 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center",
+                    s?.status === "invalid" ? "border-bad/60" : "border-sand-2/25",
+                  )}
+                >
+                  <div className="grid min-w-0 gap-1">
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      <KeyRound aria-hidden="true" className="size-4 shrink-0 text-sand-2" />
+                      <span className="font-mono text-meta text-sand-0 [overflow-wrap:anywhere]">
+                        Key {i + 1} · {shown}
+                      </span>
+                    </span>
+                    {s?.status === "invalid" && (
+                      <span className="text-caption text-sand-1">Rejected by the provider. The planner ignores this key.</span>
+                    )}
+                    {meta && <span className="text-micro text-sand-2 tabular-nums">{meta}</span>}
+                    {probe && !probe.ok && probe.error && <span className="text-caption text-bad [overflow-wrap:anywhere]">{probe.error}</span>}
+                  </div>
+                  <div className="flex items-center justify-between gap-3 sm:justify-end">
+                    <StatusText tone={status.tone}>{status.label}</StatusText>
+                    <IconButton
+                      tone="danger"
+                      label={`Remove key ${i + 1}`}
+                      icon={<Trash2 aria-hidden="true" className="size-4" />}
+                      onClick={() => setRows((list) => list.filter((_, j) => j !== i))}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
         {canAdd ? (
-          <>
+          <div className="grid gap-2">
             <label htmlFor={`${id}-new`} className="text-base font-semibold text-sand-0">
               Add a key
             </label>
@@ -383,80 +561,77 @@ function ProviderPanel({ provider: p, pool, onSaved }: { provider: ProviderView;
             <p id={`${id}-hint`} className="text-caption text-sand-2">
               {p.key_hint}
             </p>
-          </>
+          </div>
         ) : (
           <p id={`${id}-hint`} className="text-caption text-sand-2">
             {p.label} accepts one key. Remove the current key to add a different one. {p.key_hint}
           </p>
         )}
-      </div>
 
-      {error && (
-        <p role="alert" className="text-caption text-bad">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p role="alert" className="text-caption text-bad">
+            {error}
+          </p>
+        )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => void save()} disabled={!dirty || saving}>
-          {saving ? <Spinner /> : <Save aria-hidden="true" className="size-4" />}
-          Save keys
-        </Button>
-        <Button variant="secondary" onClick={() => void test()} disabled={testing || p.keys.length === 0}>
-          {testing ? <Spinner /> : <Activity aria-hidden="true" className="size-4" />}
-          Test keys
-        </Button>
-      </div>
-
-      {probes && (
-        <ul className="grid gap-1.5 border-t border-sand-2/15 pt-4" aria-label={`${p.label} key test results`}>
-          {probes.map((r) => (
-            <li key={r.slot} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
-              <Badge ok={r.ok} yes={`Key ${r.slot} works`} no={`Key ${r.slot} failed`} />
-              <span className="font-mono text-meta text-sand-2">
-                {r.masked} · {r.status ?? "no response"} · {r.elapsed_s.toFixed(1)}s
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => void save()} disabled={!dirty || saving}>
+            {saving ? <Spinner /> : <Save aria-hidden="true" className="size-4" />}
+            Save keys
+          </Button>
+          <Button variant="secondary" onClick={() => void runTest()} disabled={testing || dirty || p.keys.length === 0}>
+            {testing ? <Spinner /> : <Activity aria-hidden="true" className="size-4" />}
+            Test keys
+          </Button>
+          {dirty ? (
+            <span className="text-caption text-sand-2">Save keys before testing them.</span>
+          ) : (
+            probeSummary && (
+              <span role="status" className="text-caption text-sand-1">
+                {probeSummary}
               </span>
-              {!r.ok && r.error && <span className="text-bad">{r.error}</span>}
-            </li>
-          ))}
-        </ul>
-      )}
+            )
+          )}
+        </div>
+      </div>
 
-      <div className="grid gap-2 border-t border-sand-2/15 pt-4">
-        <p className="text-base font-semibold text-sand-0">Models</p>
+      <div className="grid gap-3 border-t border-sand-2/15 pt-4">
+        <div className="grid gap-1">
+          <p className="text-base font-semibold text-sand-0">Models</p>
+          <p className="text-caption text-sand-2">Disabled models are not used by the planner.</p>
+        </div>
         {p.models.length === 0 ? (
           <p className="text-caption text-sand-2">No models are listed for {p.label} yet.</p>
         ) : (
-          <ul className="flex flex-wrap gap-2" aria-label={`${p.label} models`}>
-            {p.models.map((m) => (
-              <li key={m} className="rounded-full border border-sand-2/35 px-3 py-1 font-mono text-meta text-sand-1 [overflow-wrap:anywhere]">
-                {m}
-              </li>
-            ))}
+          <ul className="grid gap-2" aria-label={`${p.label} models`}>
+            {p.models.map((m) => {
+              const st = MODEL_STATUS[m.status];
+              const when = checkedText(m.checked_at);
+              return (
+                <li
+                  key={m.id}
+                  className="grid gap-2 rounded-lg border border-sand-2/25 bg-night-0/50 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                >
+                  <div className="grid min-w-0 gap-1">
+                    <span className="text-base font-semibold text-sand-0">{m.label}</span>
+                    <span className="font-mono text-meta text-sand-2 [overflow-wrap:anywhere]">{m.id}</span>
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <StatusText tone={st.tone}>{st.label}</StatusText>
+                      {when && <span className="text-micro text-sand-2 tabular-nums">{when}</span>}
+                    </span>
+                  </div>
+                  <Switch
+                    checked={m.enabled}
+                    disabled={modelBusy !== null}
+                    label={`Enable model ${m.label}`}
+                    onChange={(next) => void setModel(m, next)}
+                  />
+                </li>
+              );
+            })}
           </ul>
-        )}
-        {p.name === "nim" && p.models.length > 0 && (
-          <p className="text-caption text-sand-2">Models are tried in this order. If one is busy or unavailable, the next one takes over.</p>
         )}
       </div>
-
-      {pool && (
-        <div className="grid gap-2 border-t border-sand-2/15 pt-4">
-          <p className="flex items-center gap-2 text-base font-semibold text-sand-0">
-            <Gauge aria-hidden="true" className="size-4 text-sand-1" />
-            Right now: {pool.in_flight} {pool.in_flight === 1 ? "request" : "requests"} running
-          </p>
-          <ul className="grid gap-1 text-caption text-sand-1 tabular-nums">
-            {pool.keys.map((k) => (
-              <li key={k.slot}>
-                Key {k.slot}: {k.in_flight} running · {k.sent_last_minute} of {k.per_minute} sent this minute
-                {k.retired ? ` · paused for ${Math.ceil(k.retired_for_s)}s after an error` : ""}
-                {k.cooling.length > 0 ? ` · cooling: ${k.cooling.map((c) => c.model).join(", ")}` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </>
   );
 }
@@ -487,7 +662,9 @@ function LimitsSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Set
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => setDraft(toDraft(view)), [view]);
+  // Keyed on the limits themselves, so a provider or model toggle does not discard an unsaved edit here.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setDraft(toDraft(view)), [view.agent, view.context]);
 
   const problems: string[] = [];
   const changed: Partial<Record<SettingsSection, Record<string, number>>> = {};

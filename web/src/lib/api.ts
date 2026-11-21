@@ -173,11 +173,14 @@ export const api = {
   settings: () => req<SettingsView>("/api/settings"),
   saveLimits: (patch: Partial<Record<SettingsSection, Record<string, number>>>) =>
     req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
-  saveKeys: (keys: string[]) => req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ nim: { keys } }) }),
+  // Keys: masked values echoed back keep the stored key. Only newly typed keys are sent in full.
   saveProviderKeys: (provider: string, keys: string[]) =>
     req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ providers: { [provider]: { keys } } }) }),
-  setProvider: (provider: string) => req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { provider } }) }),
-  testKeys: (provider = "nim") =>
+  setProviderEnabled: (provider: string, enabled: boolean) =>
+    req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { providers: { [provider]: { enabled } } } }) }),
+  setModelEnabled: (model: string, enabled: boolean) =>
+    req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { models: { [model]: { enabled } } } }) }),
+  testKeys: (provider: string) =>
     req<{ provider: string; keys: KeyProbe[] }>(`/api/settings/test-keys?provider=${encodeURIComponent(provider)}`, { method: "POST" }),
   clearData: (confirm: string) => req<{ removed: Record<string, number> }>("/api/settings/clear-data", { method: "POST", body: JSON.stringify({ confirm }) }),
 
@@ -206,14 +209,17 @@ export const api = {
 
 export type SettingsSection = "agent" | "context";
 
+export type KeyStatus = "valid" | "invalid" | "untested";
+export type ModelStatus = "verified" | "failed" | "untested";
+
+// Result of POST /api/settings/test-keys. The status is also persisted server-side, so refetch settings afterwards.
 export type KeyProbe = {
   slot: number;
-  model: string;
-  status: number | null;
-  error: string | null;
-  elapsed_s: number;
   masked: string;
+  status: KeyStatus;
+  http_status: number | null;
   ok: boolean;
+  error: string | null;
 };
 
 export type PoolKey = {
@@ -228,28 +234,45 @@ export type PoolKey = {
 
 export type PoolView = { keys: PoolKey[]; demoted_models: { model: string; for_s: number }[]; in_flight: number };
 
+export type ProviderKeyView = {
+  slot: number;
+  masked: string;
+  status: KeyStatus;
+  http_status: number | null;
+  checked_at: string | null;
+};
+
+export type ProviderModelView = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  status: ModelStatus;
+  checked_at: string | null;
+};
+
 export type LlmProviderView = {
   name: string;
   label: string;
+  enabled: boolean;
+  ready: boolean;
+  endpoint: string | null;
   multi_key: boolean;
   key_hint: string;
-  keys: { slot: number; masked: string }[];
-  configured: boolean;
-  endpoint_set: boolean;
-  models: string[];
-  ready: boolean;
-  active: boolean;
+  keys: ProviderKeyView[];
+  models: ProviderModelView[];
 };
 
-export type LlmView = { provider: string; pool: PoolView | null; providers: LlmProviderView[] };
+export type LlmBudget = { "1d": number | null; "7d": number | null; "30d": number | null };
+
+export type LlmView = {
+  providers: LlmProviderView[];
+  // Typed for the contract; the settings screen does not display budgets yet.
+  budgets?: Record<string, LlmBudget>;
+  // Present only when the backend reports it. Shown as one line while providers are running requests.
+  pool?: PoolView | null;
+};
 
 export type SettingsView = {
-  nim: {
-    configured: boolean;
-    keys: { slot: number; masked: string }[];
-    models: string[];
-    pool: PoolView | null;
-  };
   llm: LlmView;
   agent: Record<string, number>;
   context: Record<string, number>;
