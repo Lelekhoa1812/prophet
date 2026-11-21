@@ -111,3 +111,15 @@ def test_real_timesfm_forecast_through_the_durable_runtime(tmp_path):
     finally:
         store.close()
 
+
+
+def test_a_48_hour_forecast_reaches_the_planner_in_full_not_thinned_to_30():
+    # Regression: the planner was shown 30 of 48 hourly points, judged the forecast incomplete and never finished.
+    from prophet_agent.tools.timesfm_tool import observe
+
+    point = [400.0 + i for i in range(48)]
+    result = {"point": point, "health": {"verdict": "ok"}, "quantiles": {"0.1": point, "0.9": point},
+              "config": {"horizon": 48}}
+    shown = observe(result)
+    assert shown["point"] == [round(x, 3) for x in point] and "note" not in shown
+    assert len(shown["q10"]) == 48 and len(shown["q90"]) == 48

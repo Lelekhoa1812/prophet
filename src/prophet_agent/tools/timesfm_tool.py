@@ -24,6 +24,7 @@ QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 MAX_HORIZON = 512
 ALLOWED_ARGS = {"values", "source", "horizon"} | CONTROL_ARGS
 SHOWN = 30      # points of a forecast shown to the planner before it is thinned
+FULL_SHOWN = 120   # a forecast up to this many periods is shown in full: thinning hid hours the planner needed (48 h live)
 INTERMITTENT_ADI = 1.32   # Syntetos-Boylan cut-off: an average gap above this between periods with demand is intermittent
 
 
@@ -101,7 +102,7 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
 
 
 def _thin(v: list[float]) -> list[float]:
-    if len(v) <= SHOWN:
+    if len(v) <= FULL_SHOWN:
         return [round(x, 3) for x in v]
     idx = np.linspace(0, len(v) - 1, SHOWN).round().astype(int)
     return [round(v[i], 3) for i in idx]
@@ -112,7 +113,7 @@ def _compact(r: dict) -> dict:
     out = {"config": {k: v for k, v in r["config"].items() if k != "quantile_levels"},
            "health": r.get("health"),
            "point": _thin(r["point"]), "q10": _thin(q["0.1"]), "q90": _thin(q["0.9"])}
-    if len(r["point"]) > SHOWN:
+    if len(r["point"]) > FULL_SHOWN:
         out["note"] = f"{len(r['point'])} periods; every ~{len(r['point']) // SHOWN}th shown"
     return out
 
