@@ -61,8 +61,18 @@ Each criterion is done only when its check passes and its evidence is recorded i
   flat_unexpected and ended partial.
 - The finish gate sends a forecast with no baseline backtest or no prior data inspection back to the planner (twice at most), then
   labels the answer partial. It is covered by three goal-loop tests.
-- Open: figures the model derives itself (a ratio of two printed numbers) are still listed as unverified, which makes good
-  answers "partial". Grounding does not yet accept a figure computable from two evidenced figures.
+- Live pressure matrix on the final code (Gemini 3.5 Flash, real public series, real TimesFM 3, no provider error shown to the
+  person in any run): hourly load, retail units and WTI price all ended `done_verified` with the ledger gate passed (elapsed
+  148 s, 124 s, 253 s). Daily CO2 on Gemini ended `done_verified` earlier in the session (161 s). NIM completed load, CO2 and WTI
+  as `partial_unverified`: the answers were sound, the label came from derived figures and, before the fix below, a ledger count
+  that ignored a cell that failed after saving. NIM is slow: 898 s, 1183 s and one retail run still going at the 1800 s harness limit.
+- Three routing defects found only by running live, each now a failing test first: all keys resting past one attempt's budget raised a
+  failure (three Gemini missions died); Google's HTTP 400 for a bad key was blamed on the model (one mission died); keys of an
+  account-wide quota were paced separately.
+- Open: NIM planner efficiency (20+ analysis cells before the backtest on retail). The finish gate and ledger make the work thorough;
+  they do not make it short. Candidate fix: a cell budget per funnel stage.
+- Grounding now accepts a figure marked as approximate ("about", "~", "roughly") within one percent of a printed figure. A derived
+  figure that is not marked, and not printed, still leaves the answer partial; planner rule 57 tells the planner to print it.
 - Open: no measurement yet of whether smoothing, outlier replacement or imputation improves a TimesFM backtest. The
   research found none. Each step must earn its place on the synthetic twin with a no-cleaning arm.
 
