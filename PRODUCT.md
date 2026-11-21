@@ -11,6 +11,6 @@ Prophet is a durable forecasting agent for R&D. A user states a goal (for exampl
 
 - Identity: Dune-meets-space, as the user asked. A dark desert-night base, sand for text and quiet structure, ember for action and attention. No Dune names, logos, quotations or trademarked motifs.
 - Type: a serif display voice for headings and the wordmark; a clean sans for interface and body text; a monospace only for hashes, identifiers and JSON, where the content really is data.
-- Research use only. The forecast engine uses non-commercial TimesFM 3 weights, so every forecast surface carries that note.
+- Licence: the TimesFM 3 weights are non-commercial. The notice lives in NOTICE.md and the README only. The console, agent replies and generated files do not carry it.
 - No invented claims: no prices, customers, benchmarks or capabilities the product does not have. Demonstration numbers are labelled synthetic.
 - Accessibility: body text at 4.5:1 or better, visible focus rings in ember, every control reachable by keyboard, and no horizontal scroll at 375 px.

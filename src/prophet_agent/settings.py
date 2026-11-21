@@ -57,8 +57,6 @@ LLM_FIELDS = ("provider", "providers", "models", "budgets")           # provider
 KEY_CHECKS = "key_checks"                                              # top level of settings.json, per provider
 KEY_SECTIONS = ("nim", "providers")                                     # handled by set_keys, not by update()
 CLEAR_PHRASE = "delete all data"
-LICENCE = ("TimesFM 3 weights are non-commercial: research use only. Do not use outputs for commercial decisions, client "
-           "deliverables or paid services.")
 # data/ files that "clear data" keeps: settings, usage (not mission data) and the model verification results.
 KEPT_ON_CLEAR = ("settings.json", MODEL_CHECK_FILE)
 
@@ -520,9 +518,8 @@ def view(settings: Settings, store, datasets, pool_status: dict | None) -> dict[
         "defaults": {section: dict(vals) for section, vals in DEFAULTS.items()},
         "bounds": {section: {name: [low, high] for (s, name), (low, high) in BOUNDS.items() if s == section}
                    for section in DEFAULTS},
-        "timesfm": {"checkpoint": TIMESFM_CHECKPOINT, "engine_installed": importlib.util.find_spec("timesfm") is not None,
-                    "licence": LICENCE},
+        "timesfm": {"checkpoint": TIMESFM_CHECKPOINT, "engine_installed": importlib.util.find_spec("timesfm") is not None},
         "sandbox": _sandbox_limits(),
         "data": settings.summary(store, datasets),
-        "about": {"name": "Prophet", "licence": LICENCE, "clear_phrase": CLEAR_PHRASE},
+        "about": {"name": "Prophet", "clear_phrase": CLEAR_PHRASE},
     }

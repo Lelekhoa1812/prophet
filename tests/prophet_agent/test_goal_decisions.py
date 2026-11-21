@@ -203,3 +203,13 @@ def test_unrelated_numbers_do_not_make_a_question_a_repeat():
         {"question": "The series has 1200 rows from 2024-01-01 to 2025-04-30. Which date order applies?",
          "header": "Order"}], history)
     assert len(open_qs) == 1 and repeated == []
+
+
+def test_planner_never_asks_the_person_about_how_tools_store_data():
+    # Live run 09 (300k rows): the planner asked the person to choose between re-creating 300 series in one run or
+    # forecasting a subset, because files did not survive between sandbox runs. That is the agent's problem to solve.
+    from prophet_agent.prompts import current
+
+    text = " ".join(current("planner").text.split())
+    assert "How the tools store and pass data is never a question for the person" in text
+    assert "rebuild what a later run needs, in one run, or batch the work" in text

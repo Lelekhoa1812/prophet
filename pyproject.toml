@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Prophet: a durable forecasting agent with TimesFM 3, NIM-hosted planning and sandboxed analytics. R&D use."
 requires-python = ">=3.12"
 dependencies = [
-  "timesfm[mlx]==3.0.2",   # TimesFM 3 weights are non-commercial; see docs/prophet/ARCHITECTURE.md section 5
+  "timesfm[mlx]==3.0.2",   # TimesFM 3 licence terms: see NOTICE.md
   "numpy",
   "pandas",
   "matplotlib",

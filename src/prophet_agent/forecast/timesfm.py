@@ -5,7 +5,6 @@ Motivation: loading the model takes seconds and MLX inference is not thread-safe
 share one loaded model and run inference one call at a time.
 Logic: a process-wide singleton, created under a lock, with inference serialised by a second lock. The full official
 context (the forecaster's global_context) is used. The legacy 512-point cap was a lab choice and is not kept.
-Licence: the TimesFM 3 weights are non-commercial. This module is for research use only.
 """
 from __future__ import annotations
 

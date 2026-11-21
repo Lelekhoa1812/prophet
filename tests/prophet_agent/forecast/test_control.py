@@ -277,7 +277,7 @@ def test_report_note_states_what_was_applied():
     rt = importlib.import_module("prophet_agent.tools.report_tool")
     assert "default settings" in rt._method_note({})
     note = rt._method_note({"control": {"ignored_points": 3, "future_covariates": ["promo"], "znorm": True}})
-    assert "3 history points ignored" in note and "promo" in note and "research use only" in note
+    assert "3 history points ignored" in note and "promo" in note and "research" not in note.lower()
 
 
 def test_report_forwards_controls_to_the_forecast(tool_engine, monkeypatch):

@@ -10,7 +10,7 @@ from prophet_agent.forecast.types import Forecast
 from prophet_agent.runtime.goal import goal_program
 from prophet_agent.runtime.runner import Runtime
 from prophet_agent.runtime.store import Store
-from prophet_agent.tools import LICENCE_NOTE, timesfm_tool
+from prophet_agent.tools import timesfm_tool
 
 
 class _StubEngine:
@@ -38,7 +38,7 @@ def test_tool_records_configuration_and_context_used(stub_engine):
     assert out["config"]["horizon"] == 3
     assert len(out["point"]) == 3
     assert sorted(out["quantiles"]) == ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"]
-    assert "licence" not in out  # audit wording belongs in NOTICE.md, not in results the planner repeats
+    assert "licence" not in out["config"] and "research use" not in str(out).lower()  # licence terms live in NOTICE.md only
 
 
 @pytest.mark.parametrize("args", [
@@ -93,12 +93,3 @@ def test_real_timesfm_forecast_through_the_durable_runtime(tmp_path):
     finally:
         store.close()
 
-
-def test_every_forecast_result_carries_the_licence_terms(monkeypatch):
-    from prophet_agent.tools.timesfm_tool import LICENCE_NOTE, _one
-    import numpy as np
-    class E:
-        checkpoint = "google/timesfm-3.0-pytorch"
-        global_context = 512
-    out = _one(np.arange(10.0), np.zeros(3), np.zeros((3, 9)), 3, E())
-    assert out["config"]["licence"] == LICENCE_NOTE and "Research use only" in LICENCE_NOTE

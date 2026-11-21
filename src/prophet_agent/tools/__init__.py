@@ -7,7 +7,7 @@ from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_driv
 from .notebook_tools import SAVE_TABLE_SPEC, NotebookBinding, save_table_tool
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .sandbox_tool import SANDBOX_PYTHON_SPEC, sandbox_python_tool
-from .timesfm_tool import LICENCE_NOTE, QUANTILE_LEVELS, TIMESFM_TOOL_SPEC, timesfm_tool
+from .timesfm_tool import QUANTILE_LEVELS, TIMESFM_TOOL_SPEC, timesfm_tool
 
 
 def spec_doc(spec: dict) -> str:
@@ -41,6 +41,6 @@ def tool_catalogue() -> dict:
     return default_tools({"example.csv": Path("example.csv")}, binding=NotebookBinding(None, "", ""))
 
 
-__all__ = ["BACKTEST_SPEC", "BUILD_DRIVERS_SPEC", "DETECT_ANOMALIES_SPEC", "FORECAST_REPORT_SPEC", "INSPECT_DATA_SPEC", "LICENCE_NOTE", "NotebookBinding",
+__all__ = ["BACKTEST_SPEC", "BUILD_DRIVERS_SPEC", "DETECT_ANOMALIES_SPEC", "FORECAST_REPORT_SPEC", "INSPECT_DATA_SPEC", "NotebookBinding",
            "QUANTILE_LEVELS", "SAVE_TABLE_SPEC", "SANDBOX_PYTHON_SPEC", "TIMESFM_TOOL_SPEC", "default_tools",
            "build_drivers_tool", "detect_anomalies_tool", "forecast_report_tool", "sandbox_python_tool", "save_table_tool", "timesfm_tool", "tool_catalogue"]

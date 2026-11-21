@@ -276,7 +276,7 @@ def test_settings_show_masked_keys_and_bounded_limits_and_refuse_bad_input(tmp_p
     body = client.get("/api/settings").json()
     assert body["nim"]["configured"] is False and body["nim"]["keys"] == []
     assert body["agent"]["part_steps"] == 200 and body["timesfm"]["checkpoint"]
-    assert "research use only" in body["about"]["licence"]
+    assert "licence" not in body["about"] and "licence" not in body["timesfm"]  # the notice lives in NOTICE.md, not the console
     assert body["bounds"]["agent"]["part_steps"] == [5, 1000], "the page reads its limits from the server"
     assert body["sandbox"]["timeout_s"] == 20 and body["sandbox"]["mem_mb"] == 1024
     assert isinstance(body["timesfm"]["engine_installed"], bool)

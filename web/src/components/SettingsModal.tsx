@@ -117,7 +117,7 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center p-3 sm:p-6">
+    <div className="fixed inset-0 z-50 grid grid-cols-[minmax(0,1fr)] place-items-center p-3 sm:p-6">
       <button type="button" tabIndex={-1} aria-hidden="true" onClick={onClose} className="absolute inset-0 bg-black/60" />
       <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="relative flex max-h-[92dvh] w-full max-w-3xl flex-col rounded-2xl border border-sand-2/25 bg-night-1 shadow-2xl">
         <header className="flex items-center justify-between gap-3 border-b border-sand-2/20 px-5 py-4">
@@ -716,7 +716,7 @@ function ProviderPanel({
 function ModelsAndTimesFm({ view }: { view: SettingsView }) {
   const headingId = useId();
   return (
-    <Section id={headingId} title="Forecast engine" description="TimesFM 3 runs locally for forecasts. Its weights have a research-only licence.">
+    <Section id={headingId} title="Forecast engine" description="TimesFM 3 runs locally for forecasts.">
       <dl className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:gap-x-6">
         <dt className="text-base font-semibold text-sand-0">Engine</dt>
         <dd>
@@ -970,21 +970,14 @@ function DataSection({ view, onCleared }: { view: SettingsView; onCleared: () =>
 
 // -- About --------------------------------------------------------------------------------------------------------------
 
-// The licence notice lives here and nowhere on the working surfaces: it is attribution, not a banner.
 function AboutSection({ view }: { view: SettingsView }) {
   const headingId = useId();
   return (
     <Section id={headingId} title="About">
-      <div className="grid gap-3">
-        <p className="flex items-center gap-2 text-base font-semibold text-sand-0">
-          <Cpu aria-hidden="true" className="size-4 text-sand-1" />
-          {view.about.name}
-        </p>
-        <p className="flex gap-2 text-caption text-sand-1">
-          <Info aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-sand-2" />
-          {view.about.licence}
-        </p>
-      </div>
+      <p className="flex items-center gap-2 text-base font-semibold text-sand-0">
+        <Cpu aria-hidden="true" className="size-4 text-sand-1" />
+        {view.about.name}
+      </p>
     </Section>
   );
 }

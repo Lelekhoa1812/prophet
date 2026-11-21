@@ -69,7 +69,7 @@ def _method_note(config: dict) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
     c = config.get("control")
     if not c:
-        return "TimesFM 3, default settings, no external drivers (research use only)."
+        return "TimesFM 3, default settings, no external drivers."
     parts = []
     if c.get("ignored_points"):
         parts.append(f"{c['ignored_points']} history points ignored")
@@ -83,7 +83,7 @@ def _method_note(config: dict) -> str:
         parts.append("standardised")
     if c.get("symmetric_averaging"):
         parts.append("symmetric averaging")
-    return "TimesFM 3 (research use only); " + "; ".join(parts) + "."
+    return "TimesFM 3: " + "; ".join(parts) + "."
 
 
 def _run(args: dict, key: str) -> dict[str, Any]:

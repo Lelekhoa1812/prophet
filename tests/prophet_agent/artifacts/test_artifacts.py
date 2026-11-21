@@ -16,7 +16,7 @@ def pack():
     q10 = [p - 2 for p in point]
     q90 = [p + 2 for p in point]
     res = build_forecast_pack(history=history, point=point, q10=q10, q90=q90,
-                              title="Weekly demand forecast (synthetic)", note="Research use only. Synthetic data.")
+                              title="Weekly demand forecast (synthetic)", note="Synthetic data.")
     assert res.ok, res.stderr
     return res
 
@@ -65,7 +65,7 @@ def test_docx_reopens_with_title_and_picture(pack):
     doc = Document(_out(pack, "report.docx"))
     texts = [p.text for p in doc.paragraphs]
     assert "Weekly demand forecast (synthetic)" in texts
-    assert any("Research use only" in t for t in texts)
+    assert any("Synthetic data." in t for t in texts)
     assert len(doc.inline_shapes) == 1
 
 

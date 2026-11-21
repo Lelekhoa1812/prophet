@@ -120,7 +120,7 @@ export function UsageMeter({
       : loading
         ? "Token budget, loading"
         : "Token budget, no budget set";
-  const visible = failed ? "Usage unavailable" : reading ? `${Math.round(reading.pct)}%` : loading ? "" : "No budget";
+  const visible = failed ? "Usage unavailable" : reading ? `${Math.round(reading.pct)}%` : loading ? "" : "N/A";
 
   return (
     <div ref={wrap} className="relative min-w-0">

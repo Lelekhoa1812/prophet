@@ -3,9 +3,8 @@
 Motivation vs Logic
 Motivation: a forecast is only useful if the reader can see which model, context and horizon produced it.
 Logic: the tool is pure (same input, same output), so it is marked idempotent and a crashed call can be re-run safely.
-Every result carries the checkpoint, the context actually used, the horizon, the quantile levels and the licence
-terms of the weights, so the planner, the report and the written answer all see that the forecast is research use
-only. The series comes from ``values`` or by reference from an analysis run (see series_io). The model is loaded
+Every result carries the checkpoint, the context actually used, the horizon and the quantile levels, so the planner,
+the report and the written answer can see which model and settings produced the numbers. The series comes from ``values`` or by reference from an analysis run (see series_io). The model is loaded
 lazily on the first call, so importing the runtime never loads MLX.
 """
 from __future__ import annotations
@@ -20,8 +19,6 @@ from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
 QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-LICENCE_NOTE = ("TimesFM 3.0 weights: TimesFM Non-Commercial License v1.0. Research use only; "
-                "not for commercial decisions, client deliverables or paid services.")
 MAX_HORIZON = 512
 ALLOWED_ARGS = {"values", "source", "horizon"} | CONTROL_ARGS
 SHOWN = 30      # points of a forecast shown to the planner before it is thinned
@@ -39,7 +36,6 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
             "context_used": min(len(series), (control.context_points if control is not None and control.context_points else engine.global_context)),
             "horizon": horizon,
             "quantile_levels": QUANTILE_LEVELS,
-            "licence": LICENCE_NOTE,
             "history_points": len(series),
             **cfg_extra,
         },

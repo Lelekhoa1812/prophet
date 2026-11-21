@@ -289,7 +289,7 @@ export type SettingsView = {
   context: Record<string, number>;
   defaults: Record<SettingsSection, Record<string, number>>;
   bounds: Record<SettingsSection, Record<string, [number, number]>>;
-  timesfm: { checkpoint: string; engine_installed: boolean; licence: string };
+  timesfm: { checkpoint: string; engine_installed: boolean };
   sandbox: {
     timeout_s: number;
     mem_mb: number;
@@ -298,7 +298,7 @@ export type SettingsView = {
     isolation: string;
   };
   data: { missions: number; notebooks: number; datasets: number; bytes: number };
-  about: { name: string; licence: string; clear_phrase: string };
+  about: { name: string; clear_phrase: string };
 };
 
 // -- Model choice and token budgets (composer) --------------------------------------------------------------------------
