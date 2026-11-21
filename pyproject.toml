@@ -12,6 +12,7 @@ dependencies = [
   "python-calamine==0.9.1",   # reads xls, xlsb and ods; MIT
   "scipy",
   "statsmodels",
+  "holidays",   # public-holiday calendars for event covariates; MIT
   "python-docx",
   "reportlab",
   "jsonschema",

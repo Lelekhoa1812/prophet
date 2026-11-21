@@ -14,19 +14,21 @@ from typing import Any
 
 import numpy as np
 
+from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
 from prophet_agent.runtime.runner import Tool
-from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series
+from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
 QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 LICENCE_NOTE = ("TimesFM 3.0 weights: TimesFM Non-Commercial License v1.0. Research use only; "
                 "not for commercial decisions, client deliverables or paid services.")
 MAX_HORIZON = 512
-ALLOWED_ARGS = {"values", "source", "horizon"}
+ALLOWED_ARGS = {"values", "source", "horizon"} | CONTROL_ARGS
 SHOWN = 30      # points of a forecast shown to the planner before it is thinned
 
 
-def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, engine: Any) -> dict[str, Any]:
+def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, engine: Any, control: Control | None = None) -> dict[str, Any]:
+    cfg_extra = {"control": control.describe()} if control is not None and not control.is_default else {}
     return {
         "point": [round(float(v), 4) for v in point],
         "quantiles": {f"{lvl:.1f}": [round(float(v), 4) for v in q[:, i]] for i, lvl in enumerate(QUANTILE_LEVELS)},
@@ -34,11 +36,12 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
             "checkpoint": engine.checkpoint or CHECKPOINT,
             "backend": "mlx",
             "global_context": engine.global_context,
-            "context_used": min(len(series), engine.global_context),
+            "context_used": min(len(series), (control.context_points if control is not None and control.context_points else engine.global_context)),
             "horizon": horizon,
             "quantile_levels": QUANTILE_LEVELS,
             "licence": LICENCE_NOTE,
             "history_points": len(series),
+            **cfg_extra,
         },
     }
 
@@ -48,14 +51,29 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
     # believe it was used.
     extra = sorted(set(args) - ALLOWED_ARGS)
     if extra:
-        raise ValueError(f"unknown arguments {extra}; the model is fixed to TimesFM 3; allowed: values or source, horizon")
+        raise ValueError(f"unknown arguments {extra}; the model is fixed to TimesFM 3; allowed: values or source, horizon, "
+                         f"and the control options {sorted(CONTROL_ARGS)}")
     horizon = args.get("horizon")
     if not isinstance(horizon, int) or isinstance(horizon, bool) or not 1 <= horizon <= MAX_HORIZON:
         raise ValueError(f"horizon must be an integer from 1 to {MAX_HORIZON}")
     named = resolve_series(args)
     engine = TimesFMEngine.get()
-    fc = engine.forecast_batch([s for _, s in named], horizon)
-    results = {name: _one(s, fc.point[i], fc.q[i], horizon, engine) for i, (name, s) in enumerate(named)}
+    pool = source_covariates(args)
+    controls = []
+    for name, s in named:
+        c = build_control(args, len(s), horizon, pool)
+        if len(named) > 1 and (c.ignore or c.past or c.future):
+            raise ValueError("ignore_ranges and covariates belong to one series; forecast one series (source.name) at a time")
+        controls.append(c)
+    if all(c.is_default for c in controls):
+        fc = engine.forecast_batch([s for _, s in named], horizon)
+        pairs = [(fc.point[i], fc.q[i]) for i in range(len(named))]
+    else:
+        pairs = []
+        for (_, s), c in zip(named, controls):
+            f = engine.forecast_controlled(s, horizon, c)
+            pairs.append((f.point, f.q))
+    results = {name: _one(s, pairs[i][0], pairs[i][1], horizon, engine, controls[i]) for i, (name, s) in enumerate(named)}
     if len(results) == 1 and ("values" in args or "series" in results):
         return next(iter(results.values()))        # one unnamed series keeps the flat shape
     return {"series": results}
@@ -98,6 +116,10 @@ TIMESFM_TOOL_SPEC = {
     "description": "Forecast one or more series with TimesFM 3 (a pretrained time-series model, used as it is). Returns "
                    "point and 10 to 90 percent quantile forecasts and the configuration used. Forecasts are floored at zero "
                    "only when the history never went below zero. Pass the series as given; clean or reshape it in an "
-                   "analysis step first when it needs that.",
-    "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512, in the series' own periods"},
+                   "analysis step first when it needs that. The optional control arguments change how the model reads "
+                   "the series (history window, points to ignore, known drivers such as promotions or holidays). They "
+                   "are choices, not improvements: run backtest_series with the same arguments and keep one only if it "
+                   "beats the default.",
+    "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512, in the series' own periods",
+             **CONTROL_HELP},
 }

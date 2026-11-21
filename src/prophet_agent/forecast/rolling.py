@@ -46,7 +46,7 @@ def pick_season(x: np.ndarray, given: int | None) -> int:
 
 
 def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origins: int = 8, season: int | None = None,
-                     engine: Any = None) -> dict:
+                     engine: Any = None, control: Any = None) -> dict:
     x = np.asarray(values, dtype=float)
     n = len(x)
     if not np.isfinite(x).all():
@@ -67,16 +67,25 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
         from prophet_agent.forecast.timesfm import TimesFMEngine
         engine = TimesFMEngine.get()
     fc = engine.forecast_batch([x[:o] for o in origins], horizon)
+    configured = control is not None and not control.is_default
+    if configured:
+        # Each origin sees only what was knowable then: arrays are cut at the origin, so nothing leaks from the future.
+        runs = [engine.forecast_controlled(x[:o], horizon, control.at_origin(o, horizon)) for o in origins]
+        cfc = type(fc)(np.stack([r.point for r in runs]), np.stack([r.q for r in runs]))
+    else:
+        cfc = fc
 
-    names = ["timesfm", "naive", "seasonal_naive", "drift", "mean_last_season"]
+    names = ["timesfm", "naive", "seasonal_naive", "drift", "mean_last_season"] + (["timesfm_default"] if configured else [])
     errs: dict[str, list[float]] = {nm: [] for nm in names}
     act_sum, abs_err = 0.0, {nm: 0.0 for nm in names}
     covered, pin = [], []
     qs = np.arange(1, 10) / 10
     for j, o in enumerate(origins):
         hist, actual = x[:o], x[o:o + horizon]
-        preds = {"timesfm": fc.point[j], "naive": np.full(horizon, hist[-1]), "seasonal_naive": _snaive(hist, horizon, m),
+        preds = {"timesfm": cfc.point[j], "naive": np.full(horizon, hist[-1]), "seasonal_naive": _snaive(hist, horizon, m),
                  "drift": _drift(hist, horizon), "mean_last_season": _mean_last(hist, horizon, m)}
+        if configured:
+            preds["timesfm_default"] = fc.point[j]
         scale = np.mean(np.abs(hist[m:] - hist[:-m])) if len(hist) > m else np.mean(np.abs(np.diff(hist)))
         scale = scale if scale > 1e-12 else np.nan
         for nm, p in preds.items():
@@ -84,18 +93,23 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             errs[nm].append(float(e.mean() / scale) if scale == scale else float("nan"))
             abs_err[nm] += float(e.sum())
         act_sum += float(np.abs(actual).sum())
-        q = fc.q[j]
+        q = cfc.q[j]
         covered.append(float(((actual >= q[:, 0]) & (actual <= q[:, 8])).mean()))
         d = actual[:, None] - q
         pin.append(float(np.mean(np.maximum(qs * d, (qs - 1) * d)) / scale) if scale == scale else float("nan"))
 
     models = {nm: {"mase": round(float(np.nanmean(v)), 4) if len(v) and not np.all(np.isnan(v)) else None,
                    "wape": round(abs_err[nm] / act_sum, 4) if act_sum > 0 else None} for nm, v in errs.items()}
-    base = {nm: v["mase"] for nm, v in models.items() if nm != "timesfm" and v["mase"] is not None}
+    base = {nm: v["mase"] for nm, v in models.items() if nm not in ("timesfm", "timesfm_default") and v["mase"] is not None}
     out: dict[str, Any] = {"points": n, "horizon": horizon, "origins": k, "season_used": m,
                            "models": models,
                            "timesfm_range_coverage_80": round(float(np.mean(covered)), 3),
                            "timesfm_pinball_scaled": round(float(np.nanmean(pin)), 4) if not np.all(np.isnan(pin)) else None}
+    if configured:
+        out["control"] = control.describe()
+        d, c = models["timesfm_default"]["mase"], models["timesfm"]["mase"]
+        if d and c is not None:
+            out["configured_vs_default_pct"] = round((d - c) / d * 100, 1)
     if base and models["timesfm"]["mase"] is not None:
         best = min(base, key=base.get)
         gain = (base[best] - models["timesfm"]["mase"]) / base[best] * 100 if base[best] else None
@@ -104,5 +118,7 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
         out["reading"] = (
             "Lower MASE is better; 1.0 means as accurate as repeating the value one season (or step) back. "
             f"Range coverage should sit near 0.8. Measured over {k} windows of {horizon} periods; with this few windows a "
-            "difference of a few percent is not distinguishable from noise.")
+            "difference of a few percent is not distinguishable from noise."
+            + (" 'timesfm' is the configured run (see control); 'timesfm_default' is the same model with no control. "
+               "configured_vs_default_pct above 0 means the configuration helped on these windows." if configured else ""))
     return out

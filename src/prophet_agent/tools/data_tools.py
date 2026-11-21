@@ -12,10 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, build_control
 from prophet_agent.forecast.rolling import rolling_backtest
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.sandbox.runner import run_python
-from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series
+from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
 PROFILE_CODE = '''
 import json, sys
@@ -80,7 +81,7 @@ INSPECT_DATA_SPEC = {
 
 
 def _backtest(args: dict, _key: str) -> dict[str, Any]:
-    extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season"})
+    extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season"} - CONTROL_ARGS)
     if extra:
         raise ValueError(f"unknown arguments {extra}")
     horizon = args.get("horizon")
@@ -95,7 +96,9 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     season = args.get("season")
     if season is not None and (not isinstance(season, int) or not 1 <= season <= 1000):
         raise ValueError("season must be an integer from 1 to 1000 (1 means none)")
-    return rolling_backtest(named[0][1], horizon, n_origins=n_origins, season=season)
+    series = named[0][1]
+    control = build_control(args, len(series), horizon, source_covariates(args))
+    return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control)
 
 
 def backtest_tool() -> Tool:
@@ -110,8 +113,12 @@ BACKTEST_SPEC = {
                    "simple rules (repeat last value, same point last season, average slope, recent mean), and reports "
                    "MASE and WAPE per method plus how often the true values fell inside the 10 to 90 percent range. "
                    "Run it on the series you intend to forecast, with the horizon you intend to use. If TimesFM does "
-                   "not beat the best simple rule, say so in the answer rather than presenting the forecast as reliable.",
+                   "not beat the best simple rule, say so in the answer rather than presenting the forecast as reliable. Accepts the "
+                   "same control arguments as timesfm_forecast (history window, ignored points, covariates, znorm, "
+                   "symmetric averaging); then it also scores default TimesFM, so you can see whether the configuration "
+                   "helped before using it. Future covariates must cover the history plus the horizon.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer periods ahead",
              "n_origins": "windows to test, 2 to 30 (default 8)",
-             "season": "length of the repeating cycle in periods, 1 for none (default: detected from the data)"},
+             "season": "length of the repeating cycle in periods, 1 for none (default: detected from the data)",
+             **CONTROL_HELP},
 }

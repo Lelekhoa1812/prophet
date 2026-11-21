@@ -77,6 +77,21 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     return [(str(k), _clean(str(k), v)) for k, v in named.items()]
 
 
+def source_covariates(args: dict) -> dict[str, Any]:
+    """Named covariates stored with a series file (``covariates`` key written by ``prophet_lib.save_series``). Empty when
+    there is no source or the file holds none; lengths are checked later against the horizon."""
+    source = args.get("source")
+    if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
+        return {}
+    try:
+        target = (SANDBOX_ROOT / source["run_id"] / str(source.get("file", f"{OUT_DIR}/series.json"))).resolve()
+        doc = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    cov = doc.get("covariates") if isinstance(doc, dict) else None
+    return cov if isinstance(cov, dict) else {}
+
+
 def run_dates(args: dict, name: str) -> list[str] | None:
     """Dates saved next to a series, if any, for chart axes."""
     source = args.get("source")

@@ -788,10 +788,24 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
     return s
 
 
-def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None) -> str:
-    """Write series for the forecast tools: a list, a Series (its dates are kept for charts) or a dict of named ones."""
+def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None,
+                covariates: dict[str, Any] | None = None) -> str:
+    """Write series for the forecast tools: a list, a Series (its dates are kept for charts) or a dict of named ones.
+
+    ``covariates`` maps a name to a list of numbers kept beside the series. A driver known only up to now (price paid)
+    must be as long as the history; one known ahead (a planned promotion, holidays) must be as long as the history plus the
+    horizon you will forecast. The forecast tools then take them by name: future_covariates=['promo'].
+    """
     items = series if isinstance(series, dict) else {"series": series}
     out: dict[str, Any] = {"series": {}, "dates": {}}
+    if covariates:
+        clean: dict[str, list[float]] = {}
+        for cname, cv in covariates.items():
+            arr = np.asarray(cv, dtype=float).reshape(-1)
+            if not np.isfinite(arr).all():
+                raise ValueError(f"covariate {cname!r} has missing or non-finite values; fill them before saving")
+            clean[str(cname)] = arr.tolist()
+        out["covariates"] = clean
     if freq:
         out["freq"] = freq
     for name, s in items.items():
@@ -811,6 +825,98 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(out), encoding="utf-8")
     return path
+
+
+# -------------------------------------------------------------------------- events, holidays, anomalies --
+# Known-ahead drivers and suspicious points, built here so the agent states each choice in code and can chart it. These
+# report facts and build arrays; whether a spike is an error to ignore or an event to explain is the caller's decision.
+
+def _starts(index: Any, horizon: int, freq: str | None) -> pd.DatetimeIndex:
+    """Period start dates for the history plus ``horizon`` further periods."""
+    idx = pd.DatetimeIndex(pd.to_datetime(index))
+    if len(idx) < 3:
+        raise ValueError("need at least 3 dates to know the period length")
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")        # pandas is changing what infer_freq returns; the string is what we use
+        f = freq or pd.infer_freq(idx)
+    if f is None:
+        step = pd.Series(idx).diff().dropna().median()
+        return idx.append(pd.DatetimeIndex([idx[-1] + step * (i + 1) for i in range(horizon)]))
+    off = pd.tseries.frequencies.to_offset(f)
+    return idx.append(pd.date_range(idx[-1] + off, periods=horizon, freq=off)) if horizon else idx
+
+
+def event_covariate(index: Any, events: list[tuple[Any, Any]], horizon: int = 0, freq: str | None = None) -> np.ndarray:
+    """A 0 to 1 driver from date ranges, as long as the history plus ``horizon`` periods. ``events`` is a list of
+    (first_day, last_day), inclusive. Each period gets the share of its days inside an event, so a one-day holiday is 1.0
+    in a daily series and about 0.14 in a weekly one. Pass future event dates too: a planned promotion is known ahead."""
+    starts = _starts(index, horizon, freq)
+    ends = starts[1:].append(pd.DatetimeIndex([starts[-1] + (starts[-1] - starts[-2])]))
+    span = (ends - starts).total_seconds().to_numpy()
+    out = np.zeros(len(starts))
+    for a, b in events:
+        lo, hi = pd.Timestamp(a), pd.Timestamp(b) + pd.Timedelta(days=1)
+        overlap = (np.minimum(ends.to_numpy(), hi.to_datetime64()) - np.maximum(starts.to_numpy(), lo.to_datetime64()))
+        out += np.clip(overlap / np.timedelta64(1, "s"), 0, None) / span
+    return np.clip(out, 0, 1)
+
+
+def list_holidays(country: str, subdiv: str | None = None, start: Any = None, end: Any = None) -> list[dict]:
+    """Public holidays (date and name) for a country code such as 'AU' or 'US', optionally a state, between two dates."""
+    import holidays as hol
+    lo, hi = pd.Timestamp(start), pd.Timestamp(end)
+    cal = hol.country_holidays(country, subdiv=subdiv, years=range(lo.year, hi.year + 1))
+    return [{"date": d.isoformat(), "name": nm} for d, nm in sorted(cal.items()) if lo.date() <= d <= hi.date()]
+
+
+def holiday_covariate(index: Any, country: str, subdiv: str | None = None, horizon: int = 0, freq: str | None = None) -> np.ndarray:
+    """Public-holiday driver for the history plus ``horizon`` periods (see event_covariate). Holiday calendars change by
+    country and state, and shop-level effects (a market closed, a school break) are not in them."""
+    starts = _starts(index, horizon, freq)
+    step = starts[-1] - starts[-2]
+    days = list_holidays(country, subdiv, starts[0], starts[-1] + step)
+    return event_covariate(index, [(d["date"], d["date"]) for d in days], horizon, freq)
+
+
+def detect_anomalies(values: list[float] | np.ndarray, season: int | None = None, threshold: float = 6.0) -> dict:
+    """Points far from what their neighbours or the previous cycle imply, scored with a robust spread (median absolute
+    deviation) so the outliers themselves do not hide each other. Returns index ranges in the form the forecast tools take
+    as ignore_ranges. A promotion or a holiday also looks like a spike: compare these against known events before ignoring
+    anything, and ignore only what has no explanation."""
+    x = np.asarray(values, dtype=float)
+    n = len(x)
+    if n < 12:
+        return {"note": "too short to judge", "points": n, "indices": [], "ignore_ranges": []}
+    m = int(season) if season and season > 1 and season * 2 <= n else 0
+    if m:
+        # Full windows only: a truncated window at the edge does not span a whole cycle and would bias the level there.
+        level = pd.Series(x).rolling(m, center=True, min_periods=m).median().ffill().bfill().to_numpy()
+        detrended = x - level
+        phase = np.arange(n) % m
+        profile = np.array([np.nanmedian(detrended[phase == r]) for r in range(m)])
+        resid = detrended - profile[phase]
+        method = f"distance from the level and the usual shape of a cycle (cycle of {m})"
+    else:
+        k = 7 if n >= 28 else 3
+        med = pd.Series(x).rolling(k, center=True, min_periods=1).median().to_numpy()
+        resid = x - med
+        method = f"distance from the rolling median (window {k})"
+    ok = np.isfinite(resid)
+    centre = np.median(resid[ok])
+    mad = np.median(np.abs(resid[ok] - centre))
+    scale = 1.4826 * mad if mad > 1e-12 else (np.std(resid[ok]) or 1.0)
+    score = np.where(ok, np.abs(resid - centre) / scale, 0.0)
+    idx = np.flatnonzero(score > threshold)
+    ranges: list[list[int]] = []
+    for i in idx.tolist():
+        if ranges and i == ranges[-1][1]:
+            ranges[-1][1] = i + 1
+        else:
+            ranges.append([i, i + 1])
+    return {"method": method, "threshold": threshold, "robust_spread": round(float(scale), 6),
+            "indices": [int(i) for i in idx], "scores": [round(float(score[i]), 2) for i in idx],
+            "values": [round(float(x[i]), 6) for i in idx], "ignore_ranges": ranges}
 
 
 def find_season(values: list[float] | np.ndarray, candidates: tuple[int, ...] | None = None) -> dict:
