@@ -11,7 +11,7 @@ import { Button } from "./ui";
 function Ring({ pct, loading }: { pct: number | null; loading: boolean }) {
   const over = pct !== null && pct >= 100;
   return (
-    <svg viewBox="0 0 36 36" aria-hidden="true" className={cn("size-6 shrink-0 -rotate-90", loading && "animate-pulse")}>
+    <svg viewBox="0 0 36 36" aria-hidden="true" className={cn("size-5 shrink-0 -rotate-90", loading && "animate-pulse")}>
       <circle cx="18" cy="18" r="14" pathLength={100} fill="none" strokeWidth="3.5" className="stroke-sand-2/30" />
       {pct !== null && pct > 0 && (
         <circle
@@ -132,7 +132,7 @@ export function UsageMeter({
         title="Token budgets"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg px-2 transition-colors hover:bg-night-2 hover:text-sand-0",
+          "inline-flex min-h-10 min-w-10 items-center justify-center rounded-lg px-2 transition-colors hover:bg-night-2 hover:text-sand-0 sm:min-h-8 sm:min-w-8",
           open ? "bg-night-2 text-sand-0" : "text-sand-1",
         )}
       >

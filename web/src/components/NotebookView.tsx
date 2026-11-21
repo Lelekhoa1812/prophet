@@ -148,9 +148,9 @@ export function NotebookView({
         disabled={uploads.uploading !== null}
         aria-label="Add files"
         title="Add spreadsheets or data files"
-        className="grid size-11 shrink-0 place-items-center rounded-full text-sand-1 transition-colors hover:bg-night-2 hover:text-sand-0 disabled:opacity-50"
+        className="grid size-10 shrink-0 place-items-center rounded-full text-sand-1 transition-colors hover:bg-night-2 hover:text-sand-0 disabled:opacity-50 sm:size-8"
       >
-        {uploads.uploading ? <Spinner /> : <Paperclip aria-hidden="true" className="size-5" />}
+        {uploads.uploading ? <Spinner /> : <Paperclip aria-hidden="true" className="size-4" />}
       </button>
     </>
   );

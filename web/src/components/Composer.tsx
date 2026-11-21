@@ -20,6 +20,8 @@ import { Spinner } from "./ui";
 const MAX = 2000;
 // From this length the counter shows, so people see the limit before they reach it.
 const NEAR_LIMIT = 1800;
+// The box grows with the text up to this many lines, then scrolls inside itself.
+const MAX_LINES = 7;
 
 // Phones and tablets: Enter adds a line, because the on-screen keyboard has no Shift and people expect Return to break a line.
 function isTouchPointer(): boolean {
@@ -88,12 +90,18 @@ export function Composer({
     }
   }, [initial]);
 
-  // Grow with the text up to about eight lines, then scroll inside the box.
+  // Grow with the text up to MAX_LINES, then scroll inside the box. The cap is measured from the computed line height,
+  // so it stays at seven lines whatever the font size or breakpoint.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const style = getComputedStyle(el);
+    const line = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.5;
+    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const cap = Math.round(line * MAX_LINES + padding);
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
+    el.style.overflowY = el.scrollHeight > cap ? "auto" : "hidden";
   }, [text]);
 
   const options = quick ? optionsFor(pick, quick) : [];
@@ -284,11 +292,11 @@ export function Composer({
           </ul>
         )}
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-end gap-1">
           {quick ? (
             <ActionMenu
               label="Add files, folders, skills or tools"
-              trigger={<Plus aria-hidden="true" className="size-5" />}
+              trigger={<Plus aria-hidden="true" className="size-4" />}
               items={[
                 { key: "files", label: "Add files", icon: <Paperclip className="size-4" />, onSelect: quick.onOpenFiles },
                 { key: "folder", label: "Add folder", icon: <Folder className="size-4" />, onSelect: quick.onOpenFolder },
@@ -315,7 +323,7 @@ export function Composer({
             aria-controls={quick && listOpen ? listId : undefined}
             aria-activedescendant={activeId}
             aria-autocomplete={quick ? "list" : undefined}
-            className="max-h-56 min-h-11 flex-1 resize-none bg-transparent px-2 py-2.5 text-body leading-snug text-sand-0 placeholder:text-sand-2 focus:outline-none"
+            className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-caption leading-normal text-sand-0 placeholder:text-sand-2 focus:outline-none sm:min-h-8 sm:py-1"
           />
           {showStop ? (
             <button
@@ -324,9 +332,9 @@ export function Composer({
               disabled={stopping}
               aria-label={stopping ? "Stopping" : "Stop"}
               title="Stop"
-              className="grid size-11 shrink-0 place-items-center rounded-full bg-sand-0 text-night-0 transition-colors hover:bg-sand-1 disabled:opacity-60"
+              className="grid size-10 shrink-0 place-items-center rounded-full bg-sand-0 text-night-0 transition-colors hover:bg-sand-1 disabled:opacity-60 sm:size-8"
             >
-              {stopping ? <Spinner /> : <Square aria-hidden="true" className="size-4 fill-current" />}
+              {stopping ? <Spinner /> : <Square aria-hidden="true" className="size-3.5 fill-current" />}
             </button>
           ) : (
             <button
@@ -334,9 +342,9 @@ export function Composer({
               disabled={!canSend}
               aria-label={busy ? "Sending" : "Send"}
               title="Send"
-              className="grid size-11 shrink-0 place-items-center rounded-full bg-ember text-night-0 transition-colors hover:bg-ember-strong disabled:cursor-not-allowed disabled:bg-night-3 disabled:text-sand-2"
+              className="grid size-10 shrink-0 place-items-center rounded-full bg-ember text-night-0 transition-colors hover:bg-ember-strong disabled:cursor-not-allowed disabled:bg-night-3 disabled:text-sand-2 sm:size-8"
             >
-              {busy ? <Spinner /> : <ArrowUp aria-hidden="true" className="size-5" />}
+              {busy ? <Spinner /> : <ArrowUp aria-hidden="true" className="size-4" />}
             </button>
           )}
         </div>
