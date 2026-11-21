@@ -736,12 +736,24 @@ def test_the_report_observation_carries_the_run_id_so_the_files_can_be_found():
 
 # -- the finish gate: deterministic checks run on the evidence --------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _ledger_on_disk(tmp_path, monkeypatch):
+    """The finish gate reads the analyst's ledger from the sandbox folder; point it at a folder holding a good one."""
+    import json
+    folder = tmp_path / "sandbox" / "runledger" / "out"
+    folder.mkdir(parents=True)
+    (folder / "ledger.json").write_text(json.dumps([{"stage": st, "finding": "f", "decision": "d"}
+                                                    for st in ("time index", "coverage", "zeros", "outliers")]))
+    monkeypatch.setattr("prophet_agent.runtime.goal.SANDBOX_ROOT", tmp_path / "sandbox")
+
+
 def _gate_tools():
     fc = {"config": {"horizon": 3}, "health": {"verdict": "ok"}, "point": [1.0, 2.0, 3.0], "q10": [0.5, 1.5, 2.5],
           "q90": [1.5, 2.5, 3.5]}
     bt = {"horizon": 3, "best_baseline": "seasonal_naive",
           "models": {"naive": {"mase": 1.0}, "seasonal_naive": {"mase": 0.9}, "timesfm": {"mase": 0.8}}}
-    return {"sandbox_python": _tool("sandbox_python", lambda a, k: {"ok": True, "stdout": "n=40"}),
+    return {"sandbox_python": _tool("sandbox_python", lambda a, k: {"ok": True, "stdout": "n=40", "run_id": "runledger",
+                                                                      "outputs": ["out/ledger.json (300 bytes)"]}),
             "timesfm_forecast": _tool("timesfm_forecast", lambda a, k: fc),
             "backtest_series": _tool("backtest_series", lambda a, k: bt)}
 
@@ -774,4 +786,13 @@ def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_
     _, out = run(store, goal_program("forecast", _gate_tools(), brain))
     assert out["result"]["status"] == "met"
     refusals = [h for h in out["result"]["evidence"] if h.get("contract")]
-    assert refusals and refusals[0]["contract"] == ["data_inspected"]
+    assert refusals and "data_inspected" in refusals[0]["contract"]
+
+
+def test_a_forecast_without_the_analysis_ledger_is_sent_back_until_one_is_saved(store, tmp_path, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.goal.SANDBOX_ROOT", tmp_path / "nowhere")      # no ledger anywhere
+    brain = ScriptedBrain(plans=[call("sandbox_python"), call("backtest_series"), call("timesfm_forecast"), finish(), finish(),
+                                 finish()], evals=[met("forecast 1, 2, 3")] * 3)
+    _, out = run(store, goal_program("forecast", _gate_tools(), brain))
+    assert out["result"]["status"] == "partial"
+    assert out["result"]["contract_failures"] == ["analysis_ledger"]

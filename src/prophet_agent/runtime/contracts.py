@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import math
 import numbers
+import json
 from pathlib import Path
 from typing import Any
 
@@ -257,6 +258,39 @@ def _quantile(rec: dict, level: str, key: str) -> Any:
     return q.get(level) if isinstance(q, dict) else None
 
 
+MIN_LEDGER_STAGES = 4   # distinct analysis stages a forecast's ledger must record (proposed default, to calibrate on live runs)
+
+
+def check_ledger(history, run_root) -> dict | None:
+    """The analyst's ledger: a sandbox step saved ``out/ledger.json`` (``ps.Ledger.save``) with a finding and a decision for at
+    least ``MIN_LEDGER_STAGES`` distinct stages. A forecast whose data was never broken down and decided on leaves no such
+    record. None when ``run_root`` is unknown, so the check is skipped where the sandbox folder cannot be read."""
+    if run_root is None:
+        return None
+    best = 0
+    for h in reversed(history):
+        res = _ok_result(h, "sandbox_python")
+        if not isinstance(res, dict) or not isinstance(res.get("run_id"), str) or "/" in res["run_id"] or ".." in res["run_id"]:
+            continue
+        outputs = [o.split(" (")[0] for o in (res.get("outputs") or []) if isinstance(o, str)]
+        if "out/ledger.json" not in outputs:
+            continue
+        try:
+            entries = json.loads((Path(run_root) / res["run_id"] / "out" / "ledger.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(entries, list):
+            stages = {str(e.get("stage", "")).strip().lower() for e in entries
+                      if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
+            best = max(best, len(stages - {""}))
+    ok = best >= MIN_LEDGER_STAGES
+    return _check("analysis_ledger", ok,
+                  f"the analysis ledger records {best} stages with a finding and a decision" if ok else
+                  f"the analysis ledger records {best} stages; a forecast needs at least {MIN_LEDGER_STAGES} (time index, coverage, "
+                  "zeros and censoring, outliers and level shifts, seasonality) with a finding and a decision each, saved with "
+                  "ps.Ledger().save() in a sandbox step")
+
+
 def check_evidence(history, *, run_root=None) -> list[dict]:
     """Checks on a mission's observations, in order. Never raises: a missing or malformed piece skips its check."""
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
@@ -314,6 +348,11 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
             hist_vals = args.get("values")
             checks.extend(check_forecast(point, _quantile(rec, "0.1", "q10"), _quantile(rec, "0.9", "q90"),
                                          horizon=horizon, history=hist_vals if _numbers(hist_vals) is not None else None))
+
+    if forecasts:
+        ledger = check_ledger(obs, run_root)
+        if ledger is not None:
+            checks.append(ledger)
 
     if backtests and isinstance(backtests[-1].get("models"), dict):
         checks.extend(check_backtest(backtests[-1]))

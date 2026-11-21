@@ -52,7 +52,16 @@ def _tool(name, result=None, args=None, error=None):
 
 
 def _inspect():
-    return _tool("sandbox_python", {"ok": True, "stdout": "rows 12"}, {"code": "print(1)"})
+    return _tool("sandbox_python", {"ok": True, "stdout": "rows 12", "run_id": "insp1", "outputs": ["out/ledger.json (400 bytes)"]},
+                 {"code": "print(1)"})
+
+
+def _write_ledger(root, stages=("time index", "coverage", "zeros", "outliers", "seasonality"), run_id="insp1"):
+    import json as _json
+    folder = root / run_id / "out"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "ledger.json").write_text(_json.dumps([{"index": i + 1, "stage": st, "finding": f"{st} checked", "decision": "kept"}
+                                                     for i, st in enumerate(stages)]))
 
 
 def _forecast(verdict="ok"):
@@ -286,6 +295,7 @@ def test_summarise_gives_blocking_sentences_first_then_warnings_and_respects_lim
 
 def test_good_mission_passes_with_no_blocking_failures(tmp_path):
     _write_pack(tmp_path)
+    _write_ledger(tmp_path)
     checks = check_evidence(_good_history(), run_root=tmp_path)
     assert blocking(checks) == []
     names = {c["name"] for c in checks}
@@ -394,3 +404,26 @@ def test_error_only_history_blocks_nothing_but_reports_no_forecast():
     checks = check_evidence(history)
     assert blocking(checks) == []
     assert _by_name(checks, "forecast_exists")["ok"] is False
+
+
+def test_a_forecast_with_no_analysis_ledger_blocks_when_the_sandbox_folder_is_known(tmp_path):
+    _write_pack(tmp_path)
+    blocked = blocking(check_evidence(_good_history(), run_root=tmp_path))
+    assert [c["name"] for c in blocked] == ["analysis_ledger"]
+
+
+def test_a_ledger_with_too_few_stages_blocks_and_one_with_enough_passes(tmp_path):
+    _write_pack(tmp_path)
+    _write_ledger(tmp_path, stages=("time index", "coverage", "coverage"))
+    assert [c["name"] for c in blocking(check_evidence(_good_history(), run_root=tmp_path))] == ["analysis_ledger"]
+    _write_ledger(tmp_path)
+    assert blocking(check_evidence(_good_history(), run_root=tmp_path)) == []
+
+
+def test_ledger_entries_without_a_decision_do_not_count(tmp_path):
+    import json as _json
+    _write_pack(tmp_path)
+    folder = tmp_path / "insp1" / "out"
+    folder.mkdir(parents=True)
+    (folder / "ledger.json").write_text(_json.dumps([{"stage": f"s{i}", "finding": "x", "decision": ""} for i in range(6)]))
+    assert [c["name"] for c in blocking(check_evidence(_good_history(), run_root=tmp_path))] == ["analysis_ledger"]

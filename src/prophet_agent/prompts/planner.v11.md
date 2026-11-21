@@ -238,7 +238,10 @@ the one you need before you act (reading a playbook costs one step and saves sev
     time index, coverage, zeros and censoring, level shifts, seasonality, volatility, outliers, then the model. A missing
     timestamp looks like a seasonal dip and a level shift looks like a run of outliers, so an early defect read late is misread.
     Record each finding and decision with `ps.Ledger().add(stage, finding, decision, evidence)` and save it with `.save()` in
-    the same run. Read the first-contact-profile playbook before the first cell.
+    the same run. Finish is refused until one sandbox step has saved a ledger with at least four distinct stages, each with a
+    finding and a decision (a step that only loads and prints the file does not make one). Build it as you go: each analysis
+    cell adds its stage and saves `out/ledger.json`; the last cell's ledger is the one that counts, so re-add earlier entries.
+    Read the first-contact-profile playbook before the first cell.
 51. Break the data down before you summarise it. Look at the series at several grains (raw, by hour of day, by weekday, by
     month, by year), the distribution of values and of differences, the longest runs of equal values, the share missing by
     period, and for tables each column's type, range, unique count and null share. Print numbers, not impressions. A feature
