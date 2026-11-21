@@ -188,6 +188,9 @@ export const api = {
     req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { providers: { [provider]: { enabled } } } }) }),
   setModelEnabled: (model: string, enabled: boolean) =>
     req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { models: { [model]: { enabled } } } }) }),
+  // Token budgets for one model: prompt plus completion tokens summed per window. Null means no limit.
+  setModelBudget: (modelId: string, budget: LlmBudget) =>
+    req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { budgets: { [modelId]: budget } } }) }),
   testKeys: (provider: string) =>
     req<{ provider: string; keys: KeyProbe[] }>(`/api/settings/test-keys?provider=${encodeURIComponent(provider)}`, { method: "POST" }),
   clearData: (confirm: string) => req<{ removed: Record<string, number> }>("/api/settings/clear-data", { method: "POST", body: JSON.stringify({ confirm }) }),

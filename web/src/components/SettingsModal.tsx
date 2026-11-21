@@ -2,6 +2,7 @@ import {
   Activity,
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Circle,
   Cpu,
   Download,
@@ -19,9 +20,11 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { api, type KeyProbe, type KeyStatus, type ModelStatus, type SettingsSection, type SettingsView } from "../lib/api";
+import { api, type KeyProbe, type KeyStatus, type LlmBudget, type ModelStatus, type SettingsSection, type SettingsView } from "../lib/api";
 import { errorMessage } from "../lib/format";
+import { WINDOWS } from "../lib/usage";
 import { cn, formatBytes } from "../lib/utils";
+import { BudgetEditor } from "./BudgetEditor";
 import { Button, Card, IconButton, Spinner } from "./ui";
 
 // Plain-language labels for every numeric setting. The server owns the bounds and defaults; this only says what each one does.
@@ -239,6 +242,52 @@ function setModelFlag(v: SettingsView, id: string, enabled: boolean): SettingsVi
   };
 }
 
+function setBudgetFlag(v: SettingsView, id: string, budget: LlmBudget): SettingsView {
+  return { ...v, llm: { ...v.llm, budgets: { ...v.llm.budgets, [id]: budget } } };
+}
+
+// A model with no saved budget reads as three open windows. Missing windows are filled in so a partial entry cannot show "undefined".
+function budgetFor(budgets: Record<string, LlmBudget>, id: string): LlmBudget {
+  const b = budgets[id];
+  return { "1d": b?.["1d"] ?? null, "7d": b?.["7d"] ?? null, "30d": b?.["30d"] ?? null };
+}
+
+// "24-hour 1,200,000 · 30-day 5,000,000" for the windows that have a limit, or "No limits set".
+function budgetSummary(budget: LlmBudget): string {
+  const set = WINDOWS.flatMap((w) => {
+    const n = budget[w.key];
+    return n === null ? [] : [`${w.adjective} ${n.toLocaleString("en-AU")}`];
+  });
+  return set.length > 0 ? set.join(" · ") : "No limits set";
+}
+
+// Token budgets sit under an enabled model. Collapsed by default so the model list stays scannable; the editor stays
+// mounted while collapsed, so an unsaved edit survives closing the disclosure.
+function ModelBudgets({ modelLabel, budget, onSave }: { modelLabel: string; budget: LlmBudget; onSave: (budget: LlmBudget) => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  return (
+    <div className="grid gap-3 border-t border-sand-2/15 pt-3 sm:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((o) => !o)}
+          className="inline-flex min-h-11 items-center gap-2 rounded-lg text-base font-semibold text-sand-0 hover:text-ember"
+        >
+          <ChevronDown aria-hidden="true" className={cn("size-4 shrink-0 text-sand-2 transition-transform duration-150 motion-reduce:transition-none", open && "rotate-180")} />
+          Token budgets
+        </button>
+        <span className="text-caption text-sand-1 tabular-nums">{budgetSummary(budget)}</span>
+      </div>
+      <div id={panelId} hidden={!open}>
+        <BudgetEditor modelLabel={modelLabel} budget={budget} onSave={onSave} />
+      </div>
+    </div>
+  );
+}
+
 function toRows(keys: ProviderKey[]): KeyRow[] {
   return keys.map((k) => ({ value: k.masked, saved: k }));
 }
@@ -326,7 +375,7 @@ function KeysSection({ view, onPatch, onSaved }: { view: SettingsView; onPatch: 
             aria-labelledby={`${headingId}-tab-${current.name}`}
             className="grid gap-4 border-t border-sand-2/15 pt-4"
           >
-            <ProviderPanel key={current.name} provider={current} onPatch={onPatch} onSaved={onSaved} />
+            <ProviderPanel key={current.name} provider={current} budgets={view.llm.budgets ?? {}} onPatch={onPatch} onSaved={onSaved} />
           </div>
         )}
       </div>
@@ -334,7 +383,17 @@ function KeysSection({ view, onPatch, onSaved }: { view: SettingsView; onPatch: 
   );
 }
 
-function ProviderPanel({ provider: p, onPatch, onSaved }: { provider: ProviderView; onPatch: Patch; onSaved: (v: SettingsView) => void }) {
+function ProviderPanel({
+  provider: p,
+  budgets,
+  onPatch,
+  onSaved,
+}: {
+  provider: ProviderView;
+  budgets: Record<string, LlmBudget>;
+  onPatch: Patch;
+  onSaved: (v: SettingsView) => void;
+}) {
   const id = useId();
   const [rows, setRows] = useState<KeyRow[]>(() => toRows(p.keys));
   const [draft, setDraft] = useState("");
@@ -430,6 +489,19 @@ function ProviderPanel({ provider: p, onPatch, onSaved }: { provider: ProviderVi
       setToggleError(errorMessage(err, `Couldn't ${next ? "enable" : "disable"} ${m.label}. Try again.`));
     } finally {
       setModelBusy(null);
+    }
+  }
+
+  // Optimistic like the toggles: the budget moves at once and returns if the server refuses it. The error is rethrown so
+  // the budget editor shows the server's message beside its own fields.
+  async function setBudget(modelId: string, next: LlmBudget) {
+    const previous = budgetFor(budgets, modelId);
+    onPatch((v) => setBudgetFlag(v, modelId, next));
+    try {
+      await api.setModelBudget(modelId, next);
+    } catch (err) {
+      onPatch((v) => setBudgetFlag(v, modelId, previous));
+      throw err;
     }
   }
 
@@ -626,6 +698,9 @@ function ProviderPanel({ provider: p, onPatch, onSaved }: { provider: ProviderVi
                     label={`Enable model ${m.label}`}
                     onChange={(next) => void setModel(m, next)}
                   />
+                  {m.enabled && (
+                    <ModelBudgets modelLabel={m.label} budget={budgetFor(budgets, m.id)} onSave={(next) => setBudget(m.id, next)} />
+                  )}
                 </li>
               );
             })}
