@@ -828,3 +828,15 @@ def test_an_account_wide_429_rests_every_key_for_that_model():
     assert reply.text == "ok"
     assert [s for s, _ in script.sequence()][0] == 1
     assert clock.t - start >= 19.0, "keys 2 and 3 share the account limit, so they were not tried straight away"
+
+
+def test_two_unusable_strict_replies_switch_the_model_to_plain_json_mode_with_the_schema_in_the_prompt():
+    replies = iter(['{"ok": "yes"}', '{"ok": "no"}', '{"ok": true}'])
+    script = Script().on(lambda request, payload: sse([next(replies)]))
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    client, _ = make(script)
+    reply = client.complete([M1], MSGS, schema=schema)
+    assert reply.text == '{"ok": true}' and [m for _, m in script.sequence()] == [M1, M1, M1]
+    formats = [c["body"].get("response_format", {}).get("type") for c in script.calls]
+    assert formats[:2] == ["json_schema", "json_schema"] and formats[2] == "json_object"
+    assert "schema" in json.dumps(script.calls[2]["body"]["messages"]).lower()

@@ -577,6 +577,10 @@ class NimClient:
                     if out.invalid and repairs < MAX_REPAIRS:
                         # The model answered, but not in the schema. Show it that reply and the reason, on the same key.
                         repairs += 1
+                        if repairs == 2 and shape.mode == "strict" and schema is not None and not opts.tools:
+                            # Strict decoding has now produced two unusable replies. Ask in plain JSON mode with the schema in the
+                            # prompt and the local check, which some models follow where their constrained decoding fails.
+                            shape = _Shape("json_object", shape.drop)
                         repair = [{"role": "assistant", "content": out.text[:REPAIR_QUOTE_CHARS]},
                                   {"role": "user", "content": REPAIR_PROMPT.format(reason=out.reason) + repair_hint(out.reason)}]
                         tried -= 1
