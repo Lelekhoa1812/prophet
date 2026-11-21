@@ -682,6 +682,8 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
         out["issues"].append("no table could be read from this file")
         return out
     numeric_cols, time_cols, id_cols = [], [], []
+    nums: dict[str, pd.Series] = {}
+    times: dict[str, pd.Series] = {}
     for name in df.columns:
         col = df[name]
         info: dict[str, Any] = {"name": str(name), "unique": int(col.nunique(dropna=True)), "sample": [str(v)[:30] for v in col.head(3)]}
@@ -704,10 +706,12 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
                 time_cols.append(str(name))
             else:
                 numeric_cols.append(str(name))
+                nums[str(name)] = num
         else:
             ts, tinfo = to_datetime(col)
             if ts.notna().mean() >= 0.9 and col.nunique() > 1:
                 info.update(kind="time", **_regularity(ts), parsed_as=tinfo.get("format"))
+                times[str(name)] = ts
                 if tinfo.get("ambiguous_day_month"):
                     out["issues"].append(f"column {name!r}: dates such as {col.iloc[0]!r} read differently day-first and month-first "
                                          f"({tinfo.get('rows_where_it_matters')} rows differ); ask which applies")
@@ -725,6 +729,8 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
                 if info["unique"] <= max(50, 0.2 * len(df)) or "spelling_variants" in info:
                     id_cols.append(str(name))
         out["columns"].append(info)
+    if times and nums and not id_cols:
+        _outlier_facts(out, nums, next(iter(times.values())))
     if len(out["columns"]) > MAX_PROFILE_COLUMNS:
         out["columns_omitted"] = len(out["columns"]) - MAX_PROFILE_COLUMNS
         out["columns"] = out["columns"][:MAX_PROFILE_COLUMNS]
@@ -737,6 +743,33 @@ def profile(path: str | Path, sheet: str | int | None = None, block: int | None 
     if not time_cols and numeric_cols:
         out["layout_hints"].append("no time column found; rows may already be in time order, or the time information is in the header")
     return out
+
+
+def _outlier_facts(out: dict, nums: dict[str, pd.Series], ts: pd.Series) -> None:
+    """Values far from their neighbours in a single time-ordered series, reported as a fact. They may be entry errors or
+    real events; the caller decides. Skipped when so many points qualify that 'unusual' stops meaning anything."""
+    order = np.argsort(ts.to_numpy(dtype="datetime64[ns]"), kind="stable")
+    by_name = {c["name"]: c for c in out["columns"]}
+    for name, num in list(nums.items())[:5]:
+        x = num.to_numpy(dtype=float)[order]
+        keep = np.isfinite(x)
+        if keep.sum() < 30:
+            continue
+        rows = np.flatnonzero(keep)
+        res = detect_anomalies(x[keep])
+        n_found = len(res["indices"])
+        if not n_found or n_found > 0.05 * keep.sum():
+            continue
+        worst = np.argsort(res["scores"])[::-1][:5]
+        picks = [{"row": int(order[rows[res["indices"][i]]]) + 1, "date": str(ts.iloc[order[rows[res["indices"][i]]]])[:10],
+                  "value": res["values"][i]} for i in worst]
+        found = {"count": n_found, "largest": picks}
+        if keep.all() and (order == np.arange(len(order))).all():
+            found["ignore_ranges_if_confirmed"] = res["ignore_ranges"][:20]      # positions equal the table's row order
+        by_name[name]["outlier_candidates"] = found
+        out["issues"].append(
+            f"column {name!r}: {n_found} value(s) sit far from their neighbours (largest: {picks[0]['value']:g} on {picks[0]['date']}). "
+            "They may be entry errors or real events (a promotion, a holiday): compare with known events before ignoring or keeping them")
 
 
 def profile_workbook(path: str | Path, max_sheets: int = 12) -> dict:

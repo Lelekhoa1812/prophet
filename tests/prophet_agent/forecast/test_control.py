@@ -268,3 +268,28 @@ def test_real_masking_a_keying_error_removes_its_influence_and_covariate_changes
     assert (np.diff(withcov.q, axis=-1) >= 0).all() and withcov.q.shape == (h, 9)
     sym = e.forecast_controlled(y, h, Control(symmetric=True, znorm=True, context_points=128))
     assert np.isfinite(sym.q).all()
+
+
+# ------------------------------------------------------------------------------------------- report path --
+
+def test_report_note_states_what_was_applied():
+    import importlib
+    rt = importlib.import_module("prophet_agent.tools.report_tool")
+    assert "default settings" in rt._method_note({})
+    note = rt._method_note({"control": {"ignored_points": 3, "future_covariates": ["promo"], "znorm": True}})
+    assert "3 history points ignored" in note and "promo" in note and "research use only" in note
+
+
+def test_report_forwards_controls_to_the_forecast(tool_engine, monkeypatch):
+    import importlib
+    rt = importlib.import_module("prophet_agent.tools.report_tool")
+    seen = {}
+    real = rt.timesfm_run
+    monkeypatch.setattr(rt, "timesfm_run", lambda a, k: seen.update(a) or real(a, k))
+    monkeypatch.setattr(rt, "build_forecast_pack", lambda **kw: seen.update(note=kw["note"]) or type(
+        "P", (), {"ok": True, "run_id": "r", "workdir": "w", "outputs": [], "stderr": ""})())
+    out = rt._run({"values": [float(i % 7) + 10 for i in range(60)], "horizon": 4, "title": "t", "ignore_ranges": [[3, 5]],
+                   "future_covariates": {"promo": [0.0] * 64}}, "k")
+    assert seen["ignore_ranges"] == [[3, 5]] and "title" not in seen
+    assert out["forecast"]["config"]["control"]["future_covariates"] == ["promo"]
+    assert "promo" in seen["note"]

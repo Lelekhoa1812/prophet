@@ -22,6 +22,13 @@ _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 _DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_MONTH}\s+\d{{4}}\b|\b(\d{{4}})-\d{{1,2}}(?:-\d{{1,2}})?\b|\b\d{{1,2}}/\d{{1,2}}/(\d{{2,4}})\b|\b\d{{1,2}}:\d{{2}}(?::\d{{2}})?\b")
 
 
+# A day or a range of days beside a real month name ("16-19 January", "Jan 16", "March 3-5") is a date label as well. Only true
+# month names count, so "Mark 15" or "Decision 12" are not swallowed.
+_REAL_MONTH = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
+               r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)")
+_DAYS = r"\d{1,2}(?:(?:st|nd|rd|th)\b)?(?:\s*-\s*\d{1,2}(?:(?:st|nd|rd|th)\b)?)?"
+_DAY_MONTH = re.compile(rf"\b{_DAYS}\s+(?:of\s+)?{_REAL_MONTH}\b|\b{_REAL_MONTH}\.?\s+{_DAYS}(?![\d%,.]*\d)(?!%)")
+
 # Models write dates and minus signs with non-breaking hyphens, en dashes and the true minus sign.
 _YEAR = re.compile(r"(?:19|20)\d\d")
 _DASHES = {ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2212"}
@@ -57,7 +64,7 @@ def _drop_row_indexes(text: str) -> str:
 def figures(text: str) -> list[str]:
     """The numeric tokens in a text, in order of appearance."""
     text = _drop_row_indexes((text or "").translate(_DASHES))
-    text = _DATE.sub("", text or "")
+    text = _DAY_MONTH.sub("", _DATE.sub("", text or ""))
     return [m.group().rstrip(",") for m in _NUM.finditer(text)]
 
 
