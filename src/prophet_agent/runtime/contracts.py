@@ -269,7 +269,8 @@ def check_ledger(history, run_root) -> dict | None:
         return None
     best = 0
     for h in reversed(history):
-        res = _ok_result(h, "sandbox_python")
+        # A step that saved the ledger and then failed later in the cell (a print, a chart) still saved it: the file is the evidence.
+        res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
         if not isinstance(res, dict) or not isinstance(res.get("run_id"), str) or "/" in res["run_id"] or ".." in res["run_id"]:
             continue
         outputs = [o.split(" (")[0] for o in (res.get("outputs") or []) if isinstance(o, str)]

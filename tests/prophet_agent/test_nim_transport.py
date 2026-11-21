@@ -851,3 +851,19 @@ def test_a_400_that_says_the_api_key_is_invalid_retires_that_key_and_the_next_on
     assert reply.model == M1 and reply.text == "ok"
     assert script.sequence() == [(1, M1), (2, M1)], "the model was not blamed for the key"
     assert client.status()["keys"][0]["retired"] is True
+
+
+def test_keys_all_resting_past_the_attempt_budget_is_waited_out_not_reported():
+    # Seen live: "all keys are cooling or paced past the budget" reached the person as a failed mission.
+    refused: list[int] = []
+
+    def rate_limited_then_fine(request, payload):
+        if len(refused) < 3:
+            refused.append(1)
+            return httpx.Response(429, text="", headers={"Retry-After": "100"})
+        return sse(["ok"])
+    script = Script().on(rate_limited_then_fine)
+    client, clock = make(script)
+    reply = client.complete([M1], MSGS, budget_s=30.0)
+    assert reply.text == "ok"
+    assert clock.t >= 1000.0 + 100.0, "the call waited out the 100 s cooldown"

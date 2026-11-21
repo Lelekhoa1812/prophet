@@ -390,6 +390,12 @@ def _timeout(remaining: float, silence: float | None = None) -> httpx.Timeout:
                          pool=min(30.0, remaining))
 
 
+class _AllBusy(Exhausted):
+    """Every usable key is cooling or paced for this model, past this attempt's slice of the budget. A rate limit, not a failure:
+    the call waits for the soonest key instead of reporting it (seen live: three missions failed with this message while
+    five were running against four working keys)."""
+
+
 class _BudgetSpent(Exception):
     """The wall-clock budget ran out inside a response. Internal: never escapes the transport."""
 
@@ -514,7 +520,11 @@ class NimClient:
                         raise Exhausted(f"nim budget spent before a usable answer; last: {last}")
                     if checkpoint is not None:
                         checkpoint()
-                    key = self._acquire(model, deadline, only=key if reuse else None)
+                    try:
+                        key = self._acquire(model, deadline, only=key if reuse else None)
+                    except _AllBusy as busy:
+                        last, waitable = str(busy), True      # try the next model, then wait for the soonest key (see _rate_wait)
+                        break
                     reuse = False
                     tried += 1
                     dispatched += 1
@@ -779,7 +789,7 @@ class NimClient:
                 soonest = min(pool, key=lambda k: self._ready_at(k, model, now))
                 at = self._ready_at(soonest, model, now)
             if at > deadline:
-                raise Exhausted("all keys are cooling or paced past the budget")
+                raise _AllBusy("all keys are cooling or paced past the budget")
             self.sleep(max(0.01, at - now))
 
     def _release(self, key: str) -> None:

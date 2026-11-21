@@ -427,3 +427,13 @@ def test_ledger_entries_without_a_decision_do_not_count(tmp_path):
     folder.mkdir(parents=True)
     (folder / "ledger.json").write_text(_json.dumps([{"stage": f"s{i}", "finding": "x", "decision": ""} for i in range(6)]))
     assert [c["name"] for c in blocking(check_evidence(_good_history(), run_root=tmp_path))] == ["analysis_ledger"]
+
+
+def test_a_ledger_saved_by_a_step_that_failed_later_in_the_cell_still_counts(tmp_path):
+    _write_pack(tmp_path)
+    _write_ledger(tmp_path)
+    history = _good_history()
+    history[0]["result"]["ok"] = False          # the cell raised after ps.Ledger().save()
+    history.insert(0, _inspect())
+    blocked = [c["name"] for c in blocking(check_evidence(history, run_root=tmp_path))]
+    assert "analysis_ledger" not in blocked
