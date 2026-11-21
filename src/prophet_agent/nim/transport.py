@@ -284,9 +284,12 @@ class NimClient:
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
                  rng: random.Random | None = None,
-                 on_reply: Callable[[Reply], None] | None = None):
+                 on_reply: Callable[[Reply], None] | None = None,
+                 allow: Callable[[str], str | None] | None = None):
         self.provider = provider
         self.on_reply = on_reply               # called once per successful model call (the usage ledger hook); never raises
+        # Budget gate: returns a reason when a model may not be called now (its token budget is used up), else None.
+        self.allow = allow
         self.keys: list[str] = list(dict.fromkeys(k for k in keys if k))
         if not self.keys:
             raise NotConfigured(f"no {provider.label} key configured (looked for {provider.key_hint} in the "
@@ -348,6 +351,14 @@ class NimClient:
         chain = self._order(models)
         if not chain:
             raise NimError("no models given")
+        if self.allow is not None:
+            # Models over their token budget are skipped before any call is made; if none is left, the call stops here.
+            verdicts = {m: self.allow(m) for m in chain}
+            reasons = [why for why in verdicts.values() if why]
+            if reasons:
+                chain = [m for m in chain if verdicts[m] is None]
+                if not chain:
+                    raise Exhausted("token budget used up: " + "; ".join(reasons))
         deadline = self.clock() + budget_s
         opts = _Opts(thinking, max_tokens, schema, schema_name, [dict(t) for t in tools] if tools else None)
         dispatched, last, last_invalid = 0, "no attempt", False
@@ -687,6 +698,24 @@ def _usage_hook(provider: str) -> Callable[[Reply], None]:
     return record
 
 
+def _budget_gate() -> Callable[[str], str | None]:
+    """The gate every shared client gets: a model whose token budget is used up in any window (1d, 7d, 30d) is not
+    called. Budgets are read on each call, so a change in Settings applies at once. Read, write and cache tokens count together."""
+    def gate(model: str) -> str | None:
+        from ..settings import Settings
+        from ..usage import WINDOWS, ledger_for
+        from ..config import DATA
+        budget = Settings().budgets().get(model) or {}
+        if not any(budget.get(w) for w in WINDOWS):
+            return None
+        ledger = ledger_for(DATA)
+        now = ledger.clock()
+        over = [f"{w} {ledger.used(model, w, now):,}/{budget[w]:,} tokens" for w in WINDOWS
+                if budget.get(w) and ledger.used(model, w, now) >= budget[w]]
+        return f"{model} over budget ({'; '.join(over)})" if over else None
+    return gate
+
+
 def shared_client(provider: str | None = None) -> NimClient:
     """The one client of this process for one provider (default: the planner's active provider), created on first use.
     Every mission and sub-agent calls through it, so the rate windows, cooldowns and in-flight counts cover all of them
@@ -697,7 +726,8 @@ def shared_client(provider: str | None = None) -> NimClient:
     with _SHARED_LOCK:
         client = _SHARED.get(name)
         if client is None:
-            client = NimClient(Settings().usable_keys(name), provider=PROVIDERS[name], on_reply=_usage_hook(name))
+            client = NimClient(Settings().usable_keys(name), provider=PROVIDERS[name], on_reply=_usage_hook(name),
+                               allow=_budget_gate())
             _SHARED[name] = client
         return client
 

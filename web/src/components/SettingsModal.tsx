@@ -24,6 +24,7 @@ import { errorMessage } from "../lib/format";
 import { WINDOWS } from "../lib/usage";
 import { cn, formatBytes } from "../lib/utils";
 import { BudgetEditor } from "./BudgetEditor";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Button, Card, IconButton, Spinner } from "./ui";
 
 // Plain-language labels for every numeric setting. The server owns the bounds and defaults; this only says what each one does.
@@ -168,11 +169,21 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
           )}
           {view && (
             <div className="grid gap-8">
-              <KeysSection view={view} onPatch={patchView} onSaved={setView} />
-              <ModelsAndTimesFm view={view} />
-              <LimitsSection view={view} onSaved={setView} />
-              <SandboxSection view={view} />
-              <DataSection view={view} onCleared={() => { void load(); onDataChanged(); }} />
+              <ErrorBoundary label="Model providers">
+                <KeysSection view={view} onPatch={patchView} onSaved={setView} />
+              </ErrorBoundary>
+              <ErrorBoundary label="Model details">
+                <ModelsAndTimesFm view={view} />
+              </ErrorBoundary>
+              <ErrorBoundary label="Limits">
+                <LimitsSection view={view} onSaved={setView} />
+              </ErrorBoundary>
+              <ErrorBoundary label="Sandbox">
+                <SandboxSection view={view} />
+              </ErrorBoundary>
+              <ErrorBoundary label="Data">
+                <DataSection view={view} onCleared={() => { void load(); onDataChanged(); }} />
+              </ErrorBoundary>
             </div>
           )}
         </div>

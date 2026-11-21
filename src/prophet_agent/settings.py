@@ -35,6 +35,31 @@ from prophet_agent.runtime.goal import GoalConfig
 from prophet_agent.sandbox.runner import memory_limit_enforced, run_python
 from prophet_agent.usage import WINDOWS
 
+# The Settings page shows the size of the data folder. Walking tens of thousands of files takes about a second, so the
+# answer is kept for SIZE_TTL_S seconds; clearing data drops it at once.
+SIZE_TTL_S = 60.0
+_SIZE_CACHE: dict[str, tuple[float, int]] = {}
+_SIZE_LOCK = threading.Lock()
+
+
+def _data_bytes(root: Path) -> int:
+    key = str(root)
+    now = time.monotonic()
+    with _SIZE_LOCK:
+        hit = _SIZE_CACHE.get(key)
+        if hit is not None and now - hit[0] < SIZE_TTL_S:
+            return hit[1]
+    size = sum(p.stat().st_size for p in root.rglob("*") if p.is_file()) if root.exists() else 0
+    with _SIZE_LOCK:
+        _SIZE_CACHE[key] = (now, size)
+    return size
+
+
+def _forget_data_bytes(root: Path) -> None:
+    with _SIZE_LOCK:
+        _SIZE_CACHE.pop(str(root), None)
+
+
 DEFAULTS: dict[str, dict[str, int]] = {
     "agent": {"part_steps": 200, "tool_calls_per_part": 20, "part_seconds": 900, "sub_steps": 12},
     "context": {"view_chars": 16000, "keep_recent": 4, "memory_chars": 8000},
@@ -422,9 +447,8 @@ class Settings:
         with store.lock:
             missions = store.conn.execute("SELECT COUNT(*) AS n FROM missions").fetchone()["n"]
             notebooks = store.conn.execute("SELECT COUNT(*) AS n FROM notebooks").fetchone()["n"]
-        size = sum(p.stat().st_size for p in self.data_root.rglob("*") if p.is_file()) if self.data_root.exists() else 0
         return {"missions": int(missions), "notebooks": int(notebooks), "datasets": len(datasets.list(limit=10_000)),
-                "bytes": int(size)}
+                "bytes": int(_data_bytes(self.data_root))}
 
     def export(self, store, datasets) -> dict[str, Any]:
         """Everything the ledger holds, as plain JSON. Keys and .env are not part of it."""
@@ -454,6 +478,7 @@ class Settings:
                 shutil.rmtree(child, ignore_errors=True)
             else:
                 child.unlink(missing_ok=True)
+        _forget_data_bytes(self.data_root)
         return removed
 
     # -- helpers -----------------------------------------------------------------------------------------------
