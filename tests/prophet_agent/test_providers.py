@@ -5,11 +5,12 @@ Offline only. No test calls a real provider; the HTTP layer is an httpx MockTran
 from __future__ import annotations
 
 import json
+import random
 
 import httpx
 import pytest
 
-from prophet_agent.nim import NimClient, NotConfigured
+from prophet_agent.nim import NimClient
 from prophet_agent.nim.providers import PROVIDERS, active_provider_name, load_provider_keys, planner_problem
 from prophet_agent.nim.transport import _Opts, _Shape, build_body
 from prophet_agent.settings import Settings, mask
@@ -78,10 +79,70 @@ def test_client_sends_bearer_key_to_the_vendor_endpoint_and_returns_the_answer()
     assert "sk-openai" not in repr(client), "the client never shows key material"
 
 
-def test_matilda_without_an_endpoint_is_a_configuration_error(monkeypatch):
+def test_matilda_defaults_to_the_verified_endpoint_and_model(monkeypatch):
+    # Source: FreeRouter docs/API_CONTRACTS.md; live-verified 2026-11-21 (model id "matilda", OpenAI-compatible).
     monkeypatch.delenv("MATILDA_BASE_URL", raising=False)
-    with pytest.raises(NotConfigured, match="MATILDA_BASE_URL"):
-        NimClient(["mat-key-111111"], provider=PROVIDERS["matilda"])
+    assert PROVIDERS["matilda"].resolve_base_url() == "https://matilda.maincode.com/api/v1"
+    assert PROVIDERS["matilda"].models({}) == ("matilda",)
+    assert PROVIDERS["matilda"].probe_target({}) == "matilda"
+    assert PROVIDERS["matilda"].usable({})
+
+
+def test_matilda_endpoint_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("MATILDA_BASE_URL", "https://matilda.example.test/api/v1/")
+    assert PROVIDERS["matilda"].resolve_base_url() == "https://matilda.example.test/api/v1"
+
+
+def test_matilda_request_shape_and_auth_follow_the_openai_wire_format(monkeypatch):
+    monkeypatch.delenv("MATILDA_BASE_URL", raising=False)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse('{"status": "ok"}'), headers={"content-type": "text/event-stream"})
+
+    schema = {"type": "object", "properties": {"status": {"type": "string", "enum": ["ok"]}},
+              "required": ["status"], "additionalProperties": False}
+    clock, sleep = _clock()
+    client = NimClient(["mat-key-111111"], provider=PROVIDERS["matilda"], transport=httpx.MockTransport(handler),
+                       clock=clock, sleep=sleep)
+    reply = client.complete(["matilda"], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=50,
+                            schema=schema, schema_name="status_reply")
+    assert reply.model == "matilda" and reply.text == '{"status": "ok"}'
+    assert seen["url"] == "https://matilda.maincode.com/api/v1/chat/completions"
+    assert seen["auth"] == "Bearer mat-key-111111"
+    body = seen["body"]
+    assert body["model"] == "matilda" and body["stream"] is True and body["max_tokens"] == 50
+    assert body["stream_options"] == {"include_usage": True}
+    for banned in ("temperature", "top_p", "stop", "reasoning_effort", "chat_template_kwargs", "max_completion_tokens"):
+        assert banned not in body, f"Matilda rejects or ignores {banned}"
+    assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["strict"] is True
+    assert "mat-key-111111" not in repr(client), "the client never shows key material"
+
+
+def test_matilda_rotates_to_the_next_key_after_a_rate_limit(monkeypatch):
+    monkeypatch.delenv("MATILDA_BASE_URL", raising=False)
+    used: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.headers["authorization"].removeprefix("Bearer ")
+        used.append(key)
+        if key == "mat-key-111111":
+            return httpx.Response(429, headers={"retry-after": "30"}, content=b'{"error": "rate limited"}')
+        return httpx.Response(200, content=_sse("READY"), headers={"content-type": "text/event-stream"})
+
+    class _InOrder(random.Random):                  # keep key order so the first attempt is always key 1
+        def shuffle(self, x):
+            return None
+
+    clock, sleep = _clock()
+    client = NimClient(["mat-key-111111", "mat-key-222222"], provider=PROVIDERS["matilda"],
+                       transport=httpx.MockTransport(handler), clock=clock, sleep=sleep, rng=_InOrder())
+    reply = client.complete(["matilda"], [{"role": "user", "content": "hi"}], thinking=False, max_tokens=20)
+    assert reply.text == "READY" and reply.key_slot == 2
+    assert used[0] == "mat-key-111111" and used[-1] == "mat-key-222222"
 
 
 def test_active_provider_persists_across_limit_updates(tmp_path):

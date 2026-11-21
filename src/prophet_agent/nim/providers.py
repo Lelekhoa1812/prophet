@@ -106,8 +106,13 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.x.ai/v1", default_models=("grok-4", "grok-3-mini"),
     ),
     "matilda": Provider(
+        # Motivation: Maincode's Matilda is OpenAI-compatible at this endpoint with a Bearer "mc_live_" key and one model id.
+        # Logic: MATILDA_BASE_URL overrides the verified default. Matilda rejects sampling controls (temperature, top_p,
+        # stop) and reasoning_effort, so no temperature is sent. Live-verified 2026-11-21: stream_options is accepted.
+        # Sources: FreeRouter docs/API_CONTRACTS.md and src/lib/providers/openai.ts (buildMatildaBody).
         name="matilda", label="Matilda", key_list_var="MATILDA_API_KEY", key_prefix="MATILDA_API_KEY",
-        base_url=None, base_url_var="MATILDA_BASE_URL", default_models=(),
+        base_url="https://matilda.maincode.com/api/v1", base_url_var="MATILDA_BASE_URL", default_models=("matilda",),
+        send_temperature=False,
     ),
 }
 DEFAULT_PROVIDER = "nim"
