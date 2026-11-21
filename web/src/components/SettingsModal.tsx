@@ -17,7 +17,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { api, type KeyProbe, type SettingsSection, type SettingsView } from "../lib/api";
 import { errorMessage } from "../lib/format";
 import { cn, formatBytes } from "../lib/utils";
@@ -148,21 +148,106 @@ export function SettingsModal({ open, onClose, onDataChanged }: { open: boolean;
   );
 }
 
-// -- NIM keys -----------------------------------------------------------------------------------------------------------
+// -- Model providers ----------------------------------------------------------------------------------------------------
 
+type ProviderView = SettingsView["llm"]["providers"][number];
+type PoolView = NonNullable<SettingsView["llm"]["pool"]>;
+
+// One switcher over every provider. Only the selected provider's panel is mounted, so one set of keys is on screen at a time.
 function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: SettingsView) => void }) {
   const headingId = useId();
-  const [keys, setKeys] = useState<string[]>(() => view.nim.keys.map((k) => k.masked));
+  const providers = view.llm.providers;
+  const activeLabel = providers.find((p) => p.name === view.llm.provider)?.label ?? view.llm.provider;
+  const [selected, setSelected] = useState(view.llm.provider);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const current = providers.find((p) => p.name === selected) ?? providers[0];
+
+  // Arrow keys, Home and End move between tabs and select the tab they land on (the roving tabindex pattern).
+  function onTabKey(e: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    const last = providers.length - 1;
+    const next =
+      e.key === "ArrowRight" ? (index === last ? 0 : index + 1) : e.key === "ArrowLeft" ? (index === 0 ? last : index - 1) : e.key === "Home" ? 0 : e.key === "End" ? last : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    setSelected(providers[next].name);
+    tabRefs.current[next]?.focus();
+  }
+
+  return (
+    <Section
+      id={headingId}
+      title="Model providers"
+      description="Add keys for each provider, then choose the one Prophet uses for planning. Keys are never shown in full."
+    >
+      <div className="grid gap-4">
+        <p className="text-base text-sand-0">
+          Planning uses: <span className="font-semibold">{activeLabel}</span>
+        </p>
+
+        <div role="tablist" aria-label="Model providers" className="flex flex-wrap gap-2">
+          {providers.map((p, i) => {
+            const isSelected = p.name === selected;
+            return (
+              <button
+                key={p.name}
+                ref={(el) => {
+                  tabRefs.current[i] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`${headingId}-tab-${p.name}`}
+                aria-selected={isSelected}
+                aria-controls={`${headingId}-panel`}
+                tabIndex={isSelected ? 0 : -1}
+                onClick={() => setSelected(p.name)}
+                onKeyDown={(e) => onTabKey(e, i)}
+                className={cn(
+                  "inline-flex min-h-11 items-center gap-2 rounded-lg border px-3.5 text-base font-semibold transition-colors",
+                  isSelected ? "border-ember bg-night-2 text-sand-0" : "border-sand-2/30 text-sand-1 hover:border-sand-1 hover:text-sand-0",
+                )}
+              >
+                {p.label}
+                {p.active && <span className="rounded-full bg-ember/15 px-2 py-0.5 text-micro text-ember">Active</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        {current && (
+          <div
+            role="tabpanel"
+            id={`${headingId}-panel`}
+            aria-labelledby={`${headingId}-tab-${current.name}`}
+            className="grid gap-4 border-t border-sand-2/15 pt-4"
+          >
+            <ProviderPanel key={current.name} provider={current} pool={current.active ? view.llm.pool : null} onSaved={onSaved} />
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function ProviderPanel({ provider: p, pool, onSaved }: { provider: ProviderView; pool: PoolView | null; onSaved: (v: SettingsView) => void }) {
+  const id = useId();
+  const [keys, setKeys] = useState<string[]>(() => p.keys.map((k) => k.masked));
   const [draft, setDraft] = useState("");
   const [reveal, setReveal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [probes, setProbes] = useState<KeyProbe[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => setKeys(view.nim.keys.map((k) => k.masked)), [view.nim.keys]);
+  useEffect(() => setKeys(p.keys.map((k) => k.masked)), [p.keys]);
 
-  const dirty = JSON.stringify(keys) !== JSON.stringify(view.nim.keys.map((k) => k.masked)) || draft.trim() !== "";
+  // Single-key providers take one key: the add field only appears while no key is set.
+  const canAdd = p.multi_key || keys.length === 0;
+  const dirty = JSON.stringify(keys) !== JSON.stringify(p.keys.map((k) => k.masked)) || (canAdd && draft.trim() !== "");
+  const setupVars = p.name !== "matilda" ? [] : [
+    ...(!p.endpoint_set ? [{ name: "MATILDA_BASE_URL", help: "the endpoint Matilda is served from" }] : []),
+    ...(p.models.length === 0 ? [{ name: "PROPHET_MATILDA_MODELS", help: "the models Prophet may use" }] : []),
+  ];
 
   function addKey() {
     const value = draft.trim();
@@ -180,12 +265,12 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
     setSaving(true);
     setError(null);
     try {
-      const pending = draft.trim() ? [...keys, draft.trim()] : keys;
-      onSaved(await api.saveKeys(pending));
+      const pending = canAdd && draft.trim() ? [...keys, draft.trim()] : keys;
+      onSaved(await api.saveProviderKeys(p.name, pending));
       setDraft("");
       setProbes(null);
     } catch (err) {
-      setError(errorMessage(err, "Couldn't save the keys. Check the format and try again."));
+      setError(errorMessage(err, `Couldn't save the ${p.label} keys. Check the format and try again.`));
     } finally {
       setSaving(false);
     }
@@ -195,131 +280,184 @@ function KeysSection({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
     setTesting(true);
     setError(null);
     try {
-      setProbes((await api.testKeys()).keys);
+      setProbes((await api.testKeys(p.name)).keys);
     } catch (err) {
-      setError(errorMessage(err, "Couldn't test the keys. Save a key first."));
+      setError(errorMessage(err, `Couldn't test the ${p.label} keys. Save a key first.`));
     } finally {
       setTesting(false);
     }
   }
 
-  const pool = view.nim.pool;
+  async function useForPlanning() {
+    setActivating(true);
+    setError(null);
+    try {
+      onSaved(await api.setProvider(p.name));
+    } catch (err) {
+      setError(errorMessage(err, `Couldn't make ${p.label} the planning provider.`));
+    } finally {
+      setActivating(false);
+    }
+  }
 
   return (
-    <Section
-      id={headingId}
-      title="Model keys"
-      description="NVIDIA NIM keys. Prophet spreads work across them, so several keys let more work run at once. Keys are never shown in full."
-    >
-      <div className="grid gap-4">
-        {keys.length === 0 ? (
-          <p className="flex items-center gap-2 text-base text-ember">
-            <AlertCircle aria-hidden="true" className="size-4" /> No key is set. Prophet cannot plan until you add one.
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h4 className="text-lg font-bold text-sand-0">{p.label}</h4>
+          <Badge ok={p.ready} yes="Ready" no={p.configured ? "Not ready" : "No keys yet"} />
+          {p.active && <span className="rounded-full bg-ember/15 px-2.5 py-0.5 text-micro font-semibold text-ember">Active</span>}
+        </div>
+        <Button variant="secondary" onClick={() => void useForPlanning()} disabled={p.active || !p.ready || activating}>
+          {activating && <Spinner />}
+          Use for planning
+        </Button>
+      </div>
+      {!p.active && !p.ready && setupVars.length === 0 && (
+        <p className="text-caption text-sand-2">{p.configured ? `${p.label} is not ready yet.` : `Add a key before ${p.label} can be used for planning.`}</p>
+      )}
+
+      {setupVars.length > 0 && (
+        <div role="note" className="grid gap-2 rounded-lg border border-ember/40 bg-night-0/50 p-3">
+          <p className="flex items-center gap-2 text-base font-semibold text-ember">
+            <Info aria-hidden="true" className="size-4 shrink-0" /> {p.label} needs setup in .env
           </p>
+          <ul className="grid gap-1 text-caption text-sand-1">
+            {setupVars.map((v) => (
+              <li key={v.name}>
+                <span className="font-mono text-sand-0">{v.name}</span> is {v.help}.
+              </li>
+            ))}
+          </ul>
+          <p className="text-caption text-sand-2">Restart Prophet after you change these. Test keys stays off until keys are saved.</p>
+        </div>
+      )}
+
+      {keys.length === 0 ? (
+        <p className="flex items-center gap-2 text-base text-ember">
+          <AlertCircle aria-hidden="true" className="size-4" />
+          {p.active ? `No key is set. Prophet cannot plan with ${p.label} until you add one.` : `No key is set for ${p.label}.`}
+        </p>
+      ) : (
+        <ul className="grid gap-2" aria-label={`${p.label} keys`}>
+          {keys.map((k, i) => (
+            <li key={`${i}-${k}`} className="flex items-center justify-between gap-3 rounded-lg border border-sand-2/25 bg-night-0/50 px-3 py-2">
+              <span className="flex min-w-0 items-center gap-2.5">
+                <KeyRound aria-hidden="true" className="size-4 shrink-0 text-sand-2" />
+                <span className="font-mono text-meta text-sand-0 [overflow-wrap:anywhere]">
+                  Key {i + 1} · {k}
+                </span>
+              </span>
+              <IconButton
+                tone="danger"
+                label={`Remove key ${i + 1}`}
+                icon={<Trash2 aria-hidden="true" className="size-4" />}
+                onClick={() => setKeys((list) => list.filter((_, j) => j !== i))}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="grid gap-2">
+        {canAdd ? (
+          <>
+            <label htmlFor={`${id}-new`} className="text-base font-semibold text-sand-0">
+              Add a key
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id={`${id}-new`}
+                aria-describedby={`${id}-hint`}
+                type={reveal ? "text" : "password"}
+                value={draft}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addKey())}
+                className="min-h-11 min-w-0 flex-1 rounded-lg border border-sand-2/40 bg-night-0 px-3 font-mono text-meta text-sand-0 placeholder:text-sand-2 focus:border-ember focus:outline-none"
+              />
+              <IconButton label={reveal ? "Hide" : "Show"} icon={reveal ? <EyeOff aria-hidden="true" className="size-5" /> : <Eye aria-hidden="true" className="size-5" />} onClick={() => setReveal((r) => !r)} />
+              <IconButton label="Add" icon={<Plus aria-hidden="true" className="size-5" />} onClick={addKey} disabled={!draft.trim()} />
+            </div>
+            <p id={`${id}-hint`} className="text-caption text-sand-2">
+              {p.key_hint}
+            </p>
+          </>
         ) : (
-          <ul className="grid gap-2" aria-label="Configured keys">
-            {keys.map((k, i) => (
-              <li key={`${i}-${k}`} className="flex items-center justify-between gap-3 rounded-lg border border-sand-2/25 bg-night-0/50 px-3 py-2">
-                <span className="flex min-w-0 items-center gap-2.5">
-                  <KeyRound aria-hidden="true" className="size-4 shrink-0 text-sand-2" />
-                  <span className="font-mono text-meta text-sand-0 [overflow-wrap:anywhere]">
-                    Key {i + 1} · {k}
-                  </span>
-                </span>
-                <IconButton
-                  tone="danger"
-                  label={`Remove key ${i + 1}`}
-                  icon={<Trash2 aria-hidden="true" className="size-4" />}
-                  onClick={() => setKeys((list) => list.filter((_, j) => j !== i))}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="grid gap-2">
-          <label htmlFor={`${headingId}-new`} className="text-base font-semibold text-sand-0">
-            Add a key
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              id={`${headingId}-new`}
-              type={reveal ? "text" : "password"}
-              value={draft}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="nvapi-..."
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addKey())}
-              className="min-h-11 min-w-0 flex-1 rounded-lg border border-sand-2/40 bg-night-0 px-3 font-mono text-meta text-sand-0 placeholder:text-sand-2 focus:border-ember focus:outline-none"
-            />
-            <IconButton label={reveal ? "Hide" : "Show"} icon={reveal ? <EyeOff aria-hidden="true" className="size-5" /> : <Eye aria-hidden="true" className="size-5" />} onClick={() => setReveal((r) => !r)} />
-            <IconButton label="Add" icon={<Plus aria-hidden="true" className="size-5" />} onClick={addKey} disabled={!draft.trim()} />
-          </div>
-        </div>
-
-        {error && (
-          <p role="alert" className="text-caption text-bad">
-            {error}
+          <p id={`${id}-hint`} className="text-caption text-sand-2">
+            {p.label} accepts one key. Remove the current key to add a different one. {p.key_hint}
           </p>
         )}
+      </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={() => void save()} disabled={!dirty || saving}>
-            {saving ? <Spinner /> : <Save aria-hidden="true" className="size-4" />}
-            Save keys
-          </Button>
-          <Button variant="secondary" onClick={() => void test()} disabled={testing || view.nim.keys.length === 0}>
-            {testing ? <Spinner /> : <Activity aria-hidden="true" className="size-4" />}
-            Test keys
-          </Button>
-        </div>
+      {error && (
+        <p role="alert" className="text-caption text-bad">
+          {error}
+        </p>
+      )}
 
-        {probes && (
-          <ul className="grid gap-1.5 border-t border-sand-2/15 pt-4" aria-label="Key test results">
-            {probes.map((p) => (
-              <li key={p.slot} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
-                <Badge ok={p.ok} yes={`Key ${p.slot} works`} no={`Key ${p.slot} failed`} />
-                <span className="font-mono text-meta text-sand-2">
-                  {p.masked} · {p.status ?? "no response"} · {p.elapsed_s.toFixed(1)}s
-                </span>
-                {!p.ok && p.error && <span className="text-bad">{p.error}</span>}
-              </li>
-            ))}
-          </ul>
-        )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={() => void save()} disabled={!dirty || saving}>
+          {saving ? <Spinner /> : <Save aria-hidden="true" className="size-4" />}
+          Save keys
+        </Button>
+        <Button variant="secondary" onClick={() => void test()} disabled={testing || p.keys.length === 0}>
+          {testing ? <Spinner /> : <Activity aria-hidden="true" className="size-4" />}
+          Test keys
+        </Button>
+      </div>
 
-        <div className="grid gap-2 border-t border-sand-2/15 pt-4">
-          <p className="text-base font-semibold text-sand-0">Models</p>
-          <ul className="flex flex-wrap gap-2" aria-label="Models in the fallback chain">
-            {view.nim.models.map((m) => (
+      {probes && (
+        <ul className="grid gap-1.5 border-t border-sand-2/15 pt-4" aria-label={`${p.label} key test results`}>
+          {probes.map((r) => (
+            <li key={r.slot} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
+              <Badge ok={r.ok} yes={`Key ${r.slot} works`} no={`Key ${r.slot} failed`} />
+              <span className="font-mono text-meta text-sand-2">
+                {r.masked} · {r.status ?? "no response"} · {r.elapsed_s.toFixed(1)}s
+              </span>
+              {!r.ok && r.error && <span className="text-bad">{r.error}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="grid gap-2 border-t border-sand-2/15 pt-4">
+        <p className="text-base font-semibold text-sand-0">Models</p>
+        {p.models.length === 0 ? (
+          <p className="text-caption text-sand-2">No models are listed for {p.label} yet.</p>
+        ) : (
+          <ul className="flex flex-wrap gap-2" aria-label={`${p.label} models`}>
+            {p.models.map((m) => (
               <li key={m} className="rounded-full border border-sand-2/35 px-3 py-1 font-mono text-meta text-sand-1 [overflow-wrap:anywhere]">
                 {m}
               </li>
             ))}
           </ul>
+        )}
+        {p.name === "nim" && p.models.length > 0 && (
           <p className="text-caption text-sand-2">Models are tried in this order. If one is busy or unavailable, the next one takes over.</p>
-        </div>
-
-        {pool && (
-          <div className="grid gap-2 border-t border-sand-2/15 pt-4">
-            <p className="flex items-center gap-2 text-base font-semibold text-sand-0">
-              <Gauge aria-hidden="true" className="size-4 text-sand-1" />
-              Right now: {pool.in_flight} {pool.in_flight === 1 ? "request" : "requests"} running
-            </p>
-            <ul className="grid gap-1 text-caption text-sand-1 tabular-nums">
-              {pool.keys.map((k) => (
-                <li key={k.slot}>
-                  Key {k.slot}: {k.in_flight} running · {k.sent_last_minute} of {k.per_minute} sent this minute
-                  {k.retired ? ` · paused for ${Math.ceil(k.retired_for_s)}s after an error` : ""}
-                  {k.cooling.length > 0 ? ` · cooling: ${k.cooling.map((c) => c.model).join(", ")}` : ""}
-                </li>
-              ))}
-            </ul>
-          </div>
         )}
       </div>
-    </Section>
+
+      {pool && (
+        <div className="grid gap-2 border-t border-sand-2/15 pt-4">
+          <p className="flex items-center gap-2 text-base font-semibold text-sand-0">
+            <Gauge aria-hidden="true" className="size-4 text-sand-1" />
+            Right now: {pool.in_flight} {pool.in_flight === 1 ? "request" : "requests"} running
+          </p>
+          <ul className="grid gap-1 text-caption text-sand-1 tabular-nums">
+            {pool.keys.map((k) => (
+              <li key={k.slot}>
+                Key {k.slot}: {k.in_flight} running · {k.sent_last_minute} of {k.per_minute} sent this minute
+                {k.retired ? ` · paused for ${Math.ceil(k.retired_for_s)}s after an error` : ""}
+                {k.cooling.length > 0 ? ` · cooling: ${k.cooling.map((c) => c.model).join(", ")}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   );
 }
 

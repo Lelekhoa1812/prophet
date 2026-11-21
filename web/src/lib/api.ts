@@ -174,7 +174,11 @@ export const api = {
   saveLimits: (patch: Partial<Record<SettingsSection, Record<string, number>>>) =>
     req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
   saveKeys: (keys: string[]) => req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ nim: { keys } }) }),
-  testKeys: () => req<{ keys: KeyProbe[] }>("/api/settings/test-keys", { method: "POST" }),
+  saveProviderKeys: (provider: string, keys: string[]) =>
+    req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ providers: { [provider]: { keys } } }) }),
+  setProvider: (provider: string) => req<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ llm: { provider } }) }),
+  testKeys: (provider = "nim") =>
+    req<{ provider: string; keys: KeyProbe[] }>(`/api/settings/test-keys?provider=${encodeURIComponent(provider)}`, { method: "POST" }),
   clearData: (confirm: string) => req<{ removed: Record<string, number> }>("/api/settings/clear-data", { method: "POST", body: JSON.stringify({ confirm }) }),
 
   notebooks: () => req<NotebookRow[]>("/api/notebooks"),
@@ -222,13 +226,31 @@ export type PoolKey = {
   cooling: { model: string; for_s: number }[];
 };
 
+export type PoolView = { keys: PoolKey[]; demoted_models: { model: string; for_s: number }[]; in_flight: number };
+
+export type LlmProviderView = {
+  name: string;
+  label: string;
+  multi_key: boolean;
+  key_hint: string;
+  keys: { slot: number; masked: string }[];
+  configured: boolean;
+  endpoint_set: boolean;
+  models: string[];
+  ready: boolean;
+  active: boolean;
+};
+
+export type LlmView = { provider: string; pool: PoolView | null; providers: LlmProviderView[] };
+
 export type SettingsView = {
   nim: {
     configured: boolean;
     keys: { slot: number; masked: string }[];
     models: string[];
-    pool: { keys: PoolKey[]; demoted_models: { model: string; for_s: number }[]; in_flight: number } | null;
+    pool: PoolView | null;
   };
+  llm: LlmView;
   agent: Record<string, number>;
   context: Record<string, number>;
   defaults: Record<SettingsSection, Record<string, number>>;
