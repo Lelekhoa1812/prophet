@@ -92,9 +92,9 @@ Each chart shows the history, the forecast and its likely range, and marks any p
 <tr>
 <td width="50%" valign="top">
 
-**Intermittent demand.** A daily spare-part series that is mostly zero, forecast with a method built for sparse demand.
+**Intermittent demand.** Weekly units for a spare part that is often zero. The expected demand from a method built for sparse demand (TSB) is set against the 52-week average. Synthetic demo data.
 
-<img src="docs/images/chart-intermittent-forecast.png" alt="Daily demand history with mostly zero days and a 60-day forecast with its likely range">
+<img src="docs/images/chart-intermittent-forecast.png" alt="Weekly units for the last 52 weeks, then about 2.6 expected units a week for 12 weeks, against a 52-week average of about 3.3">
 
 </td>
 <td width="50%" valign="top">
