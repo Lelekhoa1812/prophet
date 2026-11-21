@@ -122,7 +122,9 @@ def test_artifact_paths_are_confined(tmp_path):
     assert client.get("/api/artifacts/" + "a" * 32 + "/missing.png").status_code == 404
 
 
-def test_forecast_report_produces_downloadable_files(tmp_path, stub_timesfm):
+def test_forecast_report_produces_downloadable_files(tmp_path, stub_timesfm, monkeypatch):
+    # This test is about the files, not the analysis: the finish gate has its own tests in test_goal_loop.py.
+    monkeypatch.setattr("prophet_agent.runtime.goal.contracts.check_evidence", lambda *a, **k: [])
     values = [float(10 + (i % 5)) for i in range(40)]
     brain = ScriptedBrain(
         plans=[{"action": "call_tool", "tool": "forecast_report", "rationale": "pack",

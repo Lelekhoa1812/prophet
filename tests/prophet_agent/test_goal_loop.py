@@ -732,3 +732,46 @@ def test_the_report_observation_carries_the_run_id_so_the_files_can_be_found():
               "run_id": "e" * 32, "manifest": "/x/manifest.json", "files": [{"path": "out/forecast.xlsx"}]}
     seen = observe(result)
     assert seen["run_id"] == "e" * 32 and seen["files"] == ["out/forecast.xlsx"] and "manifest" in seen
+
+
+# -- the finish gate: deterministic checks run on the evidence --------------------------------------------------------
+
+def _gate_tools():
+    fc = {"config": {"horizon": 3}, "health": {"verdict": "ok"}, "point": [1.0, 2.0, 3.0], "q10": [0.5, 1.5, 2.5],
+          "q90": [1.5, 2.5, 3.5]}
+    bt = {"horizon": 3, "best_baseline": "seasonal_naive",
+          "models": {"naive": {"mase": 1.0}, "seasonal_naive": {"mase": 0.9}, "timesfm": {"mase": 0.8}}}
+    return {"sandbox_python": _tool("sandbox_python", lambda a, k: {"ok": True, "stdout": "n=40"}),
+            "timesfm_forecast": _tool("timesfm_forecast", lambda a, k: fc),
+            "backtest_series": _tool("backtest_series", lambda a, k: bt)}
+
+
+def test_a_forecast_never_compared_with_baselines_is_sent_back_before_it_counts_as_met(store):
+    brain = ScriptedBrain(
+        plans=[call("sandbox_python"), call("timesfm_forecast"), finish(), call("backtest_series"), finish()],
+        evals=[met("forecast 1, 2, 3"), met("forecast 1, 2, 3")])
+    _, out = run(store, goal_program("forecast", _gate_tools(), brain))
+    assert out["result"]["status"] == "met"
+    assert brain.calls["plan"] == 5, "the first finish was refused and a backtest was run before the second"
+    refusals = [h for h in out["result"]["evidence"] if h.get("contract")]
+    assert refusals and "baseline_compared" in refusals[0]["contract"]
+
+
+def test_a_check_that_keeps_failing_leaves_the_answer_labelled_partial(store):
+    brain = ScriptedBrain(plans=[call("sandbox_python"), call("timesfm_forecast"), finish(), finish(), finish()],
+                          evals=[met("forecast 1, 2, 3")] * 3)
+    _, out = run(store, goal_program("forecast", _gate_tools(), brain))
+    assert out["result"]["status"] == "partial"
+    assert "baseline_compared" in out["result"]["contract_failures"]
+    assert out["result"]["answer"], "the answer is still delivered, labelled"
+
+
+def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_after_inspection(store):
+    brain = ScriptedBrain(
+        plans=[call("timesfm_forecast"), call("backtest_series"), finish(), call("sandbox_python"),
+               call("timesfm_forecast"), finish()],
+        evals=[met("forecast 1, 2, 3"), met("forecast 1, 2, 3")])
+    _, out = run(store, goal_program("forecast", _gate_tools(), brain))
+    assert out["result"]["status"] == "met"
+    refusals = [h for h in out["result"]["evidence"] if h.get("contract")]
+    assert refusals and refusals[0]["contract"] == ["data_inspected"]

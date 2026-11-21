@@ -76,7 +76,8 @@ def test_tool_is_declared_idempotent():
 
 
 @pytest.mark.timesfm
-def test_real_timesfm_forecast_through_the_durable_runtime(tmp_path):
+def test_real_timesfm_forecast_through_the_durable_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.goal.contracts.check_evidence", lambda *a, **k: [])   # the gate has its own tests
     rng = np.random.default_rng(1)
     t = np.arange(156)
     values = (20 + 4 * np.sin(2 * np.pi * t / 52) + 0.05 * t + rng.normal(0, 0.7, t.size)).round(3).tolist()

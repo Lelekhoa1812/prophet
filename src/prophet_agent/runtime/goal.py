@@ -35,6 +35,7 @@ from prophet_agent import prompts
 from prophet_agent.nim.errors import redact
 from prophet_agent.nim.transport import DEFAULT_CHAIN
 
+from . import contracts
 from .grounding import unverified
 from .questions import QUESTIONS_SCHEMA, validate_questions
 from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
@@ -78,6 +79,7 @@ VIEW_CHARS = 16000        # uncompacted observations shown before the older ones
 KEEP_RECENT = 4           # newest observations never compacted
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
+MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
 SUB_STEPS = 12            # default step budget of a delegated sub-agent
@@ -467,6 +469,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     tag = f"d{cfg.depth}"
     seg_len = cfg.max_iterations
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
+    contract_blocks = 0       # times a deterministic check sent a "met" answer back for more work
     for i in range(cfg.end):
         if i and i % seg_len == 0:
             # A new part of the work starts here. The marker is an observation, so the planner and the replay see it.
@@ -560,6 +563,19 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     continue
                 return {"status": "partial", "iterations": i + 1, "answer": "",
                         "reason": "The analysis finished but no written answer was produced.", "evidence": history}
+            # A model saying it is finished is a claim; the checks run on the evidence. A blocking failure goes back to the
+            # planner as work to do, at most MAX_CONTRACT_BLOCKS times, then the answer leaves labelled partial.
+            blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT))
+            if blocked and contract_blocks < MAX_CONTRACT_BLOCKS and not last and not out_of_calls and not cfg.finish_now:
+                contract_blocks += 1
+                history.append({"kind": "evaluation", "verdict": "not_met", "contract": [c["name"] for c in blocked],
+                                "missing": "A required check failed on the evidence: " + contracts.summarise(blocked)
+                                + ". Fix the cause with a tool call before finishing."})
+                continue
+            if blocked:
+                return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
+                        "reason": "This answer did not pass every required check: " + contracts.summarise(blocked),
+                        "contract_failures": [c["name"] for c in blocked]}
             bad = unverified(answer, history, goal)
             if bad and _corrections(history) < MAX_CORRECTIONS and not last and not out_of_calls and not cfg.finish_now:
                 # Gather before repairing: the figure may simply be an output the analysis has not printed yet. The
