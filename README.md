@@ -84,7 +84,44 @@ TimesFM 3 produces a point forecast and an 80% likely range. Prophet also scores
 
 ### Charts that make one point
 
-Titles state the finding, bars start at zero, lines are labelled directly and the colours are colour-blind safe. The numbers behind every chart are saved beside it.
+Each chart shows the history, the forecast and its likely range, and marks any promotion or Christmas weeks it was given. The numbers behind every chart are saved beside it as a CSV.
+
+<p align="center"><img src="docs/images/chart-promo-drivers.png" alt="Weekly units with promotion and Christmas weeks shaded, and a 12-week forecast with 80% and 40% ranges" width="860"></p>
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Intermittent demand.** A daily spare-part series that is mostly zero, forecast with a method built for sparse demand.
+
+<img src="docs/images/chart-intermittent-forecast.png" alt="Daily demand history with mostly zero days and a 60-day forecast with its likely range">
+
+</td>
+<td width="50%" valign="top">
+
+**Two channels over three years.** Monthly units for Online and Stores, from a saved synthetic analysis.
+
+<img src="docs/images/chart-channels-monthly.png" alt="Line chart of monthly units for Online and Stores from January 2023 to December 2025">
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Six-month forecast.** The Online series with its point forecast and likely range.
+
+<img src="docs/images/chart-online-forecast.png" alt="Monthly Online units with a six-month forecast and shaded likely range">
+
+</td>
+<td width="50%" valign="top">
+
+**Large file, charted.** Monthly revenue for 2024, computed from a 1.1 million row file.
+
+<img src="docs/images/chart-monthly-revenue.png" alt="Line chart of total monthly revenue for 2024, around five and a half to five and eight-tenths million dollars">
+
+</td>
+</tr>
+</table>
 
 ### Large files
 
