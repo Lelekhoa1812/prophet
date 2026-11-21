@@ -1,79 +1,151 @@
-<p align="center"><img src="docs/images/logo.png" alt="Prophet logo" width="112"></p>
+<p align="center">
+  <img src="docs/images/logo.png" alt="Prophet" width="96">
+</p>
 
 <h1 align="center">Prophet</h1>
 
-<p align="center"><strong>Ask your spreadsheets anything. Forecast what comes next.</strong></p>
+<p align="center">
+  <strong>Ask your spreadsheets questions in plain language. Get checked numbers, charts and forecasts you can audit.</strong>
+</p>
 
 <p align="center">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB">
-  <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white">
-  <img alt="TimesFM 3" src="https://img.shields.io/badge/TimesFM-3-B5651D">
-  <img alt="SQLite WAL" src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white">
-  <img alt="MCP bridge" src="https://img.shields.io/badge/MCP-bridge-7C3AED">
-  <img alt="Licence: non-commercial research" src="https://img.shields.io/badge/licence-non--commercial%20research-E0A040">
+  <img alt="TimesFM 3" src="https://img.shields.io/badge/forecasts-TimesFM%203-B5651D">
+  <img alt="SQLite WAL" src="https://img.shields.io/badge/store-SQLite%20WAL-003B57?logo=sqlite&logoColor=white">
+  <img alt="Status: research prototype" src="https://img.shields.io/badge/status-research%20prototype-E0A040">
 </p>
 
-Prophet is a local analyst you talk to. Drop in any number of spreadsheets, ask questions in plain language, clean and reshape the data, and forecast with TimesFM 3. It shows its working, cites where every number came from, asks when something is genuinely ambiguous, and hands you charts, workbooks and reports.
+<p align="center">
+  <img src="docs/images/notebook-answer.png" alt="A notebook answering a question about two regions, with a growth comparison table and a six-month forecast" width="860">
+</p>
 
-<p align="center"><img src="docs/images/start.png" alt="The Prophet start screen with quick actions and the message box" width="860"></p>
-<p align="center"><sub>Screenshot of the start screen. Data shown in the examples is synthetic, not observed.</sub></p>
+## Why Prophet
 
-## What you can do
+- **Answers show their working.** Every answer keeps the steps, the code that ran and what it printed. Nothing is a bare number.
+- **Forecasts earn their place.** Each forecast is backtested against simple baselines on your own history, so you can see whether the model beats a naive guess.
+- **Runs on your machine.** The server listens on loopback only. Your files stay local; the only outbound calls are planner requests to NVIDIA NIM.
 
-- **Add any spreadsheet.** CSV, Excel (`xlsx`, `xlsm`, `xlsb`, `xls`), OpenDocument, Parquet and zipped bundles. Several files at once. Hidden sheets, title rows, merged headers and several tables on one sheet are detected and reported, never silently guessed. A damaged or password-protected file is flagged in words, not dropped.
-- **Keep asking.** Totals, comparisons, trends, anomalies, joins across files, cleaning. A notebook remembers its files and earlier answers, so "now split that by product" just works.
-- **Forecast properly.** TimesFM 3 with likely ranges, backtested against simple baselines on your own history so you can see whether the model earns its keep. Intermittent demand, holidays, spikes and short histories are handled as questions to answer, not rules baked in.
-- **Charts that make one point.** Titles state the finding, bars start at zero, lines are labelled directly, colours are colour-blind safe, and the plotted numbers are saved beside every chart.
-- **Large files.** CSV and Parquet files too big to read whole are queried where they sit, so only a small result comes back; totals come from the full file.
-- **See the working.** Each answer folds the steps behind it. Open them to read the code that ran and what it printed.
-- **Keep what matters.** Cleaned tables are saved as versions you can download as CSV and reuse in later questions.
-- **Use it from other agents.** Claude, Cursor, ChatGPT-style tools and scripts can drive Prophet over HTTP or MCP. See [API.md](API.md).
+## Features
+
+### Ask in plain language
+
+Drop in one or more spreadsheets and ask. Totals, comparisons, trends, joins across files and cleaning all work from the same notebook, which remembers its files and earlier answers.
+
+Supported inputs: CSV, Excel (`xlsx`, `xlsm`, `xlsb`, `xls`), OpenDocument, Parquet and zipped bundles. Hidden sheets, title rows, merged headers and several tables on one sheet are detected and reported, never silently guessed. A damaged or password-protected file is flagged in words, not dropped.
+
+<p align="center"><img src="docs/images/start-screen.png" alt="The start screen with quick actions and the message box" width="860"></p>
+
+### Forecasts with a baseline check
+
+TimesFM 3 produces a point forecast and an 80% likely range. Prophet also scores the same method against a naive baseline on the last windows of your history, and says so when the model does not win.
+
+<p align="center"><img src="docs/images/forecast-range.png" alt="A six-month forecast table with 80% likely ranges and the backtest result" width="860"></p>
+
+### Organised workspace
+
+Notebooks and quick forecasts live in the sidebar. Each one has a menu to pin, rename, archive or delete. Titles are generated from your question, then refined by a model in the background.
+
+<p align="center"><img src="docs/images/sidebar-menu.png" alt="The sidebar with the notebook menu open showing Pin, Rename, Archive and Delete" width="520"></p>
+
+### Attach files, mention them, pick skills
+
+Use **+** to add files, a whole folder, skills or tools. Type **@** to mention an attached file, or **/** to start a skill: a prompt you can adjust before sending.
+
+<p align="center">
+  <img src="docs/images/attach-menu.png" alt="The plus menu with Add files, Add folder, Skills and Tools" width="400">
+  &nbsp;
+  <img src="docs/images/mention-files.png" alt="An attached file listed after typing @" width="520">
+</p>
+
+<p align="center"><img src="docs/images/skills-list.png" alt="The slash menu listing skills and tools" width="520"></p>
+
+### Charts that make one point
+
+Titles state the finding, bars start at zero, lines are labelled directly and the colours are colour-blind safe. The numbers behind every chart are saved beside it.
+
+### Large files
+
+CSV and Parquet files too big to read whole are queried where they sit. Only a small result comes back; totals come from the full file.
+
+### Keep what matters
+
+Cleaned tables are saved as versions you can download as CSV and reuse in later questions. Forecast packs come as PNG and SVG charts, an XLSX workbook, a DOCX report and a PDF, all listed with a SHA-256 manifest.
+
+### Use it from other agents
+
+Claude, Cursor, ChatGPT-style tools and scripts can drive Prophet over HTTP or MCP. See [API.md](API.md).
 
 ## Quick start
 
+**Requirements**
+
+- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- Node.js, to build the web console
+- An NVIDIA NIM API key, for the planner
+- Apple silicon: the TimesFM 3 runtime is installed through MLX (`timesfm[mlx]`), so the install needs it.
+
+**Install and run**
+
 ```bash
 uv venv --python 3.12 .venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-cp .env.example .env            # add your NVIDIA NIM key(s)
+cp .env.example .env              # add at least one NVIDIA_NIM_API_KEY_n
 (cd web && npm install && npm run build)
 PYTHONPATH=src python -m prophet_agent.api
 ```
 
-Open <http://127.0.0.1:8010>, press **New notebook**, drop files in, and ask.
+Open <http://127.0.0.1:8010>, choose **Notebook**, attach a file and ask a question.
 
-Apple silicon is needed for the bundled TimesFM 3 runtime (`timesfm[mlx]`). The server listens on loopback only.
+The port is set by `PROPHET_API_PORT`. Data lives in `data/` by default; set `PROPHET_HOME` to move it, for example to try Prophet on a scratch folder.
 
 ## How it works
 
-A durable goal loop plans, acts and evaluates. Each model decision and tool result is stored before the run moves on, so an interrupted run resumes without asking the model again for finished work, and a finished tool call is never repeated. Analytics code runs in a restricted child process with read-only inputs and a time limit; everything it writes is listed with a checksum. Questions to you use a structured, answerable-in-a-click format.
+```mermaid
+flowchart LR
+    Q[Question] --> P[Planner<br/>NIM models]
+    P -->|tool call| T[Tools<br/>profile, sandbox, forecast]
+    T -->|stored result| L[(Event log<br/>SQLite WAL)]
+    L --> P
+    P -->|needs a decision| U[Structured question]
+    U -->|answer| P
+    P --> A[Answer, charts,<br/>workbooks, reports]
+```
 
-| Layer | Where |
+A durable goal loop plans, acts and evaluates. Each model decision and tool result is stored before the run moves on, so an interrupted run resumes without asking the model again for finished work, and a finished tool call is never repeated. Analytics code runs in a restricted child process with read-only inputs and a time limit; everything it writes is listed with a checksum.
+
+## Project layout
+
+| Area | Location |
 |---|---|
 | Model access, key pool, failover, schema-bound output | `src/prophet_agent/nim/` |
-| Durable runtime, ledger, questions, cancel | `src/prophet_agent/runtime/` |
+| Durable runtime, event log, ledger, questions | `src/prophet_agent/runtime/` |
 | Notebooks, sources, kept tables | `src/prophet_agent/notebooks.py` |
 | Forecast maths and TimesFM 3 | `src/prophet_agent/forecast/` |
 | Tools the agent calls | `src/prophet_agent/tools/` |
 | Sandboxed analytics and artefacts | `src/prophet_agent/sandbox/`, `src/prophet_agent/artifacts/` |
 | Versioned prompt contracts | `src/prophet_agent/prompts/` |
 | HTTP API and MCP bridge | `src/prophet_agent/api/`, `src/prophet_agent/mcp_server.py` |
-| Console | `web/` |
+| Web console | `web/` |
 
 ## Documentation
 
-- [API.md](API.md): HTTP routes and the MCP server, for driving Prophet from other agents.
-- [docs/prophet/ARCHITECTURE.md](docs/prophet/ARCHITECTURE.md): locked decisions, including the licence gate.
+- [API.md](API.md): HTTP routes and the MCP server.
+- [docs/prophet/ARCHITECTURE.md](docs/prophet/ARCHITECTURE.md): locked design decisions, including the licence gate.
 - [docs/prophet/GOAL.md](docs/prophet/GOAL.md): completion criteria and the evidence behind them.
-- [CLAUDE.md](CLAUDE.md): working guidance for Claude Code in this repository.
 
-## Develop
+## Development
 
 ```bash
-scripts/check.sh            # offline gate (no real model)
-scripts/check.sh --real     # also the real TimesFM 3 tests (cached weights)
+scripts/check.sh            # offline gate: unit and API tests, no real model
+scripts/check.sh --real     # also the real TimesFM 3 tests (Apple silicon, cached weights)
 cd web && npx tsc --noEmit && npm run build
 ```
 
-## Notices
+Please run the offline gate and the web typecheck before opening a pull request. [CLAUDE.md](CLAUDE.md) has the working conventions used in this repository.
 
-Prophet is an R&D tool. The TimesFM 3 weights are released for non-commercial research use: do not use outputs for commercial decisions, client deliverables or paid services. The analytics sandbox is a guardrail, not isolation; only open files you trust. Figures from the synthetic data generator are synthetic and are labelled as such wherever they appear. Full terms and the licence gate are in [docs/prophet/ARCHITECTURE.md](docs/prophet/ARCHITECTURE.md).
+## Licence and notices
+
+- **Project licence:** not yet chosen. The repository has no licence file, so the code is not licensed for reuse until one is added.
+- **TimesFM 3 weights** are released for non-commercial research use. Do not use outputs for commercial decisions, client deliverables or paid services. The licence gate is in [docs/prophet/ARCHITECTURE.md](docs/prophet/ARCHITECTURE.md).
+- **Analytics sandbox:** a guardrail, not isolation. Open only files you trust.
+- **Examples:** the screenshots use a synthetic dataset, and figures from the built-in data generator are synthetic.

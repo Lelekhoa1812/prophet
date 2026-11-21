@@ -127,7 +127,7 @@ export default function App() {
 
   const newNotebook = async () => {
     try {
-      const nb = await api.createNotebook("Notebook");
+      const nb = await api.createNotebook("New notebook");
       openNotebook(nb.id);
       refreshList();
     } catch (err) {
