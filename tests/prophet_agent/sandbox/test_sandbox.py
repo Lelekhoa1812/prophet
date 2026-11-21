@@ -84,3 +84,39 @@ def test_result_reports_limits_honestly():
     r = run_python("print('ok')")
     assert r.limits["memory_limit_enforced"] == memory_limit_enforced()
     assert r.to_dict()["ok"] is True
+
+
+def test_deleting_a_host_file_is_refused(tmp_path):
+    victim = tmp_path / "keep.txt"
+    victim.write_text("keep")
+    r = run_python(f"import os\nos.remove({str(victim)!r})")
+    assert not r.ok
+    assert "changing files outside the run folder is blocked" in r.stderr
+    assert victim.read_text() == "keep"
+
+
+def test_renaming_or_replacing_a_host_file_is_refused(tmp_path):
+    victim = tmp_path / "keep.txt"
+    victim.write_text("keep")
+    r = run_python(f"import os\nos.replace('out', {str(victim)!r})")
+    assert not r.ok and victim.read_text() == "keep"
+    r = run_python(f"import os\nos.rename({str(victim)!r}, 'out/moved.txt')")
+    assert not r.ok and victim.exists()
+
+
+def test_reading_the_project_secrets_file_is_refused():
+    secret = Path(__file__).resolve().parents[3] / "CLAUDE.md"   # a project file outside the run folder
+    r = run_python(f"print(open({str(secret)!r}).read()[:5])")
+    assert not r.ok
+    assert "reading this location is blocked" in r.stderr
+
+
+def test_reading_outside_the_project_and_home_is_still_allowed():
+    r = run_python("print(open('/etc/hosts').read()[:1] != '')")
+    assert r.ok and r.stdout.strip() == "True"
+
+
+def test_forking_is_refused():
+    r = run_python("import os\nos.fork()", timeout_s=5)
+    assert not r.ok
+    assert "starting processes is blocked" in r.stderr

@@ -31,7 +31,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from prophet_agent.config import DATA
+from prophet_agent.config import DATA, ROOT
 from prophet_agent.nim.errors import redact
 
 SANDBOX_ROOT = DATA / "sandbox"
@@ -44,12 +44,28 @@ _BOOT = r"""
 import os, runpy, sys
 WD = os.path.realpath(sys.argv[1])
 TARGET = sys.argv[2]
+ROOT = os.path.realpath(sys.argv[3]) if sys.argv[3] else ""
+REAL_HOME = os.path.realpath(sys.argv[4]) if sys.argv[4] else ""
 _WRITE = ("w", "a", "x", "+")
 IN = os.path.join(WD, "in") + os.sep
+_PREFIXES = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix) if p}
+# Mutating calls that change the file system. Each entry lists which argument positions are paths that must stay inside.
+_MUTATE = {"os.remove": (0,), "os.rmdir": (0,), "os.mkdir": (0,), "os.chmod": (0,), "os.truncate": (0,),
+           "os.utime": (0,), "os.chown": (0,), "os.rename": (0, 1), "os.replace": (0, 1), "os.link": (0, 1),
+           "os.symlink": (1,)}
+def _under(p, base):
+    return p == base or p.startswith(base + os.sep)
 def _inside(p):
     rp = os.path.realpath(p)
     # The run folder is writable except in/, which holds the person's files and is read-only to the program.
-    return (rp == WD or rp.startswith(WD + os.sep)) and not (rp + os.sep).startswith(IN)
+    return _under(rp, WD) and not (rp + os.sep).startswith(IN)
+def _readable(p):
+    # Reads are allowed in the run folder, in the Python installation, and anywhere outside the project and the home
+    # folder. The project holds the API keys (.env) and the notebooks; the home folder holds credentials.
+    rp = os.path.realpath(p)
+    if _under(rp, WD) or any(_under(rp, s) for s in _PREFIXES):
+        return True
+    return not any(base and _under(rp, base) for base in (ROOT, REAL_HOME))
 def _hook(event, args):
     if event == "open":
         path, mode, flags = args[0], args[1], args[2]
@@ -59,7 +75,16 @@ def _hook(event, args):
                 isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC))
             if writing and not _inside(p):
                 raise PermissionError("write outside the run folder is blocked: " + os.path.basename(p))
-    elif event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn"):
+            if not writing and not _readable(p):
+                raise PermissionError("reading this location is blocked in the sandbox: " + os.path.basename(p))
+    elif event in _MUTATE:
+        for i in _MUTATE[event]:
+            if i < len(args) and isinstance(args[i], (str, bytes)):
+                p = args[i].decode() if isinstance(args[i], bytes) else args[i]
+                if not _inside(p):
+                    raise PermissionError("changing files outside the run folder is blocked: " + os.path.basename(p))
+    elif event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork",
+                   "_posixsubprocess.fork_exec"):
         raise PermissionError("starting processes is blocked in the sandbox")
     elif event in ("socket.connect", "socket.bind", "socket.sendto"):
         raise PermissionError("network access is blocked in the sandbox")
@@ -174,7 +199,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
 
     limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb,
               "memory_limit_enforced": memory_limit_enforced()}
-    cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script)]
+    cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home())]
     proc = subprocess.Popen(cmd, cwd=str(wd), env=_scrubbed_env(home), stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, preexec_fn=_limits_preexec(timeout_s, mem_mb, file_mb))
     timed_out = False

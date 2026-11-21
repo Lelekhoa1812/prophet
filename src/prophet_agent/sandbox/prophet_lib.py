@@ -30,20 +30,40 @@ warnings.filterwarnings("ignore", message="Could not infer format")
 
 MAX_PROFILE_COLUMNS = 40
 _NA_TOKENS = {"", "na", "n/a", "nan", "null", "none", "nil", "-", "--", "?", "missing", "#n/a", "#value!"}
-_ENCODINGS = ("utf-8-sig", "utf-16", "cp1252", "latin-1")
+_ENCODINGS = ("utf-8-sig", "cp1252", "latin-1")
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
 
 # --------------------------------------------------------------------------------------------------- reading --
 
 def read_text(path: str | Path) -> tuple[str, str]:
-    """Decode a file, trying common encodings. Returns (text, encoding used)."""
+    """Decode a file, trying common encodings. Returns (text, encoding used).
+
+    UTF-16 is accepted only with a byte-order mark. Without one, almost any even-length byte string decodes as UTF-16
+    (cp1252 text with accents became CJK characters and lost every row), so it must not be tried blindly."""
     raw = Path(path).read_bytes()
+    if raw.startswith(_UTF16_BOMS):
+        try:
+            return raw.decode("utf-16"), "utf-16"
+        except UnicodeDecodeError:
+            pass
     for enc in _ENCODINGS:
         try:
             return raw.decode(enc), enc
         except (UnicodeDecodeError, UnicodeError):
             continue
     return raw.decode("utf-8", "replace"), "utf-8 (with replacements)"
+
+
+def _is_binary(path: str | Path) -> bool:
+    """True when the start of the file holds control bytes that no text or table file has (an image, a damaged
+    workbook, a random file named .xlsx). UTF-16 files with a byte-order mark are text."""
+    with Path(path).open("rb") as f:
+        head = f.read(8192)
+    if head.startswith(_UTF16_BOMS) or not head:
+        return False
+    controls = sum(1 for b in head if b < 0x20 and b not in (0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1A))
+    return b"\x00" in head or controls > 0.02 * len(head)
 
 
 def _sniff_delimiter(lines: list[str]) -> str:
@@ -186,6 +206,9 @@ def _blocks(rows: list[list[str]]) -> list[tuple[int, int]]:
     return out
 
 
+_WORKBOOK_EXTENSIONS = {".xlsx": "xlsx", ".xlsm": "xlsx", ".xlsb": "xlsb", ".ods": "ods", ".xls": "ole"}
+
+
 def read_table(path: str | Path, sheet: str | int | None = None, block: int | None = None) -> tuple[pd.DataFrame, dict]:
     """Read a table of any common shape as text. Returns (frame of strings, report).
 
@@ -204,6 +227,12 @@ def read_table(path: str | Path, sheet: str | int | None = None, block: int | No
         raise TableReadError("this workbook is password-protected or in an old format; save an unprotected .xlsx copy")
     if kind == "corrupt zip":
         raise TableReadError("the file is damaged (its archive index cannot be read); no data from it was used")
+    workbook_kind = _WORKBOOK_EXTENSIONS.get(p.suffix.lower())
+    if workbook_kind and kind != workbook_kind:
+        # A workbook name on a file that is not a workbook (renamed CSV, HTML export, truncated download). Reading it as
+        # text would give a table of noise, so it is refused and the person is told what the file really is.
+        raise TableReadError(f"{p.name} has a {p.suffix} name but its content is not an Excel or OpenDocument workbook "
+                             f"(detected: {kind}); no data from it was used. Save it again as .xlsx or export .csv")
     if kind in ("gzip", "bzip2"):
         import bz2
         import gzip
@@ -252,6 +281,9 @@ def read_table(path: str | Path, sheet: str | int | None = None, block: int | No
             raise TableReadError(f"the workbook could not be read in full ({type(exc).__name__}); no data from it was used")
         report["format"] = "excel" if kind != "ods" else "opendocument"
         return _rows_to_frame(rows, report, block), report
+    if _is_binary(p):
+        raise TableReadError(f"{p.name} is not a table or text file (it holds binary data, possibly a damaged or wrong-type "
+                             "file); no data from it was used")
     text, enc = read_text(p)
     report["encoding"] = enc
     stripped = text.lstrip()
@@ -274,7 +306,8 @@ def read_table(path: str | Path, sheet: str | int | None = None, block: int | No
     if delim == r"\s+":
         rows = [re.split(r"\s+", ln.strip()) for ln in lines if ln.strip()]
     else:
-        rows = [r for r in csv.reader(lines, delimiter=delim) if r and any(c.strip() for c in r)]
+        # Parse the whole text, not the lines: a quoted field may hold a line break, and splitting first merged it.
+        rows = [r for r in csv.reader(io.StringIO(text, newline=""), delimiter=delim) if r and any(c.strip() for c in r)]
     return _rows_to_frame(rows, report, None, pad=False), report
 
 
@@ -284,7 +317,8 @@ def _rows_to_frame(rows: list[list[str]], report: dict, block: int | None, pad: 
     sel = range(len(raw))
     if len(blocks) > 1:
         report["tables_on_sheet"] = [{"rows": f"{a + 1}-{b + 1}", "first_cells": [c for c in raw[a][:4]]} for a, b in blocks]
-        pick = block if block is not None else max(range(len(blocks)), key=lambda k: blocks[k][1] - blocks[k][0])
+        # The first table is the default, as documented; the others are listed in the report, never merged.
+        pick = block if block is not None else 0
         a, b = blocks[min(pick, len(blocks) - 1)]
         report["table_read"] = min(pick, len(blocks) - 1)
         sel = range(a, b + 1)
@@ -390,6 +424,18 @@ _UNIT_WORDS = {"aud", "usd", "eur", "gbp", "nzd", "cad", "jpy", "chf", "cny", "i
                "km", "l", "ml", "ea", "pc", "pcs", "units", "unit", "hrs", "hr", "h", "pts", "x"}
 
 
+_MAGNITUDE_SINGLE = {"K": 1e3, "k": 1e3, "M": 1e6, "B": 1e9}      # case matters: lower-case "m" is metres
+_MAGNITUDE_WORDS = {"thousand": 1e3, "thousands": 1e3, "mn": 1e6, "mio": 1e6, "million": 1e6, "millions": 1e6,
+                    "bn": 1e9, "billion": 1e9, "billions": 1e9}
+
+
+def _magnitude_of(suffix: str) -> float | None:
+    """The scale a suffix stands for ("K", "M", "B", "million", ...), or None when it is not a scale."""
+    if suffix in _MAGNITUDE_SINGLE:
+        return _MAGNITUDE_SINGLE[suffix]
+    return _MAGNITUDE_WORDS.get(suffix.lower()) if len(suffix) > 1 else None
+
+
 def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, dict]:
     """Parse text to numbers. Handles decimal commas, thousands separators, currency, percent and (negative).
 
@@ -404,9 +450,13 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     t = t.str.replace(r"^\((.*)\)$", r"\1", regex=True).str.replace(r"[\s\u00a0$€£¥₹]", "", regex=True)
     # Letters survive only as a currency code or a unit beside a number ("AUD100", "12kg"). Any other text, such as an
     # id like "INV-1000", is not a number and must not lose its letters and become -1000.
-    parts = t.str.extract(r"^([A-Za-z]{0,6})([-+]?[\d.,]+(?:[eE][-+]?\d+)?%?)([A-Za-z]{0,6})$")
-    fine = parts[1].notna() & parts[0].fillna("").str.lower().isin(_UNIT_WORDS | {""}) & parts[2].fillna("").str.lower().isin(_UNIT_WORDS | {""})
+    parts = t.str.extract(r"^([A-Za-z]{0,6})([-+]?[\d.,]+(?:[eE][-+]?\d+)?%?)([A-Za-z]{0,12})$")
+    suffix = parts[2].fillna("")
+    magnitude = suffix.map(_magnitude_of)
+    fine = (parts[1].notna() & parts[0].fillna("").str.lower().isin(_UNIT_WORDS | {""})
+            & (suffix.str.lower().isin(_UNIT_WORDS | {""}) | magnitude.notna()))
     t = parts[1].where(fine, "x").fillna("x")
+    # "1.2M" is 1.2 million, not 1.2 metres. Only the scale is applied here; the count is reported in the info.
     pct = t.str.endswith("%")
     t = t.str.rstrip("%")
     # Both marks present: the last one is the decimal point ("1.234,56" is European, "1,234.56" is not). A lone comma
@@ -422,10 +472,45 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     num = pd.to_numeric(t.mask(is_na | looks_like_date_or_clock), errors="coerce")
     num = num.where(~neg, -num.abs())
     num = num.where(~pct, num / 100.0)
+    scaled = magnitude.notna() & num.notna()
+    num = num * magnitude.where(scaled, 1.0).astype(float)
     info = {"missing_tokens": int(is_na.sum()), "unparsed": int((num.isna() & ~is_na & ~looks_like_date_or_clock).sum()),
             "decimal_comma_values": int(dec.sum() + european.sum()), "percent_values": int(pct.sum()),
-            "parenthesised_negatives": int(neg.sum())}
+            "parenthesised_negatives": int(neg.sum()), "scaled_by_suffix": int(scaled.sum())}
     return num, info
+
+
+_ISO_START = r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:$|[ T])"
+_DMY = r"^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2}|\d{4})$"
+
+
+_TIME_OFFSET = r"(?<=\d{2}:\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$"
+
+
+def _wall_clock(x: pd.Series) -> pd.Series:
+    """The date and time as written. A trailing offset (+11:00, Z) is dropped rather than converted, so 2024-07-05T00:00
+    +11:00 stays 5 July, and a column mixing offsets still loads (converting to UTC would make it 4 July)."""
+    return pd.to_datetime(x.str.replace(_TIME_OFFSET, "", regex=True), errors="coerce", format="mixed")
+
+
+def _parse_dates(t: pd.Series, dayfirst: bool) -> pd.Series:
+    """Each value is parsed on its own, by its shape:
+    - year first (2024-01-07): always year-month-day, so it is never read day-first (7 January, not 1 July);
+    - numeric day-month-year (05/01/2024): read in the order asked, and a value that is not valid in that order is NaT,
+      so the two readings can be compared (pandas' lenient parser would quietly swap them);
+    - anything else (5 Jan 2024): pandas' mixed-format parser, which keeps every format that fits."""
+    iso = t.str.match(_ISO_START).fillna(False).astype(bool)
+    dmy = t.str.match(_DMY).fillna(False).astype(bool) & ~iso
+    other_mask = ~(iso | dmy)
+    year_first = _wall_clock(t.where(iso))
+    parts = t.where(dmy).str.extract(_DMY)
+    a, b = pd.to_numeric(parts[0]), pd.to_numeric(parts[1])
+    y = pd.to_numeric(parts[2])
+    y = y.where(y >= 100, y + 2000)
+    day, month = (a, b) if dayfirst else (b, a)
+    numeric = pd.to_datetime(pd.DataFrame({"year": y, "month": month, "day": day}), errors="coerce")
+    other = pd.to_datetime(t.where(other_mask), errors="coerce", format="mixed", dayfirst=dayfirst)
+    return year_first.where(iso, numeric.where(dmy, other))
 
 
 def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, dict]:
@@ -436,7 +521,7 @@ def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, 
     t = t.mask(t.str.lower().isin(_NA_TOKENS))
     info: dict[str, Any] = {"ambiguous_day_month": False}
     head = t.dropna().head(60)
-    if len(head) and max(pd.to_datetime(head, errors="coerce", dayfirst=df).notna().mean() for df in (False, True)) < 0.8 \
+    if len(head) and max(_parse_dates(head, df).notna().mean() for df in (False, True)) < 0.8 \
             and pd.to_numeric(head, errors="coerce").notna().mean() < 0.8:
         info["format"] = "not a date"
         return pd.Series(pd.NaT, index=s.index), info
@@ -458,12 +543,12 @@ def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, 
     filled = t.dropna()
     if len(filled) and filled.str.match(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:$|[ T])").mean() >= 0.95:
         info["format"] = "year first (unambiguous)"      # 2023-03-01 is always year-month-day, whatever order a person writes
-        return pd.to_datetime(t, errors="coerce", dayfirst=False), info
+        return _parse_dates(t, False), info
     if dayfirst is not None:
         info["format"] = "day first (stated)" if dayfirst else "month first (stated)"
-        return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst), info
-    day = pd.to_datetime(t, errors="coerce", dayfirst=True)
-    mon = pd.to_datetime(t, errors="coerce", dayfirst=False)
+        return _parse_dates(t, dayfirst), info
+    day = _parse_dates(t, True)
+    mon = _parse_dates(t, False)
     both_ok = day.notna() & mon.notna()
     if both_ok.any() and (day[both_ok] != mon[both_ok]).any():
         n_diff = int((day[both_ok] != mon[both_ok]).sum())
@@ -567,7 +652,9 @@ def _regularity(ts: pd.Series) -> dict:
     if cal:
         step_txt, off = cal, 0.0
     else:
-        step = d.mode().iloc[0]
+        # The typical step ignores same-timestamp rows (zero gaps); a file with many rows per day otherwise reads as 0.
+        nonzero = d[d > pd.Timedelta(0)]
+        step = nonzero.mode().iloc[0] if len(nonzero) else pd.Timedelta(0)
         step_txt, off = str(step), float((d != step).mean())
         expected = int((ts.iloc[-1] - ts.iloc[0]) / step) + 1 if step > pd.Timedelta(0) else len(ts)
     return {"first": str(ts.iloc[0]), "last": str(ts.iloc[-1]), "points": int(len(ts)),
@@ -691,7 +778,9 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
     s = pd.Series(num.values, index=ts).dropna(axis=0, how="all")
     s = s[s.index.notna()].sort_index()
     if freq:
-        s = getattr(s.groupby(pd.Grouper(freq=freq)), agg)()
+        grouped = s.groupby(pd.Grouper(freq=freq))
+        # A period with no recorded value is missing, not zero: sum() of nothing is 0 in pandas unless min_count says so.
+        s = grouped.sum(min_count=1) if agg == "sum" else getattr(grouped, agg)()
         if fill == "zero":
             s = s.fillna(0.0)
         elif fill == "interpolate":

@@ -91,12 +91,15 @@ def test_gzip_zip_and_damaged_and_wrong_extension(tmp_path):
         z.writestr("two.csv", csv)
     (tmp_path / "bad.xlsx").write_bytes(b"PK\x03\x04 this is not really a workbook")
     (tmp_path / "fake.xlsx").write_bytes(csv)          # a csv wearing an xlsx name
-    for name, expect_rows in (("a.csv.gz", 24), ("z.zip", 24), ("fake.xlsx", 24)):
+    for name, expect_rows in (("a.csv.gz", 24), ("z.zip", 24)):
         sheet = _profile(tmp_path, name)["sheets"][0]
         assert sheet["rows"] == expect_rows, (name, sheet["issues"])
     assert "other_members_not_read" in _profile(tmp_path, "z.zip")["sheets"][0]["read"]
     bad = _profile(tmp_path, "bad.xlsx")["sheets"][0]
     assert bad["rows"] == 0 and bad["issues"], "a damaged file is reported, never read partially"
+    fake = _profile(tmp_path, "fake.xlsx")
+    assert not fake["sheets"] or fake["sheets"][0]["rows"] == 0, "a csv wearing an xlsx name is refused, not read as noise"
+    assert any("content is not" in i for i in json.dumps(fake).split('"')), json.dumps(fake)[:300]
 
 
 def _run(tmp_path, code, name, content):
@@ -210,3 +213,20 @@ def test_profile_flags_names_typed_more_than_one_way(tmp_path):
     col = next(c for c in prof["columns"] if c["name"] == "Customer")
     assert col["spelling_variants"] == {"unique": 6, "after_tidy": 3}
     assert any("tidy_text" in i for i in prof["issues"])
+
+
+def test_day_month_order_is_decided_per_value_and_offsets_keep_the_written_date():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src" / "prophet_agent" / "sandbox"))
+    import prophet_lib as pl
+    import pandas as pd
+    # 15/11 can only be day-first, so the column is day-first and 03/07 is 3 July (not 7 March)
+    got, info = pl.to_datetime(pd.Series(["15/11/2025", "03/07/2025", "20/12/2025"]))
+    assert got.iloc[1] == pd.Timestamp("2025-07-03") and info["format"] == "day first"
+    # 11/15 can only be month-first, so the column is month-first
+    got, info = pl.to_datetime(pd.Series(["11/15/2025", "03/07/2025", "12/20/2025"]))
+    assert got.iloc[1] == pd.Timestamp("2025-03-07") and info["format"] == "month first"
+    # a trailing offset is dropped, not converted: 5 July stays 5 July whatever the offset
+    got, _ = pl.to_datetime(pd.Series(["2024-01-05T00:00:00+00:00", "2024-07-05T00:00:00+11:00"]))
+    assert list(got.dt.date.astype(str)) == ["2024-01-05", "2024-07-05"]
