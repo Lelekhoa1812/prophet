@@ -1,17 +1,21 @@
 import { Download, File, FileImage, FileSpreadsheet, FileText } from "lucide-react";
 import { artifactUrl, type ArtifactFile, type ArtifactRun } from "../lib/api";
-import { formatNumber } from "../lib/format";
+import { formatNumber, shortHash } from "../lib/format";
 import { formatBytes } from "../lib/utils";
-import { Card } from "./ui";
+import { Card, ResearchNotice } from "./ui";
 
 const W = 640;
-const H = 250;
-const PAD = { l: 56, r: 12, t: 12, b: 28 };
+const H = 260;
+// Room for axis labels and the caption line at a readable size: on a 375 px phone the chart scales to about 0.59,
+// so a 20-unit label is about 12 px.
+const PAD = { l: 84, r: 16, t: 14, b: 40 };
+const LABEL = 20;
 
 type Fc = NonNullable<ArtifactRun["forecast"]>;
 
 // The forecast, drawn from the numbers in the run: the series so far in sand, the forecast in ember, and the
-// shaded band where 8 in 10 outcomes are expected (the P10 to P90 range).
+// shaded band where 8 in 10 outcomes are expected (the P10 to P90 range). The figcaption describes it in words, so the
+// drawing itself is hidden from screen readers.
 export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
   const point = fc.point ?? [];
   const lo10 = fc.q10 ?? [];
@@ -37,6 +41,8 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
     lo10.slice(0, n).map((_, i) => { const j = n - 1 - i; return `L${x(off + j).toFixed(1)},${y(lo10[j]).toFixed(1)}`; }).join(" ") +
     " Z";
   const ticks = [lo, lo + span / 3, lo + (2 * span) / 3, hi];
+  // The "Forecast starts" label sits to the left of its line when there is no room to its right.
+  const flip = hist.length > 0 && x(off) + 160 > W - PAD.r;
   const first = point[0];
   const last = point[n - 1];
   const change = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : null;
@@ -49,17 +55,11 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
 
   return (
     <figure className="grid gap-3">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        role="img"
-        aria-label={reading}
-        className="h-auto w-full"
-        style={{ fontFamily: "inherit" }}
-      >
+      <svg viewBox={`0 0 ${W} ${H}`} aria-hidden="true" className="h-auto w-full" style={{ fontFamily: "inherit" }}>
         {ticks.map((t, i) => (
           <g key={i}>
             <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} stroke="#2b241c" strokeWidth="1" />
-            <text x={PAD.l - 8} y={y(t) + 4} textAnchor="end" fontSize="13" fill="#c2b392">
+            <text x={PAD.l - 8} y={y(t) + 6} textAnchor="end" fontSize={LABEL} fill="#c2b392">
               {formatNumber(t)}
             </text>
           </g>
@@ -68,7 +68,13 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
         <path d={band} fill="#e8793a" fillOpacity="0.2" />
         {hist.length > 1 && <path d={path(hist, 0)} fill="none" stroke="#c2b392" strokeWidth="1.75" strokeLinejoin="round" />}
         <path d={path([...bridge, ...point.slice(0, n)], bridge.length ? off - 1 : off)} fill="none" stroke="#e8793a" strokeWidth="2.5" strokeLinejoin="round" />
-        <text x={x(off)} y={H - 8} textAnchor={hist.length ? "start" : "start"} fontSize="13" fill="#c2b392" dx={hist.length ? 6 : 0}>
+        <text
+          x={flip ? x(off) - 6 : x(off) + (hist.length ? 6 : 0)}
+          y={H - 12}
+          textAnchor={flip ? "end" : "start"}
+          fontSize={LABEL}
+          fill="#c2b392"
+        >
           {hist.length ? "Forecast starts" : "Forecast"}
         </text>
       </svg>
@@ -112,6 +118,14 @@ function FileRow({ runId, file }: { runId: string; file: ArtifactFile }) {
           <span className="truncate text-base text-sand-0">{name}</span>
           <span className="text-[0.9375rem] text-sand-2">
             {kind.label} · {ext.toUpperCase()} · {formatBytes(file.bytes)}
+            {file.sha256 && (
+              <>
+                {" · "}
+                <span className="font-mono text-[0.875rem]" title={`sha256 ${file.sha256}`}>
+                  sha256 {shortHash(file.sha256)}
+                </span>
+              </>
+            )}
           </span>
         </span>
         <Download aria-label="Download" className="size-5 shrink-0 text-sand-1 group-hover:text-ember" />
@@ -140,6 +154,7 @@ export function Results({ runs }: { runs: ArtifactRun[] }) {
     <div className="grid gap-4">
       {runs.map((run) => (
         <Card key={run.run_id} className="grid gap-5 p-4 sm:p-5">
+          {run.forecast && <ResearchNotice />}
           {run.forecast?.point && run.forecast.q10 && run.forecast.q90 && (
             <ForecastChart history={run.history ?? []} fc={run.forecast} />
           )}

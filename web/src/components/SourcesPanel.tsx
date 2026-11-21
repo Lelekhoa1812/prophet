@@ -51,7 +51,11 @@ export function SourcesPanel({
               source={s}
               busy={busyId === s.id}
               onToggle={() => void change(s, { included: !s.included }, "Couldn't change this file.")}
-              onRemove={() => void change(s, { removed: true }, "Couldn't remove this file.")}
+              onRemove={() => {
+                if (window.confirm(`Remove ${s.name}? Prophet will no longer read this file.`)) {
+                  void change(s, { removed: true }, "Couldn't remove this file.");
+                }
+              }}
             />
           ))}
         </ul>

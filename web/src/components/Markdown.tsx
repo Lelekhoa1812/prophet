@@ -37,6 +37,9 @@ function CopyButton({ text, label }: { text: string; label: string }) {
           setDone(true);
           window.clearTimeout(timer.current);
           timer.current = window.setTimeout(() => setDone(false), 1600);
+        }).catch(() => {
+          // The browser refused the clipboard write: show nothing as copied.
+          setDone(false);
         });
       }}
       className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-sm text-sand-1 transition-colors hover:bg-night-3 hover:text-sand-0"
@@ -68,7 +71,7 @@ function loadMermaid() {
       startOnLoad: false,
       securityLevel: "strict",
       theme: "base",
-      fontFamily: '"Times New Roman", Times, serif',
+      fontFamily: '"IBM Plex Sans", system-ui, sans-serif',
       themeVariables: {
         darkMode: true,
         background: "#171410",

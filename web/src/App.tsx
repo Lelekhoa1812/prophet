@@ -4,13 +4,14 @@ import { Composer } from "./components/Composer";
 import { NotebookView } from "./components/NotebookView";
 import { Sidebar } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
-import { Button, Card, Spinner } from "./components/ui";
+import { Button, Card, ResearchNotice, Spinner } from "./components/ui";
 import { api, type ArtifactRun, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
 import { errorMessage } from "./lib/format";
 import { useMission } from "./lib/useMission";
 import { cn, isWorking } from "./lib/utils";
 
 // Starting points that carry their own data, so a first-time visitor can see a full run without preparing a file.
+// They are demonstration data and are labelled "Sample data" on screen.
 const EXAMPLES: { label: string; text: string }[] = [
   {
     label: "Weekly sales, next 8 weeks",
@@ -21,10 +22,13 @@ const EXAMPLES: { label: string; text: string }[] = [
     text: "Here is monthly revenue for two years: 310, 295, 330, 352, 371, 365, 380, 402, 388, 410, 455, 520, 335, 322, 349, 375, 396, 391, 405, 428, 415, 439, 486, 551. Forecast the next 6 months and show the likely range.",
   },
   {
-    label: "Spare parts with many zeros",
-    text: "Weekly demand for a spare part: 0, 0, 3, 0, 0, 0, 5, 0, 0, 2, 0, 0, 0, 0, 4, 0, 0, 0, 6, 0, 0, 3. Forecast the next 8 weeks and tell me how much stock to hold.",
+    label: "Weekly units, sample region",
+    text: "Weekly units sold in a sample region: 0, 0, 3, 0, 0, 0, 5, 0, 0, 2, 0, 0, 0, 0, 4, 0, 0, 0, 6, 0, 0, 3. Forecast the next 8 weeks and show the likely range.",
   },
 ];
+
+// One notice slot above the main column. Errors are never swallowed: they land here until dismissed.
+type Notice = { id: number; message: string; tone: "error" | "info"; action?: { label: string; run: () => void } };
 
 export default function App() {
   const [missions, setMissions] = useState<MissionRow[]>([]);
@@ -38,21 +42,29 @@ export default function App() {
   const [draft, setDraft] = useState<string | undefined>(undefined);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const { mission, error: pollError, refresh } = useMission(selectedId);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const wasNavOpen = useRef(false);
+
+  const showError = (message: string) => setNotice({ id: Date.now(), message, tone: "error" });
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null));
     api
       .tools()
       .then((list) => setTools(Object.fromEntries(list.map((t) => [t.name, t]))))
-      .catch(() => {});
+      .catch(() => showError("Couldn't load the tool list. Refresh the page to try again."));
   }, []);
 
   const refreshList = useCallback(() => {
-    api.missions().then(setMissions).catch(() => {});
-    api.notebooks().then(setNotebooks).catch(() => {});
+    const failed = () =>
+      setNotice({ id: Date.now(), message: "Couldn't refresh your list. Check the connection and try again.", tone: "error" });
+    api.missions().then(setMissions).catch(failed);
+    api.notebooks().then(setNotebooks).catch(failed);
   }, []);
 
   useEffect(() => {
@@ -81,6 +93,13 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [navOpen]);
 
+  // Focus moves into the drawer when it opens and returns to the menu button when it closes.
+  useEffect(() => {
+    if (navOpen) closeButton.current?.focus();
+    else if (wasNavOpen.current) menuButton.current?.focus();
+    wasNavOpen.current = navOpen;
+  }, [navOpen]);
+
   const openNotebook = (id: string) => {
     setSelectedNotebookId(id);
     setSelectedId(null);
@@ -101,7 +120,34 @@ export default function App() {
       refreshList();
     } catch (err) {
       setDraft(undefined);
-      throw new Error(errorMessage(err, "Couldn't create a notebook. Try again."));
+      showError(errorMessage(err, "Couldn't create a notebook. Try again."));
+    }
+  };
+
+  // Hiding is reversible: the notice offers Undo, which restores the forecast to the list.
+  const hideMission = async (id: string) => {
+    try {
+      await api.archiveMission(id);
+      refreshList();
+      setNotice({
+        id: Date.now(),
+        message: "Forecast hidden.",
+        tone: "info",
+        action: {
+          label: "Undo",
+          run: () => {
+            api
+              .unarchiveMission(id)
+              .then(() => {
+                refreshList();
+                setNotice(null);
+              })
+              .catch((err) => showError(errorMessage(err, "Couldn't restore this forecast. Try again.")));
+          },
+        },
+      });
+    } catch (err) {
+      showError(errorMessage(err, "Couldn't hide this forecast. Try again."));
     }
   };
 
@@ -134,6 +180,8 @@ export default function App() {
     setStopping(true);
     try {
       await api.cancel(selectedId);
+    } catch (err) {
+      showError(errorMessage(err, "Couldn't stop Prophet. Try again."));
     } finally {
       setStopping(false);
       refresh();
@@ -162,26 +210,31 @@ export default function App() {
       selectedMissionId={selectedId}
       onSelectNotebook={openNotebook}
       onSelectMission={openMission}
-      onNewNotebook={() => void newNotebook().catch(() => {})}
+      onNewNotebook={() => void newNotebook()}
       onNewForecast={newForecast}
-      onHideMission={(id) => void api.archiveMission(id).then(refreshList).catch(() => {})}
+      onHideMission={(id) => void hideMission(id)}
     />
   );
 
   return (
     <div className="flex h-dvh bg-night-0 text-sand-0">
-      <aside className="hidden w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4 lg:flex">
-        <h1 className="px-2 text-2xl font-bold">Prophet</h1>
+      <aside className="hidden w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4 lg:flex" inert={navOpen}>
+        <h1 className="px-2 font-display text-2xl font-semibold">Prophet</h1>
         <div className="min-h-0 flex-1">{sidebar}</div>
       </aside>
 
       {navOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          <button type="button" aria-label="Close menu" onClick={() => setNavOpen(false)} className="absolute inset-0 bg-black/60" />
-          <div className="absolute inset-y-0 left-0 flex w-[86%] max-w-80 flex-col gap-4 bg-night-1 p-4">
+          <button type="button" tabIndex={-1} aria-hidden="true" onClick={() => setNavOpen(false)} className="absolute inset-0 bg-black/60" />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Workspace"
+            className="absolute inset-y-0 left-0 flex w-[86%] max-w-80 flex-col gap-4 bg-night-1 p-4"
+          >
             <div className="flex items-center justify-between">
-              <span className="px-2 text-2xl font-bold">Prophet</span>
-              <Button variant="ghost" size="icon" aria-label="Close menu" onClick={() => setNavOpen(false)}>
+              <span className="px-2 font-display text-2xl font-semibold">Prophet</span>
+              <Button ref={closeButton} variant="ghost" size="icon" aria-label="Close menu" onClick={() => setNavOpen(false)}>
                 <X aria-hidden="true" className="size-5" />
               </Button>
             </div>
@@ -190,25 +243,65 @@ export default function App() {
         </div>
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col" inert={navOpen}>
         <header className="flex items-center justify-between gap-2 border-b border-sand-2/20 px-3 py-2 lg:hidden">
-          <Button variant="ghost" size="icon" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
+          <Button ref={menuButton} variant="ghost" size="icon" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
             <Menu aria-hidden="true" className="size-5" />
           </Button>
-          <span className="text-xl font-bold">Prophet</span>
-          <Button variant="ghost" size="icon" aria-label="New notebook" onClick={() => void newNotebook().catch(() => {})}>
+          <span className="font-display text-xl font-semibold">Prophet</span>
+          <Button variant="ghost" size="icon" aria-label="New notebook" onClick={() => void newNotebook()}>
             <Plus aria-hidden="true" className="size-5" />
           </Button>
         </header>
 
+        {notice && (
+          <div className="px-4 pt-4 sm:px-6">
+            <div
+              role={notice.tone === "error" ? "alert" : "status"}
+              className={cn(
+                "mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border bg-night-1 p-3 text-[0.9375rem]",
+                notice.tone === "error" ? "border-bad/40" : "border-sand-2/30",
+              )}
+            >
+              <p className={cn("min-w-0 [overflow-wrap:anywhere]", notice.tone === "error" ? "text-bad" : "text-sand-0")}>{notice.message}</p>
+              <div className="flex items-center gap-2">
+                {notice.action && (
+                  <Button variant="secondary" size="sm" onClick={notice.action.run}>
+                    {notice.action.label}
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => setNotice(null)}>
+                  Dismiss
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {(noKeys || apiDown) && (
           <div className="px-4 pt-4 sm:px-6">
-            <Card role="alert" className="mx-auto grid w-full max-w-3xl gap-1 border-bad/40 p-4">
+            <Card role="alert" className="mx-auto grid w-full max-w-3xl gap-2 border-bad/40 p-4">
               <p className="text-base font-bold">{apiDown ? "Prophet isn't running" : "Prophet needs a model key"}</p>
               <p className="text-[0.9375rem] text-sand-1">
                 {apiDown
                   ? "Start the Prophet server, then reload this page."
-                  : "Add your NVIDIA key to the .env file in the project folder, then restart the server."}
+                  : "Prophet cannot run yet: no model key is set. Ask the person who set up this app to add one, then reload."}
+              </p>
+              {noKeys && (
+                <details className="text-[0.9375rem] text-sand-1">
+                  <summary className="inline-flex min-h-10 cursor-pointer items-center text-sand-2 hover:text-sand-0 sm:min-h-0">Details</summary>
+                  <p className="pt-1">Technical detail: add your NVIDIA key to the .env file in the project folder, then restart the server.</p>
+                </details>
+              )}
+            </Card>
+          </div>
+        )}
+
+        {pollError && (
+          <div className="px-4 pt-4 sm:px-6">
+            <Card role="alert" className="mx-auto grid w-full max-w-3xl gap-1 border-bad/40 p-4">
+              <p className="text-[0.9375rem] text-sand-0">
+                Lost contact with Prophet. Retrying every few seconds. Progress will update when the connection is back.
               </p>
             </Card>
           </div>
@@ -216,7 +309,13 @@ export default function App() {
 
         {inNotebook ? (
           <main className="min-h-0 flex-1 overflow-hidden">
-            <NotebookView key={selectedNotebookId} notebookId={selectedNotebookId} tools={tools} onChanged={refreshList} />
+            <NotebookView
+              key={selectedNotebookId}
+              notebookId={selectedNotebookId}
+              tools={tools}
+              onChanged={refreshList}
+              onError={showError}
+            />
           </main>
         ) : (
           <main
@@ -231,12 +330,12 @@ export default function App() {
               {selectedId === null ? (
                 <section aria-label="Start" className="grid gap-8 pt-6 sm:pt-14">
                   <div className="grid gap-3">
-                    <h2 className="text-3xl leading-tight font-bold text-balance sm:text-4xl">What would you like to work on?</h2>
+                    <h2 className="font-display text-3xl leading-tight font-semibold text-balance sm:text-4xl">What would you like to work on?</h2>
                     <p className="text-lg text-sand-1">
                       Start a notebook to add spreadsheets and ask questions about them, or ask a quick forecast below.
                     </p>
                     <div>
-                      <Button onClick={() => void newNotebook().catch(() => {})}>
+                      <Button onClick={() => void newNotebook()}>
                         <Plus aria-hidden="true" className="size-4" />
                         New notebook
                       </Button>
@@ -250,9 +349,10 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => setDraft(ex.text)}
-                            className="min-h-10 rounded-full border border-sand-2/40 px-4 text-base text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
+                            className="inline-flex min-h-10 items-center gap-2.5 rounded-full border border-sand-2/40 px-4 text-base text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2"
                           >
                             {ex.label}
+                            <span className="rounded-full border border-sand-2/40 px-2 py-px text-[0.8125rem] text-sand-1">Sample data</span>
                           </button>
                         </li>
                       ))}
@@ -260,16 +360,17 @@ export default function App() {
                   </div>
                 </section>
               ) : current ? (
-                <Turn mission={current} tools={tools} runs={runs} onAnswered={refresh} onRetry={(g) => void start(g).catch(() => {})} />
+                <Turn
+                  mission={current}
+                  tools={tools}
+                  runs={runs}
+                  onAnswered={refresh}
+                  onRetry={(g) => void start(g).catch((err) => showError(errorMessage(err, "Couldn't start the forecast. Try again.")))}
+                  onEdit={(g) => setDraft(g)}
+                />
               ) : (
                 <p role="status" className="flex items-center gap-2 text-base text-sand-1">
-                  {pollError ? (
-                    <span className="text-bad">{pollError}</span>
-                  ) : (
-                    <>
-                      <Spinner /> Loading
-                    </>
-                  )}
+                  <Spinner /> Loading
                 </p>
               )}
             </div>
@@ -289,6 +390,7 @@ export default function App() {
                 initial={draft}
                 placeholder={selectedId === null ? "Describe a quick forecast" : "Describe another forecast"}
               />
+              <ResearchNotice className="px-4 pt-1.5" />
             </div>
           </div>
         )}

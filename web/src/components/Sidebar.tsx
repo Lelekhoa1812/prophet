@@ -1,5 +1,5 @@
 import { BookOpen, Plus, Search, Sparkles, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { MissionRow, NotebookRow } from "../lib/api";
 import { relativeTime, truncate } from "../lib/format";
 import { cn, isWorking, statusInfo } from "../lib/utils";
@@ -28,6 +28,10 @@ export function Sidebar({
   onHideMission: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  // The sidebar renders twice (desktop column and mobile drawer), so each copy gets its own id prefix.
+  const uid = useId();
+  const notebooksId = `${uid}-notebooks`;
+  const forecastsId = `${uid}-forecasts`;
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return q ? missions.filter((m) => m.goal.toLowerCase().includes(q)) : missions;
@@ -41,8 +45,8 @@ export function Sidebar({
       </Button>
 
       <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto">
-        <section className="grid gap-1" aria-labelledby="sidebar-notebooks">
-          <h2 id="sidebar-notebooks" className="px-2 pb-1 text-[0.9375rem] font-semibold text-sand-2">
+        <section className="grid gap-1" aria-labelledby={notebooksId}>
+          <h2 id={notebooksId} className="px-2 pb-1 text-[0.9375rem] font-semibold text-sand-2">
             Notebooks
           </h2>
           {notebooks.length === 0 && (
@@ -76,9 +80,9 @@ export function Sidebar({
           </ul>
         </section>
 
-        <section className="grid gap-1" aria-labelledby="sidebar-forecasts">
+        <section className="grid gap-1" aria-labelledby={forecastsId}>
           <div className="flex items-center justify-between gap-2 px-2 pb-1">
-            <h2 id="sidebar-forecasts" className="text-[0.9375rem] font-semibold text-sand-2">
+            <h2 id={forecastsId} className="text-[0.9375rem] font-semibold text-sand-2">
               Quick forecasts
             </h2>
             <button
@@ -121,7 +125,7 @@ export function Sidebar({
                       aria-label={`Hide forecast: ${truncate(m.goal, 40)}`}
                       title="Hide this forecast"
                       onClick={() => onHideMission(m.id)}
-                      className="absolute top-1.5 right-1.5 z-10 grid size-8 place-items-center rounded-md text-sand-2 opacity-0 transition-opacity hover:bg-night-3 hover:text-sand-0 focus-visible:opacity-100 group-hover:opacity-100 max-lg:opacity-100"
+                      className="absolute top-1.5 right-1.5 z-10 grid size-10 place-items-center rounded-md sm:size-8 text-sand-2 opacity-0 transition-opacity hover:bg-night-3 hover:text-sand-0 focus-visible:opacity-100 group-hover:opacity-100 max-lg:opacity-100"
                     >
                       <X aria-hidden="true" className="size-4" />
                     </button>

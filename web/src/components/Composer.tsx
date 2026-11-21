@@ -4,6 +4,13 @@ import { cn } from "../lib/utils";
 import { Spinner } from "./ui";
 
 const MAX = 2000;
+// From this length the counter shows, so people see the limit before they reach it.
+const NEAR_LIMIT = 1800;
+
+// Phones and tablets: Enter adds a line, because the on-screen keyboard has no Shift and people expect Return to break a line.
+function isTouchPointer(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
+}
 
 // One message box, like the one people already know: attach on the left, send on the right.
 // Enter sends, Shift+Enter adds a line, and Enter during IME composition is left alone. While the agent works the
@@ -51,6 +58,8 @@ export function Composer({
   const trimmed = text.trim();
   const canSend = trimmed.length >= 3 && trimmed.length <= MAX && !busy && !blockedReason;
   const showStop = working && onStop !== undefined;
+  const near = text.length >= NEAR_LIMIT;
+  const full = text.length >= MAX;
 
   async function submit(e?: FormEvent) {
     e?.preventDefault();
@@ -65,20 +74,21 @@ export function Composer({
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouchPointer()) {
       e.preventDefault();
       void submit();
     }
   }
 
-  const note = error ?? blockedReason ?? (trimmed.length > 0 ? "Enter to send · Shift+Enter for a new line" : null);
+  const hint = isTouchPointer() ? "Tap the arrow to send" : "Enter to send · Shift+Enter for a new line";
+  const note = error ?? blockedReason ?? (trimmed.length > 0 ? hint : null);
 
   return (
     <form onSubmit={submit} className="grid gap-1.5">
       <div
         className={cn(
           "flex items-end gap-1.5 rounded-[1.75rem] border bg-night-1 p-2 shadow-[0_6px_24px_-12px_rgba(0,0,0,0.8)] transition-colors",
-          "border-sand-2/30 focus-within:border-sand-1/70",
+          "border-sand-2/30 focus-within:border-ember focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ember",
         )}
       >
         {leading}
@@ -90,7 +100,6 @@ export function Composer({
           ref={ref}
           value={text}
           rows={1}
-          maxLength={MAX}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
@@ -119,9 +128,17 @@ export function Composer({
           </button>
         )}
       </div>
-      <p className="min-h-5 px-4 text-[0.9375rem] text-sand-2" role={error ? "alert" : undefined}>
-        {error ? <span className="text-bad">{error}</span> : note}
-      </p>
+      <div className="flex min-h-5 flex-wrap items-baseline justify-between gap-x-4 px-4 text-[0.9375rem] text-sand-2">
+        <p className="min-w-0" role={error ? "alert" : undefined}>
+          {error ? <span className="text-bad">{error}</span> : note}
+        </p>
+        {near && (
+          <p className={cn("tabular-nums", full && "text-ember")}>
+            {text.length}/{MAX}
+            {full ? ". For longer data, attach a file." : ""}
+          </p>
+        )}
+      </div>
     </form>
   );
 }

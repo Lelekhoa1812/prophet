@@ -8,7 +8,7 @@ import { cn, isWorking } from "../lib/utils";
 import { Composer } from "./Composer";
 import { NotebookTurn } from "./NotebookTurn";
 import { SourcesPanel } from "./SourcesPanel";
-import { Spinner } from "./ui";
+import { ResearchNotice, Spinner } from "./ui";
 
 export const THREAD_SCROLL_ID = "thread-scroll";
 
@@ -38,16 +38,20 @@ export function NotebookView({
   notebookId,
   tools,
   onChanged,
+  onError,
 }: {
   notebookId: string;
   tools: Record<string, ToolInfo>;
   onChanged: () => void;
+  onError: (message: string) => void;
 }) {
   const { notebook, error, refresh } = useNotebook(notebookId);
   const [stopping, setStopping] = useState(false);
   const [manage, setManage] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [draft, setDraft] = useState<string | undefined>(undefined);
+  // True while a question is being sent, so the send button cannot fire a second copy of the same question.
+  const [sending, setSending] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const turnCount = notebook?.turns.length ?? 0;
 
@@ -60,7 +64,8 @@ export function NotebookView({
   // Follow the newest question down the page.
   useEffect(() => {
     const el = document.getElementById(THREAD_SCROLL_ID);
-    el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    el?.scrollTo({ top: el.scrollHeight, behavior: reduceMotion ? "auto" : "smooth" });
   }, [turnCount]);
 
   useEffect(() => {
@@ -85,13 +90,20 @@ export function NotebookView({
       ? "Answer the question above to continue."
       : null;
   const hasFiles = notebook.sources.length > 0;
+  // Usable: at least one included file has been read. Checking: some file is still being read. Otherwise nothing is in use.
   const ready = notebook.sources.some((s) => s.included && (s.status === "ready" || s.status === "needs_attention"));
+  const checking = notebook.sources.some((s) => s.status === "profiling");
 
+  // The composer keeps the draft until the send succeeds; a failure stays visible in the composer (thrown) and the
+  // retry path from a question card reports through the notice slot.
   async function send(goal: string) {
+    setSending(true);
     try {
       await api.createTurn(notebookId, goal);
     } catch (err) {
       throw new Error(errorMessage(err, "Couldn't send that. Try again."));
+    } finally {
+      setSending(false);
     }
     setDraft(undefined);
     changed();
@@ -102,6 +114,8 @@ export function NotebookView({
     setStopping(true);
     try {
       await api.cancel(last.id);
+    } catch (err) {
+      onError(errorMessage(err, "Couldn't stop Prophet. Try again."));
     } finally {
       setStopping(false);
       changed();
@@ -242,7 +256,11 @@ export function NotebookView({
           {hasFiles && notebook.turns.length === 0 && (
             <div className="grid gap-3 pt-2">
               <p className="text-lg text-sand-1">
-                {ready ? "Ask anything about your files. Prophet shows its working and where each number came from." : "Prophet is checking your files."}
+                {ready
+                  ? "Ask anything about your files. Prophet shows the steps it took and the code it ran."
+                  : checking
+                    ? "Prophet is checking your files."
+                    : "None of your files are in use. Include a file under Manage to ask questions."}
               </p>
               {ready && (
                 <ul className="flex flex-wrap gap-2">
@@ -266,7 +284,12 @@ export function NotebookView({
             <ol aria-label="Questions" className="grid gap-10">
               {notebook.turns.map((t) => (
                 <li key={t.id}>
-                  <NotebookTurn missionId={t.id} tools={tools} onRetry={(goal) => void send(goal).catch(() => {})} />
+                  <NotebookTurn
+                    missionId={t.id}
+                    tools={tools}
+                    onRetry={(goal) => void send(goal).catch((err) => onError(errorMessage(err, "Couldn't send that. Try again.")))}
+                    onEdit={setDraft}
+                  />
                 </li>
               ))}
             </ol>
@@ -278,7 +301,7 @@ export function NotebookView({
         <div className="mx-auto w-full max-w-3xl">
           <Composer
             onSend={send}
-            busy={false}
+            busy={sending}
             blockedReason={blockedReason}
             initial={draft}
             leading={attach}
@@ -287,6 +310,7 @@ export function NotebookView({
             stopping={stopping}
             placeholder={notebook.turns.length === 0 ? "Ask a question about your files" : "Ask a follow-up question"}
           />
+          <ResearchNotice className="px-4 pt-1.5" />
         </div>
       </div>
 

@@ -37,9 +37,10 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
   const complete = answered === specs.length && specs.length > 0;
 
   const setSingle = (header: string, label: string) => setAnswers((p) => ({ ...p, [header]: label }));
+  // A real option replaces a skip, so the skip marker never travels with an answer.
   const toggleMulti = (header: string, label: string) =>
     setAnswers((p) => {
-      const cur = Array.isArray(p[header]) ? (p[header] as string[]) : [];
+      const cur = Array.isArray(p[header]) ? (p[header] as string[]).filter((x) => x !== SKIPPED) : [];
       return { ...p, [header]: cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label] };
     });
 
@@ -85,9 +86,10 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
                 <button
                   type="button"
                   onClick={() => setAnswers((p) => ({ ...p, [spec.header]: spec.multiSelect ? [SKIPPED] : SKIPPED }))}
-                  className="text-[0.9375rem] text-sand-1 underline underline-offset-4 hover:text-sand-0"
+                  aria-label={`Skip this question: ${spec.question}`}
+                  className="inline-flex min-h-10 items-center text-[0.9375rem] text-sand-1 underline underline-offset-4 hover:text-sand-0 sm:min-h-0"
                 >
-                  Skip
+                  Skip this question
                 </button>
               </legend>
               <div className="grid gap-2">

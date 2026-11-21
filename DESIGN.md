@@ -11,7 +11,7 @@ Mode: Operate. Precision and restraint carry the identity; the starfield is the 
 | --night-2 | #201a14 | raised rows, inputs |
 | --sand-0 | #f1e4c8 | primary text (contrast ≥ 14:1 on night-0) |
 | --sand-1 | #b9a682 | secondary text (contrast ≥ 7:1) |
-| --sand-2 | #7d6d55 | rules and quiet borders only, never text |
+| --sand-2 | #9a8b6f | captions, labels and rules. Passes 4.5:1 on night-2 (5.07), night-3 (4.59) and ember-soft (4.60), so it is usable for captions; never for the primary text |
 | --ember | #ef7a3a | primary action, focus ring, the agent's live state |
 | --ember-soft | #3a2116 | ember-tinted backgrounds for question cards |
 | --ok | #8fbf9a | completed |

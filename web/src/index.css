@@ -1,17 +1,17 @@
 @import "tailwindcss";
 
-/* One typeface everywhere: Times New Roman. Sizes come from one scale so every screen feels like the same product. */
+/* Self-hosted families (see main.tsx): Cormorant Garamond for display, IBM Plex Sans for interface and body, IBM Plex Mono for data. */
 @theme {
-  --font-sans: "Times New Roman", Times, "Liberation Serif", serif;
-  --font-display: "Times New Roman", Times, "Liberation Serif", serif;
-  --font-mono: "Times New Roman", Times, "Liberation Serif", serif;
+  --font-sans: "IBM Plex Sans", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Cormorant Garamond", "Times New Roman", Times, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --color-night-0: #0f0d0b;
   --color-night-1: #171410;
   --color-night-2: #211c16;
   --color-night-3: #2b241c;
   --color-sand-0: #f3e9d2;
   --color-sand-1: #c2b392;
-  --color-sand-2: #8d7e65;
+  --color-sand-2: #9a8b6f;
   --color-ember: #e8793a;
   --color-ember-strong: #f48d51;
   --color-ember-soft: #34201a;

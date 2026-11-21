@@ -144,6 +144,7 @@ export const api = {
   tools: () => req<ToolInfo[]>("/api/tools"),
   missions: () => req<MissionRow[]>("/api/missions"),
   archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
+  unarchiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: false }) }),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
   createMission: (goal: string) => req<{ id: string }>("/api/missions", { method: "POST", body: JSON.stringify({ goal }) }),
   answer: (questionId: string, answers: Record<string, string | string[]>) =>

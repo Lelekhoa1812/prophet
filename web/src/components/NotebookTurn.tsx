@@ -9,10 +9,12 @@ export function NotebookTurn({
   missionId,
   tools,
   onRetry,
+  onEdit,
 }: {
   missionId: string;
   tools: Record<string, ToolInfo>;
   onRetry: (goal: string) => void;
+  onEdit: (goal: string) => void;
 }) {
   const { mission, error, refresh } = useMission(missionId);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
@@ -36,5 +38,5 @@ export function NotebookTurn({
       </p>
     );
   }
-  return <Turn mission={mission} tools={tools} runs={runs} onAnswered={refresh} onRetry={onRetry} />;
+  return <Turn mission={mission} tools={tools} runs={runs} onAnswered={refresh} onRetry={onRetry} onEdit={onEdit} />;
 }
