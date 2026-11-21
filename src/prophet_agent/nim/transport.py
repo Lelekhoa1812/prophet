@@ -279,6 +279,9 @@ def _retry_after(value: str | None, default: float) -> float:
 
 _DAILY = re.compile(r"per[ _-]?day|daily|free-models-per-day|requests?_per_day", re.I)
 _BILLING = re.compile(r"enforced_spend_limit|insufficient_quota|billing|spend[ _]limit", re.I)
+# Google answers a bad key with HTTP 400 ("Please pass a valid API key", reason API_KEY_INVALID), not 401. That is the key's
+# fault, not the model's or the request's, so the key is retired and the next one serves.
+_BAD_KEY = re.compile(r"valid api key|api[_ ]key[_ ]?(not valid|invalid)|API_KEY_INVALID", re.I)
 _RETRY_DELAY = re.compile(r'"retryDelay"\s*:\s*"([0-9.]+)s"')
 
 
@@ -924,7 +927,7 @@ class NimClient:
         """NIM.md §4.2, one row per branch. Reason strings carry the model and status, never the key."""
         note = f"{model}: HTTP {status}"
         log.warning("nim: %s slot=%d HTTP %s after %.1fs", model, slot, status, self.clock() - started)
-        if status in (401, 403):                 # NIM answers 403, not 401, to a bad key on chat
+        if status in (401, 403) or (status == 400 and _BAD_KEY.search(raw or "")):   # NIM answers 403, Google 400, to a bad key
             self._retire(key)
             return _Outcome("retire", note)
         if status == 503:

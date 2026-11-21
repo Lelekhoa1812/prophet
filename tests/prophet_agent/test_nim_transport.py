@@ -840,3 +840,14 @@ def test_two_unusable_strict_replies_switch_the_model_to_plain_json_mode_with_th
     formats = [c["body"].get("response_format", {}).get("type") for c in script.calls]
     assert formats[:2] == ["json_schema", "json_schema"] and formats[2] == "json_object"
     assert "schema" in json.dumps(script.calls[2]["body"]["messages"]).lower()
+
+
+def test_a_400_that_says_the_api_key_is_invalid_retires_that_key_and_the_next_one_serves():
+    # Google answers a bad key with HTTP 400, not 401. Seen live: every model "failed" on the bad key and the mission died.
+    body = '{"error": {"code": 400, "message": "Please pass a valid API key", "status": "INVALID_ARGUMENT"}}'
+    script = Script().on(status(400, body), slot=1)
+    client, _ = make(script)
+    reply = client.complete([M1, M2], MSGS)
+    assert reply.model == M1 and reply.text == "ok"
+    assert script.sequence() == [(1, M1), (2, M1)], "the model was not blamed for the key"
+    assert client.status()["keys"][0]["retired"] is True
