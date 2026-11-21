@@ -32,3 +32,16 @@ Decision rules:
 Record the profile as a short table (rows, keys, date range, coverage, flags) and add it to the ledger. A clean-looking plot is a hypothesis, not a finding.
 
 Do not model before the profile is recorded. Do not drop series silently. Do not treat a complete-looking table as complete. Do not ignore the loader's report. Do not assume a unit or a timezone that nobody stated.
+
+## Run the scan first
+
+Before the steps above, run the scan. It reads the table and changes nothing.
+
+```python
+import prophet_scan as sc; r = sc.scan(df, "date", "units", entity_cols=["sku"], freq="D")
+for f in r["findings"]:
+    if f["severity"] in ("blocker", "major"):
+        print(f["id"], f["scope"], f["decision_needed"])
+```
+
+Do not forecast while a blocker is unresolved or a major finding has no ledger decision; record one for each in the Ledger.
