@@ -54,11 +54,14 @@ def propose_title(text: str, ask_model: Callable[[str], str | None]) -> str | No
 
 
 def nim_ask_model(text: str) -> str | None:
-    """Default model call. Uses the shared NIM client and the cheapest model in the default chain, with no retries of its own."""
-    from prophet_agent.nim.transport import DEFAULT_CHAIN, shared_client
+    """Default model call. Uses the planner's provider and its enabled models (so only ids that provider knows are sent),
+    through the shared client, with no retries of its own."""
+    from prophet_agent.nim.transport import shared_client
+    from prophet_agent.settings import Settings
 
-    reply = shared_client().complete(
-        list(DEFAULT_CHAIN),
+    provider, models = Settings().planner_choice()
+    reply = shared_client(provider).complete(
+        list(models),
         [{"role": "user", "content": text}],
         max_tokens=24,
         budget_s=20.0,
