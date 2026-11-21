@@ -43,9 +43,10 @@ def test_key_variables_follow_the_brief():
 def test_gemini_uses_the_openai_compatible_endpoint_and_the_verified_chain():
     gemini = PROVIDERS["gemini"]
     assert gemini.resolve_base_url({}) == "https://generativelanguage.googleapis.com/v1beta/openai"
-    assert gemini.models({}) == ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+    assert gemini.models({}) == ("gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
+                                 "gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
     assert not any(m.startswith("gemini-2.5") for m in gemini.models({})), "2.5 models were retired on 3 Nov 2026"
-    assert gemini.probe_target({}) == "gemini-3.1-flash-lite", "the cheapest model is the key probe"
+    assert gemini.probe_target({}) == "gemini-3.5-flash-lite", "a model that verified, so a 403 means the key"
 
 
 def test_gemini_request_shape_uses_max_tokens_and_a_strict_json_schema():
@@ -119,9 +120,11 @@ def test_claude_and_openai_send_no_temperature_and_grok_keeps_the_default_shape(
 
 
 def test_verified_chains_match_the_current_model_ids():
-    assert PROVIDERS["claude"].default_models == ("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5")
-    assert PROVIDERS["openai"].default_models == ("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-luna")
-    assert PROVIDERS["grok"].default_models == ("grok-4.7", "grok-4.3")
+    assert PROVIDERS["claude"].default_models == ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2")
+    assert PROVIDERS["openai"].default_models == ("gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra")
+    assert PROVIDERS["grok"].default_models == ("grok-4.7", "grok-4.6", "grok-4.3")
+    assert PROVIDERS["claude"].probe_target({}) == "claude-haiku-5-5", "the probe stays on the cheapest Claude"
+    assert PROVIDERS["openai"].probe_target({}) == "gpt-6-luna"
     assert PROVIDERS["grok"].base_url == "https://api.x.ai/v1"
     assert PROVIDERS["claude"].base_url == "https://api.anthropic.com/v1"
 
@@ -230,7 +233,7 @@ def test_active_provider_persists_across_limit_updates(tmp_path):
     settings = Settings(data_root=tmp_path, dotenv=tmp_path / ".env")
     settings.update({"llm": {"provider": "grok"}})
     settings.update({"agent": {"part_steps": 300}})
-    assert active_provider_name(tmp_path) == "grok"
+    assert active_provider_name(tmp_path, environ={}) == "grok", "no usable grok key, but it is the only one switched on"
     assert settings.values()["agent"]["part_steps"] == 300
     with pytest.raises(ValueError, match="unknown provider"):
         settings.update({"llm": {"provider": "bogus"}})

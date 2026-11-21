@@ -82,12 +82,15 @@ class MissionService:
     def default_budget(self) -> dict:
         return self.settings.default_budget() if self._use_settings else dict(DEFAULT_BUDGET)
 
-    def create(self, goal: str, budget: dict | None = None, dataset_ids: list[str] | None = None) -> str:
+    def create(self, goal: str, budget: dict | None = None, dataset_ids: list[str] | None = None,
+               model: str | None = None) -> str:
         budget = dict(budget or self.default_budget())
         if dataset_ids:
             for did in dataset_ids:
                 self.datasets.get(did)          # KeyError for an unknown id, before any mission row exists
             budget["dataset_ids"] = list(dataset_ids)
+        if model is not None:
+            budget["model"] = model             # the catalog id the planner uses; absent means the default chain
         mission_id = self.store.create_mission(goal, budget)
         self._name(mission_id, goal)
         return mission_id
@@ -139,12 +142,15 @@ class MissionService:
 
     # -- notebook turns ------------------------------------------------------------------------------------------
 
-    def create_turn(self, notebook_id: str, goal: str) -> str:
+    def create_turn(self, notebook_id: str, goal: str, model: str | None = None) -> str:
         """A new question in a notebook. Raises KeyError for an unknown notebook and NotebookBusy while one runs."""
         self.notebooks.get(notebook_id)
         last = self.store.conn.execute(
             "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
-        turn_id = self.store.create_mission(goal, self.default_budget(), notebook_id=notebook_id,
+        budget = self.default_budget()
+        if model is not None:
+            budget["model"] = model
+        turn_id = self.store.create_mission(goal, budget, notebook_id=notebook_id,
                                             parent_turn_id=last["id"] if last else None)
         if last is None:
             self._name_notebook(notebook_id, goal)
@@ -204,8 +210,10 @@ class MissionService:
             base = self.settings.goal_config(self.goal_cfg) if self._use_settings else self.goal_cfg
             cfg = replace(base, tool_budget=budget.get("max_tool_calls"),
                           segment=int(budget.get("segment", 0)), finish_now=bool(budget.get("finish_now", False)))
-            program = goal_program(mission["goal"], self.tools_for(mission), self.brain_factory(), cfg,
-                                   self.files_context(mission))
+            # A mission with a chosen model gets a brain for that model alone; without one the factory is called as before.
+            model = budget.get("model")
+            brain = self.brain_factory(model) if model else self.brain_factory()
+            program = goal_program(mission["goal"], self.tools_for(mission), brain, cfg, self.files_context(mission))
             # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
             runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
             t = threading.Thread(target=self._run, args=(runtime, mission_id, program), daemon=True)

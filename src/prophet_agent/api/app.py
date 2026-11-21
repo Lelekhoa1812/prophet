@@ -22,12 +22,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from prophet_agent.config import ROOT
 from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
-from prophet_agent.nim.providers import PROVIDERS, planner_problem
+from prophet_agent.nim.providers import CATALOG, PROVIDERS, planner_problem
 from prophet_agent.nim.transport import probe_provider, shared_client
 from prophet_agent.runtime.store import ACTIVE, LeaseHeld, NotebookBusy
-from prophet_agent.settings import mask
 from prophet_agent.settings import view as settings_view
 from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
+from prophet_agent.usage import ledger_for
 
 from .service import MissionService
 
@@ -46,6 +46,7 @@ WEB_DIST = ROOT / "web" / "dist"
 class MissionIn(BaseModel):
     goal: str = Field(min_length=3, max_length=2000)
     dataset_ids: list[str] = Field(default_factory=list, max_length=10)
+    model: str | None = Field(default=None, max_length=120)     # a catalog model id; omitted means the default chain
 
 
 class MissionPatch(BaseModel):
@@ -76,6 +77,7 @@ class SourcePatch(BaseModel):
 
 class TurnIn(BaseModel):
     goal: str = Field(min_length=3, max_length=2000)
+    model: str | None = Field(default=None, max_length=120)     # a catalog model id; omitted means the default chain
 
 
 DISPLAY_EXTS = (".png", ".svg", ".xlsx", ".docx", ".pdf")
@@ -171,13 +173,28 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(409, str(exc))
         return {"id": mission_id, "deleted": True}
 
+    def _model_gate(model: str | None) -> None:
+        """422 for a model id that is not in the catalog, or whose model or provider is switched off in Settings."""
+        if model is None:
+            return
+        try:
+            service.settings.check_model_choice(model)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+
+    def _planner_gate(model: str | None) -> None:
+        """503 while the planner cannot run (no usable key, no endpoint). Checked before any row is written."""
+        if service.brain_factory is default_brain_factory:
+            problem = service.settings.planner_problem(model=model)
+            if problem:
+                raise HTTPException(503, problem)
+
     @app.post("/api/missions", status_code=201)
     def create_mission(body: MissionIn) -> dict:
-        if service.brain_factory is default_brain_factory and planner_problem():
-            # Refuse before writing a mission row, so no orphan "created" mission is left behind.
-            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        _model_gate(body.model)
+        _planner_gate(body.model)     # refused before a mission row exists, so no orphan "created" mission is left behind
         try:
-            mission_id = service.create(body.goal.strip(), dataset_ids=body.dataset_ids)
+            mission_id = service.create(body.goal.strip(), dataset_ids=body.dataset_ids, model=body.model)
         except KeyError:
             raise HTTPException(422, "one of the uploaded files no longer exists; upload it again")
         try:
@@ -323,10 +340,10 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.post("/api/notebooks/{nid}/turns", status_code=201)
     def create_turn(nid: str, body: TurnIn) -> dict:
-        if service.brain_factory is default_brain_factory and planner_problem():
-            raise HTTPException(503, planner_problem())
+        _model_gate(body.model)
+        _planner_gate(body.model)
         try:
-            mission_id = service.create_turn(nid, body.goal.strip())
+            mission_id = service.create_turn(nid, body.goal.strip(), model=body.model)
         except KeyError:
             raise HTTPException(404, "no such notebook")
         except NotebookBusy as exc:
@@ -428,16 +445,23 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.post("/api/settings/test-keys")
     def test_keys(provider: str = "nim") -> dict:
-        """One 1-token call per key of one provider. Returns status codes and timings only; no key material, no text."""
+        """One 1-token call per key of one provider. Each key's status (valid, invalid or untested) and HTTP code are
+        saved in settings.json, so the planner stops using an invalid key. No key material and no generated text."""
         if provider not in PROVIDERS:
             raise HTTPException(422, f"unknown provider {provider!r}")
         try:
             rows = probe_provider(provider)
         except NotConfigured as exc:
             raise HTTPException(503, str(exc))
-        keys = service.settings.key_slots(None, provider)
-        return {"provider": provider, "keys": [
-            {**row, "masked": mask(keys[row["slot"] - 1]), "ok": row["status"] == 200} for row in rows]}
+        return {"provider": provider, "keys": service.settings.save_key_checks(provider, rows)}
+
+    @app.get("/api/usage")
+    def get_usage() -> dict:
+        """Tokens used per model over the last 1, 7 and 30 days, with the ceilings set in Settings and when each window
+        frees up again. Every catalog model is listed, whether or not it is switched on."""
+        ledger = ledger_for(service.settings.data_root)
+        budgets = service.settings.budgets()
+        return {"models": ledger.summary(CATALOG, budgets)}
 
     @app.get("/api/settings/export")
     def export_data() -> JSONResponse:
@@ -462,11 +486,14 @@ def create_app(service: MissionService) -> FastAPI:
     return app
 
 
-def default_brain_factory():
-    """Build the NIM-backed planner, or raise NotConfigured when no keys are present."""
+def default_brain_factory(model: str | None = None):
+    """Build the planner for the chosen model, or for the default chain (the planner's provider and its enabled models).
+    Raises NotConfigured when nothing can plan, and ValueError for an unknown or switched-off model."""
     from prophet_agent.nim.transport import shared_client
     from prophet_agent.runtime.goal import NimBrain
-    return NimBrain(shared_client())
+    from prophet_agent.settings import Settings
+    provider, models = Settings().planner_choice(model=model)
+    return NimBrain(shared_client(provider), models=list(models))
 
 
 __all__ = ["create_app", "default_brain_factory"]

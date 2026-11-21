@@ -31,7 +31,7 @@ from typing import Any
 
 import httpx
 
-from .errors import Exhausted, NimError, NotConfigured, SchemaViolation
+from .errors import Exhausted, NimError, NotConfigured, SchemaViolation, redact
 from .providers import NIM_BASE_URL, NIM_DEFAULT_CHAIN, PROVIDERS, Provider, active_provider_name, load_provider_keys
 from .schema import STRIP_ALWAYS, is_format_error, strip_schema, unimplemented_keys, validate
 
@@ -110,6 +110,8 @@ class _Outcome:
     invalid: bool = False
     shape: _Shape | None = None
     partial: str = ""                  # "cut" only: the raw text that was already released before the stream broke
+    status: int | None = None          # the HTTP status of the attempt, when one was received
+    detail: str = ""                   # redacted, shortened response body for a failed attempt (model checks show it)
 
 
 # -- pure helpers --------------------------------------------------------------------------------------------------
@@ -281,8 +283,10 @@ class NimClient:
                  transport: httpx.BaseTransport | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
-                 rng: random.Random | None = None):
+                 rng: random.Random | None = None,
+                 on_reply: Callable[[Reply], None] | None = None):
         self.provider = provider
+        self.on_reply = on_reply               # called once per successful model call (the usage ledger hook); never raises
         self.keys: list[str] = list(dict.fromkeys(k for k in keys if k))
         if not self.keys:
             raise NotConfigured(f"no {provider.label} key configured (looked for {provider.key_hint} in the "
@@ -376,6 +380,7 @@ class NimClient:
                          self.clock() - attempt_started, out.reason)
                 if out.kind == "ok":
                     reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
+                    self._record(reply)
                     yield "done", reply
                     return
                 last, last_invalid = out.reason, out.invalid
@@ -423,6 +428,43 @@ class NimClient:
         if done is None:
             raise NimError("stream ended without an answer")
         return done
+
+    def check_model(self, model: str, messages: Sequence[Mapping[str, Any]], *, max_tokens: int = 64,
+                    budget_s: float = 60.0) -> dict:
+        """One tiny completion for one model on one key: no failover, no retries, no demotion. Returns
+        {"model", "status": "verified" | "failed", "http_status", "error"}. ``error`` is redacted and short; it never
+        holds the key. A 200 with no text is "failed", because the check asks for a completion."""
+        deadline = self.clock() + budget_s
+        try:
+            key = self._acquire(model, deadline)
+        except NimError as exc:
+            return {"model": model, "status": "failed", "http_status": None, "error": str(exc)}
+        opts = _Opts(thinking=False, max_tokens=max_tokens, schema=None, schema_name="check", tools=None)
+        try:
+            gen = self._attempt(key, model, [dict(m) for m in messages], opts, _Shape("strict"), deadline)
+            out: _Outcome | None = None
+            while out is None:
+                try:
+                    next(gen)
+                except StopIteration as stop:
+                    out = stop.value
+        finally:
+            self._release(key)
+        if out is not None and out.kind == "ok" and out.reply is not None:
+            self._record(out.reply)
+            return {"model": model, "status": "verified", "http_status": out.status or 200, "error": None}
+        error = out.detail or out.reason if out is not None else "no answer"
+        return {"model": model, "status": "failed", "http_status": out.status if out is not None else None,
+                "error": redact(error, limit=200)}
+
+    def _record(self, reply: Reply) -> None:
+        """Hand a successful call to the usage hook. A broken hook must never fail the call that produced the answer."""
+        if self.on_reply is None:
+            return
+        try:
+            self.on_reply(reply)
+        except Exception:
+            log.warning("usage hook failed; the call itself succeeded", exc_info=True)
 
     def status(self) -> dict:
         """What the pool is doing right now, per key slot. Never includes key material: slots are 1-based positions."""
@@ -540,8 +582,10 @@ class NimClient:
                 status = r.status_code
                 if status >= 400:
                     raw = r.read().decode("utf-8", "replace")
-                    return self._classify_http(key, model, slot, status, r.headers.get("retry-after"), raw,
-                                               opts, shape, started)
+                    out = self._classify_http(key, model, slot, status, r.headers.get("retry-after"), raw,
+                                              opts, shape, started)
+                    out.status, out.detail = status, redact(raw, limit=200)
+                    return out
                 acc: dict[int, dict] = {}
                 finish: str | None = None
                 usage: dict = {}
@@ -586,14 +630,15 @@ class NimClient:
         if not text and not calls:
             if emitted:
                 raise NimError("nim stream ended with no answer after output began; no failover")
-            return _Outcome("model", f"{model}: empty reply (finish_reason={finish})", demote=finish != "length")
+            return _Outcome("model", f"{model}: empty reply (finish_reason={finish})", demote=finish != "length",
+                            status=status)
         if opts.schema is not None and not opts.tools:
             err = _check_schema(text, opts.schema)
             if err:
-                return _Outcome("model", f"{model}: local schema check failed: {err}", invalid=True)
+                return _Outcome("model", f"{model}: local schema check failed: {err}", invalid=True, status=status)
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,
                       usage=_usage(usage), key_slot=slot, elapsed_s=round(elapsed, 2))
-        return _Outcome("ok", reply=reply)
+        return _Outcome("ok", reply=reply, status=status)
 
     def _classify_http(self, key: str, model: str, slot: int, status: int, retry_after: str | None, raw: str,
                        opts: _Opts, shape: _Shape, started: float) -> _Outcome:
@@ -629,27 +674,42 @@ class NimClient:
 
 # -- the process-wide client ----------------------------------------------------------------------------------------
 
-_SHARED: NimClient | None = None
+_SHARED: dict[str, NimClient] = {}
 _SHARED_LOCK = threading.Lock()
 
 
-def shared_client() -> NimClient:
-    """The one client of this process for the ACTIVE provider (Settings), created on first use. Every mission and
-    sub-agent calls through it, so the rate windows, cooldowns and in-flight counts cover all of them together.
-    Raises NotConfigured without keys or endpoint."""
-    global _SHARED
+def _usage_hook(provider: str) -> Callable[[Reply], None]:
+    """The callback every shared client gets: one usage row per successful model call, in data/usage.sqlite."""
+    def record(reply: Reply) -> None:
+        from ..usage import ledger_for
+        from ..config import DATA
+        ledger_for(DATA).record(provider, reply.model, reply.usage)
+    return record
+
+
+def shared_client(provider: str | None = None) -> NimClient:
+    """The one client of this process for one provider (default: the planner's active provider), created on first use.
+    Every mission and sub-agent calls through it, so the rate windows, cooldowns and in-flight counts cover all of them
+    together. Only keys that are not marked invalid are used (Settings.usable_keys). Raises NotConfigured without keys
+    or endpoint."""
+    from ..settings import Settings
+    name = provider or active_provider_name()
     with _SHARED_LOCK:
-        if _SHARED is None:
-            _SHARED = NimClient.for_provider(active_provider_name())
-        return _SHARED
+        client = _SHARED.get(name)
+        if client is None:
+            client = NimClient(Settings().usable_keys(name), provider=PROVIDERS[name], on_reply=_usage_hook(name))
+            _SHARED[name] = client
+        return client
 
 
-def reset_shared_client() -> None:
-    """Drop the shared client so the next call re-reads the keys and the active provider (after a change in Settings).
+def reset_shared_client(provider: str | None = None) -> None:
+    """Drop the shared client of one provider, or of all, so the next call re-reads its keys (after a change in Settings).
     Calls already in flight keep their reference and finish normally."""
-    global _SHARED
     with _SHARED_LOCK:
-        _SHARED = None
+        if provider is None:
+            _SHARED.clear()
+        else:
+            _SHARED.pop(provider, None)
 
 
 def probe_provider(name: str) -> list[dict]:
