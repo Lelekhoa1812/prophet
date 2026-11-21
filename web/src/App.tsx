@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Menu, Plus, ScanSearch, Settings as SettingsIcon, Undo2, Upload, X } from "lucide-react";
+import { BarChart3, BookOpen, Menu, PanelLeft, PanelLeftClose, Plus, ScanSearch, Settings as SettingsIcon, Undo2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import logo from "./public/logo.png";
 import { Composer, type Attachment } from "./components/Composer";
@@ -24,6 +24,21 @@ export default function App() {
   const [health, setHealth] = useState<{ ok: boolean; nim_keys_configured: boolean } | null>(null);
   const [tools, setTools] = useState<Record<string, ToolInfo>>({});
   const [navOpen, setNavOpen] = useState(false);
+  // Desktop sidebar can be collapsed out of the way; the choice is remembered per browser (best effort).
+  const [sidebarHidden, setSidebarHidden] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("prophet.sidebarHidden") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("prophet.sidebarHidden", sidebarHidden ? "1" : "0");
+    } catch {
+      /* storage unavailable: the sidebar simply starts open next time */
+    }
+  }, [sidebarHidden]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
   const [draft, setDraft] = useState<string | undefined>(undefined);
@@ -299,13 +314,16 @@ export default function App() {
 
   return (
     <div className="flex h-dvh bg-night-0 text-sand-0">
-      <aside className="hidden w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4 lg:flex" inert={navOpen}>
+      <aside className={cn("w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4", sidebarHidden ? "hidden" : "hidden lg:flex")} inert={navOpen}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5 px-2">
             <img src={logo} alt="" aria-hidden="true" className="size-8 shrink-0 rounded-md object-cover" />
             <h1 className="font-display text-2xl font-semibold">Prophet</h1>
           </div>
-          <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
+          <div className="flex items-center">
+            <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
+            <IconButton label="Hide" aria-expanded={true} icon={<PanelLeftClose aria-hidden="true" className="size-5" />} onClick={() => setSidebarHidden(true)} />
+          </div>
         </div>
         <div className="min-h-0 flex-1">{sidebar}</div>
       </aside>
@@ -326,7 +344,7 @@ export default function App() {
               </span>
               <div className="flex items-center">
                 <IconButton label="Settings" icon={<SettingsIcon aria-hidden="true" className="size-5" />} onClick={() => setSettingsOpen(true)} />
-                <IconButton ref={closeButton} label="Close menu" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(false)} />
+                <IconButton ref={closeButton} label="Close" icon={<X aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(false)} />
               </div>
             </div>
             <div className="min-h-0 flex-1">{sidebar}</div>
@@ -335,8 +353,13 @@ export default function App() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col" inert={navOpen}>
+        {sidebarHidden && (
+          <div className="hidden items-center border-b border-sand-2/20 px-3 py-2 lg:flex">
+            <IconButton label="Show" icon={<PanelLeft aria-hidden="true" className="size-5" />} onClick={() => setSidebarHidden(false)} />
+          </div>
+        )}
         <header className="flex items-center justify-between gap-2 border-b border-sand-2/20 px-3 py-2 lg:hidden">
-          <IconButton ref={menuButton} label="Open menu" aria-expanded={navOpen} icon={<Menu aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(true)} />
+          <IconButton ref={menuButton} label="Open" aria-expanded={navOpen} icon={<Menu aria-hidden="true" className="size-5" />} onClick={() => setNavOpen(true)} />
           <span className="flex items-center gap-2"><img src={logo} alt="" aria-hidden="true" className="size-7 rounded-md object-cover" /><span className="font-display text-xl font-semibold">Prophet</span></span>
           <div className="flex items-center">
             <IconButton label="Notebook" icon={<Plus aria-hidden="true" className="size-5" />} onClick={() => void newNotebook()} />

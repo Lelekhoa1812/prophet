@@ -197,7 +197,8 @@ export function NotebookView({
                   );
                 })}
                 <IconButton
-                  label={manage ? "Close file manager" : "Manage files"}
+                  label={manage ? "Close" : "Manage"}
+                  title={manage ? "Close" : "Manage"}
                   aria-expanded={manage}
                   icon={<SlidersHorizontal aria-hidden="true" className="size-5" />}
                   onClick={() => setManage((v) => !v)}
