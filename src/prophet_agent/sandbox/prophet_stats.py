@@ -1920,3 +1920,10 @@ def causal_canary(fn: Callable[[pd.Series], Any], series: Any, origin: int | Non
         "origin": origin,
         "shift": shift,
     }
+
+
+try:                                       # inside the sandbox the helpers sit side by side; in tests they are a package
+    from prophet_pair import wrap_pairs as _wrap_pairs
+except ImportError:                        # pragma: no cover
+    from prophet_agent.sandbox.prophet_pair import wrap_pairs as _wrap_pairs
+_wrap_pairs(globals())

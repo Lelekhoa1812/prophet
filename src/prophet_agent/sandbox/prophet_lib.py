@@ -1661,3 +1661,10 @@ def query(sql: str, max_rows: int = 20_000, **files: str | Path) -> pd.DataFrame
     df = con.sql(stmt).limit(max_rows + 1).df()
     df.attrs["truncated"] = len(df) > max_rows
     return df.iloc[:max_rows]
+
+
+try:                                       # inside the sandbox the helpers sit side by side; in tests they are a package
+    from prophet_pair import wrap_pairs as _wrap_pairs
+except ImportError:                        # pragma: no cover
+    from prophet_agent.sandbox.prophet_pair import wrap_pairs as _wrap_pairs
+_wrap_pairs(globals())

@@ -77,6 +77,8 @@ EVAL_SCHEMA: dict[str, Any] = {
 OBS_CHARS = 4000          # one observation, as the planner sees it
 VIEW_CHARS = 16000        # uncompacted observations shown before the older ones fold into the memo
 KEEP_RECENT = 4           # newest observations never compacted
+MIN_FOLD = 3              # older observations folded per compaction, unless the view is far over its limit
+HARD_VIEW_FACTOR = 2.5    # the view may grow to this many times VIEW_CHARS before a smaller fold is forced
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
 ASKS_KEEP_CHARS = 2000    # head of the memo (the ASKS section) that a cut to fit never removes
 FORECAST_GOAL = re.compile(r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook", re.I)
@@ -364,7 +366,12 @@ def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, t
     memo text comes from a stored step, so a resumed run reads the same memo without asking the writer again."""
     pending = history[memo.covered:]
     cut = len(history) - keep_recent
-    if cut <= memo.covered or sum(len(_clip(_view(o))) for o in pending) <= view_chars:
+    total = sum(len(_clip(_view(o))) for o in pending)
+    if cut <= memo.covered or total <= view_chars:
+        return
+    # Fold in batches. With large cells every step is over the limit, and folding one observation per step doubles the
+    # model calls (live: a compaction after every plan). A single older observation waits unless the view is far over.
+    if cut - memo.covered < MIN_FOLD and total <= HARD_VIEW_FACTOR * view_chars:
         return
     chunk = history[memo.covered:cut]
     write = getattr(brain, "write", None)

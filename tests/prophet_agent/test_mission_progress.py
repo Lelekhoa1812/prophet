@@ -150,3 +150,28 @@ def test_a_forecast_whose_data_was_never_scanned_is_blocked(tmp_path):
     assert "data_scanned" in blocked
     with_scan = [_sandbox_ok(outputs=("out/ledger.json", "out/scan.json (900 bytes)")), fc]
     assert "data_scanned" not in {c["name"] for c in contracts.blocking(contracts.check_evidence(with_scan, run_root=tmp_path))}
+
+
+def test_compaction_folds_in_batches_not_one_observation_per_step():
+    from prophet_agent.runtime import goal
+
+    class Ctx:
+        def __init__(self):
+            self.steps = []
+
+        def step(self, name, fn):
+            self.steps.append(name)
+            return fn(None)
+
+    class Brain:
+        def write(self, messages):
+            return "ASKS: x\nFOUND: y"
+
+    big = {"kind": "tool", "tool": "sandbox_python", "args": {"code": "x" * 3000}, "result": {"ok": True, "stdout": "y" * 3000}}
+    ctx, memo = Ctx(), goal.Memo() if hasattr(goal, "Memo") else None
+    history = [dict(big) for _ in range(6)]       # 6 large observations: 2 older than the newest 4, view over its limit
+    goal._compact(ctx, Brain(), "goal", history, memo, "t", view_chars=20000, keep_recent=4)
+    assert ctx.steps == [], "two older observations wait for a batch while the view is not far over"
+    history += [dict(big) for _ in range(2)]      # now 4 older observations
+    goal._compact(ctx, Brain(), "goal", history, memo, "t", view_chars=20000, keep_recent=4)
+    assert len(ctx.steps) == 1 and memo.covered == 4

@@ -974,3 +974,17 @@ def test_changepoints_and_isolation_outliers_say_they_are_diagnostic_only():
 
     # Later data changes the penalty (it scales with the variance of everything passed), so the early change moves.
     assert ps.causal_canary(indicator, y, origin=100)["causal"] is False
+
+
+def test_pair_results_unpack_and_explain_a_dict_style_read():
+    import numpy as np
+    from prophet_agent.sandbox import prophet_stats as ps
+    rng = np.random.default_rng(0)
+    x = np.r_[rng.normal(0, 1, 80), rng.normal(6, 1, 80)]
+    out = ps.changepoints(x)
+    changes, report = out                                   # unpacking works as before
+    assert changes and out[0] is changes and out.value is changes and out.report is report
+    with pytest.raises(TypeError, match="returns a pair"):
+        out["changepoints"]
+    key = next(iter(report))
+    assert out[key] == report[key], "a report key reads straight from the pair"
