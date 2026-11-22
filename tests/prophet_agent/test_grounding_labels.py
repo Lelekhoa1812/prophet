@@ -64,3 +64,19 @@ def test_a_scaled_figure_is_a_rounding_of_a_printed_one():
     assert unverified("Weekday means run £27.8k.", history, "") == ["27.8k"]          # 27,800 is not a rounding of 27,912
     assert unverified("The cell is 5m wide.", [{"kind": "tool", "tool": "t", "args": {}, "result": {"stdout": "5"}}], "") == []
     assert unverified("It ran 5 min.", [{"kind": "tool", "tool": "t", "args": {}, "result": {"stdout": "5"}}], "") == []
+
+
+def test_a_copying_slip_in_a_large_figure_is_corrected_to_the_printed_value():
+    """Live retail round 15: 557,050 for the printed 557051.21 and 352,702 for 352602.3."""
+    from prophet_agent.runtime.grounding import snap, snap_note
+    history = [{"kind": "tool", "tool": "forecast_report", "args": {}, "result": {
+        "centre_line_total": 557051.21, "q10_together": 352602.3, "rows": 10000, "q90": 843784.23}}]
+    text = "Total **557,050**, range 352,702 to 843,784. We read 10,001 rows."
+    fixed_text, fixed = snap(text, history, "")
+    assert fixed_text == "Total **557,051**, range 352,602 to 843,784. We read 10,001 rows."
+    assert fixed == [("557,050", "557,051"), ("352,702", "352,602")]
+    assert unverified(fixed_text, history, "") == ["10,001"]                   # a whole-number count is never snapped
+    assert "2 figure(s)" in snap_note(fixed) and snap_note([]) == ""
+    # two printed values near the figure: no guess
+    twin = [{"kind": "tool", "tool": "t", "args": {}, "result": {"a": 5000.4, "b": 5001.3}}]
+    assert snap("It is 5,001.", twin, "")[1] == []

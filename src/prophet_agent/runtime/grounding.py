@@ -200,3 +200,43 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
         if token not in missing:
             missing.append(token)
     return missing
+
+
+# A writer copying a printed 557,051.21 as "557,050", or 352,602 as "352,702", has made a slip, not a claim. When an unmatched
+# figure of 1,000 or more lies within SNAP_TOLERANCE of exactly one printed value that has decimals, it is corrected to that
+# value. Printed whole numbers are never snapped: 10,001 rows and 10,000 rows are different facts.
+SNAP_TOLERANCE = 0.0005
+SNAP_MIN = 1000.0
+
+
+def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, str]]]:
+    """The answer with transcription slips in large figures corrected to the printed value, and the (old, new) pairs."""
+    bad = unverified(answer, history, goal)
+    if not bad:
+        return answer, []
+    printed = {}
+    for t in figures(evidence_text(history, goal)):
+        v, dec, pct = _parse(t)
+        if dec > 0 and not pct and _scale_of(t) == 1.0:
+            printed[abs(v)] = dec
+    fixed: list[tuple[str, str]] = []
+    for token in bad:
+        value, decimals, pct = _parse(token)
+        v = abs(value)
+        if pct or _scale_of(token) != 1.0 or v < SNAP_MIN or _YEAR.fullmatch(token):
+            continue
+        near = sorted({p for p in printed if abs(p - v) <= SNAP_TOLERANCE * v})
+        if len(near) != 1:
+            continue
+        new = f"{near[0]:,.{decimals}f}" if "," in token else f"{near[0]:.{decimals}f}"
+        digits = token.lstrip("-")
+        pattern = re.compile(r"(?<![\d.,])" + re.escape(digits) + r"(?!\d|[.,]\d)")
+        if pattern.search(answer):
+            answer = pattern.sub(new, answer)
+            fixed.append((digits, new))
+    return answer, fixed
+
+
+def snap_note(fixed: list[tuple[str, str]]) -> str:
+    return (f"\n\n_{len(fixed)} figure(s) were corrected to the value the analysis printed (a copying slip, under 0.05%)._"
+            if fixed else "")

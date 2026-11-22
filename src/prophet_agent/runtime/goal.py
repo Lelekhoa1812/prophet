@@ -38,7 +38,7 @@ from prophet_agent.nim.errors import redact
 from prophet_agent.nim.transport import DEFAULT_CHAIN
 
 from . import contracts
-from .grounding import unverified
+from .grounding import snap, snap_note, unverified
 from . import agents
 from .questions import QUESTIONS_SCHEMA, validate_questions
 from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
@@ -1187,6 +1187,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
                         "reason": "This answer did not pass every required check: " + contracts.summarise(blocked),
                         "contract_failures": [c["name"] for c in blocked]}
+            answer, fixed = snap(answer, history, goal)          # a copying slip in a large figure is corrected, not argued over
+            answer += snap_note(fixed)
             bad = unverified(answer, history, goal)
             if bad and _corrections(history) < MAX_CORRECTIONS and not last and not out_of_calls and not cfg.finish_now:
                 # Gather before repairing: the figure may simply be an output the analysis has not printed yet. The
