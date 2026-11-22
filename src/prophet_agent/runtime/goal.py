@@ -824,7 +824,7 @@ def _outside_block(ctx: Ctx | None) -> str:
 
 
 def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, draft: str,
-                      bad: list[str] | None = None, ctx: Ctx | None = None) -> list[dict]:
+                      bad: list[str] | None = None, ctx: Ctx | None = None, fixes: str | None = None) -> list[dict]:
     system = prompts.current("composer").text
     outside = _outside_block(ctx)
     trust = contracts.trust_statement(history)
@@ -837,6 +837,9 @@ def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, 
     if bad:
         user += (f"\n\nThese figures in the draft do not appear in the evidence: {', '.join(bad)}. Remove each of them, "
                  "row numbers included. Describe a row in words if the evidence gives no number for it.")
+    if fixes:
+        user += (f"\n\nThese statements in the draft disagree with the stored analysis output: {fixes}. Rewrite each one to say "
+                 "what the output says, or take it out. Keep everything else.")
     return [{"role": "system", "content": system}, {"role": "user", "content": user + "\n\nWrite the final answer in Markdown."}]
 
 
@@ -932,13 +935,13 @@ def _missing_figures_text(bad: list[str]) -> str:
 
 
 def _compose(ctx: Ctx, brain: Any, step: str, goal: str, history: list[dict], memo: Memo, context: str, draft: str,
-             bad: list[str] | None = None) -> str | None:
+             bad: list[str] | None = None, fixes: str | None = None) -> str | None:
     """The finished answer as plain text. A schema-bound reply cannot carry line breaks (the decoder drops them), so the
     verdict's answer is only a draft; the text the person reads is written in a free-text call. None: the brain cannot."""
     write = getattr(brain, "write", None)
     if write is None or not draft.strip():
         return None
-    return ctx.step(step, lambda c: write(_compose_messages(goal, history, memo, context, draft, bad, ctx)))
+    return ctx.step(step, lambda c: write(_compose_messages(goal, history, memo, context, draft, bad, ctx, fixes)))
 
 
 VOLATILE_KEYS = ("run_id", "outputs", "manifest", "files")   # differ on every run of the same call, so a repeat is still a repeat
@@ -1614,6 +1617,21 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                         "contract_failures": [c["name"] for c in blocked]}
             answer, fixed = snap(answer, history, goal)          # a copying slip in a large figure is corrected, not argued over
             answer += snap_note(fixed)
+            # The answer's plain claims (a cycle, the best rule, a total the pack withheld) are checked against the stored
+            # output. The fix is in the words, so the composer rewrites once; a claim still wrong after that leaves partial.
+            # Round 4: these checks were built (C3a) and tested but never called here, so none ran live.
+            claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT)) if cfg.depth == 0 else []
+            if claims:
+                rewritten = _compose(ctx, brain, f"claims:{tag}:{i}", goal, history, memo, context, answer,
+                                     fixes=contracts.summarise(claims))
+                if rewritten is not None and rewritten.strip():
+                    answer = rewritten
+                    claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT))
+            if claims:
+                return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
+                        "reason": "This answer states something the analysis output does not support: "
+                                  + contracts.summarise(claims),
+                        "contract_failures": [c["name"] for c in claims]}
             bad = unverified(answer, history, goal)
             if bad and _corrections(history) < MAX_CORRECTIONS and not last and not out_of_calls and not cfg.finish_now:
                 # Gather before repairing: the figure may simply be an output the analysis has not printed yet. The

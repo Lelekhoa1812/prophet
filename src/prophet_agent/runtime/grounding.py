@@ -272,9 +272,12 @@ def negated(unit: str, start: int) -> bool:
 
 
 _CYCLE_CLAIMS = (
-    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\W{0,3}(?:\(|of\s+|=|:)?\W{0,3}(\d{1,3})[- ](?:day|step|period)?\b", re.I),
-    re.compile(r"\b(\d{1,3})[- ](?:day|step|period)s?\W{0,3}(?:weekly|cycles?|seasonal|seasonality|season|pattern|periodic|periodicity)\b", re.I),
-    re.compile(r"\b(?:period|cycle|season)\s*(?:=|:|of)\s*(\d{1,3})\b", re.I),
+    # No comma between the word and the number: "weekly cycle, 105 cycles in history" counts cycles, it is not a length.
+    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\s{0,2}(?:\(|of\s+|:)?\s{0,2}(\d{1,3})[- ](?:day|step|period)?\b", re.I),
+    # Only a space, a dash or a closing bracket between: "horizon 14 days, weekly seasonality" names a horizon, not a cycle.
+    re.compile(r"\b(\d{1,3})[- ](?:day|step|period)s?\)?[\s-]{1,2}(?:weekly|cycles?|seasonal|seasonality|season|pattern|periodic|periodicity)\b", re.I),
+    # "season=252" quotes an argument a tool was given, not a claim about the data (live 1969cd11), so "=" is not read.
+    re.compile(r"\b(?:period|cycle|season)\s*(?::|of)\s*(\d{1,3})\b", re.I),
 )
 
 
@@ -292,12 +295,14 @@ def claimed_periods(answer: str) -> list[tuple[int, str]]:
 
 _BASELINE_NAMES = (
     ("seasonal_naive", r"seasonal[ _-]naive"),
-    ("mean_last_season", r"mean[ _]of[ _]the[ _]last[ _]season|mean_last_season"),
+    # "mean of last season", "mean of the last 5 business days" (live wording) are the same rule
+    ("mean_last_season", r"mean[ _]of[ _](?:the[ _])?last[ _](?:season|\d{1,3}[ _](?:business[ _])?(?:days?|weeks?|steps?|points?))|mean_last_season"),
     ("tsb_expected", r"\bTSB\b|intermittent[- ]demand rule"),
     ("drift", r"\bdrift\b"),
     ("naive", r"\bnaive\b"),
 )
 _BEST_WORDS = re.compile(r"\b(?:best|most accurate|appropriate benchmark|right benchmark|the benchmark)\b", re.I)
+BEST_WINDOW = 30           # characters either side of "best" in which the rule it names must sit
 _NO_BEATS = re.compile(r"\bno (?:other |simple )?(?:model|method|rule|baseline|forecast)s? (?:beats?|outperforms?|is better than"
                        r"|is more accurate than)\s+(.*)", re.I)
 
@@ -328,8 +333,11 @@ def claimed_best_baselines(answer: str) -> list[tuple[str, str]]:
         best = _BEST_WORDS.search(unit)
         if not best or negated(unit, best.start()):
             continue
+        # The rule must sit next to the claim: in "more accurate than naive (lower MASE), but less accurate than the best
+        # simple baseline" (live) the best is another rule. A rule named anywhere else in the sentence is not called best.
         names = set(baselines_named(unit))
-        if len(names) == 1:
+        near = set(baselines_named(unit[max(0, best.start() - BEST_WINDOW): best.end() + BEST_WINDOW]))
+        if len(names) == 1 and names == near:
             out.append((names.pop(), unit.strip()))
     return out
 
@@ -434,3 +442,21 @@ def treatment_stances(text: str) -> dict[str, set[str]]:
                 for m in rx.finditer(unit):
                     out.setdefault(topic, set()).add(_OPPOSITE[stance] if negated(unit, m.start()) else stance)
     return out
+
+
+# Headline totals (A7-03 follow-up). When the pack withholds its total, the answer must not headline one. A sentence that says
+# "total" (or "in all", "altogether", "sum of") and carries a figure is a total claim; one that also says why the total is not
+# a headline (withheld, floored, below zero, the health verdict) is the explanation, not a claim.
+_TOTAL_WORD = re.compile(r"\b(?:total|in all|altogether|sum of|summed)\b", re.I)
+_WITHHELD_WORD = re.compile(r"\bwithheld\b|\bwithhold|\bnot (?:a |the )?headline|\bno headline|\bfloored\b|\bbelow zero\b|"
+                            r"\bhealth (?:check|verdict)\b|\bverdict\b", re.I)
+
+
+def claimed_totals(answer: str) -> list[str]:
+    """Sentences that state a total with a figure and do not explain why a total is withheld."""
+    return [u for u in sentences(answer) if _TOTAL_WORD.search(u) and figures(u) and not _WITHHELD_WORD.search(u)]
+
+
+def explains_withheld(answer: str) -> bool:
+    """Whether the answer says anywhere why the total is not a headline."""
+    return bool(_WITHHELD_WORD.search(answer or ""))

@@ -1158,6 +1158,24 @@ def _scan_shift_counts(history: list, run_root) -> list[int] | None:
     return counts or [0]
 
 
+def _withheld_totals(obs) -> dict[str, str]:
+    """Why the delivered pack (the newest forecast_report) withheld its headline total: {"": reason} for one series,
+    {entity: reason} for a panel. Empty when the total stands or no pack was built."""
+    for h in reversed(obs):
+        res = _ok_result(h, "forecast_report")
+        if not isinstance(res, dict):
+            continue
+        head = res.get("headline")
+        if isinstance(head, dict):
+            return {"": str(head["withheld"])} if head.get("withheld") else {}
+        series = res.get("series")
+        if isinstance(series, dict):
+            return {str(n): str(ln["total_withheld"]) for n, ln in series.items()
+                    if isinstance(ln, dict) and ln.get("total_withheld")}
+        return {}
+    return {}
+
+
 def check_ledger_answer(answer, history, run_root) -> dict | None:
     """The answer and the newest saved ledger must take the same stance on negatives, outliers and gaps (A4-04). Live evidence
     (measured): retail rep3 ledger "keep negative values" against an answer that "clipped to 0"; WTI rep3 "no gaps filled"
@@ -1201,7 +1219,8 @@ def check_answer(answer, history, *, run_root=None) -> list[dict]:
     if periods:
         stored = {p for h in obs if (rec := _forecast_record(h)) is not None and (p := _health_period(rec)) is not None}
         if stored:
-            wrong = [(n, s) for n, s in periods if n not in stored]
+            # A long cycle is read within 1 percent: "365 days" against a measured 364 is the same annual cycle (CO2 live).
+            wrong = [(n, s) for n, s in periods if not any(abs(n - p) <= p // 100 for p in stored)]
             if wrong:
                 n, s = wrong[0]
                 checks.append(_check("answer_cycle_matches_health", False,
@@ -1254,6 +1273,21 @@ def check_answer(answer, history, *, run_root=None) -> list[dict]:
     reconciled = check_ledger_answer(text, obs, run_root)
     if reconciled is not None:
         checks.append(reconciled)
+
+    withheld = _withheld_totals(obs)
+    if withheld:
+        named = [n for n in withheld if n]               # panel entities; a single series is keyed ""
+        totals = [s for s in grounding.claimed_totals(text) if not named or any(n.lower() in s.lower() for n in named)]
+        why = "; ".join(f"{n}: {r}" if n else r for n, r in list(withheld.items())[:2])
+        if totals:
+            checks.append(_check("answer_total_withheld", False,
+                                 f"the pack withheld the total ({why[:200]}), but the answer states one ({totals[0][:160]}); "
+                                 "give the reason first and quote the daily table or the range, not a total"))
+        elif not grounding.explains_withheld(text):
+            checks.append(_check("answer_total_withheld", False,
+                                 f"the pack withheld the total ({why[:200]}); the answer does not say so. State the reason", "warn"))
+        else:
+            checks.append(_check("answer_total_withheld", True, "the answer gives no total the pack withheld, and says why"))
 
     methods = grounding.unsupported_method_claims(text, obs)
     if methods:
