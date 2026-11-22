@@ -1177,7 +1177,10 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
            "figures": [{"name": str(f["name"])[:120], "value": str(f["value"])[:60],
                         "sourced": not unverified(str(f["value"]), sub_history, task)}
                        for f in sub.get("figures") or [] if isinstance(f, dict) and "name" in f and "value" in f][:20]}
+    # A4-14: the sub-agent's own figure list is reconciled too. A figure it marked unsourced reaches the lead even when the
+    # answer text leaves it out, so the lead never reads an unsourced figure as checked.
     bad = unverified(answer, sub_history, str(spec["task"])) if answer else []
+    bad = list(dict.fromkeys(bad + [f["value"] for f in obs["figures"] if not f["sourced"]]))
     if bad:
         obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
     return obs
