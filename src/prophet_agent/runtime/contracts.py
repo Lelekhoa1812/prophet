@@ -572,6 +572,41 @@ def researched(history) -> bool:
     return False
 
 
+def panel_entities(history) -> dict | None:
+    """For a panel mission (a result naming more than one series): how many entities the mission has, how many the newest
+    forecast delivered, and which are missing when the names are known. None when no panel result was seen (A3-12; live
+    Beijing: 12 stations in the panel, the forecast held 10, and the answer said "all 12")."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    expected = None
+    names = None
+    delivered = None
+    delivered_names = None
+    not_shown = 0
+    for h in obs:
+        for tool in ("backtest_series", "forecast_report", "timesfm_forecast"):
+            r = _ok_result(h, tool)
+            if not isinstance(r, dict):
+                continue
+            if _is_int(r.get("n_series")) and r["n_series"] > 1:
+                expected = r["n_series"]
+                if tool == "backtest_series" and isinstance(r.get("series"), dict):
+                    names = list(r["series"])
+            if tool != "backtest_series" and isinstance(r.get("series"), dict):
+                delivered_names = list(r["series"])
+                not_shown = r.get("not_shown") if _is_int(r.get("not_shown")) else 0
+                delivered = len(delivered_names) + not_shown
+            elif tool != "backtest_series" and _is_int(r.get("series_count")):
+                delivered, delivered_names, not_shown = r["series_count"], None, 0
+    if expected is None or expected < 2:
+        return None
+    missing = None
+    if names is not None and delivered_names is not None and not not_shown:
+        missing = [n for n in names if n not in delivered_names]
+    return {"expected": expected, "delivered": delivered or 0, "missing": missing}
+
+
+
+
 def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
     """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
 
@@ -601,6 +636,16 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
     items.append({"item": "compare the forecast method with the simple baselines (backtest_series)",
                   "status": "done" if backtested else "todo"})
     items.append({"item": "forecast the series (timesfm_forecast)", "status": "done" if forecasts else "todo"})
+    entities = panel_entities(obs)
+    if entities is not None:
+        # A panel goal is not finished while an entity has no delivered forecast. Live Beijing (measured): 12 stations, 10 in
+        # the forecast, and the answer said "for all 12".
+        n, k = entities["expected"], entities["delivered"]
+        detail = f"{min(k, n)} of {n} entities forecast"
+        if entities["missing"]:
+            detail += "; missing: " + ", ".join(entities["missing"][:12])
+        items.append({"item": "every panel entity has a delivered forecast (forecast_report on the whole panel)",
+                      "status": "done" if k >= n else "todo", "detail": detail})
     if forecasts:
         verdict = delivered_health(forecasts[-1][1])
         items.append({"item": "forecast health is not flat_unexpected", "status": "todo" if verdict == "flat_unexpected" else "done",
