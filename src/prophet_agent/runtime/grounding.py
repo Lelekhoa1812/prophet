@@ -161,6 +161,8 @@ def _observed(history: list):
         kind = h.get("kind")
         if kind == "tool" and "result" in h:
             yield _as_text(h["result"])
+            if "full" in h:              # what the tool really returned, before its summary cut it (round 4, live panels)
+                yield _as_text(h["full"])
         elif kind in ("ask_user", "evaluator_question") and "answers" in h:
             yield _as_text(h["answers"])
         elif kind == "subagent":
