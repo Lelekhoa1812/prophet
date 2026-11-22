@@ -63,3 +63,22 @@ def test_the_state_card_names_the_newest_file_of_each_kind_and_the_sub_agent_rep
     assert "out/series.json from run r2" in card and "out/scan.json from run r2" in card and "r1" not in card
     assert "Sub-agent a1 (researcher, met): OPEC meets 29 Nov" in card
     assert _state_card([]) == ""
+
+
+def test_outside_claims_whose_figures_no_page_contains_are_removed(tmp_path):
+    from prophet_agent.runtime.goal import _check_outside
+    from prophet_agent.runtime.store import Store
+
+    class C:
+        pass
+    store = Store(tmp_path / "s.sqlite")
+    mid = store.create_mission("goal", {})
+    c = C(); c.store, c.mission_id = store, mid
+    store.tool_start(mid, 0, "web_research", {"queries": ["x"]}, "k0")
+    store.tool_set("k0", "done", {"sources": [{"passages": [{"text": "The IMF rate is JPY 159.47 per USD on 20 Nov 2026."}]}]})
+    answer = ("The forecast is flat.\n\n## Outside context\n- IMF (20 Nov 2026): JPY 159.47 per USD.\n"
+              "- IMF (20 Nov 2026): EUR/JPY 162.34.\n\n## Files\n- out/forecast.png")
+    out, removed = _check_outside(c, answer)
+    assert removed == ["162.34"] and "159.47" in out and "162.34 ." not in out.split("_Some")[0]
+    assert "EUR/JPY 162.34" not in out and "## Files" in out and "left out" in out
+    assert _check_outside(c, "No outside section.") == ("No outside section.", [])

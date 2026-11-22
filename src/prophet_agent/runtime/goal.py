@@ -1097,6 +1097,44 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             "reason": "this part of the work is spent", "evidence": history, "memory": memo.text}
 
 
+DATE_TEXT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s+\d{4})?"
+                       r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?", re.I)
+OUTSIDE_HEAD = re.compile(r"^#{1,4}\s*Outside context\s*$", re.I | re.M)
+
+
+def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
+    """Removes lines of the answer's Outside context section whose figures appear in no fetched web passage, and says so.
+    Live, an answer cited "IMF: EUR/JPY 162.34", a number from the agent's own analysis that no source contained, and
+    attributed an inventory figure to a site whose passage credited someone else. Dates are not figures. Returns the
+    answer and the figures removed."""
+    m = OUTSIDE_HEAD.search(answer or "")
+    if not m:
+        return answer, []
+    from prophet_agent.research.passages import verify_figures
+    sources: list = []
+    for tool in ("web_research", "web_fetch", "web_search"):
+        for res in ctx.store.tool_results(ctx.mission_id, tool):
+            if isinstance(res, dict):
+                sources.extend(res.get("sources") or res.get("hits") or [])
+                if isinstance(res.get("text"), str):
+                    sources.append({"text": res["text"]})
+    nxt = re.search(r"^#{1,4}\s+\S", answer[m.end():], re.M)
+    end = m.end() + nxt.start() if nxt else len(answer)
+    kept, removed = [], []
+    for line in answer[m.end():end].splitlines():
+        bad = verify_figures(DATE_TEXT.sub(" ", line), sources) if line.strip() else []
+        if bad:
+            removed.extend(b for b in bad if b not in removed)
+        else:
+            kept.append(line)
+    if not removed:
+        return answer, []
+    body = "\n".join(kept).rstrip()
+    body += ("\n\n_Some outside claims were left out because their figures (" + ", ".join(removed[:6])
+             + ") were not found in the pages that were read._\n")
+    return answer[:m.end()] + body + ("\n" + answer[end:] if end < len(answer) else ""), removed
+
+
 def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfig | None = None,
                  context: str = "") -> Callable[[Ctx], dict]:
     cfg = cfg or GoalConfig()
@@ -1116,6 +1154,10 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
 
             bind(ctx._guard_time, note)
         result = _ground_result(_run(ctx, brain, goal, tools, cfg, context, history), history, goal)
+        if isinstance(result.get("answer"), str):
+            checked, removed = _check_outside(ctx, result["answer"])
+            if removed:
+                result = {**result, "answer": checked, "outside_removed": removed}
         trust = contracts.trust_statement(history)
         if trust and isinstance(result.get("answer"), str) and result["answer"].strip() and "Accuracy check (computed" not in result["answer"]:
             # Written by code from the stored backtest, after grounding: the figures in it are the ledger's own.
