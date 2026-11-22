@@ -482,3 +482,27 @@ Root causes and fixes:
   answer also called the sum of the clients' 10 to 90 % bounds the likely range and said it assumed independent errors;
   summing bounds assumes every client misses the same way at once. The computed accuracy paragraph now names the drawn
   centre per series and both panel-total bounds with what each assumes.
+
+### Reruns on the ledger and panel-centre fixes (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| retail, business user rep 6 | 4d530e1 | partial | stalled | 450 | 26 |
+| electricity panel rep 11 | 4d530e1 | partial | stalled | 1,412 | 105 |
+| retail, business user rep 7 | f669929 | **completed** | **done_verified** | 270 | 16 |
+| electricity panel rep 12 | f669929 | partial | stalled | 511 | 68 |
+
+Retail rep 7 used `led.decide` and `ps.change_test`, opened by correcting the premise ("not real: +10.3 %, p = 0.484") and
+finished in 270 s.
+
+- Retail rep 6 printed the scan's findings in eleven cells and its rescue analyst in fourteen more; no decision was saved.
+  The open ledger item now ends with the `led.decide` cell for the undecided findings, and the rescue brief carries it.
+- Electricity rep 11's panel backtest ranked TimesFM first (overall MASE 1.331) and the pooled model fourth (1.539); the
+  pack drew the pooled model for all 60 clients, and its total was 3.08 million kWh against rep 10's 4.38 million.
+  `panel_centre_matches_backtest` now blocks a single panel rule more than 2 % behind the backtest's best.
+- Retail rep 7 opened with "an 80 % range of 1,257,168 to 2,610,558", the bound if every day misses the same way at
+  once, above a measured range of 1,358,450 to 2,142,805, and passed. `answer_total_range_named` now blocks a bound given as
+  the range without what it assumes; replayed, it blocks rep 7 and electricity rep 10 and passes the other stored answers.
+- Electricity rep 12's only backtest covered one analyst's 15 clients, and the lead re-ran an entity-listing cell three
+  times. The coverage note now gives the cell that saves all 60 (checked on the real file). Its answer also called MASE
+  "MAE"; open.
