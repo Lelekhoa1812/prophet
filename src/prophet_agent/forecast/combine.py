@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from prophet_agent.forecast.metrics import paired_signflip
 from prophet_agent.forecast.paired import bootstrap_gain
 
 _EPS = 1e-12
@@ -76,23 +77,28 @@ def equal_blend(point_a: Any, point_b: Any) -> np.ndarray:
 
 
 def _beats(base: np.ndarray, cand: np.ndarray, seed: int, confidence: float, resamples: int, win_share: float) -> dict[str, Any]:
-    """Whether ``cand`` beats ``base`` on the same origins: the paired interval of the gain is wholly above zero and ``cand``
-    has the lower error on at least ``win_share`` of the origins.
+    """Whether ``cand`` beats ``base`` on the same origins: a one-sided sign-flip test rejects equal error at the level
+    implied by ``confidence`` in the candidate's favour, and ``cand`` has the lower error on at least ``win_share`` of the
+    origins.
 
     Motivation vs Logic
-    Motivation: a lower mean error on a few origins is not a win. The verdict needs the same two rules the rolling backtest
-    uses for TimesFM against a baseline, so a blend and a forecast are judged by one standard.
-    Logic: keep the origins where both errors are finite, count how many the candidate wins, and take the seeded paired
-    bootstrap interval of the relative gain. Both conditions must hold.
+    Motivation: a lower mean error on a few origins is not a win. The verdict needs the same rule the rolling backtest uses
+    for TimesFM against a baseline, so a blend and a forecast are judged by one standard. The percentile bootstrap held
+    its level badly at 6 origins (audit A2-06), so the decision uses the exact sign-flip test.
+    Logic: keep the origins where both errors are finite, count how many the candidate wins, and take the one-sided
+    sign-flip p-value. The bootstrap interval is kept as a description. Both conditions must hold.
     """
     keep = np.isfinite(base) & np.isfinite(cand)
     n = int(keep.sum())
     wins = int((cand[keep] < base[keep]).sum())
     g = bootstrap_gain(base, cand, seed, confidence, resamples)
-    beats = bool(n and np.isfinite(g["lo"]) and g["lo"] > 0 and wins >= win_share * n)
+    st = paired_signflip(base, cand, seed=seed)
+    alpha = (1 - confidence) / 2
+    beats = bool(n and st["p_cand_better"] <= alpha and wins >= win_share * n)
     interval = [round(g["lo"] * 100, 2), round(g["hi"] * 100, 2)] if np.isfinite(g["lo"]) else None
     return {"beats": beats, "gain_pct": round(g["gain"] * 100, 2) if np.isfinite(g["gain"]) else None,
-            "interval_pct": interval, "wins": wins, "of": n}
+            "interval_pct": interval, "wins": wins, "of": n, "test": st["method"],
+            "p_one_sided": round(st["p_cand_better"], 4) if n else None}
 
 
 def adopt_equal_blend(err_timesfm: Any, err_blend: Any, err_rule: Any, *, seed: int, confidence: float, resamples: int,
