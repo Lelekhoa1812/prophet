@@ -33,7 +33,12 @@ def _future_dates(dates: list[str], n: int) -> list[str] | None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")            # pandas is changing the return type of infer_freq; the string is what is used here
         freq = pd.infer_freq(idx[-min(len(idx), 90):])
-    if freq:
+    if freq in ("B", "C") or (freq is None and _weekdays_only(idx)):
+        # A trading-day series: skip the holidays of the exchange calendar its history follows, not just weekends.
+        from prophet_agent.forecast.calendar import infer_calendar, next_trading_days
+        cal = infer_calendar(t.date() for t in idx)
+        nxt = pd.DatetimeIndex([pd.Timestamp(d) for d in next_trading_days(idx[-1].date(), n, cal["calendar"])])
+    elif freq:
         nxt = pd.date_range(idx[-1], periods=n + 1, freq=freq)[1:]
     else:
         gaps = idx.to_series().diff().dropna()
@@ -42,6 +47,14 @@ def _future_dates(dates: list[str], n: int) -> list[str] | None:
             return None
         nxt = pd.DatetimeIndex([idx[-1] + step * (k + 1) for k in range(n)])
     return [t.strftime("%Y-%m-%d %H:%M") if (t.hour or t.minute) else t.strftime("%Y-%m-%d") for t in nxt]
+
+
+def _weekdays_only(idx) -> bool:
+    """True when a daily history has no weekend dates and its steps are one to four days (weekends and holidays)."""
+    if len(idx) < 20 or (idx.hour != 0).any():
+        return False
+    gaps = idx.to_series().diff().dropna().dt.days
+    return bool((idx.day_of_week < 5).all() and gaps.between(1, 4).all())
 
 
 def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:

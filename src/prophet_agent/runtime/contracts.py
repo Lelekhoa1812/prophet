@@ -527,3 +527,63 @@ def summarise(checks, limit: int = 5) -> str:
     if rest > 0:
         parts.append(f"and {rest} more")
     return "; ".join(parts)
+
+
+BASELINE_NAMES = {"naive": "repeating the last value", "seasonal_naive": "repeating the value one season back",
+                  "drift": "extending the recent average change", "mean_last_season": "the average of the last season",
+                  "tsb_expected": "an intermittent-demand rule (TSB)"}
+HEADLINE_MARGIN = 2.0     # percent: TimesFM is the headline only when it beats the best simple rule by more than this
+
+
+def trust_facts(history) -> dict | None:
+    """The accuracy facts a reader needs, taken from the newest successful backtest and calibration, never from model text.
+    Returns None when no backtest ran."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    bt = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "backtest_series"), dict) and r.get("models")), None)
+    if bt is None:
+        return None
+    models = bt.get("models") or {}
+    best = bt.get("best_baseline")
+    tf, base = (models.get("timesfm") or {}).get("mase"), (models.get(best) or {}).get("mase") if best else None
+    facts = {"origins": bt.get("origins") or bt.get("n_origins"), "horizon": bt.get("horizon"), "timesfm_mase": tf,
+             "best_baseline": best, "baseline_mase": base, "gain_pct": bt.get("timesfm_vs_best_baseline_pct"),
+             "backtest_coverage": bt.get("timesfm_range_coverage_80"), "verdict": bt.get("verdict")}
+    cal = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "calibrate_intervals"), dict)
+                and "heldout_coverage_raw" in r), None)
+    if cal is not None:
+        facts.update(heldout_raw=cal.get("heldout_coverage_raw"), heldout_calibrated=cal.get("heldout_coverage_calibrated"),
+                     calibration=cal.get("recommend"))
+    if facts["verdict"] is None and isinstance(facts["gain_pct"], (int, float)):
+        g = facts["gain_pct"]
+        facts["verdict"] = "timesfm_better" if g > HEADLINE_MARGIN else ("baseline_better" if g < -HEADLINE_MARGIN else "no_clear_difference")
+    return facts
+
+
+def _pct(v: Any) -> str:
+    return f"{100 * float(v):.0f}%" if isinstance(v, (int, float)) else "not measured"
+
+
+def trust_statement(history) -> str:
+    """One computed paragraph on how far to trust the forecast: the backtest score against the best simple rule, what that
+    means for the centre line, and how often the range held. It is appended to the answer as written by code, so a model can
+    never misquote it (live: an answer said a range "reached 87.5%" when the stored calibration said otherwise)."""
+    f = trust_facts(history)
+    if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
+        return ""
+    rule = BASELINE_NAMES.get(f["best_baseline"], str(f["best_baseline"]))
+    head = (f"Over {f['origins']} past windows of {f['horizon']} steps, TimesFM scored MASE {f['timesfm_mase']:.3g} against "
+            f"{f['baseline_mase']:.3g} for the best simple rule ({rule}).")
+    v = f.get("verdict")
+    if v == "baseline_better":
+        call = (" The simple rule was more accurate, so use it for the centre line and treat TimesFM's range as the band; "
+                "the TimesFM centre line is shown for reference only.")
+    elif v == "timesfm_better":
+        call = f" TimesFM was {abs(f['gain_pct']):.1f}% more accurate." if isinstance(f.get("gain_pct"), (int, float)) else ""
+    else:
+        call = " The two are not distinguishable over this many windows, so the centre line is no better than the simple rule."
+    rng = f" In that backtest the 10-90% range held {_pct(f.get('backtest_coverage'))} of outcomes (target 80%)."
+    if f.get("heldout_raw") is not None:
+        used = "the calibrated range is used" if f.get("calibration") == "use_calibrated" else "the raw range is kept"
+        rng += (f" On later held-out windows it held {_pct(f['heldout_raw'])} raw and {_pct(f.get('heldout_calibrated'))} "
+                f"after calibration; {used}.")
+    return "**Accuracy check (computed from the stored backtest):** " + head + call + rng

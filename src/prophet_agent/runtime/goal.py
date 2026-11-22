@@ -128,6 +128,7 @@ class GoalConfig:
     keep_recent: int = KEEP_RECENT    # newest observations that are never folded
     memory_chars: int = MEMORY_CHARS  # cap on the folded memory
     tag: str = ""                     # names this loop's steps: "d0" for the goal, "d1.a2" for sub-agent a2
+    auto_delegate: bool = True        # the harness starts a researcher, panel analysts or a repair analyst itself (see _harness_plan)
 
     @property
     def end(self) -> int:
@@ -318,6 +319,129 @@ def _repeat_error_note(history: list[dict]) -> str:
     return text
 
 
+AUTO_REPEAT = 5          # identical failures in a row after which the harness hands the step to a fresh analyst
+
+
+def _panel_hint(history: list[dict]) -> dict | None:
+    """The grouping column of a long panel (several entities sharing dates), read from inspect_data's profile, or None."""
+    for h in history:
+        res = h.get("result") if h.get("kind") == "tool" and h.get("tool") == "inspect_data" else None
+        prof = res.get("profile") if isinstance(res, dict) else None
+        if not isinstance(prof, dict):
+            continue
+        cols = prof.get("columns") or []
+        time_col = next((c for c in cols if c.get("kind") == "time" and (c.get("duplicate_timestamps") or 0) > 0), None)
+        groups = [c for c in cols if c.get("kind") == "text" and 2 <= (c.get("unique") or 0) <= 200]
+        nums = [c["name"] for c in cols if c.get("kind") == "number"]
+        if time_col and groups and nums:
+            return {"file": res.get("file"), "time": time_col["name"], "entity": groups[0]["name"],
+                    "entities": groups[0]["unique"], "values": nums[:6]}
+    return None
+
+
+def _last_failure(history: list[dict]) -> tuple[str, str]:
+    """(code of the newest failed sandbox cell, its last error line), for a hand-over brief."""
+    for h in reversed(history):
+        if h.get("kind") == "tool" and _error_signature(h):
+            code = str((h.get("args") or {}).get("code", ""))[:2500]
+            return code, _error_signature(h) or ""
+    return "", ""
+
+
+def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """Delegations the harness starts itself instead of hoping the planner will. Live, the planner delegated once in 1,983
+    decisions although its rules ask for it, so three situations are routed deterministically:
+    1. a market or macro series with no outside research yet, once the data has been looked at: a researcher;
+    2. a long panel (several entities sharing dates), once inspected and before any forecast: analysts on slices in parallel;
+    3. the same failure five times in a row: a fresh-context analyst gets the failing cell and the error.
+    Each fires at most once per mission (or once per failure signature), and the decision is stored as a step."""
+    inspected = any(h.get("kind") == "tool" and h.get("tool") in contracts.INSPECTION_TOOLS and not h.get("error") for h in history)
+    auto = [h for h in history if h.get("kind") == "subagent" and h.get("auto")]
+    kinds = {h.get("auto") for h in auto}
+    if _error_run(history) >= AUTO_REPEAT:
+        code, err = _last_failure(history)
+        key = "repeat:" + err
+        if key not in kinds and "sandbox_python" in tools:
+            return {"action": "delegate", "auto": key, "agent_type": "analyst",
+                    "rationale": "the same step failed five times in a row; a fresh context gets it working",
+                    "task": "A lead agent working on this goal could not get one analysis step to run: " + goal + "\n\nIts last "
+                            "attempt failed with: " + err + "\n\nThe cell was:\n```python\n" + code + "\n```\nMake this step "
+                            "work. Read the error, check what the inputs and helpers really are (print df.columns, df.dtypes, the "
+                            "helper's return value), change what is wrong, and use plain pandas where a helper is unclear. Save "
+                            "what the step was meant to produce under out/.",
+                    "deliverable": "The run id and the files the working cell wrote, what each holds, the key figures it "
+                                   "printed, and one sentence on what was wrong before.",
+                    "constraints": "Do not forecast. Keep printed output short. Do not rewrite unrelated analysis."}
+    if not inspected:
+        return None
+    if "research" not in kinds and EXTERNAL_GOAL.search(goal) and "web_research" in tools and not contracts.researched(history):
+        return {"action": "delegate", "auto": "research", "agent_type": "researcher",
+                "rationale": "a market or macro series is driven by things its history cannot show",
+                "task": "Research what is driving the series in this goal now, and what is scheduled inside the forecast "
+                        "horizon. Goal: " + goal + "\nToday is " + time.strftime("%Y-%m-%d") + ". Plan four to six angles "
+                        "first (current regime and level, policy path and the next decision dates, scheduled data releases, "
+                        "supply or demand shocks, consensus or market-implied levels, the case against the consensus), "
+                        "search them together, read primary sources first, then follow up on gaps.",
+                "deliverable": "A dated briefing: (1) the current regime and level, each with source id, site and date; "
+                               "(2) scheduled events inside the horizon with dates; (3) up to three upside and three "
+                               "downside risks with the mechanism; (4) published consensus or market-implied levels with "
+                               "source. Every number must appear in a fetched passage and carry its source id.",
+                "constraints": "Do not forecast and do not analyse the data file. Primary sources (central banks, "
+                               "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
+    panel = _panel_hint(history)
+    forecast_done = any(contracts._forecast_record(h) for h in history)
+    if "panel" not in kinds and panel and not forecast_done and "sandbox_python" in tools:
+        n = int(panel["entities"])
+        groups = min(4, n)
+        size = -(-n // groups)
+        tasks = []
+        for k in range(groups):
+            lo, hi = k * size + 1, min(n, (k + 1) * size)
+            if lo > hi:
+                break
+            tasks.append({"agent_type": "analyst",
+                          "task": f"File {panel['file']} is a long panel: entity column {panel['entity']!r}, time column "
+                                  f"{panel['time']!r}, value columns {panel['values']}. Take the entities ranked {lo} to {hi} in "
+                                  f"sorted order of {panel['entity']!r} (print their names first). For each one separately: "
+                                  "profile coverage and gaps, zeros, outliers and level shifts, seasonality and trend, and how "
+                                  "it differs from the others in your slice. Prepare each as a regular series (gaps filled by "
+                                  "interpolation, never zero) and save them together with pl.save_series({name: series}, "
+                                  "'out/series.json').",
+                          "deliverable": "A table, one row per entity: rows, first and last date, missing share, gaps filled, "
+                                         "outliers, level shifts with dates, dominant period, and one line on what is unusual; "
+                                         "then the run id of out/series.json.",
+                          "constraints": "Do not forecast. Only your slice of entities. Print short summaries, not raw rows."})
+        return {"action": "delegate", "auto": "panel", "tasks": tasks,
+                "rationale": f"{n} entities share dates; slices are analysed in parallel before modelling"}
+    return None
+
+
+def _state_card(history: list[dict]) -> str:
+    """A short card of where the work stands, rebuilt from the evidence on every step so compaction can never drop it: the
+    newest file of each kind with the run that wrote it (to pass in carry), the backtest verdict, and the sub-agents' reports.
+    Live, missions reloaded the raw file in 38 of 40 cells and never carried a result, and one re-ran its whole pipeline to
+    find a file it had already written."""
+    newest: dict[str, str] = {}
+    for run, paths in _runs_with_outputs(history):
+        for p in paths:
+            newest[p] = run
+    lines = []
+    if newest:
+        keep = sorted(newest.items(), key=lambda kv: kv[0])[-12:]
+        lines.append("Files you can carry (carry=[{run_id, file}], then open in/carried/<file name>): "
+                     + "; ".join(f"{p} from run {r}" for p, r in keep))
+    facts = contracts.trust_facts(history)
+    if facts and facts.get("timesfm_mase") is not None:
+        lines.append(f"Backtest so far: TimesFM MASE {facts['timesfm_mase']} vs {facts['best_baseline']} {facts['baseline_mase']} "
+                     f"({facts.get('verdict') or 'no verdict'}); range coverage {facts.get('backtest_coverage')}.")
+    subs = [h for h in history if h.get("kind") == "subagent"]
+    for h in subs[-4:]:
+        lines.append(f"Sub-agent {h.get('agent_id')} ({h.get('agent_type')}, {h.get('status')}): "
+                     + " ".join(str(h.get("answer") or h.get("reason") or "").split())[:300]
+                     + (f" Files: {', '.join(h.get('files', [])[:4])}." if h.get("files") else ""))
+    return ("State of the work (computed from the evidence):\n- " + "\n- ".join(lines)) if lines else ""
+
+
 def _skills_read_note(ctx: Ctx) -> str:
     """The playbooks already read in this mission, from the ledger (compaction drops their text from the view, and a planner that
     cannot see them reads them again: ten of twenty calls in one live run). Replay-safe: it only feeds a planner step."""
@@ -445,6 +569,11 @@ def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, 
                       bad: list[str] | None = None, ctx: Ctx | None = None) -> list[dict]:
     system = prompts.current("composer").text
     outside = _outside_block(ctx)
+    trust = contracts.trust_statement(history)
+    if trust:
+        outside = ("Accuracy facts (computed; an accuracy paragraph with exactly these figures is appended after your answer, so "
+                   "do not restate coverage or MASE figures that differ from it, and never call the forecast better than a simple rule "
+                   "unless these facts say so):\n" + trust + ("\n\n" + outside if outside else ""))
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
             f"\n\n{outside + chr(10) + chr(10) if outside else ''}Draft (the content to keep; its formatting was lost):\n{draft}")
     if bad:
@@ -525,9 +654,27 @@ def _compose(ctx: Ctx, brain: Any, step: str, goal: str, history: list[dict], me
     return ctx.step(step, lambda c: write(_compose_messages(goal, history, memo, context, draft, bad, ctx)))
 
 
+VOLATILE_KEYS = ("run_id", "outputs", "manifest", "files")   # differ on every run of the same call, so a repeat is still a repeat
+
+
 def _signature(obs: dict) -> str:
-    return canonical({"tool": obs.get("tool"), "args": obs.get("args"), "result": obs.get("result"),
-                      "error": obs.get("error")})
+    res = obs.get("result")
+    if isinstance(res, dict):
+        res = {k: v for k, v in res.items() if k not in VOLATILE_KEYS}
+    return canonical({"tool": obs.get("tool"), "args": obs.get("args"), "result": res, "error": obs.get("error")})
+
+
+def _error_run(history: list[dict]) -> int:
+    """How many of the newest tool calls in a row failed with the same error signature."""
+    first, n = None, 0
+    for h in reversed(history):
+        if h.get("kind") != "tool":
+            continue
+        sig = _error_signature(h)
+        if not sig or (first is not None and sig != first):
+            break
+        first, n = sig, n + 1
+    return n
 
 
 def _runs_with_outputs(history: list[dict]) -> list[tuple[str, set[str]]]:
@@ -595,7 +742,14 @@ def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: f
         pass
 
 
+ERROR_STALL = 8      # identical failures in a row after which the loop stops repeating (live: 33 and 19 before this existed)
+
+
 def _stalled(history: list[dict], window: int) -> bool:
+    """Stalled when the newest ``window`` tool calls are the same call with the same outcome (run ids aside), or when the newest
+    ERROR_STALL calls failed the same way even with different code: the planner is not converging."""
+    if _error_run(history) >= ERROR_STALL:
+        return True
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
         return False
@@ -764,14 +918,21 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             note += "\n\n" + read_note
         if (repeat_note := _repeat_error_note(history)):
             note += "\n\n" + repeat_note
+        if (card := _state_card(history)):
+            note += "\n\n" + card
         if cfg.depth == 0 and FORECAST_GOAL.search(goal):
             # The checklist is derived from the evidence on every step, so it cannot drift and a resumed run sees the same one.
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
                                        external=bool(EXTERNAL_GOAL.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
             _status(ctx, i, history, items, started)
-        plan = ctx.step(f"plan:{tag}:{i}", lambda c: _decide_plan(brain, goal, tools, history, memo, context, note,
-                                                                 finish_now=cfg.finish_now, out_of_calls=out_of_calls))
+        auto = (_harness_plan(goal, history, tools)
+                if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
+        if auto is not None:
+            plan = ctx.step(f"auto:{tag}:{i}", lambda c: auto)
+        else:
+            plan = ctx.step(f"plan:{tag}:{i}", lambda c: _decide_plan(brain, goal, tools, history, memo, context, note,
+                                                                     finish_now=cfg.finish_now, out_of_calls=out_of_calls))
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
         elif plan["action"] == "ask_user":
@@ -797,6 +958,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     obs["not_asked_again"] = repeated
         elif plan["action"] == "delegate":
             delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
+            if plan.get("auto"):
+                for d in delegated:
+                    if d.get("kind") == "subagent":
+                        d["auto"] = plan["auto"]      # started by the harness, so each trigger fires once
             history.extend(delegated[:-1])
             obs = delegated[-1]
         else:
@@ -951,6 +1116,10 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
 
             bind(ctx._guard_time, note)
         result = _ground_result(_run(ctx, brain, goal, tools, cfg, context, history), history, goal)
+        trust = contracts.trust_statement(history)
+        if trust and isinstance(result.get("answer"), str) and result["answer"].strip() and "Accuracy check (computed" not in result["answer"]:
+            # Written by code from the stored backtest, after grounding: the figures in it are the ledger's own.
+            result = {**result, "answer": result["answer"].rstrip() + "\n\n" + trust, "trust": contracts.trust_facts(history)}
         return {**result, "stop_reason": STOP_REASONS.get(result.get("status", ""), "unknown")}
 
     return program

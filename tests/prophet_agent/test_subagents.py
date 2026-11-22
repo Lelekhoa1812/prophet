@@ -164,3 +164,24 @@ def test_a_report_figure_no_tool_printed_is_flagged_to_the_lead_agent(store):
                   {"rates": [{"action": "finish", "rationale": "d"}]})
     _, out = _run(store, goal_program("g", {"sandbox_python": _tool("sandbox_python")}, brain))
     assert "7.77" in out["result"]["evidence"][0]["unverified"]
+
+
+def test_the_harness_starts_a_researcher_for_a_market_goal_and_a_replay_asks_the_model_nothing(store):
+    inspect = {"file": "wti.csv", "profile": {"columns": [{"kind": "time", "name": "date", "duplicate_timestamps": 0},
+                                                          {"kind": "number", "name": "price"}]}}
+    tools = {"inspect_data": _tool("inspect_data", lambda a, k: inspect), "web_research": _tool("web_research")}
+    goal = "Forecast the WTI spot price for 20 trading days"
+    brain = KeyedBrain([{"action": "call_tool", "tool": "inspect_data", "args": {"file": "wti.csv"}, "rationale": "look"},
+                        {"action": "finish", "rationale": "done"}],
+                       {"sub-agent a1": [{"action": "call_tool", "tool": "web_research", "args": {"queries": ["opec"]}, "rationale": "r"},
+                                         {"action": "finish", "rationale": "done"}]})
+    mid, out = _run(store, goal_program(goal, tools, brain))
+    subs = [h for h in out["result"]["evidence"] if h.get("kind") == "subagent"]
+    assert len(subs) == 1 and subs[0]["agent_type"] == "researcher" and subs[0]["auto"] == "research"
+    assert "Do not forecast" in brain.briefs[0]
+    calls = brain.calls
+    replay = KeyedBrain([], {})
+    store.set_status(mid, "running")
+    out2 = Runtime(store).run(mid, goal_program(goal, tools, replay))
+    assert replay.calls == 0 and out2["status"] == out["status"], "the stored steps replay; nothing is asked again"
+    assert calls > 0
