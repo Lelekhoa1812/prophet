@@ -20,6 +20,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from prophet_agent.forecast.timesfm import nonnegative_domain
+
 EXPECTED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
 INTERVAL_SHARE = 0.9      # share of steps that must sit inside q10 <= point <= q90
 SCALE_MARGIN = 3.0        # forecast may run this many history ranges beyond the history's own range
@@ -87,11 +89,25 @@ def check_forecast(point, q10=None, q90=None, *, horizon=None, history=None) -> 
                                  f"q10 <= point <= q90 holds at {inside} of {len(p)} steps; at least "
                                  f"{round(INTERVAL_SHARE * 100)} per cent are needed", "warn"))
     hist = _numbers(history) if history is not None else None
-    if hist and all(math.isfinite(v) for v in hist) and p and min(hist) >= 0:
+    if hist and all(math.isfinite(v) for v in hist) and p and nonnegative_domain(hist):
+        # Live retail rep3 (measured): -3,606 on a Saturday, while the history held only two refund days below zero. The
+        # domain is non-negative when a small share of points is below zero (forecast.timesfm.NEG_SHARE_MAX), so those
+        # days no longer switch the check off. The band counts too: a negative q10 is an impossible sales value as well.
         neg = sum(1 for v in p if not v >= 0)
-        checks.append(_check("non_negative_when_history_is", neg == 0,
-                             "the history is never negative and the forecast is never negative" if neg == 0
-                             else f"the history is never negative but {neg} forecast steps are below zero"))
+        band_lo = _numbers(q10) if q10 is not None else None
+        band_hi = _numbers(q90) if q90 is not None else None
+        band_neg = sum(1 for v in (band_lo or []) + (band_hi or []) if math.isfinite(v) and v < 0)
+        ok = neg == 0 and band_neg == 0
+        if ok:
+            detail = "the history is essentially non-negative and the forecast and its band are never negative"
+        else:
+            parts = []
+            if neg:
+                parts.append(f"{neg} forecast steps are below zero")
+            if band_neg:
+                parts.append(f"{band_neg} band values are below zero")
+            detail = "the history is essentially non-negative but " + " and ".join(parts)
+        checks.append(_check("non_negative_when_history_is", ok, detail))
     if hist and all(math.isfinite(v) for v in hist) and p and all(math.isfinite(v) for v in p):
         lo_h, hi_h = min(hist), max(hist)
         span = hi_h - lo_h
@@ -258,10 +274,9 @@ def _forecast_record(h: dict) -> dict | None:
     if isinstance(res, dict) and isinstance(res.get("forecast"), dict):
         return res["forecast"]
     if isinstance(res, dict) and "n_series" in res and isinstance(res.get("series"), dict):
-        # A panel pack, seen as one line per series. It is held only when a series delivered on TimesFM's own line lost its
-        # cycle; a series centred on a simple rule does not deliver TimesFM's line.
-        lost = [n for n, ln in res["series"].items() if isinstance(ln, dict) and ln.get("health") == "flat_unexpected"
-                and ln.get("centre", "timesfm") == "timesfm"]
+        # A panel pack, seen as one line per series. It is held when a series' band lost its cycle, whatever its centre line:
+        # the band is TimesFM's either way (A6-03, live retail rep4: a naive centre on a flat_unexpected band was delivered).
+        lost = [n for n, ln in res["series"].items() if isinstance(ln, dict) and ln.get("health") == "flat_unexpected"]
         return {"panel": True, "n_series": res["n_series"],
                 "health": {"verdict": "flat_unexpected" if lost else "ok", "causes": [f"cycle lost: {', '.join(lost[:6])}"] if lost else []}}
     return None
@@ -309,16 +324,37 @@ def _saved_ledgers(history, run_root) -> list[list]:
 
 
 def ledger_stages(history, run_root) -> int | None:
-    """The most distinct stages (with a finding and a decision each) any saved ledger in this mission records. None when
-    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look"."""
+    """The distinct stages (with a finding and a decision each) in the newest saved ledger of this mission. None when
+    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look". The newest, not the best: a later cell that saved
+    an empty ps.Ledger() over the record must be seen (live WTI rep3, A4-05, measured: the file of run d908f0a5 is [])."""
     if run_root is None:
         return None
-    best = 0
-    for entries in _saved_ledgers(history, run_root):
-        stages = {str(e.get("stage", "")).strip().lower() for e in entries
-                  if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
-        best = max(best, len(stages - {""}))
-    return best
+    ledgers = _saved_ledgers(history, run_root)
+    if not ledgers:
+        return 0
+    stages = {str(e.get("stage", "")).strip().lower() for e in ledgers[0]
+              if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
+    return len(stages - {""})
+
+
+def check_ledger_kept(history, run_root) -> dict | None:
+    """Warns when a later saved ledger of the mission holds fewer entries than an earlier one: a record was overwritten (A4-05,
+    live WTI rep3). None when no ledger was saved or ``run_root`` is unknown."""
+    if run_root is None:
+        return None
+    ledgers = list(reversed(_saved_ledgers(history, run_root)))      # oldest first
+    if not ledgers:
+        return None
+    peak = 0
+    for entries in ledgers:
+        n = len(entries)
+        if n < peak:
+            return _check("ledger_kept", False,
+                          f"a later saved ledger holds {n} entries, fewer than the {peak} an earlier ledger of this mission "
+                          "holds: a record was overwritten. Load the earlier ledger with ps.Ledger.open(path) before adding "
+                          "to it, then save", "warn")
+        peak = max(peak, n)
+    return _check("ledger_kept", True, f"the saved ledgers never shrink (the largest holds {peak} entries)", "warn")
 
 
 def _saved_scan_findings(history, run_root) -> list[dict] | None:
@@ -478,12 +514,10 @@ def check_controls(history, args: dict, record: dict | None = None) -> dict | No
 
 
 def delivered_health(rec: dict) -> str | None:
-    """The health verdict of the line actually delivered. When the pack's centre line is a simple rule (the backtest found it
-    more accurate), TimesFM's line is shown for reference only, so its health does not hold the mission (live retail: 17
-    pack builds with a rule as centre, each held because TimesFM's own line had lost the weekly cycle)."""
-    centre = rec.get("centre") if isinstance(rec, dict) else None
-    if isinstance(centre, dict) and centre.get("rule"):
-        return f"centre_rule:{centre['rule']}"
+    """The health verdict of the band the pack delivers. The band is TimesFM's whatever centre line is drawn (forecast_report
+    shifts it, it does not redraw it), so a simple rule as the centre does not clear a flat band. Live retail rep4 (measured):
+    centre naive, health flat_unexpected, and the answer quoted "80% range 810k to 1.57m" built on that band. An earlier
+    version returned "centre_rule:<rule>" here and let such a band through (A6-03)."""
     health = rec.get("health") if isinstance(rec, dict) else None
     return health.get("verdict") if isinstance(health, dict) else None
 
@@ -506,17 +540,71 @@ def check_ledger(history, run_root) -> dict | None:
 RESEARCH_TOOLS = ("web_research", "web_search", "web_fetch")
 
 
+def _briefing(res: Any) -> bool:
+    """True when a tool result holds something a reader can use: a non-empty body, and not marked ok False."""
+    if isinstance(res, dict):
+        if res.get("ok") is False:
+            return False
+        return any(v not in (None, "", [], {}) for k, v in res.items() if k not in ("ok", "error", "status"))
+    if isinstance(res, (list, tuple)):
+        return len(res) > 0
+    return isinstance(res, str) and bool(res.strip())
+
+
 def researched(history) -> bool:
-    """True once outside context was sought: a web tool was called (even if it failed) or a researcher sub-agent ran. An attempt
-    counts, so a mission with no network is told to say so in its answer rather than being held on this item."""
+    """True once a usable outside-context briefing exists: a web call returned content, or a researcher sub-agent gave a
+    non-empty answer or its own web calls returned content. A failed or empty attempt does not tick the item, so the planner
+    must research again or say plainly why research was not possible (A3-02; live WTI rep4: the researcher returned answer ""
+    with "research briefing is incomplete", and the item ticked anyway)."""
     for h in history if isinstance(history, list) else []:
         if not isinstance(h, dict):
             continue
         if h.get("kind") == "tool" and h.get("tool") in RESEARCH_TOOLS:
-            return True
+            if not h.get("error") and _briefing(h.get("result")):
+                return True
         if h.get("kind") == "subagent" and h.get("agent_type") == "researcher":
-            return True
+            if isinstance(h.get("answer"), str) and h["answer"].strip():
+                return True
+            for e in h.get("evidence") if isinstance(h.get("evidence"), list) else []:
+                if (isinstance(e, dict) and e.get("kind") == "tool" and e.get("tool") in RESEARCH_TOOLS
+                        and not e.get("error") and _briefing(e.get("result"))):
+                    return True
     return False
+
+
+def panel_entities(history) -> dict | None:
+    """For a panel mission (a result naming more than one series): how many entities the mission has, how many the newest
+    forecast delivered, and which are missing when the names are known. None when no panel result was seen (A3-12; live
+    Beijing: 12 stations in the panel, the forecast held 10, and the answer said "all 12")."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    expected = None
+    names = None
+    delivered = None
+    delivered_names = None
+    not_shown = 0
+    for h in obs:
+        for tool in ("backtest_series", "forecast_report", "timesfm_forecast"):
+            r = _ok_result(h, tool)
+            if not isinstance(r, dict):
+                continue
+            if _is_int(r.get("n_series")) and r["n_series"] > 1:
+                expected = r["n_series"]
+                if tool == "backtest_series" and isinstance(r.get("series"), dict):
+                    names = list(r["series"])
+            if tool != "backtest_series" and isinstance(r.get("series"), dict):
+                delivered_names = list(r["series"])
+                not_shown = r.get("not_shown") if _is_int(r.get("not_shown")) else 0
+                delivered = len(delivered_names) + not_shown
+            elif tool != "backtest_series" and _is_int(r.get("series_count")):
+                delivered, delivered_names, not_shown = r["series_count"], None, 0
+    if expected is None or expected < 2:
+        return None
+    missing = None
+    if names is not None and delivered_names is not None and not not_shown:
+        missing = [n for n in names if n not in delivered_names]
+    return {"expected": expected, "delivered": delivered or 0, "missing": missing}
+
+
 
 
 def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
@@ -548,6 +636,16 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
     items.append({"item": "compare the forecast method with the simple baselines (backtest_series)",
                   "status": "done" if backtested else "todo"})
     items.append({"item": "forecast the series (timesfm_forecast)", "status": "done" if forecasts else "todo"})
+    entities = panel_entities(obs)
+    if entities is not None:
+        # A panel goal is not finished while an entity has no delivered forecast. Live Beijing (measured): 12 stations, 10 in
+        # the forecast, and the answer said "for all 12".
+        n, k = entities["expected"], entities["delivered"]
+        detail = f"{min(k, n)} of {n} entities forecast"
+        if entities["missing"]:
+            detail += "; missing: " + ", ".join(entities["missing"][:12])
+        items.append({"item": "every panel entity has a delivered forecast (forecast_report on the whole panel)",
+                      "status": "done" if k >= n else "todo", "detail": detail})
     if forecasts:
         verdict = delivered_health(forecasts[-1][1])
         items.append({"item": "forecast health is not flat_unexpected", "status": "todo" if verdict == "flat_unexpected" else "done",
@@ -692,6 +790,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         ledger = check_ledger(obs, run_root)
         if ledger is not None:
             checks.append(ledger)
+        kept = check_ledger_kept(obs, run_root)
+        if kept is not None:
+            checks.append(kept)
         decisions = check_scan_decisions(obs, run_root)
         if decisions is not None:
             checks.append(decisions)

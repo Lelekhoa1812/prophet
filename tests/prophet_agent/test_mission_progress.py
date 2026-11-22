@@ -182,10 +182,16 @@ def test_external_series_checklist_asks_for_outside_context_until_a_researcher_o
     ctx = next(it for it in items if it["item"].startswith("outside context"))
     assert ctx["status"] == "todo"
     assert not any(it["item"].startswith("outside context") for it in contracts.progress([], run_root=tmp_path))
-    for done in ({"kind": "subagent", "agent_type": "researcher"},
-                 {"kind": "tool", "tool": "web_search", "args": {}, "error": "offline"}):   # an attempt counts
+    # Changed by round 3 (A3-02, live WTI rep4): an attempt no longer ticks the item. A researcher's briefing must be non-empty,
+    # and a web call must return content. A failed or empty attempt leaves it to do, so the planner researches again or says why.
+    for done in ({"kind": "subagent", "agent_type": "researcher", "answer": "OPEC+ meets on 29 November"},
+                 {"kind": "tool", "tool": "web_search", "args": {}, "result": {"ok": True, "results": [{"title": "EIA"}]}}):
         items = contracts.progress([done], run_root=tmp_path, external=True)
         assert next(it for it in items if it["item"].startswith("outside context"))["status"] == "done"
+    for attempt in ({"kind": "subagent", "agent_type": "researcher", "answer": ""},
+                    {"kind": "tool", "tool": "web_search", "args": {}, "error": "offline"}):
+        items = contracts.progress([attempt], run_root=tmp_path, external=True)
+        assert next(it for it in items if it["item"].startswith("outside context"))["status"] == "todo"
     assert contracts.researched([{"kind": "subagent", "agent_type": "analyst"}]) is False
 
 
@@ -311,10 +317,12 @@ def test_idle_calls_name_the_next_item_and_clipped_output_keeps_its_tail():
 
 
 def test_a_rule_centre_line_is_not_held_by_timesfms_lost_cycle():
+    # Changed by round 3 (A6-03, live retail rep4): the band is TimesFM's whatever centre line is drawn, so a rule centre on a
+    # flat_unexpected band is held, not passed. The old expectation ("centre_rule:naive") let a flat band reach the pack.
     from prophet_agent.runtime.contracts import delivered_health
     lost = {"health": {"verdict": "flat_unexpected"}}
     assert delivered_health(lost) == "flat_unexpected"
-    assert delivered_health({**lost, "centre": {"rule": "naive"}}) == "centre_rule:naive"
+    assert delivered_health({**lost, "centre": {"rule": "naive"}}) == "flat_unexpected"
     assert delivered_health({}) is None
 
 
@@ -323,10 +331,12 @@ def test_a_panel_pack_counts_as_the_forecast_and_is_held_only_by_a_timesfm_line_
     def pack(lines):
         return {"kind": "tool", "tool": "forecast_report", "args": {"horizon": 14},
                 "result": {"n_series": len(lines), "series": lines, "run_id": "a" * 32, "files": ["out/forecast.xlsx"]}}
-    ok = pack({"A": {"health": "ok", "centre": "timesfm"}, "B": {"health": "flat_unexpected", "centre": "naive"}})
+    # Round 3 (A6-03): a flat band is held on a rule centre too. The line "B" with centre naive used to pass here.
+    ok = pack({"A": {"health": "ok", "centre": "timesfm"}, "B": {"health": "ok", "centre": "naive"}})
     bad = pack({"A": {"health": "flat_unexpected", "centre": "timesfm"}})
+    held = pack({"A": {"health": "ok", "centre": "timesfm"}, "B": {"health": "flat_unexpected", "centre": "naive"}})
     item = lambda h: next(i for i in progress([h]) if i["item"].startswith("forecast health"))
-    assert item(ok)["status"] == "done" and item(bad)["status"] == "todo"
+    assert item(ok)["status"] == "done" and item(bad)["status"] == "todo" and item(held)["status"] == "todo"
     assert all(c["ok"] for c in check_evidence([ok]) if c["name"] == "health_repaired")
 
 
