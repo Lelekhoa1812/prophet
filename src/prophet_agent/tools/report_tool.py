@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from prophet_agent.artifacts import MAX_PANEL, build_forecast_pack, build_panel_pack
+from prophet_agent.forecast.combine import equal_blend
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, run_dates, source_covariates
@@ -77,14 +78,37 @@ def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
     return out
 ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre", "season"} | CONTROL_ARGS
 # Every simple rule backtest_series can name as best, so the pack can deliver the one that won (live retail: the backtest's
-# best rule was mean_last_season, the pack refused it, and the planner fell back to naive).
-CENTRES = ("timesfm", "naive", "drift", "seasonal_naive", "mean_last_season")
+# best rule was mean_last_season, the pack refused it, and the planner fell back to naive). "blend" is the equal-weight
+# blend of TimesFM and one of those rules, delivered only when this tool's backtest says it wins (see _blend_centre).
+CENTRES = ("timesfm", "naive", "drift", "seasonal_naive", "mean_last_season", "blend")
 RULE_TEXT = {"naive": "the last value repeated", "drift": "the average historical change extended",
              "seasonal_naive": "the value one season back repeated", "mean_last_season": "the average of the last season"}
 
 
+def _blend_note(centre: dict) -> str:
+    """The provenance line for an adopted blend. It says what this tool checked and what that check cannot show.
+
+    Motivation vs Logic
+    Motivation: a blend that wins on the windows that chose it is the most flattering claim the pack could make, so the note
+    must carry the selection caveat in the same sentence as the win (audit item 21: say only what the tool checked).
+    Logic: the note reads the evidence the tool recorded (window count, horizon, MASE of each line) and names the selection.
+    It never says "more accurate" without that caveat.
+    """
+    ev = centre.get("evidence") or {}
+    rule = RULE_TEXT[centre["with"]] + (f" (season {centre['season']})" if centre.get("season") else "")
+    mase = ev.get("mase") or {}
+    figures = (f" (MASE {mase.get('blend')} against {mase.get('timesfm')} for TimesFM 3 and {mase.get(centre['with'])} for the rule)"
+               if mase else "")
+    return (f"Centre line: an equal-weight blend of TimesFM 3 and {rule}, adopted because this tool's backtest over "
+            f"{ev.get('windows')} windows of {ev.get('horizon')} periods, with the pack's settings, found the blend beat both{figures}. "
+            "Selected on these windows: the rule and the adoption were both chosen on them, so these figures are optimistic and not "
+            "an unbiased test of accuracy. The range is TimesFM 3's band, recentred on the blend.")
+
+
 def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
+    if centre and centre.get("rule") == "blend":
+        return _blend_note(centre)
     if centre:
         rule = RULE_TEXT[centre["rule"]] + (f" (season {centre['season']})" if centre.get("season") else "")
         # The pack cannot see the backtest, so it says only what it was asked to do (audit item 21).
@@ -147,30 +171,90 @@ def _calibrated(fc: dict, values: list[float], args: dict) -> dict:
     return {**fc, "quantiles": res["calibrated"]["quantiles"], "interval_calibration": info}
 
 
-def _centre(fc: dict, values: list[float], which: str, season: int | None = None) -> dict:
-    """The forecast with its centre line replaced by a simple rule (the band stays TimesFM's, shifted to the new centre so the
-    band keeps its width around it). Used when the backtest said the rule was more accurate. Records what was done."""
+def _rule_line(values: list[float], h: int, which: str, season: int | None) -> tuple[Any, int | None]:
+    """A simple rule's centre line over the horizon, and the season it used (None for the rules without one).
+
+    Motivation vs Logic
+    Motivation: the delivered line must be the line the backtest scored, so each rule is computed in exactly one place.
+    Logic: naive repeats the last value; the seasonal rules use the same season choice as backtest_series; drift extends the
+    average change over the history. The single centre and the blend both read their rule from here.
+    """
     import numpy as np
-    h = len(fc["point"])
     last = float(values[-1])
-    m = None
     if which == "naive":
-        new = np.full(h, last)
-    elif which in ("seasonal_naive", "mean_last_season"):
+        return np.full(h, last), None
+    if which in ("seasonal_naive", "mean_last_season"):
         # The same rules and the same season choice as backtest_series, so the delivered line is the one that was scored.
         from prophet_agent.forecast.rolling import _mean_last, _snaive, pick_season
         x = np.asarray(values, dtype=float)
         m = pick_season(x, season)
-        new = _snaive(x, h, m) if which == "seasonal_naive" else _mean_last(x, h, m)
-    else:   # drift: the average change over the history, extended
-        slope = (float(values[-1]) - float(values[0])) / max(len(values) - 1, 1)
-        new = last + slope * np.arange(1, h + 1)
+        return (_snaive(x, h, m) if which == "seasonal_naive" else _mean_last(x, h, m)), m
+    slope = (float(values[-1]) - float(values[0])) / max(len(values) - 1, 1)   # drift: the average change, extended
+    return last + slope * np.arange(1, h + 1), None
+
+
+def _centre(fc: dict, values: list[float], which: str, season: int | None = None, *, rule: str | None = None,
+            evidence: dict | None = None) -> dict:
+    """The forecast with its centre line replaced by a simple rule (the band stays TimesFM's, shifted to the new centre so the
+    band keeps its width around it). ``which`` = "blend" puts the equal-weight blend of TimesFM's centre and ``rule`` as the
+    centre; its evidence is the backtest that _blend_centre ran. Records what was done.
+
+    Motivation vs Logic
+    Motivation: the caller can ask for a simple rule; the pack must draw it and say exactly what it is.
+    Logic: the rule's line comes from _rule_line. For a single rule the centre is that line. For the blend the centre is the
+    plain mean of TimesFM's centre and that line (equal_blend, nothing fitted). Either way the band is shifted by the same
+    amount at each step, so its width is kept.
+    """
+    import numpy as np
+    h = len(fc["point"])
     old = np.asarray(fc["point"], dtype=float)
+    if which == "blend":
+        from prophet_agent.forecast.rolling import EQUAL_BLEND_RULES
+        if rule not in EQUAL_BLEND_RULES:
+            raise ValueError(f"the blend's rule must be one of {list(EQUAL_BLEND_RULES)}")
+        line, m = _rule_line(values, h, rule, season)
+        new = equal_blend(old, line)
+        centre = {"rule": "blend", "with": rule, **({"season": int(m)} if m else {}),
+                  "reason": "the backtest on these windows found the blend beat TimesFM's centre and the rule; the band is "
+                            "TimesFM's, recentred on the blend", "evidence": evidence}
+    else:
+        new, m = _rule_line(values, h, which, season)
+        centre = {"rule": which, **({"season": int(m)} if m else {}),
+                  "reason": "the caller set this simple rule as the centre line; the band is TimesFM's, recentred on the rule"}
     shift = new - old
     q = {k: [round(float(v) + float(d), 4) for v, d in zip(vals, shift)] for k, vals in fc["quantiles"].items()}
     return {**fc, "point": [round(float(v), 4) for v in new], "quantiles": q, "timesfm_point": fc["point"],
-            "centre": {"rule": which, **({"season": int(m)} if m else {}),
-                       "reason": "the caller set this simple rule as the centre line; the band is TimesFM's, recentred on the rule"}}
+            "centre": centre}
+
+
+def _blend_centre(fc: dict, values: list[float], args: dict) -> dict:
+    """The equal-weight blend of TimesFM's centre and the best simple rule, delivered only when this tool's own backtest over
+    the same windows says it beats both. Otherwise the centre stays TimesFM's, and blend_check says why.
+
+    Motivation vs Logic
+    Motivation: a blend that is never checked is an opinion, and one checked on the windows it then claims to win is a
+    selection. The report runs the check itself, so the line it draws is the line it scored, and it says what was selected.
+    Logic: intermittent demand is not blended, because its centre is expected demand and the backtest scores the median.
+    Otherwise run rolling_backtest with the pack's season and control and the blend switched on, and deliver the blend only
+    when its centre_choice says it wins. A series too short to backtest keeps TimesFM's centre and says why.
+    """
+    if "median_point" in fc:
+        return {**fc, "blend_check": {"adopt": False, "reason": "intermittent demand: the centre is expected demand, which the "
+                                                                 "blend was not scored on"}}
+    from prophet_agent.forecast.control import build_control
+    from prophet_agent.forecast.rolling import rolling_backtest
+    from prophet_agent.tools.series_io import source_covariates
+    season = _season_arg(args)
+    h = len(fc["point"])
+    try:
+        control = build_control(args, len(values), h, source_covariates(args))
+        bt = rolling_backtest(values, h, season=season, control=control, blend_centre=True)
+    except ValueError as exc:
+        return {**fc, "blend_check": {"adopt": False, "reason": str(exc)[:200]}}
+    ce = bt["centre_choice"]
+    if not ce["adopt"]:
+        return {**fc, "blend_check": ce}
+    return {**_centre(fc, values, "blend", season, rule=ce["rule"], evidence=ce), "blend_check": ce}
 
 
 def _season_arg(args: dict) -> int | None:
@@ -201,7 +285,9 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     values = [float(v) for v in named[0][1]]
     if args.get("calibrate") is True:
         fc = _calibrated(fc, values, args)
-    if centre != "timesfm":
+    if centre == "blend":
+        fc = _blend_centre(fc, values, args)
+    elif centre != "timesfm":
         fc = _centre(fc, values, centre, _season_arg(args))
     hist_dates = run_dates(args, named[0][0])
     if hist_dates is not None and len(hist_dates) != len(values):
@@ -229,7 +315,11 @@ PANEL_SHOWN = 30     # series with a line of their own in the observation; the r
 def _panel_centres(centre: Any, names: list[str]) -> dict[str, str]:
     """The centre rule per series: one rule for every series, or a dict {series name: rule}. Series not named keep TimesFM;
     the result holds only the series whose centre is not TimesFM's."""
+    blend_refused = ("the equal-weight blend is checked on one series's backtest, so it needs one series at a time: build the "
+                     "panel with the other rules, then forecast that series with forecast_report and centre 'blend'")
     if isinstance(centre, str):
+        if centre == "blend":
+            raise ValueError(blend_refused)
         if centre not in CENTRES:
             raise ValueError(f"centre must be one of {list(CENTRES)}, or a dict of series name to rule")
         return {} if centre == "timesfm" else {n: centre for n in names}
@@ -237,6 +327,8 @@ def _panel_centres(centre: Any, names: list[str]) -> dict[str, str]:
         unknown = sorted(set(centre) - set(names))
         if unknown:
             raise ValueError(f"centre names series not in the panel: {unknown[:10]}; the panel holds {names[:20]}")
+        if "blend" in centre.values():
+            raise ValueError(blend_refused)
         bad = {k: v for k, v in centre.items() if v not in CENTRES}
         if bad:
             raise ValueError(f"each centre rule must be one of {list(CENTRES)}; got {bad}")
@@ -320,12 +412,15 @@ def observe(result: dict) -> dict:
         return _panel_observe(result)
     # The run id is what proves where the files are: without it the planner cannot cite or re-open the workbook and asks
     # where it went (seen live, as "the forecast workbook could not be found").
-    return {"forecast": _compact(result["forecast"]), "run_id": result["run_id"],
-            "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
-            "range_vs_centre_pct": range_vs_centre(result["forecast"]),
-            "centre_line_total": _total(result["forecast"]),
-            "total_range_80": total_range(result["forecast"]),
-            "deliverables": "built and listed in the manifest; no further build is needed"}
+    out = {"forecast": _compact(result["forecast"]), "run_id": result["run_id"],
+           "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
+           "range_vs_centre_pct": range_vs_centre(result["forecast"]),
+           "centre_line_total": _total(result["forecast"]),
+           "total_range_80": total_range(result["forecast"]),
+           "deliverables": "built and listed in the manifest; no further build is needed"}
+    if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
+        out["blend_check"] = result["forecast"]["blend_check"]
+    return out
 
 
 def _total(fc: dict) -> float | None:
@@ -395,9 +490,9 @@ FORECAST_REPORT_SPEC = {
                    "Use it for the final forecast the person asked for, after any checking is done. It takes the same control "
                    "arguments as timesfm_forecast for one series; a panel uses the defaults. Pass exactly the configuration that won "
                    "your backtest, or the pack will show the default forecast. n_origins belongs to backtest_series and is refused "
-                   "here; season is used only by the seasonal centre rules.",
+                   "here; season is used only by the seasonal centre rules and the blend's rule.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
-             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm)",
+             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm)",
              "season": "optional integer, only for the seasonal centre rules: the season backtest_series used (default: chosen from the data by the same rule as the backtest)",
              "calibrate": "optional true, one series only (refused for a panel): replace the 10-90 percent band by the calibrated one when a held-out test on past windows shows it covers closer to 80 percent (the point forecast never changes)",
              **CONTROL_HELP},
