@@ -526,3 +526,18 @@ pooled blend a "per-client blend".
   whose answer lacks the measured range of the average. Rep 4 gave $80.44 to $100.62, the measured range.
 - MASE scores reported as "MAE": replaying the last 120 stored answers found electricity reps 4 and 12 and one Beijing run,
   with no false hit. `answer_metric_named` blocks it unless a cell printed an MAE of its own.
+
+### Panels on the full set of answer checks (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| Beijing panel rep 8 | ad98df0 | partial | could not close a gap | 1,307 | 88 |
+| electricity panel rep 14 | ad98df0 | **completed** | **done_verified** | 1,112 | 99 |
+| Beijing panel rep 9 | 5eae779 | **completed** | **done_verified** | 1,382 | 106 |
+
+Electricity has now finished verified three times running (reps 13 and 14 on the new checks; rep 14 drew the pooled blend,
+the best overall at mean MASE 1.697). Beijing rep 8 had a correct forecast but ended partial: each station's health sat in
+the pack and its backtest scores in panel_backtest, and the planner could not join them. The loop now attaches both,
+side by side, to the panel pack's observation, and the pack reports its horizon, context and model. Rep 9 finished
+verified with them. It also wrote that Huairou had a `flat_expected` verdict while the pack gave it `ok`;
+`answer_series_health_matches` now blocks that (one hit in 150 stored answers, this one).
