@@ -213,3 +213,33 @@ Source: `docs/prophet/goal_mode_rea.md` (mechanism read from the shipped Claude 
    or names what the function returns; `sc.scan` accepts `entity_col` and returns a result readable as `res.findings`. Hand-tuning
    TimesFM (context, ignored points, znorm, symmetric averaging) is blocked by the `controls_tested` contract until `control_lab`
    has run. Compaction folds at least three observations at a time.
+
+## 11. Sub-agents v2, self-hosted web research and interval calibration (2026-11-22)
+
+Sources: `reports/Prophet research agents and datasets.md` (deep research), `docs/prophet/agent_platforms_rea.md` and
+`docs/prophet/subagents_architecture.md` (Claude Code, Cursor and others read from shipped binaries with REA). REA setup note: the MCP server
+needed Node 24 and the system Node was 26, so it runs through `npx -y -p node@24 -p rea-agents@latest -- rea ...`; the MCP tools appeared only
+after a Claude restart. Decisions:
+
+1. **Sub-agents are typed, briefed, scoped and isolated** (`runtime/agents.py`). Types `general`, `researcher`, `analyst`, `modeler`,
+   `verifier` each carry a tool allowlist, a step budget and a role line. A delegation carries `task`, `deliverable` and `constraints`; the child
+   starts with a fresh history and memo, so the parent's context is not copied (Claude Code's `Task` tool, Codex's workers). Depth is 1: a child
+   cannot delegate. Up to 4 run in parallel (`tasks`), 24 per mission. A child can be resumed by id and continues from its own steps.
+2. **Hand-back is a report with evidence.** The child's answer returns files as `run_id:path` and figures; a figure not present in the
+   child's own tool results is flagged `unverified` deterministically, never by the model's word.
+3. **Each agent has notes** (`agent_notes` table, scopes `main`, `a1`, `a2` ...; `notes` tool). A child writes only to its own scope and can
+   read the main notes, which is how a long mission keeps decisions outside the context window.
+4. **Replay stays stable under parallelism.** A parallel child numbers its steps from a reserved block (`Ctx.branch`), so the same program asks
+   for the same step numbers on every run. A replay of a finished delegation makes zero model calls (`tests/prophet_agent/test_subagents.py`).
+5. **Web research is self-hosted** (`research/`, tools `web_search`, `web_fetch`, `web_research`): ddgs with a backend cascade, a disk cache,
+   an SSRF and robots guard with per-host delay, trafilatura then bs4 extraction, source credibility tiers, BM25-lite passage ranking and
+   quote verification. Two skills (`web-research-playbook`, `market-and-macro-research`) give the fan-out plan: market, policy, news, base rates,
+   then known-ahead drivers. Research output is evidence for drivers and context, never a forecast.
+6. **Intervals are calibrated, never narrowed** (`forecast/calibrate.py`, tool `calibrate_intervals`, `forecast_report(calibrate=true)`):
+   split-conformal scaling of the 10-90 band per horizon third from past windows, validated on held-out windows; applied only when clearly
+   closer to 80 percent. The point forecast is never changed.
+7. **Planner v14** adds rules 65 to 69: delegate independent work with a brief, research external drivers for market series, keep notes,
+   go atomic before modelling, calibrate the range.
+
+Not adopted: nested delegation (cost and loss of control), a shared mutable workspace between children (children write to their own run
+folders and hand files back), and a model-written verdict on a child's figures.
