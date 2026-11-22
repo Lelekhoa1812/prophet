@@ -58,7 +58,8 @@ def _run_until_answered(store, program, mid, runtime_owner="r1"):
 
 def test_repeated_question_with_same_header_is_refused_and_the_answer_stands(store):
     q = "The 2025-06-03 spike is an extreme outlier. Should I ignore it as a data error?"
-    brain = ScriptedBrain(plans=[ask(q, "Outlier"), ask(q, "Outlier"), finish()], evals=[met()])
+    # A5-04: a forecast goal's finish is refused twice for checklist items still to do; the third reaches the evaluator.
+    brain = ScriptedBrain(plans=[ask(q, "Outlier"), ask(q, "Outlier"), finish(), finish(), finish()], evals=[met()])
     program = goal_program("forecast sales", {}, brain)
     mid = store.create_mission("forecast sales", {})
     qid = _run_until_answered(store, program, mid)
@@ -74,7 +75,7 @@ def test_repeated_question_with_same_header_is_refused_and_the_answer_stands(sto
 def test_same_question_with_new_header_and_near_identical_wording_is_refused(store):
     q1 = "The March and August 2025 spikes do not match any public holiday. Treat them as unrecorded promotions?"
     q2 = "The March and August 2025 spikes do not match any public holiday. Should I treat them as unrecorded promotions?"
-    brain = ScriptedBrain(plans=[ask(q1, "March/August"), ask(q2, "Spikes"), finish()], evals=[met()])
+    brain = ScriptedBrain(plans=[ask(q1, "March/August"), ask(q2, "Spikes"), finish(), finish(), finish()], evals=[met()])
     program = goal_program("forecast sales", {}, brain)
     mid = store.create_mission("forecast sales", {})
     qid = _run_until_answered(store, program, mid)
@@ -159,7 +160,7 @@ def test_questions_per_mission_are_capped_and_the_run_still_finishes(store):
         "Is the field labelled units in cases or in single items?",
     ]
     assert len(topics) > MAX_ASKS
-    plans = [ask(t, f"H{i}") for i, t in enumerate(topics)] + [finish()]
+    plans = [ask(t, f"H{i}") for i, t in enumerate(topics)] + [finish(), finish(), finish()]  # A5-04: two refusals, then the evaluator
     brain = ScriptedBrain(plans=plans, evals=[met()])
     program = goal_program("forecast sales", {}, brain)
     mid = store.create_mission("forecast sales", {})

@@ -41,7 +41,7 @@ from . import contracts
 from .grounding import snap, snap_note, unverified
 from . import agents
 from .questions import QUESTIONS_SCHEMA, validate_questions
-from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
+from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import OutcomeUnknown, canonical
 
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT
@@ -89,6 +89,19 @@ EVAL_SCHEMA: dict[str, Any] = {
     },
 }
 
+# Round 3, A5-05: a sub-agent's final verdict also carries its findings and the figures it printed. Optional, so a model that
+# leaves them out still gets a valid verdict; the sourcing of each figure is checked in code, not taken from the model.
+SUB_EVAL_SCHEMA: dict[str, Any] = {
+    **EVAL_SCHEMA,
+    "properties": {
+        **EVAL_SCHEMA["properties"],
+        "findings": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}},
+        "figures": {"type": "array", "maxItems": 20, "items": {
+            "type": "object", "required": ["name", "value"], "additionalProperties": False,
+            "properties": {"name": {"type": "string", "maxLength": 120}, "value": {"type": "string", "maxLength": 60}}}},
+    },
+}
+
 OBS_CHARS = 4000          # one observation, as the planner sees it
 VIEW_CHARS = 16000        # uncompacted observations shown before the older ones fold into the memo
 KEEP_RECENT = 4           # newest observations never compacted
@@ -111,6 +124,7 @@ STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "imposs
                 "checkpoint": "budget_part_spent"}
 MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
 REPAIR_CALLS = 8          # one extra allowance, granted once, when a blocked answer meets a spent tool budget (2026-11-22)
+MAX_PREMATURE_FINISHES = 2  # round 3, A5-04: finishes refused for checklist items still to do, per run, before the evaluator judges
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
 SUB_STEPS = 14            # default step budget of a delegated sub-agent
@@ -180,9 +194,40 @@ def _view(obs: dict) -> dict:
     return obs
 
 
-def _clip(obj: Any) -> str:
+def _clip(obj: Any, step: int | None = None) -> str:
     s = canonical(obj)
-    return s if len(s) <= OBS_CHARS else s[:OBS_CHARS] + "...[clipped]"
+    if len(s) <= OBS_CHARS:
+        return s
+    # Round 3, A5-02: the rest is not lost. The planner is told the step to page it back with read_observation.
+    where = f"read_observation with step {step} pages the rest" if step else "clipped"
+    return s[:OBS_CHARS] + f"...[clipped; {where}]"
+
+
+PAGE_CHARS = 3000   # one read_observation page; with its framing it stays under OBS_CHARS, so a page is not clipped again
+
+
+def _observation_tool(history: list[dict]) -> Tool:
+    """Pages a stored tool result back to the planner (round 3, A5-02). Reads the live history, which a resumed run rebuilds
+    from the ledger, so the page is the same text. The result is a ledger entry like any tool call, but it is not charged."""
+    def read(args: dict, key: str) -> dict:
+        n = args.get("step")
+        page = args.get("page", 1) or 1
+        if not isinstance(n, int) or not 1 <= n <= len(history) or history[n - 1].get("kind") != "tool":
+            raise ValueError(f"no observation at step {n}; read a tool result whose step the evidence shows")
+        if not isinstance(page, int):
+            raise ValueError("page must be a whole number")
+        obs = history[n - 1]
+        whole = canonical(obs["result"] if "result" in obs else {"error": obs.get("error")})
+        pages = max(1, -(-len(whole) // PAGE_CHARS))
+        if not 1 <= page <= pages:
+            raise ValueError(f"page {page} is outside 1..{pages} for step {n}")
+        out = {"step": n, "page": page, "pages": pages, "text": whole[(page - 1) * PAGE_CHARS:page * PAGE_CHARS]}
+        if page < pages:
+            out["next"] = page + 1
+        return out
+    return Tool("read_observation", read, idempotent=True,
+                doc="read_observation(step, page): the rest of a tool result the evidence clipped; step is the number the "
+                    "clipped line names, page starts at 1 and the result says next when more pages follow")
 
 
 def _tool_lines(tools: dict[str, Tool]) -> str:
@@ -195,7 +240,7 @@ def _evidence_lines(history: list[dict], start: int = 1) -> str:
     # Each observation is clipped on its own, so the goal and the tool list are never cut off by a long result.
     if not history:
         return "(none yet)"
-    return "\n".join(f"{n}. {_clip(_view(obs))}" for n, obs in enumerate(history, start=start))
+    return "\n".join(f"{n}. {_clip(_view(obs), obs.get('step'))}" for n, obs in enumerate(history, start=start))
 
 
 def _question_texts(questions: Any) -> list[tuple[str, str]]:
@@ -276,18 +321,57 @@ def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dic
     return open_qs, [str(q.get("question", ""))[:160] for q in repeated]
 
 
-READ_ONLY_TOOLS = ("analyst_skill", "notes")      # reading a playbook or a note does no work, so it is not charged to the budget
+# Round 3 (A5-09, A3-10): live electricity mission, 2026-11-22, identical (tool, arguments) calls recurred 21 times (panel_backtest
+# 6, sandbox_python 9). Web calls are re-run because the web changes; notes and the read-only tools change with the ledger.
+REPEAT_EXEMPT = frozenset({"web_research", "web_search", "web_fetch", *READ_ONLY})
+
+
+def _repeat_of(name: str, args: Any, history: list[dict]) -> int | None:
+    """The 1-based position of the earlier identical call, or None. Read from the stored history, so a resumed run makes the
+    same decision and sends nothing to the tool."""
+    if name in REPEAT_EXEMPT:
+        return None
+    want = canonical(args)
+    for pos in range(len(history), 0, -1):          # the most recent identical call
+        h = history[pos - 1]
+        if h.get("kind") == "tool" and h.get("tool") == name and not h.get("repeat_of") and canonical(h.get("args")) == want:
+            # A cell may have written the files the tool reads: live, a forecast was blocked until it ran again after the
+            # inspection. So a call made after any sandbox cell is run again, not answered with a pointer.
+            if any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:]):
+                return None
+            return pos
+    return None
+
+
+def _repeat_obs(name: str, args: Any, history: list[dict], pos: int) -> dict:
+    earlier = history[pos - 1]
+    obs = {"kind": "tool", "tool": name, "args": args, "repeat_of": pos, "sig": _signature(earlier),
+           "note": (f"this call was already made at step {pos}; it gave the same result and was not run again. Read that "
+                    "result there, or change the arguments.")}
+    if "error" in earlier:
+        obs["error"] = earlier["error"]
+        obs["note"] = obs["note"].replace("gave the same result", "gave the same error")
+    if earlier.get("rejected"):
+        obs["rejected"] = True     # an identical refused call is refused again, and is not charged
+    return obs
 
 
 def _calls_used(history: list[dict]) -> int:
-    """Tool calls made so far, including those a delegated sub-agent made (audit 2026-11-22, item 7): unknown-tool slips
-    never reached the runtime, and reads of playbooks and notes are not work."""
+    """The lead agent's tool calls so far: the count the planner's allowance is held to. A delegated sub-agent's calls are
+    not in it; they have their own grant (see ``_delegated_calls``). Round 3, A5-01: before, they were, so a lead that
+    delegated four analysts was forced to finish with its own allowance unused. Reads of playbooks, notes and stored
+    observations are not work, and an unknown-tool slip never reached the runtime."""
+    return sum(1 for h in history if h.get("kind") == "tool" and h.get("tool") not in UNCHARGED
+               and not str(h.get("error", "")).startswith("unknown tool")
+               and "repeat_of" not in h and not h.get("rejected"))
+
+
+def _delegated_calls(history: list[dict]) -> int:
+    """Tool calls the lead's sub-agents made, counted against their own grant (round 3, A5-01)."""
     total = 0
     for h in history:
         if h.get("kind") == "subagent":
-            total += _calls_used(h.get("evidence") or [])
-        elif h.get("kind") == "tool" and h.get("tool") not in READ_ONLY_TOOLS and not str(h.get("error", "")).startswith("unknown tool"):
-            total += 1
+            total += _calls_used(h.get("evidence") or []) + _delegated_calls(h.get("evidence") or [])
     return total
 
 
@@ -685,11 +769,38 @@ def _compact_messages(goal: str, previous: str, chunk: list[dict]) -> list[dict]
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+STUB_CHARS = 240   # one folded observation, in the memo
+
+
+def _short(value: Any) -> str:
+    text = value if isinstance(value, str) else canonical(value)
+    return text[:60] + ("..." if len(text) > 60 else "")
+
+
+def _stub(obs: dict, n: int) -> str:
+    """One observation folded into the memo with no model call (round 3, A5-03). It keeps what the planner relies on: the call,
+    its key result fields and its step, so read_observation can page the full result back. A pure function of the observation."""
+    if obs.get("kind") == "subagent":
+        return (f"{n}. sub-agent {obs.get('agent_id')} ({obs.get('agent_type')}) {obs.get('status')}: "
+                f"{str(obs.get('answer', ''))[:STUB_CHARS]}")
+    if obs.get("kind") == "tool":
+        step = obs.get("step", n)
+        args = canonical(obs.get("args"))[:120]
+        if "error" in obs:
+            body = "error: " + str(obs["error"])[:160]
+        else:
+            res = obs.get("result")
+            body = "; ".join(f"{k}={_short(v)}" for k, v in list(res.items())[:6]) if isinstance(res, dict) else _short(res)
+        return f"{n}. {obs.get('tool')}({args}) -> {body} [step {step}: read_observation pages the full result]"
+    return f"{n}. {obs.get('kind')}: {canonical(_view(obs))[:STUB_CHARS]}"
+
+
 def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, tag: str, *,
              view_chars: int = VIEW_CHARS, keep_recent: int = KEEP_RECENT,
-             memory_chars: int = MEMORY_CHARS) -> None:
-    """Folds the observations older than the newest KEEP_RECENT into the memo once they outgrow the view. Durable: the
-    memo text comes from a stored step, so a resumed run reads the same memo without asking the writer again."""
+             memory_chars: int = MEMORY_CHARS, boundary: bool = False) -> None:
+    """Folds the observations older than the newest KEEP_RECENT into the memo once they outgrow the view. Round 3, A5-03: between
+    parts this is deterministic (stubs, no model call); the model writes the memo only at a part boundary. Durable: the memo
+    text comes from a stored step at a boundary, and from the stored history otherwise, so a resumed run reads the same memo."""
     pending = history[memo.covered:]
     cut = len(history) - keep_recent
     total = sum(len(_clip(_view(o))) for o in pending)
@@ -700,8 +811,10 @@ def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, t
     if cut - memo.covered < MIN_FOLD and total <= HARD_VIEW_FACTOR * view_chars:
         return
     chunk = history[memo.covered:cut]
-    write = getattr(brain, "write", None)
-    if write is None:
+    if not boundary:
+        stubs = "\n".join(_stub(o, memo.covered + k + 1) for k, o in enumerate(chunk))
+        text = (memo.text + "\n" if memo.text else "") + stubs
+    elif (write := getattr(brain, "write", None)) is None:
         text = (memo.text + f"\n[{len(chunk)} earlier observations were left out of this view; the full record is kept.]")
     else:
         text = ctx.step(f"compact:{tag}:{cut}", lambda c: write(_compact_messages(goal, memo.text, chunk)))
@@ -741,6 +854,8 @@ VOLATILE_KEYS = ("run_id", "outputs", "manifest", "files")   # differ on every r
 
 
 def _signature(obs: dict) -> str:
+    if "sig" in obs:                 # a pointer carries the signature of the call it points to, so stall detection sees it
+        return obs["sig"]
     res = obs.get("result")
     if isinstance(res, dict):
         res = {k: v for k, v in res.items() if k not in VOLATILE_KEYS}
@@ -841,6 +956,10 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
         result = ctx.call(tool, args)
     except (BudgetExceeded, Cancelled, OutcomeUnknown, Paused):
         raise                    # control flow, not evidence: the runtime must see these
+    except ArgumentRejected as exc:
+        # Round 3 (A5-12): a refused argument list is not a tool call and is not charged. Live: an "unknown arguments" error
+        # was counted and the same invalid call was sent again.
+        return {"kind": "tool", "tool": name, "args": args, "error": redact(str(exc)), "rejected": True}
     except Exception as exc:  # a tool failure is evidence for the planner; the ledger already recorded it
         return {"kind": "tool", "tool": name, "args": args, "error": redact(str(exc))}
     if tool.observe is not None:
@@ -858,7 +977,8 @@ def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: f
         done = sum(1 for it in items if it["status"] == "done")
         nxt = next((it["item"] for it in items if it.get("next")), None)
         ctx.store.append_event(ctx.mission_id, "mission.progress", {
-            "step": i + 1, "tool_calls": _calls_used(history), "elapsed_s": round(time.time() - started, 1),
+            "step": i + 1, "tool_calls": _calls_used(history), "delegated_calls": _delegated_calls(history),
+            "elapsed_s": round(time.time() - started, 1),
             "checklist_done": done, "checklist_total": len(items), "next": nxt})
     except Exception:
         pass
@@ -898,6 +1018,8 @@ def _brief(spec: dict, agent: agents.AgentType, agent_id: str, resumed: bool) ->
              f"Task: {str(spec['task']).strip()}", f"Return: {deliverable}"]
     if str(spec.get("constraints") or "").strip():
         parts.append(f"Boundaries: {str(spec['constraints']).strip()}")
+    parts.append("Your final verdict lists findings (each a short statement) and figures (a name and the value a tool "
+                 "printed). Give only figures a tool printed; list the ones you could not establish in the answer.")
     parts.append("You do not see the lead agent's conversation: this brief and the context below are all you have. Keep "
                  "anything you must not lose (a decision, a run id and file, open questions) in your notes. Report only "
                  "figures a tool printed. The lead agent reads your final report and nothing else; it can read your notes.")
@@ -952,35 +1074,30 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     sub_context = (context + "\n\n" if context else "") + (play[:7000] if play else "")
     # Sub-agent steps are top-level steps of the same ledger, numbered in call order like any others, so a resumed run
     # replays them. They are not wrapped in an outer ctx.step, which would nest their numbers inside one another.
-    sub = _run(ctx, brain, goal, sub_tools, sub_cfg, sub_context.strip(), sub_history)
+    # Round 3 (A5-01): the sub-agent's calls run on the delegated lane, so they draw on its own grant, not the lead's.
+    prev_lane, ctx.lane = ctx.lane, "delegated"
+    try:
+        sub = _run(ctx, brain, goal, sub_tools, sub_cfg, sub_context.strip(), sub_history)
+    finally:
+        ctx.lane = prev_lane
     answer = sub.get("answer", "") or sub.get("draft", "")
-    obs = {"kind": "subagent", "agent_id": agent_id, "agent_type": agent.name, "task": str(spec["task"]).strip(),
-           "tools": sorted(sub_tools), "status": sub.get("status"), "answer": answer, "reason": sub.get("reason", ""),
-           "steps": len(sub_history), "files": _files_of(sub_history), "evidence": sub_history}
+    status, reason = sub.get("status"), sub.get("reason", "")
+    if not str(answer).strip():
+        # Round 3, A5-05: live, an analyst that wrote no answer was reported as "partial" with its run status, and the lead read
+        # the empty report as work done. No written answer is not met, whatever the run status says.
+        status, reason = "not_met", "the sub-agent gave no written answer" + (f": {reason}" if reason else "")
+    task = str(spec["task"]).strip()
+    obs = {"kind": "subagent", "agent_id": agent_id, "agent_type": agent.name, "task": task,
+           "tools": sorted(sub_tools), "status": status, "answer": answer, "reason": reason,
+           "steps": len(sub_history), "files": _files_of(sub_history), "evidence": sub_history,
+           "findings": [str(f)[:300] for f in sub.get("findings") or []][:12],
+           "figures": [{"name": str(f["name"])[:120], "value": str(f["value"])[:60],
+                        "sourced": not unverified(str(f["value"]), sub_history, task)}
+                       for f in sub.get("figures") or [] if isinstance(f, dict) and "name" in f and "value" in f][:20]}
     bad = unverified(answer, sub_history, str(spec["task"])) if answer else []
     if bad:
         obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
     return obs
-
-
-@contextlib.contextmanager
-def _harness_allowance(ctx: Ctx, extra: int):
-    """Sub-agents the harness starts itself are not charged to the lead agent's tool allowance: the limit is raised for
-    them while they run and afterwards stays raised by exactly what they spent. Live (Beijing, 12 stations): four panel
-    analysts used the whole part's allowance, the lead never reached a backtest, and the run stopped at a checkpoint."""
-    from prophet_agent.runtime.runner import READ_ONLY
-    budget = getattr(getattr(ctx, "rt", None), "budget", None)
-    limit = budget.get("max_tool_calls") if isinstance(budget, dict) else None
-    if limit is None:
-        yield
-        return
-    before = ctx.store.count_tool_calls(ctx.mission_id, exclude=READ_ONLY)
-    budget["max_tool_calls"] = int(limit) + int(extra)
-    try:
-        yield
-    finally:
-        spent = ctx.store.count_tool_calls(ctx.mission_id, exclude=READ_ONLY) - before
-        budget["max_tool_calls"] = int(limit) + max(0, spent)
 
 
 def _delegate(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: GoalConfig, context: str,
@@ -1167,7 +1284,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     """The loop itself. Used for the goal and, recursively with depth 1, for a delegated sub-agent."""
     memo = Memo()
     if cfg.depth == 0:
-        tools = {**tools, "notes": _notes_for(ctx, "main")}
+        tools = {**tools, "notes": _notes_for(ctx, "main"), "read_observation": _observation_tool(history)}
         # Which instructions this mission ran under, recorded once so a resumed run reads it back unchanged.
         # The brief is stored with them: the goal, what counts as done, what must not change, and the budget. It is data a
         # resumed run and a reader can see, so a summary of the work can never drop it.
@@ -1195,7 +1312,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # Every step index is taken on every pass, including the forced finishes below. A finish that was decided outside
         # the ledger would shift the indices of later steps, and a resumed run would read the wrong stored outputs.
         _compact(ctx, brain, goal, history, memo, f"{tag}:{i}", view_chars=cfg.view_chars,
-                 keep_recent=cfg.keep_recent, memory_chars=cfg.memory_chars)
+                 keep_recent=cfg.keep_recent, memory_chars=cfg.memory_chars,
+                 boundary=i > 0 and i % seg_len == 0)
         note = _budget_note(i, cfg, history)
         if (read_note := _skills_read_note(ctx)):
             note += "\n\n" + read_note
@@ -1259,11 +1377,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 if repeated:
                     obs["not_asked_again"] = repeated
         elif plan["action"] == "delegate":
-            if plan.get("auto"):
-                with _harness_allowance(ctx, len(_specs(plan)) * cfg.sub_steps):
-                    delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
-            else:
-                delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
+            delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
             if plan.get("auto"):
                 for d in delegated:
                     if d.get("kind") == "subagent":
@@ -1278,7 +1392,12 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             if name not in tools:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
             else:
-                obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args))
+                if (pos := _repeat_of(name, args, history)) is not None:
+                    obs = _repeat_obs(name, args, history, pos)     # not sent again: the earlier result stands
+                else:
+                    obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args))
+        if obs.get("kind") == "tool":
+            obs.setdefault("step", len(history) + 1)     # the number read_observation pages back by (1-based, as evidence shows)
         history.append(obs)
 
         if obs.get("kind") == "tool" and _stalled(history, cfg.stall_window):
@@ -1302,15 +1421,30 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             return {"status": "stalled", "iterations": i + 1, "evidence": history}
 
         last = i == cfg.end - 1
+        # The gate must judge a step the same way in every part: `last` moves with cfg.end, so a finish that ended part 1 was
+        # judged by the evaluator then but refused on resume (replay diverged). at_part_end is fixed by the step index.
+        at_part_end = (i + 1) % seg_len == 0
+        if plan["action"] == "finish" and cfg.depth == 0 and FORECAST_GOAL.search(goal) and not (at_part_end or out_of_calls or cfg.finish_now):
+            # Round 3, A5-04: live, a forecast was finished with the checklist's data scan and forecast still undone, and the
+            # evaluator wrote a verdict on it. A finish with items still to do is refused here, before the evaluator is asked,
+            # and the refusal names the next item. Decided from the stored history, so a resumed run refuses the same finish.
+            refused = sum(1 for h in history if h.get("kind") == "finish_refused")
+            items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
+                                       external=bool(EXTERNAL_GOAL.search(goal)))
+            nxt = next((it["item"] for it in items if it.get("status") != "done"), None)
+            if nxt and refused < MAX_PREMATURE_FINISHES:
+                history.append({"kind": "finish_refused", "rationale": plan.get("rationale", ""), "next": nxt,
+                                "note": f"the work is not finished: '{nxt}' is still to do. Do it before finishing."})
+                continue
         # The evaluator is a judgement on a finished piece of work, so it runs when the planner says it is done, or on the
         # last step of this run to turn whatever was found into an answer or a checkpoint. Between those, it only costs time.
         # The evaluator also runs at the end of each part. The stored evaluation then replays at the same position when
         # the next part continues from there, so both runs ask the ledger for the same steps in the same order.
-        at_part_end = (i + 1) % seg_len == 0
         if plan["action"] != "finish" and not last and not out_of_calls and not at_part_end:
             continue
+        eval_schema = SUB_EVAL_SCHEMA if cfg.depth else EVAL_SCHEMA
         verdict = ctx.step(f"eval:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
-                                                                 EVAL_SCHEMA, "eval"))
+                                                                 eval_schema, "eval"))
         # The evaluator may find that one decision by the person would change the answer. It is asked once per run,
         # then the evaluator judges again with the answer in the evidence.
         qs = _usable_questions(verdict) if verdict["verdict"] != "met" else None
@@ -1320,7 +1454,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             answers = ctx.step(f"evalask:{tag}:{i}", lambda c: c.ask({"questions": qs}))
             history.append({"kind": "evaluator_question", "questions": qs, "answers": answers})
             verdict = ctx.step(f"eval2:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
-                                                                       EVAL_SCHEMA, "eval"))
+                                                                       eval_schema, "eval"))
         if verdict["verdict"] == "met":
             answer = verdict.get("answer", "")
             # A verdict can say "met" and carry no answer (a reply cut short, or a model that only gave its reason).
@@ -1393,7 +1527,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 return {"status": "partial", "iterations": i + 1, "answer": answer,
                         "reason": "Some figures in this answer could not be matched to the analysis output.",
                         "unverified": bad, "evidence": history}
-            return {"status": "met", "iterations": i + 1, "answer": answer, "evidence": history}
+            out = {"status": "met", "iterations": i + 1, "answer": answer, "evidence": history}
+            if cfg.depth:
+                out["findings"], out["figures"] = verdict.get("findings") or [], verdict.get("figures") or []
+            return out
         if verdict["verdict"] == "impossible":
             return {"status": "impossible", "iterations": i + 1, "reason": verdict["reason"], "evidence": history}
         if cfg.finish_now:
