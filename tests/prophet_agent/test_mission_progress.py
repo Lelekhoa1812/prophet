@@ -175,3 +175,20 @@ def test_compaction_folds_in_batches_not_one_observation_per_step():
     history += [dict(big) for _ in range(2)]      # now 4 older observations
     goal._compact(ctx, Brain(), "goal", history, memo, "t", view_chars=20000, keep_recent=4)
     assert len(ctx.steps) == 1 and memo.covered == 4
+
+
+def test_external_series_checklist_asks_for_outside_context_until_a_researcher_or_web_tool_ran(tmp_path):
+    items = contracts.progress([], run_root=tmp_path, external=True)
+    ctx = next(it for it in items if it["item"].startswith("outside context"))
+    assert ctx["status"] == "todo"
+    assert not any(it["item"].startswith("outside context") for it in contracts.progress([], run_root=tmp_path))
+    for done in ({"kind": "subagent", "agent_type": "researcher"},
+                 {"kind": "tool", "tool": "web_search", "args": {}, "error": "offline"}):   # an attempt counts
+        items = contracts.progress([done], run_root=tmp_path, external=True)
+        assert next(it for it in items if it["item"].startswith("outside context"))["status"] == "done"
+    assert contracts.researched([{"kind": "subagent", "agent_type": "analyst"}]) is False
+
+
+def test_calibrate_accepts_the_season_argument_the_backtest_takes():
+    from prophet_agent.tools.calibrate_tool import ALLOWED
+    assert "season" in ALLOWED

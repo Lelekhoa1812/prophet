@@ -16,7 +16,7 @@ from prophet_agent.forecast.timesfm import TimesFMEngine
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
-ALLOWED = {"values", "source", "horizon", "n_origins"} | CONTROL_ARGS
+ALLOWED = {"values", "source", "horizon", "n_origins", "season"} | CONTROL_ARGS   # season is accepted and ignored: the same arguments as backtest_series are passed on
 
 
 def _run(args: dict, _key: str, engine_factory=None) -> dict[str, Any]:

@@ -349,7 +349,23 @@ def check_ledger(history, run_root) -> dict | None:
                   "ps.Ledger().save() in a sandbox step")
 
 
-def progress(history, *, run_root=None, wants_files: bool = False) -> list[dict]:
+RESEARCH_TOOLS = ("web_research", "web_search", "web_fetch")
+
+
+def researched(history) -> bool:
+    """True once outside context was sought: a web tool was called (even if it failed) or a researcher sub-agent ran. An attempt
+    counts, so a mission with no network is told to say so in its answer rather than being held on this item."""
+    for h in history if isinstance(history, list) else []:
+        if not isinstance(h, dict):
+            continue
+        if h.get("kind") == "tool" and h.get("tool") in RESEARCH_TOOLS:
+            return True
+        if h.get("kind") == "subagent" and h.get("agent_type") == "researcher":
+            return True
+    return False
+
+
+def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
     """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
 
     Motivation: a model that sees only what it has done tends to finish when it has done something. Showing the whole list on
@@ -370,6 +386,11 @@ def progress(history, *, run_root=None, wants_files: bool = False) -> list[dict]
                               "(time index, coverage, zeros and censoring, outliers and level shifts, seasonality)",
                       "status": "done" if stages >= MIN_LEDGER_STAGES else "todo",
                       "detail": f"{stages} of {MIN_LEDGER_STAGES} recorded"})
+    if external:
+        items.append({"item": "outside context: the series is driven by things its history cannot show, so delegate a researcher "
+                              "(agent_type researcher) for the regime, scheduled events in the horizon and the main risks, or say "
+                              "plainly why web research could not be used",
+                      "status": "done" if researched(obs) else "todo"})
     items.append({"item": "compare the forecast method with the simple baselines (backtest_series)",
                   "status": "done" if backtested else "todo"})
     items.append({"item": "forecast the series (timesfm_forecast)", "status": "done" if forecasts else "todo"})

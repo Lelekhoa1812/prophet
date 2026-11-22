@@ -94,6 +94,9 @@ MIN_FOLD = 3              # older observations folded per compaction, unless the
 HARD_VIEW_FACTOR = 2.5    # the view may grow to this many times VIEW_CHARS before a smaller fold is forced
 MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
 ASKS_KEEP_CHARS = 2000    # head of the memo (the ASKS section) that a cut to fit never removes
+EXTERNAL_GOAL = re.compile(r"\b(?:wti|brent|crude|oil|gas|gold|silver|copper|commodit\w*|fx|forex|exchange rate|usd|eur|gbp|jpy|aud|"
+                           r"stock|equit\w*|share price|s&p|nasdaq|index|yield|bond|treasur\w*|bitcoin|btc|crypto\w*|spot price|"
+                           r"interest rate|inflation|cpi|unemployment|gdp)\b", re.I)
 FORECAST_GOAL = re.compile(r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook", re.I)
 FILES_GOAL = re.compile(r"\b(?:chart|graph|plot|workbook|spreadsheet|xlsx|docx|pdf|png|svg|report|deliverable)s?\b", re.I)
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
@@ -665,7 +668,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         note = _budget_note(i, cfg, history)
         if cfg.depth == 0 and FORECAST_GOAL.search(goal):
             # The checklist is derived from the evidence on every step, so it cannot drift and a resumed run sees the same one.
-            items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)))
+            items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
+                                       external=bool(EXTERNAL_GOAL.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
             _status(ctx, i, history, items, started)
         plan = ctx.step(f"plan:{tag}:{i}", lambda c: _decide_plan(brain, goal, tools, history, memo, context, note,
