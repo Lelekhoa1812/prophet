@@ -5,6 +5,7 @@ import { errorMessage, formatDuration, truncate } from "../lib/format";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
 import { cn, formatBytes, isCheckpoint, isWorking } from "../lib/utils";
 import { Markdown } from "./Markdown";
+import { MentionText } from "./MentionChip";
 import { QuestionCard, SKIPPED } from "./QuestionCard";
 import { Results } from "./Results";
 import { Button, Card, Spinner } from "./ui";
@@ -357,7 +358,7 @@ export function Turn({
           </ul>
         )}
         <div className="max-w-[88%] rounded-3xl bg-night-2 px-5 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap sm:max-w-[80%]">
-          {mission.goal}
+          <MentionText text={mission.goal} />
         </div>
       </div>
 

@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from prophet_agent import mentions
 from prophet_agent.config import ROOT
 from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
@@ -43,8 +44,24 @@ def _loopback_origin(origin: str) -> bool:
 WEB_DIST = ROOT / "web" / "dist"
 
 
+# The message text the person sees is capped at 2000 characters. A skill, tool or file picked with / or @ is stored as a
+# link (see prophet_agent.mentions), which is longer than the words it shows, so the stored text may be longer.
+GOAL_VISIBLE_MAX = 2000
+GOAL_STORED_MAX = 6000
+
+
+def _checked_goal(goal: str) -> str:
+    text = goal.strip()
+    shown = mentions.plain(text).strip()
+    if len(shown) < 3:
+        raise HTTPException(422, "the message is too short")
+    if len(shown) > GOAL_VISIBLE_MAX:
+        raise HTTPException(422, f"the message is {len(shown)} characters; the limit is {GOAL_VISIBLE_MAX}")
+    return text
+
+
 class MissionIn(BaseModel):
-    goal: str = Field(min_length=3, max_length=2000)
+    goal: str = Field(min_length=3, max_length=GOAL_STORED_MAX)
     dataset_ids: list[str] = Field(default_factory=list, max_length=10)
     model: str | None = Field(default=None, max_length=120)     # a catalog model id; omitted means the default chain
 
@@ -76,7 +93,7 @@ class SourcePatch(BaseModel):
 
 
 class TurnIn(BaseModel):
-    goal: str = Field(min_length=3, max_length=2000)
+    goal: str = Field(min_length=3, max_length=GOAL_STORED_MAX)
     model: str | None = Field(default=None, max_length=120)     # a catalog model id; omitted means the default chain
 
 
@@ -116,6 +133,22 @@ def create_app(service: MissionService) -> FastAPI:
         """What the agent can do, in words a person (or another agent) can read. Code names stay out of the UI."""
         return [{"name": t.name, "title": t.title or t.name, "activity": t.activity or t.title or t.name,
                  "description": t.doc} for t in service.tools.values()]
+
+    @app.get("/api/skills")
+    def list_skill_playbooks() -> list[dict]:
+        """The analysis playbooks a person can invoke with "/": name, a readable title and the one-line summary."""
+        from prophet_agent.skills import list_skills
+
+        return [{"name": s["name"], "title": mentions.humanise(s["name"]), "summary": s["summary"]} for s in list_skills()]
+
+    @app.get("/api/skills/{name}")
+    def get_skill_playbook(name: str) -> dict:
+        from prophet_agent.skills import list_skills, read_skill
+
+        summary = {s["name"]: s["summary"] for s in list_skills()}
+        if name not in summary:
+            raise HTTPException(404, "no such skill")
+        return {"name": name, "title": mentions.humanise(name), "summary": summary[name], "body": read_skill(name)}
 
     @app.post("/api/datasets", status_code=201)
     async def upload_dataset(request: Request, name: str = "data") -> dict:
@@ -194,7 +227,7 @@ def create_app(service: MissionService) -> FastAPI:
         _model_gate(body.model)
         _planner_gate(body.model)     # refused before a mission row exists, so no orphan "created" mission is left behind
         try:
-            mission_id = service.create(body.goal.strip(), dataset_ids=body.dataset_ids, model=body.model)
+            mission_id = service.create(_checked_goal(body.goal), dataset_ids=body.dataset_ids, model=body.model)
         except KeyError:
             raise HTTPException(422, "one of the uploaded files no longer exists; upload it again")
         try:
@@ -343,7 +376,7 @@ def create_app(service: MissionService) -> FastAPI:
         _model_gate(body.model)
         _planner_gate(body.model)
         try:
-            mission_id = service.create_turn(nid, body.goal.strip(), model=body.model)
+            mission_id = service.create_turn(nid, _checked_goal(body.goal), model=body.model)
         except KeyError:
             raise HTTPException(404, "no such notebook")
         except NotebookBusy as exc:

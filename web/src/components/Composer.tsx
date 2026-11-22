@@ -1,17 +1,25 @@
 import { AlertCircle, ArrowUp, FileText, Folder, Paperclip, Plus, Sparkles, Square, Wrench, X } from "lucide-react";
+import Document from "@tiptap/extension-document";
+import HardBreak from "@tiptap/extension-hard-break";
+import Paragraph from "@tiptap/extension-paragraph";
+import Text from "@tiptap/extension-text";
+import { Placeholder, UndoRedo } from "@tiptap/extensions";
+import { EditorContent, useEditor } from "@tiptap/react";
 import {
+  useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type DragEvent,
   type FormEvent,
-  type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { ToolInfo } from "../lib/api";
+import type { SkillInfo, ToolInfo } from "../lib/api";
+import { usePlaybooks } from "../lib/catalog";
+import { mentionExtensions, type EditorHost, type PickOption, type Trigger } from "../lib/mentionEditor";
+import { docFromGoal, goalFromDoc, plainFromDoc } from "../lib/mentions";
 import { SKILLS, type Skill } from "../lib/skills";
 import { cn } from "../lib/utils";
 import { ActionMenu } from "./ActionMenu";
@@ -20,8 +28,6 @@ import { Spinner } from "./ui";
 const MAX = 2000;
 // From this length the counter shows, so people see the limit before they reach it.
 const NEAR_LIMIT = 1800;
-// The box grows with the text up to this many lines, then scrolls inside itself.
-const MAX_LINES = 7;
 
 // Phones and tablets: Enter adds a line, because the on-screen keyboard has no Shift and people expect Return to break a line.
 function isTouchPointer(): boolean {
@@ -46,8 +52,9 @@ export type ComposerQuick = {
   onOpenFolder: () => void;
 };
 
-type Pick = { kind: "file" | "command" | "skill" | "tool"; anchor: number; trigger: boolean; query: string };
-type Option = { id: string; group: string; label: string; detail: string; icon: ReactNode; insert: string };
+// What the open list shows: the rows for what was typed and how to turn the chosen one into a chip. "only" narrows "/" to
+// playbooks or tools when the list was opened from the "+" menu.
+type Sug = { trigger: Trigger; items: PickOption[]; choose: (o: PickOption) => void };
 
 // One message box, like the one people already know: "+" on the left, send on the right.
 // Enter sends, Shift+Enter adds a line, and Enter during IME composition is left alone. While the agent works the
@@ -78,118 +85,144 @@ export function Composer({
   // Controls shown along the bottom of the box, right-aligned (the model switcher and usage meter).
   footer?: ReactNode;
 }) {
-  const [text, setText] = useState(initial ?? "");
   const [error, setError] = useState<string | null>(null);
-  const [pick, setPick] = useState<Pick | null>(null);
+  const [sug, setSug] = useState<Sug | null>(null);
   const [active, setActive] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const ref = useRef<HTMLTextAreaElement>(null);
+  const [doc, setDoc] = useState<Parameters<typeof goalFromDoc>[0]>(() => docFromGoal(initial ?? ""));
   const listId = useId();
+  const playbooks = usePlaybooks();
+
+  // The editor is made once, so what it reads (files, tools, playbooks, what to do on Enter) lives in refs the host reads.
+  const live = useRef({ quick, playbooks, only: null as "skill" | "tool" | null, sug: null as Sug | null, active: 0, submit: () => {} });
+  live.current.quick = quick;
+  live.current.playbooks = playbooks;
+  live.current.sug = sug;
+  live.current.active = active;
+  const placeholderRef = useRef(placeholder);
+  placeholderRef.current = placeholder;
+
+  const host = useMemo<EditorHost>(
+    () => ({
+      items: (trigger, query) => pickOptions(trigger, query, live.current.quick, live.current.playbooks, live.current.only),
+      show: (trigger, items, choose) => {
+        setSug({ trigger, items, choose });
+        setActive((a) => (a < items.length ? a : 0));
+      },
+      hide: () => {
+        live.current.only = null;
+        setSug(null);
+      },
+      key: (e) => {
+        const cur = live.current.sug;
+        if (!cur || cur.items.length === 0) return false;
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          const n = cur.items.length;
+          setActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+          return true;
+        }
+        if ((e.key === "Enter" && !e.shiftKey && !e.isComposing) || e.key === "Tab") {
+          cur.choose(cur.items[live.current.active] ?? cur.items[0]);
+          return true;
+        }
+        if (e.key === "Escape") {
+          setSug(null);
+          return true;
+        }
+        return false;
+      },
+      open: () => (live.current.sug?.items.length ?? 0) > 0,
+      submit: () => {
+        live.current.submit();
+        return true;
+      },
+      coarse: isTouchPointer,
+    }),
+    [],
+  );
+
+  const editor = useEditor({
+    extensions: [
+      Document,
+      Paragraph,
+      Text,
+      HardBreak,
+      UndoRedo,
+      Placeholder.configure({ placeholder: () => placeholderRef.current }),
+      ...mentionExtensions(host),
+    ],
+    content: docFromGoal(initial ?? ""),
+    editorProps: {
+      attributes: {
+        id: "composer",
+        role: "combobox",
+        "aria-label": "Your question",
+        "aria-autocomplete": "list",
+        "aria-multiline": "true",
+        class: "composer-editor",
+      },
+    },
+    onUpdate: ({ editor: ed }) => {
+      setDoc(ed.getJSON());
+      setActive(0);
+    },
+  });
 
   useEffect(() => {
-    if (initial !== undefined) {
-      setText(initial);
-      ref.current?.focus();
+    if (initial !== undefined && editor) {
+      editor.commands.setContent(docFromGoal(initial));
+      setDoc(editor.getJSON());
+      editor.commands.focus("end");
     }
-  }, [initial]);
+  }, [initial, editor]);
 
-  // Grow with the text up to MAX_LINES, then scroll inside the box. The cap is measured from the computed line height,
-  // so it stays at seven lines whatever the font size or breakpoint.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const style = getComputedStyle(el);
-    const line = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.5;
-    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-    const cap = Math.round(line * MAX_LINES + padding);
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
-    el.style.overflowY = el.scrollHeight > cap ? "auto" : "hidden";
-  }, [text]);
+  const options = sug?.items ?? [];
+  const listOpen = sug !== null && options.length > 0;
 
-  const options = optionsFor(pick, quick);
-  const listOpen = pick !== null && options.length > 0;
-
-  const trimmed = text.trim();
-  const canSend = trimmed.length >= 3 && trimmed.length <= MAX && !busy && !blockedReason;
+  // The stored message keeps each pick as a link; the person's count and the minimum length use the words they see.
+  const goal = goalFromDoc(doc).trim();
+  const shown = plainFromDoc(doc).trim();
+  const textLength = plainFromDoc(doc).length;
+  const canSend = shown.length >= 3 && shown.length <= MAX && !busy && !blockedReason;
   const showStop = working && onStop !== undefined;
-  const near = text.length >= NEAR_LIMIT;
-  const full = text.length >= MAX;
+  const near = textLength >= NEAR_LIMIT;
+  const full = textLength >= MAX;
+  const activeId = listOpen ? `${listId}-${active}` : undefined;
 
-  async function submit(e?: FormEvent) {
-    e?.preventDefault();
-    if (showStop || !canSend) return;
-    setError(null);
-    try {
-      await onSend(trimmed);
-      setText("");
-      setPick(null);
-    } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : "Couldn't send that. Try again.");
-    }
-  }
+  useEffect(() => {
+    const dom = editor?.view.dom;
+    if (!dom) return;
+    dom.setAttribute("aria-expanded", String(listOpen));
+    if (listOpen) dom.setAttribute("aria-controls", listId);
+    else dom.removeAttribute("aria-controls");
+    if (activeId) dom.setAttribute("aria-activedescendant", activeId);
+    else dom.removeAttribute("aria-activedescendant");
+  }, [editor, listOpen, listId, activeId]);
 
-  function choose(option: Option) {
-    const el = ref.current;
-    if (!el || !pick) return;
-    const caret = el.selectionStart ?? text.length;
-    const next = text.slice(0, pick.anchor) + option.insert + text.slice(caret);
-    const pos = pick.anchor + option.insert.length;
-    setText(next);
-    setPick(null);
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(pos, pos);
-    });
-  }
+  const submit = useCallback(
+    async (e?: FormEvent) => {
+      e?.preventDefault();
+      if (showStop || !canSend) return;
+      setError(null);
+      try {
+        await onSend(goal);
+        editor?.commands.clearContent(true);
+        setDoc(editor?.getJSON() ?? docFromGoal(""));
+        setSug(null);
+      } catch (err) {
+        setError(err instanceof Error && err.message ? err.message : "Couldn't send that. Try again.");
+      }
+    },
+    [showStop, canSend, onSend, goal, editor],
+  );
+  live.current.submit = () => void submit();
 
-  // Opens a list from the "+" menu at the caret. Skills and tools appear as a list; they are not typed.
+  // The "+" menu opens the "/" list at the caret, narrowed to playbooks or tools. The list is the same one typing "/" opens.
   function openFromMenu(kind: "skill" | "tool") {
-    const el = ref.current;
-    const caret = el?.selectionStart ?? text.length;
-    setPick({ kind, anchor: caret, trigger: false, query: "" });
-    setActive(0);
-    el?.focus();
-  }
-
-  function onChange(e: ChangeEvent<HTMLTextAreaElement>) {
-    const value = e.target.value;
-    const caret = e.target.selectionStart ?? value.length;
-    setText(value);
-    setActive(0);
-    const typed = /(^|\s)([@/])([^\s@/]*)$/.exec(value.slice(0, caret));
-    if (typed) {
-      const kind = typed[2] === "@" ? "file" : "command";
-      setPick({ kind, anchor: caret - typed[3].length - 1, trigger: true, query: typed[3] });
-    } else if (pick?.trigger) {
-      setPick(null);
-    } else if (pick) {
-      setPick({ ...pick, query: value.slice(pick.anchor, caret) });
-    }
-  }
-
-  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (listOpen) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        setActive((i) => (e.key === "ArrowDown" ? (i + 1) % options.length : (i - 1 + options.length) % options.length));
-        return;
-      }
-      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") {
-        e.preventDefault();
-        choose(options[active] ?? options[0]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setPick(null);
-        return;
-      }
-    }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouchPointer()) {
-      e.preventDefault();
-      void submit();
-    }
+    if (!editor) return;
+    live.current.only = kind;
+    const before = editor.state.doc.textBetween(Math.max(0, editor.state.selection.from - 1), editor.state.selection.from, "\n");
+    editor.chain().focus().insertContent(before === "" || before === " " || before === "\n" ? "/" : " /").run();
   }
 
   function onDrop(e: DragEvent<HTMLDivElement>) {
@@ -203,10 +236,9 @@ export function Composer({
 
   // Only errors and blocking reasons are shown under the box. The send hint is hidden.
   const note = error ?? blockedReason ?? null;
-  const activeId = listOpen ? `${listId}-${active}` : undefined;
   const removable = quick.onRemoveAttachment;
   // Options keep one flat index (for the arrow keys) but render under their group heading.
-  const groups = options.reduce<{ name: string; items: { option: Option; index: number }[] }[]>((acc, option, index) => {
+  const groups = options.reduce<{ name: string; items: { option: PickOption; index: number }[] }[]>((acc, option, index) => {
     const last = acc[acc.length - 1];
     if (last && last.name === option.group) last.items.push({ option, index });
     else acc.push({ name: option.group, items: [{ option, index }] });
@@ -219,7 +251,7 @@ export function Composer({
         <div
           id={listId}
           role="listbox"
-          aria-label={pick?.kind === "file" ? "Files" : pick?.kind === "tool" ? "Tools" : "Skills and tools"}
+          aria-label={sug?.trigger === "file" ? "Files" : "Skills and tools"}
           className="absolute inset-x-0 bottom-full z-30 mb-2 grid max-h-80 gap-0.5 overflow-y-auto rounded-xl border border-sand-2/30 bg-night-2 p-1 shadow-[0_18px_40px_-12px_rgba(0,0,0,0.9)]"
         >
           {groups.map((g) => (
@@ -229,20 +261,20 @@ export function Composer({
               </p>
               {g.items.map(({ option: o, index: i }) => (
                 <div
-                  key={o.id}
+                  key={o.key}
                   id={`${listId}-${i}`}
                   role="option"
                   aria-selected={i === active}
                   onMouseDown={(e) => e.preventDefault()}
                   onMouseEnter={() => setActive(i)}
-                  onClick={() => choose(o)}
+                  onClick={() => sug?.choose(o)}
                   className={cn(
                     "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-3 py-1.5 sm:min-h-10",
                     i === active ? "bg-night-3" : "hover:bg-night-3",
                   )}
                 >
                   <span aria-hidden="true" className="grid size-7 shrink-0 place-items-center rounded-md bg-night-1 text-sand-1">
-                    {o.icon}
+                    <PickIcon icon={o.icon} />
                   </span>
                   <span className="grid min-w-0">
                     <span className="truncate text-base text-sand-0">{o.label}</span>
@@ -310,24 +342,7 @@ export function Composer({
               { key: "tools", label: "Tools", icon: <Wrench className="size-4" />, onSelect: () => openFromMenu("tool") },
             ]}
           />
-          <label htmlFor="composer" className="sr-only">
-            Your question
-          </label>
-          <textarea
-            id="composer"
-            ref={ref}
-            value={text}
-            rows={1}
-            onChange={onChange}
-            onKeyDown={onKeyDown}
-            placeholder={placeholder}
-            role="combobox"
-            aria-expanded={listOpen}
-            aria-controls={listOpen ? listId : undefined}
-            aria-activedescendant={activeId}
-            aria-autocomplete="list"
-            className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-caption leading-normal text-sand-0 placeholder:text-sand-2 focus:outline-none sm:min-h-8 sm:py-1"
-          />
+          <EditorContent editor={editor} className="min-w-0 flex-1" />
           {showStop ? (
             <button
               type="button"
@@ -360,7 +375,7 @@ export function Composer({
         </p>
         {near && (
           <p className={cn("tabular-nums", full && "text-ember")}>
-            {text.length}/{MAX}
+            {textLength}/{MAX}
             {full ? ". For longer data, attach a file." : ""}
           </p>
         )}
@@ -369,40 +384,61 @@ export function Composer({
   );
 }
 
-// What the list offers for the current pick. "@" lists attached files; "/" and the "+" menu list skills and tools.
-function optionsFor(pick: Pick | null, quick: ComposerQuick): Option[] {
-  if (!pick) return [];
-  const q = pick.query.trim().toLowerCase();
-  const match = (s: string) => !q || s.toLowerCase().includes(q);
+function PickIcon({ icon }: { icon: PickOption["icon"] }) {
+  if (icon === "file") return <FileText aria-hidden="true" className="size-4" />;
+  if (icon === "tool") return <Wrench aria-hidden="true" className="size-4" />;
+  return <Sparkles aria-hidden="true" className="size-4" />;
+}
 
-  if (pick.kind === "file") {
-    const attached = quick.attachments.filter((a) => a.status === "ready").map((a) => ({ key: a.key, name: a.name }));
-    const files = [...attached, ...(quick.mentions ?? [])].filter((f) => match(f.name));
-    return files.map((f) => ({
-      id: `file-${f.key}`,
-      group: "Files",
-      label: f.name,
-      detail: "Mention this file",
-      icon: <FileText aria-hidden="true" className="size-4" />,
-      insert: `@${f.name} `,
-    }));
+// What the list offers. "@" lists the files that can be pointed at (attached and ready, or already in the notebook) and
+// "/" lists the analysis playbooks, the tools and the quick starts. A playbook, tool or file becomes a chip; a quick start
+// puts its sentence in the box.
+function pickOptions(trigger: Trigger, query: string, quick: ComposerQuick, playbooks: SkillInfo[], only: "skill" | "tool" | null): PickOption[] {
+  const q = query.trim().toLowerCase();
+  const match = (...s: string[]) => !q || s.some((x) => x.toLowerCase().includes(q));
+
+  if (trigger === "file") {
+    const attached = quick.attachments.filter((a) => a.status === "ready").map((a) => ({ id: a.datasetId ?? a.key, name: a.name }));
+    const files = [...attached, ...(quick.mentions ?? []).map((m) => ({ id: m.key, name: m.name }))];
+    const seen = new Set<string>();
+    return files
+      .filter((f) => match(f.name) && !seen.has(f.id) && seen.add(f.id))
+      .map((f) => ({
+        key: `file-${f.id}`,
+        group: "Files",
+        label: f.name,
+        detail: "Point the agent at this file",
+        icon: "file" as const,
+        attrs: { kind: "file" as const, id: f.id, label: f.name },
+      }));
   }
 
-  const skills = (quick.skills ?? SKILLS)
-    .filter((s) => match(s.title))
-    .map<Option>((s) => ({ id: `skill-${s.key}`, group: "Skills", label: s.title, detail: s.description, icon: <s.icon aria-hidden="true" className="size-4" />, insert: s.prompt }));
-  const tools = quick.tools
-    .filter((t) => match(t.title || t.name))
-    .map<Option>((t) => ({
-      id: `tool-${t.name}`,
+  // A name that contains what was typed comes first; the one-line summaries are searched only when no name matches.
+  const byName = playbooks.filter((s) => match(s.title, s.name));
+  const skills: PickOption[] = (byName.length || !q ? byName : playbooks.filter((s) => match(s.summary)))
+    .map((s) => ({
+      key: `skill-${s.name}`,
+      group: "Skills",
+      label: s.title,
+      detail: s.summary,
+      icon: "skill" as const,
+      attrs: { kind: "skill" as const, id: s.name, label: s.title },
+    }));
+  const tools: PickOption[] = quick.tools
+    .filter((t) => match(t.title || t.name, t.name))
+    .map((t) => ({
+      key: `tool-${t.name}`,
       group: "Tools",
       label: t.title || t.name,
       detail: t.description || t.activity,
-      icon: <Wrench aria-hidden="true" className="size-4" />,
-      insert: `Use the ${t.title || t.name} tool. `,
+      icon: "tool" as const,
+      attrs: { kind: "tool" as const, id: t.name, label: t.title || t.name },
     }));
+  const starts: PickOption[] = (quick.skills ?? SKILLS)
+    .filter((s) => match(s.title, s.description))
+    .map((s: Skill) => ({ key: `start-${s.key}`, group: "Quick starts", label: s.title, detail: s.description, icon: "start" as const, text: s.prompt }));
 
-  if (pick.kind === "skill") return skills;
-  if (pick.kind === "tool") return tools;
-  return [...skills, ...tools];
+  if (only === "skill") return skills;
+  if (only === "tool") return tools;
+  return [...skills, ...tools, ...starts];
 }

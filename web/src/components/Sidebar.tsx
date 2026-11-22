@@ -2,6 +2,7 @@ import { Archive, BookOpen, Pencil, Pin, PinOff, Plus, Search, Sparkles, Trash2,
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { MissionRow, NotebookRow } from "../lib/api";
 import { relativeTime, truncate } from "../lib/format";
+import { plainGoal } from "../lib/mentions";
 import { cn, isWorking, statusInfo } from "../lib/utils";
 import { ActionMenu, type MenuItem } from "./ActionMenu";
 import { Button, IconButton, StatusBadge } from "./ui";
@@ -48,7 +49,7 @@ export function Sidebar({
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? missions.filter((m) => (m.title || m.goal).toLowerCase().includes(q)) : missions;
+    return q ? missions.filter((m) => plainGoal(m.title || m.goal).toLowerCase().includes(q)) : missions;
   }, [missions, query]);
 
   const pinnedNotebooks = notebooks.filter((n) => n.pinned);
@@ -96,7 +97,7 @@ export function Sidebar({
 
   const renderForecast = (m: MissionRow) => {
     const active = m.id === selectedMissionId;
-    const title = m.title || m.goal;
+    const title = plainGoal(m.title || m.goal);
     const tone = statusInfo(m.status).tone;
     return (
       <Row

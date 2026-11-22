@@ -39,6 +39,10 @@ export type MissionRow = { id: string; goal: string; title: string; status: stri
 
 export type ToolInfo = { name: string; title: string; activity: string; description: string };
 
+// An analysis playbook the person can invoke with "/". The body is read only when the chip is opened.
+export type SkillInfo = { name: string; title: string; summary: string };
+export type SkillDetail = SkillInfo & { body: string };
+
 export type ArtifactFile = { path: string; sha256: string; bytes: number };
 
 export type ArtifactRun = {
@@ -156,6 +160,8 @@ function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => req<{ ok: boolean; nim_keys_configured: boolean }>("/api/health"),
   tools: () => req<ToolInfo[]>("/api/tools"),
+  skills: () => req<SkillInfo[]>("/api/skills"),
+  skill: (name: string) => req<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`),
   missions: () => req<MissionRow[]>("/api/missions"),
   archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
   unarchiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: false }) }),

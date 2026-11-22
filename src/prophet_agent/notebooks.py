@@ -29,6 +29,7 @@ from typing import Any
 
 from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, run_ids_in, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore, MAX_BYTES
+from prophet_agent.mentions import plain
 from prophet_agent.runtime.store import ACTIVE, Store
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
 
@@ -424,7 +425,7 @@ class Notebooks:
             for t in shown:
                 ans = t["answer"] if isinstance(t["answer"], dict) else {}
                 text = ans.get("answer") or ans.get("reason") or f"({t['status']})"
-                lines.append(f"Q{t['seq']}: {t['goal'][:300]}\nA{t['seq']}: {text[:700]}")
+                lines.append(f"Q{t['seq']}: {plain(t['goal'])[:300]}\nA{t['seq']}: {text[:700]}")
             parts.append("\n".join(lines))
         out = "\n\n".join(parts)
         return out if len(out) <= CONTEXT_CHARS else out[:CONTEXT_CHARS] + "\n...[notebook context cut]"

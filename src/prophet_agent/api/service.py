@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore
+from prophet_agent import mentions
 from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
@@ -86,6 +87,8 @@ class MissionService:
     def create(self, goal: str, budget: dict | None = None, dataset_ids: list[str] | None = None,
                model: str | None = None) -> str:
         budget = dict(budget or self.default_budget())
+        # A file picked with @ is attached even when it was not in the attachment list; one that no longer exists is text.
+        dataset_ids = self._with_mentioned_files(goal, dataset_ids)
         if dataset_ids:
             for did in dataset_ids:
                 self.datasets.get(did)          # KeyError for an unknown id, before any mission row exists
@@ -93,8 +96,18 @@ class MissionService:
         if model is not None:
             budget["model"] = model             # the catalog id the planner uses; absent means the default chain
         mission_id = self.store.create_mission(goal, budget)
-        self._name(mission_id, goal)
+        self._name(mission_id, mentions.plain(goal))
         return mission_id
+
+    def _with_mentioned_files(self, goal: str, dataset_ids: list[str] | None) -> list[str]:
+        known = []
+        for did in mentions.file_ids(goal):
+            try:
+                self.datasets.get(did)
+            except KeyError:
+                continue
+            known.append(did)
+        return mentions.merge_ids(dataset_ids or [], known)
 
     def _name(self, mission_id: str, text: str) -> None:
         """Save a fallback name now and let the model improve it in the background."""
@@ -154,7 +167,7 @@ class MissionService:
         turn_id = self.store.create_mission(goal, budget, notebook_id=notebook_id,
                                             parent_turn_id=last["id"] if last else None)
         if last is None:
-            self._name_notebook(notebook_id, goal)
+            self._name_notebook(notebook_id, mentions.plain(goal))
         return turn_id
 
     def _name_notebook(self, notebook_id: str, goal: str) -> None:
@@ -188,6 +201,44 @@ class MissionService:
         lines = [f"- {n} ({self.datasets.get(i)['bytes']:,} bytes)" for (n, _), i in zip(names.items(), ids)]
         return "Files the person attached (use these exact names; they are in in/ for analysis code):\n" + "\n".join(lines)
 
+    def mentions_context(self, mission: dict, tools: dict[str, Tool] | None = None) -> str:
+        """What the planner is told about the skills, tools and files the person picked with / and @.
+
+        Each pick is checked against what exists now: a playbook that is in the library, a tool the mission has, a file the
+        person (or the notebook) holds. Anything else stays plain text and is never an error."""
+        goal = mission["goal"]
+        if not mentions.parse(goal):
+            return ""
+        from prophet_agent.skills import list_skills, read_skill
+
+        titles = {s["name"]: s["name"] for s in list_skills()}
+        catalogue = tools if tools is not None else self.tools_for(mission)
+        nb = mission.get("notebook_id")
+
+        def skill_body(name: str):
+            if name not in titles:
+                return None
+            return mentions.humanise(name), read_skill(name)
+
+        def tool_info(name: str):
+            t = catalogue.get(name) or self.tools.get(name)
+            return (t.title or t.name, t.doc or t.activity or t.title or t.name) if t else None
+
+        def file_name(ident: str):
+            if nb:
+                try:
+                    src = self.notebooks.source(ident)
+                    if src["notebook_id"] == nb and not src["removed"]:
+                        return src["name"]
+                except KeyError:
+                    pass
+            try:
+                return self.datasets.get(ident)["name"]
+            except KeyError:
+                return None
+
+        return mentions.context_block(goal, skill_body=skill_body, tool_info=tool_info, file_name=file_name)
+
     def tools_for(self, mission: dict) -> dict[str, Tool]:
         if self.tools_factory is None:
             return self.tools
@@ -209,7 +260,9 @@ class MissionService:
         # A mission with a chosen model gets a brain for that model alone; without one the factory is called as before.
         model = budget.get("model")
         brain = self.brain_factory(model) if model else self.brain_factory()
-        return goal_program(mission["goal"], self.tools_for(mission), brain, cfg, self.files_context(mission))
+        tools = self.tools_for(mission)
+        context = "\n\n".join(p for p in (self.mentions_context(mission, tools), self.files_context(mission)) if p)
+        return goal_program(mentions.plain(mission["goal"]), tools, brain, cfg, context)
 
     def start(self, mission_id: str) -> None:
         """Run (or resume) the mission on a background thread. Raises LeaseHeld if it is already running."""
