@@ -556,7 +556,7 @@ class NimClient:
                     # budget, every later model starts with no time, and the call fails with nothing tried after it.
                     attempt_deadline = min(deadline, self.clock() + ATTEMPT_BUDGET_S)
                     try:
-                        out = yield from self._attempt(key, model, msgs, opts, shape, attempt_deadline)
+                        out = yield from self._attempt(key, model, msgs, opts, shape, attempt_deadline, checkpoint)
                     finally:
                         self._release(key)
                     log.info("nim attempt: model=%s outcome=%s elapsed=%.1fs reason=%s", model, out.kind,
@@ -837,9 +837,13 @@ class NimClient:
             return min(OVERLOAD_MAX_S, OVERLOAD_BASE_S * 2 ** (count - 1))
 
     def _attempt(self, key: str, model: str, messages: list[dict], opts: _Opts, shape: _Shape,
-                 deadline: float) -> Iterator[tuple[str, Any]]:
-        """One HTTP attempt. Yields visible deltas; returns an _Outcome (the generator's return value)."""
+                 deadline: float, checkpoint: Callable[[], None] | None = None) -> Iterator[tuple[str, Any]]:
+        """One HTTP attempt. Yields visible deltas; returns an _Outcome (the generator's return value).
+
+        While the answer streams, ``checkpoint`` runs about once a second (round 4, A5-06): a long call keeps the mission's
+        lease alive, and a cancel or a spent segment allowance stops it between lines instead of after the whole answer."""
         slot = self._slot(key)
+        beat_at = 0.0
         started = self.clock()
         emitted = False
         parts: list[str] = []
@@ -864,6 +868,9 @@ class NimClient:
                 for line in r.iter_lines():
                     if self.clock() > deadline:
                         raise _BudgetSpent()
+                    if checkpoint is not None and self.clock() >= beat_at:
+                        checkpoint()                    # may raise to stop the call; the caller's exception passes through
+                        beat_at = self.clock() + 1.0
                     if not line.startswith("data:"):
                         continue                        # comments and keep-alives
                     data = line[5:].strip()

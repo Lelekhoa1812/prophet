@@ -35,7 +35,7 @@ from typing import Any, Callable, Protocol
 
 from prophet_agent import prompts
 from prophet_agent.nim.errors import redact
-from prophet_agent.nim.transport import DEFAULT_CHAIN
+from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN
 
 from . import contracts
 from .grounding import snap, snap_note, unverified
@@ -1730,7 +1730,7 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                     last_note[0] = time.time()
                     ctx.store.append_event(ctx.mission_id, "provider.waiting", info)
 
-            bind(ctx._guard_time, note)
+            bind(ctx._guard_time, note, ctx.seconds_left)
         result = _run(ctx, brain, goal, tools, cfg, context, history)
         # Outside claims are checked against the pages first (lines whose figures no page holds are removed), then the whole
         # answer is grounded against the analysis evidence plus the text of the pages that were read.
@@ -1782,10 +1782,13 @@ class NimBrain:
         self.max_tokens = max_tokens
         self.checkpoint: Callable[[], None] | None = None
         self.on_wait: Callable[[dict], None] | None = None
+        self.remaining: Callable[[], float | None] | None = None
 
-    def bind(self, checkpoint: Callable[[], None] | None, on_wait: Callable[[dict], None] | None = None) -> None:
-        """Let a provider wait be stopped (cancel, spent time allowance) and reported. Called by the goal program."""
-        self.checkpoint, self.on_wait = checkpoint, on_wait
+    def bind(self, checkpoint: Callable[[], None] | None, on_wait: Callable[[dict], None] | None = None,
+             remaining: Callable[[], float | None] | None = None) -> None:
+        """Let a provider wait be stopped (cancel, spent time allowance) and reported. Called by the goal program. ``remaining``
+        gives the segment's seconds left, so one model call cannot run past the allowance (round 4, A5-06)."""
+        self.checkpoint, self.on_wait, self.remaining = checkpoint, on_wait, remaining
 
     def _extra(self) -> dict:
         extra: dict = {}
@@ -1793,6 +1796,8 @@ class NimBrain:
             extra["checkpoint"] = self.checkpoint
         if self.on_wait is not None:
             extra["on_wait"] = self.on_wait
+        if self.remaining is not None and (left := self.remaining()) is not None:
+            extra["budget_s"] = max(1.0, min(BUDGET_S, float(left)))
         return extra
 
     def write(self, messages: list[dict]) -> str:
