@@ -54,3 +54,18 @@ def test_a_repeat_of_a_short_call_carries_its_coverage_note():
     earlier = {**_pack(["A", "B", "C"]), "step": 2, "coverage_note": "this result covers 3 of the 12 values"}
     obs = _repeat_obs("forecast_report", {}, [_inspect(), earlier], 2)
     assert obs["coverage_note"] == earlier["coverage_note"] and "3 of the 12" in obs["note"]
+
+
+def test_the_coverage_note_gives_the_cell_that_saves_every_entity():
+    # live electricity rep12 (measured, 2026-11-23): the note said "pl.panel(df, entity='entity', ...)" and the lead re-ran a
+    # cell listing the entities three times, then stalled with no forecast
+    insp = {"kind": "tool", "tool": "inspect_data", "args": {"file": "electricity_daily_60_clients.csv"}, "result": {
+        "columns": ["entity: text, unique=60; e.g. ['MT_001']", "timestamp: time, first=2011-01-01, unique=1462",
+                    "kwh_daily_sum: number, max=163704.56, unique=56535"],
+        "layout_hints": ["long: a time column, grouping column(s) ['entity'] and numeric column(s); each group may be its own series"]}}
+    short = {"kind": "tool", "tool": "panel_backtest", "args": {}, "result": {"entities": 15, "overall": {}}}
+    note = _coverage_note(short, [insp, short])
+    assert ("pl.panel(df, entity='entity', time='timestamp', value='kwh_daily_sum')" in note
+            and "in/electricity_daily_60_clients.csv" in note and "pl.save_panel(series)" in note)
+    two_values = dict(insp, result=dict(insp["result"], columns=insp["result"]["columns"] + ["price: number, unique=9"]))
+    assert "value='<value column>'" in contracts.panel_build_cell([two_values])

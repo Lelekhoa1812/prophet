@@ -691,6 +691,41 @@ def data_entity_count(history) -> tuple[int, str] | None:
     return best
 
 
+def panel_build_cell(history) -> str | None:
+    """The one cell that saves every entity of the uploaded long table as a panel file, in this data's own names: the file,
+    the grouping, time and value columns read from inspect_data. None unless exactly one time column and one grouping column
+    are found; with several numeric columns the value column is left for the planner to choose.
+
+    Live electricity rep12 (measured, 2026-11-23): the only panel backtest covered one analyst's 15 clients; the coverage note
+    said to build all 60 "with pl.panel(df, entity='entity', ...)", and the lead re-ran one cell that listed the entities three
+    times, then stalled with no forecast."""
+    counted = data_entity_count(history)
+    if counted is None:
+        return None
+    for h in reversed([h for h in history if isinstance(h, dict)]):
+        if _ok_result(h, "inspect_data") is None:
+            continue
+        r = h["full"] if isinstance(h.get("full"), dict) else h["result"]
+        prof = r.get("profile") if isinstance(r.get("profile"), dict) else r
+        cols = []
+        for col in prof.get("columns") or []:
+            if isinstance(col, dict):
+                cols.append((str(col.get("name")), str(col.get("kind"))))
+            elif isinstance(col, str) and ":" in col:
+                name, rest = col.split(":", 1)
+                cols.append((name.strip(), rest.strip().split(",")[0].strip()))
+        times = [n for n, k in cols if k == "time"]
+        values = [n for n, k in cols if k == "number" and n != counted[1]]
+        file = (h.get("args") or {}).get("file") or r.get("file")
+        if len(times) != 1 or not values or not isinstance(file, str):
+            return None
+        value = values[0] if len(values) == 1 else "<value column>"
+        return (f"df = pd.read_csv('in/{file}'); series, report = pl.panel(df, entity='{counted[1]}', time='{times[0]}', "
+                f"value='{value}'); print(len(series), 'series'); pl.save_panel(series)  # writes out/series.json; then "
+                f"panel_backtest and forecast_report with source {{run_id of this cell, file: 'out/series.json'}}")
+    return None
+
+
 def result_entities(result) -> int | None:
     """How many series a forecast or backtest result covers: n_series, entities (panel_backtest) or its series table."""
     if not isinstance(result, dict):

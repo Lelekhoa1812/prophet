@@ -1141,9 +1141,12 @@ def _coverage_note(obs: dict, history: list[dict]) -> str | None:
     if k is None or data is None or k >= data[0]:
         return None
     n, col = data
-    return (f"this result covers {k} of the {n} values of '{col}' in the uploaded data. If the goal is the whole panel, build "
-            f"all {n} with pl.panel(df, entity='{col}', ...), save them with pl.save_panel in one run and pass that file; otherwise say which ones the "
-            "answer covers and why")
+    cell = contracts.panel_build_cell(history)
+    how = (f"one sandbox cell builds all {n}: {cell}" if cell else
+           f"build all {n} with pl.panel(df, entity='{col}', time=..., value=...), save them with pl.save_panel in one run and "
+           "pass that file")
+    return (f"this result covers {k} of the {n} values of '{col}' in the uploaded data. If the goal is the whole panel, {how}; "
+            "otherwise say which ones the answer covers and why")
 
 
 def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> dict:
