@@ -44,7 +44,7 @@ CATALOGUE: tuple[tuple[str, Any, str], ...] = (
 )
 # The class the planner uses most (ps.Ledger, 192 cells in the ledger) gets its own line.
 LEDGER = ("ps", prophet_stats, "Ledger")
-_LEDGER_METHODS = ("add", "save", "to_dict")
+_LEDGER_METHODS = ("add", "decide", "save")
 _LEDGER_PROPERTIES = ("entries",)
 
 _RETURN_TEXT = re.compile(r"\b(?:pd|np|prophet_\w+)\.")
@@ -94,7 +94,7 @@ def ledger_line() -> str:
     methods = ", ".join(f"{m}({_signature_text(getattr(cls, m))})" for m in _LEDGER_METHODS)
     props = ", ".join(_LEDGER_PROPERTIES)
     return (f"{alias}.{cls_name}() or {alias}.{cls_name}.open(carried path) -> methods {methods}; "
-            f"read-only property {props} (list of dicts)")
+            f"property {props} (list of dicts)")
 
 
 def build_catalogue() -> str:

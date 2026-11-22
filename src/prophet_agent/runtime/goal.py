@@ -833,7 +833,9 @@ def _asked_block(goal: str, for_whom: str) -> str:
                 "(a yes or no, a number, or a plain statement), not only the forecast around it:\n" + listed)
     if for_whom == "composer":
         return ("\n\nThe person asked these questions. Open the answer by answering each one directly, in their order and in "
-                "plain words, from the evidence; say so when the evidence cannot answer one:\n" + listed)
+                "plain words, from the evidence; say so when the evidence cannot answer one. When the evidence contradicts "
+                "a question's premise (the person says sales are slipping and the measured change is a rise), say that "
+                "first, in those words, before any verdict:\n" + listed)
     tests = [n for n, q in enumerate(qs, 1) if CHANGE_QUESTION.search(q)]
     hint = ("\nQuestion " + " and ".join(map(str, tests)) + " asks whether a change is real: answer it with ps.change_test in "
             "the sandbox (the latest weeks against the same weeks a cycle earlier, judged against the usual change), not by "

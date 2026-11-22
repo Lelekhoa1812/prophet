@@ -28,8 +28,9 @@ def test_the_failing_check_gives_the_cell_with_the_ledger_to_carry_and_each_scop
     d = c["detail"]
     assert LEDGER_RUN in d and "Ledger.open('in/carried/ledger.json')" in d
     # Changed in round 5 (live electricity rep9): one add per finding id, its scopes listed together
-    assert "changepoints.level_shift (2 series: Dongsi, Tiantan)" in d and d.count("led.add(") == 1
-    assert "outliers and level shifts" in d and "led.save()" in d and "is a list" in d
+    assert "# 2 series: Dongsi, Tiantan" in d and d.count("led.decide(") == 1
+    assert "led.decide('changepoints.level_shift'" in d and "led.save()" in d and "no if around" in d
+    assert SCAN_RUN in d                                  # the scan to carry, so decide can read it
     assert "values.spikes" not in d                       # minor findings are not asked for
 
 
@@ -48,9 +49,9 @@ def test_a_wide_panel_gets_one_add_per_finding_id_and_every_id(tmp_path):
     (tmp_path / SCAN_RUN / "out" / "scan.json").write_text(json.dumps({"findings": findings, "summary": {}}))
     hist = [{"kind": "tool", "tool": "sandbox_python", "result": {"run_id": SCAN_RUN, "outputs": ["out/scan.json (1 bytes)"]}}]
     d = contracts.check_scan_decisions(hist, tmp_path)["detail"]
-    assert d.count("led.add(") == 8
+    assert d.count("led.decide(") == 8
     for i in ids:
-        assert f"'{i} (60 series: MT_001, MT_002, MT_003 and 57 more)" in d
+        assert f"led.decide('{i}', '<your decision and why>')  # 60 series: MT_001, MT_002, MT_003 and 57 more" in d
     assert "covers every series it names" in d
 
 

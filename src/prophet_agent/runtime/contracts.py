@@ -440,10 +440,15 @@ def _decision_recipe(findings: list[dict], missing: list[str], history, run_root
                    and "out/ledger.json" in [_output_path(o) for o in (h["result"].get("outputs") or [])]), None)
     carry = (f"carry=[{{run_id: '{newest}', file: 'out/ledger.json'}}], then led = ps.Ledger.open('in/carried/ledger.json')"
              if newest else "led = ps.Ledger()")
-    adds = "; ".join(f"led.add('{STAGE_OF.get(i.split('.')[0], i.split('.')[0])}', '{i} ({scope}): <what the scan measured>', "
-                     "'<your decision and why>')" for i, scope in rows)
-    return (f". One cell does it: {carry}; {adds}; led.save(). One entry per finding id covers every series it names. The "
-            "ledger file is a list of entries {stage, finding, decision}; each add must name the finding id")
+    # led.decide reads the stage and the finding text from the saved scan, so the cell has no scan parsing to get wrong
+    # (live retail_biz rep5: guards on scan keys that do not exist skipped both adds, and the save changed nothing).
+    adds = "; ".join(f"led.decide('{i}', '<your decision and why>')  # {scope}" for i, scope in rows)
+    scan_run = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
+                     if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
+                     and any(SCAN_FILE.fullmatch(_output_path(o)) for o in (h["result"].get("outputs") or []))), None)
+    scan_carry = f" Carry the scan too ({{run_id: '{scan_run}', file: 'out/scan.json'}}) so decide can read it." if scan_run else ""
+    return (f". One cell does it: {carry}; {adds}; led.save(). Write no code that reads the scan file and no if around the "
+            f"calls: decide finds each finding itself, and one call covers every series it names.{scan_carry}")
 
 
 def scan_ran(history) -> bool:

@@ -1176,6 +1176,7 @@ class Ledger:
 
     def __init__(self) -> None:
         self._entries: list[dict[str, Any]] = []
+        self._added = 0
 
     @classmethod
     def open(cls, path: str = "out/ledger.json") -> "Ledger":
@@ -1224,6 +1225,31 @@ class Ledger:
                 raise ValueError("an outcome needs an expected value to test against")
             entry["outcome"] = outcome
         self._entries.append(entry)
+        self._added += 1
+
+    def decide(self, finding_id: str, decision: str) -> None:
+        """Record the decision on one scan finding, named by its id (such as "calendar.closed_days"). The stage and the
+        finding text (the id, the series it covers and what the scan measured) come from the saved scan, so only the
+        decision is written by hand. One call covers every series the finding names.
+
+        Motivation: live retail_biz rep5, electricity rep9 and Beijing rep5 (2026-11-23) each guessed the scan file's layout
+        (scan["calendar"]["closed_days"], scan["blockers"]), found nothing, skipped the add and saved an unchanged ledger, so
+        the finished answer was held back three times. Logic: read every scan*.json under in/ and out/; an id the scans do
+        not hold raises ValueError naming the blocker and major ids they do hold; with no scan found, the id alone is the
+        finding text.
+        """
+        if not isinstance(finding_id, str) or not finding_id.strip():
+            raise ValueError("decide needs a finding id such as 'calendar.closed_days'")
+        found, known = _scan_findings(finding_id)
+        if known and not found:
+            raise ValueError(f"no scan finding has the id {finding_id!r}; the blocker and major ids are {sorted(known)}")
+        scopes = list(dict.fromkeys(str(f.get("scope")) for f in found))
+        scope = (scopes[0] if len(scopes) == 1 else
+                 f"{len(scopes)} series: {', '.join(scopes[:3])}" + (f" and {len(scopes) - 3} more" if len(scopes) > 3 else ""))
+        measured = json.dumps(_py(found[0].get("evidence")), ensure_ascii=False, default=str)[:200] if found else ""
+        text = f"{finding_id} ({scope})" + (f": {measured}" if measured and measured != "null" else "") if found else finding_id
+        prefix = finding_id.split(".")[0]
+        self.add(_STAGE_OF.get(prefix, prefix), text, decision)
 
     def to_dict(self) -> list[dict[str, Any]]:
         """All entries in order, each with its running index (1, 2, 3 and so on)."""
@@ -1250,9 +1276,41 @@ class Ledger:
         else:
             merged = on_disk + ours  # another cell's entries: keep them, add these after them
         self._entries = merged
+        if on_disk is not None and not self._added:
+            # A save with no add in this cell is almost always an add that was skipped (live retail_biz rep5: a guard on a
+            # scan key that does not exist). Say so in the cell's output, where the planner reads it.
+            print(f"ledger: saved with no new entry in this cell ({len(merged)} entries in {path}); no add or decide ran")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         return str(target)
+
+
+_STAGE_OF = {"time": "time index", "coverage": "coverage", "values": "values", "zeros": "zeros and censoring",
+             "censoring": "zeros and censoring", "changepoints": "outliers and level shifts",
+             "outliers": "outliers and level shifts", "season": "seasonality"}
+
+
+def _scan_findings(finding_id: str) -> tuple[list[dict[str, Any]], set[str]]:
+    """The findings with this id in every saved scan under in/ and out/, and the blocker and major ids those scans hold."""
+    found: list[dict[str, Any]] = []
+    known: set[str] = set()
+    for root in ("in", "out"):
+        base = Path(root)
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("scan*.json")):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            for f in doc.get("findings") or [] if isinstance(doc, dict) else []:
+                if not isinstance(f, dict):
+                    continue
+                if f.get("severity") in ("blocker", "major") and isinstance(f.get("id"), str):
+                    known.add(f["id"])
+                if f.get("id") == finding_id and f not in found:
+                    found.append(f)
+    return found, known
 
 
 def _read_ledger(path: str) -> list[dict[str, Any]] | None:

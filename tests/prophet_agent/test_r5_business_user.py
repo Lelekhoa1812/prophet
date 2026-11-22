@@ -107,3 +107,10 @@ def test_an_is_it_real_question_points_the_planner_to_the_change_test():
     assert "ps.change_test" in note and "Question 1" in note
     assert "ps.change_test" not in _asked_block("How much will we sell next quarter?", "planner")
     assert "ps.change_test" not in _asked_block(goal, "composer")
+
+
+def test_the_composer_is_told_to_correct_a_premise_the_evidence_contradicts():
+    # live retail_biz rep5: "The recent dip is not statistically real" over a measured rise of 10.3%
+    from prophet_agent.runtime.goal import _asked_block
+    note = _asked_block("Sales feel like they've been slipping lately. Is that real?", "composer")
+    assert "contradicts a question's premise" in note
