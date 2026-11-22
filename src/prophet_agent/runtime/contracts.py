@@ -924,6 +924,31 @@ def _scan_shift_counts(history: list, run_root) -> list[int] | None:
     return counts or [0]
 
 
+def check_ledger_answer(answer, history, run_root) -> dict | None:
+    """The answer and the newest saved ledger must take the same stance on negatives, outliers and gaps (A4-04). Live evidence
+    (measured): retail rep3 ledger "keep negative values" against an answer that "clipped to 0"; WTI rep3 "no gaps filled"
+    against a ledger of 109 gaps filled by interpolation. An entry marked superseded is left out, so a later correction counts.
+    None when no ledger was saved or ``run_root`` is unknown."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return None
+    decided = " . ".join(str(e.get("decision", "")) for e in ledgers[0]
+                         if isinstance(e, dict) and not e.get("superseded") and not e.get("superseded_by"))
+    ledger = grounding.treatment_stances(decided)
+    said = grounding.treatment_stances(answer if isinstance(answer, str) else "")
+    clashes = [(topic, l, a) for topic in sorted(set(ledger) & set(said)) for l in sorted(ledger[topic]) for a in sorted(said[topic])
+               if (l, a) in grounding.OPPOSED_STANCES or (a, l) in grounding.OPPOSED_STANCES]
+    if clashes:
+        topic, l, a = clashes[0]
+        return _check("ledger_answer_consistent", False,
+                      f"the ledger decides {topic} as '{l}', but the answer says '{a}'; make the answer follow the ledger, or "
+                      "record a superseding decision in the ledger first", "warn")
+    if set(ledger) & set(said):
+        return _check("ledger_answer_consistent", True,
+                      "the answer's treatments of " + ", ".join(sorted(set(ledger) & set(said))) + " agree with the ledger", "warn")
+    return None
+
+
 def check_answer(answer, history, *, run_root=None) -> list[dict]:
     """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
     makes, so an answer with no such claim adds nothing.
@@ -991,6 +1016,10 @@ def check_answer(answer, history, *, run_root=None) -> list[dict]:
                              f"the answer attributes a shift to a cause with no research source id or test ({causes[0][:160]}); "
                              "cite the S-id of a research passage or the control_lab test, or say the shift is unexplained",
                              "warn"))
+
+    reconciled = check_ledger_answer(text, obs, run_root)
+    if reconciled is not None:
+        checks.append(reconciled)
 
     methods = grounding.unsupported_method_claims(text, obs)
     if methods:

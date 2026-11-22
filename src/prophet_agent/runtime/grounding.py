@@ -402,3 +402,33 @@ def unsupported_method_claims(answer: str, history: list) -> list[str]:
                 out.append(unit.strip())
                 break
     return out
+
+
+# Treatment stances (A4-04). A sentence that names a topic and a treatment verb gives the stance; a negation turns it into its
+# opposite ("were not clipped" is a keep). The ledger's decisions and the answer are read the same way, so they can be compared.
+_OPPOSITE = {"keep": "treat", "treat": "keep", "fill": "none", "none": "fill"}
+_TOPIC_STANCES = (
+    ("negatives", re.compile(r"negative|below zero", re.I), {
+        "keep": re.compile(r"\bkeep|\bkept\b|\bretain|\bgenuine\b", re.I),
+        "treat": re.compile(r"\bclip|\bfloor(?:ed)?\b|set to (?:zero|0)|truncat", re.I)}),
+    ("outliers", re.compile(r"outlier|spike", re.I), {
+        "keep": re.compile(r"\bkeep|\bkept\b|\bretain|real (?:spike|event|value)s?|\bgenuine\b", re.I),
+        "treat": re.compile(r"winsori[sz]|\bremov|\bexclud|\breplac|\bcapped\b|\bclipped\b|\bignored\b|\bdropped\b", re.I)}),
+    ("gaps", re.compile(r"\bgaps?\b|interpolat|imputed|\bfilled\b", re.I), {
+        "fill": re.compile(r"interpolat|\bfilled\b|\bimputed\b|straight[- ]line", re.I),
+        "none": re.compile(r"\bno gaps?\b|\bnot (?:filled|interpolated|imputed)\b|\bnot (?:a )?gaps?\b", re.I)}),
+)
+OPPOSED_STANCES = (("keep", "treat"), ("fill", "none"))
+
+
+def treatment_stances(text: str) -> dict[str, set[str]]:
+    """The stance the text takes on each topic (negatives, outliers, gaps), read sentence by sentence."""
+    out: dict[str, set[str]] = {}
+    for unit in sentences(text):
+        for topic, topic_rx, stances in _TOPIC_STANCES:
+            if not topic_rx.search(unit):
+                continue
+            for stance, rx in stances.items():
+                for m in rx.finditer(unit):
+                    out.setdefault(topic, set()).add(_OPPOSITE[stance] if negated(unit, m.start()) else stance)
+    return out
