@@ -610,6 +610,31 @@ outage works. The three partials stopped with an unverified answer. Causes, read
 - **Beijing panel (82fb34d9):** four figures (198, 203, 215, 191) in the answer did not match the analysis output, so
   the answer was marked unverified after 109 calls and 46 iterations, the most of any mission in the round.
 
-Next: fix the composer so a cycle claim is copied from the health record, not from the backtest flag, and check whether
-the panel missions' per-client comparisons are computed before the answer is written. Then rerun the three partial
-scenarios on the same build. The 3-of-6 result is one run each and is not a rate.
+Causes, found in the stored missions and fixed in f903603 (gate 1,869 passed):
+
+- **Cycle (retail business user):** the backtest's season check measured 3 steps on 273 points, the health record 6 steps on
+  633 points. The contract said "state the measured period" and the rewrite kept 3. The contract now names the number to
+  write (6 steps) and says not to use the season check for it.
+- **Figures (Beijing):** 198.77, 203.71, 215.63 and 191.58 were written as 198, 203, 215 and 191, cut down rather than
+  rounded, so the matcher found no source. A whole number that is the cut-down part of a printed decimal is now rounded to
+  it, and only when exactly one rounding fits.
+- **Per-client comparison (electricity):** the panel_backtest result held a MASE for all 60 entities, but the planner's
+  view showed the first 30 rows, so the evaluator called the comparison missing. The view now counts, over all entities,
+  where each model beats naive (`beats_naive_on`, `beats_naive_out_of`).
+
+### Rerun of the three partial scenarios on f903603 (measured, 2026-11-23)
+
+| Scenario | Mission | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| retail business user | 1aa2106e | **completed** | done_verified | 270 | 24 |
+| electricity panel | f62b473c | **completed** | done_verified | 811 | 73 |
+| Beijing panel | 3c379255 | partial | partial_unverified | 856 | 85 |
+
+Two of three verified. Beijing did not hit the figure check this time. Its checklist was 8 of 8, but it repeated identical
+calls (inspect_data five times with the same arguments, read_observation pages three times each) and the stop reason is
+"the analysis kept repeating the same step", so the answer rests on earlier findings. This is a stall, not a number
+error, and it is the next thing to look at.
+
+The fixes are checked by unit tests and by these runs, one run each, so this is not a rate. Verified across the two
+rounds: retail, WTI and WTI business user in round 6 (build 4b5df07), then retail business user and electricity panel on
+the rerun (build f903603). Beijing panel is still partial.
