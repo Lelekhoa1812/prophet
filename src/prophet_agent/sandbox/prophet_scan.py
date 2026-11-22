@@ -22,6 +22,7 @@ statsmodels. Every result is plain JSON-safe data: no numpy types and no NaN (a 
 from __future__ import annotations
 
 import json
+import re
 import math
 import warnings
 from collections import Counter
@@ -1148,9 +1149,18 @@ def _run(df: Any, time_col: Any, value_col: Any, entity_cols: Any, freq: Any, ma
 
     findings: list[dict] = []
     t_raw = df[time_col]
+    order_finding = None
     try:
-        t_parsed = t_raw if pd.api.types.is_datetime64_any_dtype(t_raw) else pd.to_datetime(t_raw, errors="coerce",
-                                                                                          format="mixed")
+        if pd.api.types.is_datetime64_any_dtype(t_raw):
+            t_parsed = t_raw
+        elif pd.api.types.is_numeric_dtype(t_raw):
+            # Epoch numbers: seconds for the usual range (1e8 to 1e11), otherwise pandas' own default. Audit: 1704067200 read as ns.
+            med = float(pd.Series(t_raw).dropna().median()) if t_raw.notna().any() else 0.0
+            unit = "s" if 1e8 <= med <= 1e11 else ("ms" if 1e11 < med <= 1e14 else "ns")
+            t_parsed = pd.to_datetime(t_raw, errors="coerce", unit=unit)
+        else:
+            dayfirst, order_finding = _day_order(t_raw, time_col)
+            t_parsed = pd.to_datetime(t_raw, errors="coerce", format="mixed", dayfirst=dayfirst)
     except (ValueError, TypeError, OverflowError) as exc:
         findings.append(_finding(
             "schema.unparseable_time", "blocker", "all", {"reason": str(exc)[:300]},
@@ -1165,6 +1175,8 @@ def _run(df: Any, time_col: Any, value_col: Any, entity_cols: Any, freq: Any, ma
         findings.append(_finding(
             "time.timezone_aware", "info", "all", {"timezone": tz_name},
             None, "The scan reads local wall-clock times. Confirm the timezone is the one the brief uses."))
+    if order_finding is not None:
+        findings.append(order_finding)
     t_nat = t_parsed.isna().to_numpy()
     t_ns = t_parsed.to_numpy(dtype="datetime64[ns]").astype(np.int64)
     n_rows = len(df)
@@ -1316,6 +1328,35 @@ def _run(df: Any, time_col: Any, value_col: Any, entity_cols: Any, freq: Any, ma
 
 _ENTITY_ALIASES = {name: "entity_cols" for name in
                    ("entity_col", "entity", "entities", "group_col", "group_cols", "id_col", "id_cols", "key_cols")}
+
+
+_DMY = re.compile(r"^\s*(\d{1,2})[/.\-](\d{1,2})[/.\-]\d{2,4}")
+
+
+def _day_order(t_raw: pd.Series, time_col: str) -> tuple[bool, dict | None]:
+    """Day-first or month-first for a text time column. A field above 12 settles it; when every such date has both fields at
+    or under 12, the order is ambiguous: month-first is used and a major finding asks the person to confirm it (before this,
+    01/02/2024 to 28/02/2024 was read as 2 January to 2 December, with no finding)."""
+    fields = t_raw.dropna().astype(str).str.extract(_DMY)
+    fields = fields.dropna()
+    if fields.empty:
+        return False, None
+    first = fields[0].astype(int)
+    second = fields[1].astype(int)
+    if (first > 12).any() and not (second > 12).any():
+        return True, None
+    if (second > 12).any() and not (first > 12).any():
+        return False, None
+    if (first > 12).any() and (second > 12).any():
+        return False, _finding(
+            "time.mixed_day_month", "blocker", "all", {"rows": int(len(fields))},
+            "Some dates have the day first and some the month first. Confirm the order before the scan can read the grain.",
+            f"print(df[{time_col!r}].head(20))")
+    return False, _finding(
+        "time.ambiguous_day_month", "major", "all", {"rows": int(len(fields))},
+        "Every date has both fields at most 12, so the order cannot be told apart. Month-first is assumed; confirm it with the "
+        "data owner, or re-read with the order stated.",
+        f"print(df[{time_col!r}].head(20))")
 
 
 @accepts_aliases({**_ENTITY_ALIASES, "time": "time_col", "value": "value_col"})

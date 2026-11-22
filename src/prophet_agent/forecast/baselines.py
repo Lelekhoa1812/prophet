@@ -61,6 +61,8 @@ def seasonal_year(series: np.ndarray, h: int, season: int = 52) -> tuple[np.ndar
     ly = s[-season - 8:-season].mean()
     ratio = recent / ly if ly > 0 else 1.0
     ratio = float(np.clip(ratio, 0.5, 2.0))
-    p = np.array([s[len(s) + i - season] for i in range(h)]) * ratio
+    # Step i is the same period one season earlier; beyond one season ahead it repeats the last observed season (the index
+    # len(s)+i-season ran past the data when h > season: IndexError, audit maths 5).
+    p = np.array([s[len(s) - season + (i % season)] for i in range(h)]) * ratio
     sd = float(np.std(s[-26:] - s[-26 - season:-season] * ratio)) if len(s) > season + 26 else float(np.std(s))
     return p, _band(p, sd, floor=_nonneg(s))

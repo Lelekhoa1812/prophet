@@ -140,8 +140,13 @@ class SandboxResult:
 
 
 def _clip(text: str) -> str:
+    """Head and tail. A traceback and a summary table print last, so keeping only the head drops the error the planner needs
+    (audit: a 31,581-character stderr lost its KeyError line)."""
     text = redact(text, limit=MAX_STREAM_CHARS * 2)
-    return text if len(text) <= MAX_STREAM_CHARS else text[:MAX_STREAM_CHARS] + "\n...[truncated]"
+    if len(text) <= MAX_STREAM_CHARS:
+        return text
+    half = MAX_STREAM_CHARS // 2
+    return text[:half] + f"\n...[{len(text) - 2 * half} characters cut from the middle]...\n" + text[-half:]
 
 
 def _sha256(path: Path) -> str:

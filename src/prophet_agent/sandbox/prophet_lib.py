@@ -1188,8 +1188,12 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     limit = max_short_gap if max_short_gap is not None else max(3, min(30, n // 50))
     long_gaps = [g for g in gaps if g[1] - g[0] > limit]
     if gaps:
-        s = s.interpolate(limit_direction="both")
+        # limit_area="inside": a gap at either end has no observation on one side, so it is not filled. With trim_tail=False
+        # the open tail stays NaN and save_series refuses it, rather than repeating the last value (audit: [1,2,3,NaN] -> 3,3).
+        s = s.interpolate(limit_direction="both", limit_area="inside")
         notes.append(f"{int(missing.sum())} gaps in {len(gaps)} runs were filled by straight-line interpolation (never zero)")
+        if not trim_tail and np.isnan(s.iloc[-1]):
+            notes.append("the trailing gap is not observed and is left open: it is not filled, and it cannot be forecast from")
     if long_gaps:
         notes.append(f"{len(long_gaps)} runs are longer than {limit} periods; they are filled but listed in ignore_ranges so the "
                      "forecast does not learn from them")

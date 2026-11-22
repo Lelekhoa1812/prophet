@@ -44,7 +44,11 @@ def carried_inputs(carry) -> dict[str, Path]:
         target = (base / rel).resolve()
         if not rel or not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
             raise ValueError(f"no file {rel!r} in the outputs of run {item['run_id']}")
-        mounted[f"carried/{target.name}"] = target
+        key = f"carried/{target.name}"
+        if key in mounted and mounted[key] != target:
+            raise ValueError(f"two carried files are named {target.name!r}; each file name can be carried once. Carry one, or "
+                             "save the other under a different name in its run")
+        mounted[key] = target
     return mounted
 
 
