@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any
 
 from prophet_agent.research.fetch import fetch_page
-from prophet_agent.research.passages import best_passages
+from prophet_agent.research.passages import best_passages, select_passages, stated_date
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
                                             is_us_region, registry_pages, resolve_family)
 from prophet_agent.research.rank import credibility, host_of, parse_date, rank_hits, rank_report
@@ -42,6 +43,8 @@ RESEARCH_ARGS = {"queries", "kind", "recency", "fetch_top", "passages_per_page",
                  "units"}
 MAX_EXCLUDE = 200
 MAX_REGISTRY = 6
+MIN_USABLE_CHARS = 100   # a fetched page with less text than this is thin: it counts as failed and is backfilled (A3-07)
+MAX_CHARS_LIMIT = 20000  # the web_fetch schema cap; a larger request is clamped and the clamp is reported (A3-07)
 
 
 def _allow(args: Any, allowed: set[str]) -> dict:
@@ -141,12 +144,51 @@ def _scope_queries(queries: list[str], region: str, units: str) -> tuple[list[st
 
 
 def _date_of(page, hit: Hit | None) -> tuple[str | None, str]:
-    """The page's own publication date when it has one; otherwise the search engine's news date, marked as such."""
+    """The page's own publication date when it has one; then a date the text states about itself ("released November
+    10", source 'text', or 'text_year_inferred' when the year is not written); then the search engine's news date."""
     if page.date and page.date_source != "none":
         return page.date, page.date_source
+    hit_year = parse_date(hit.date).year if hit is not None and hit.date and parse_date(hit.date) else None
+    stated = stated_date(page.text, hit_year or datetime.now(timezone.utc).year)
+    if stated:
+        return stated[0], "text" if stated[1] else "text_year_inferred"
     if hit is not None and hit.date and parse_date(hit.date):
         return hit.date, "search"
     return None, "none"
+
+
+def _dedupe_queries(queries: list[str]) -> tuple[list[str], int]:
+    """Queries with case and spacing ignored, first occurrence kept; and how many were repeats (A3-07, round 3:
+    the electricity researcher sent 96 query strings, 45 distinct)."""
+    seen, kept = set(), []
+    for query in queries:
+        key = " ".join(query.lower().split())
+        if key not in seen:
+            seen.add(key)
+            kept.append(query)
+    return kept, len(queries) - len(kept)
+
+
+def _fetch_with_backfill(ranked: list[Hit], fetch_top: int) -> tuple[list[tuple[Hit, Page]], list[dict]]:
+    """Read ranked candidates until fetch_top are usable (ok and at least MIN_USABLE_CHARS of text), with at most
+    2 x fetch_top attempts. Returns the usable (hit, page) pairs and the failed or thin attempts (A3-07: round 3 WTI
+    run had 3 failed search pages, so the cap of 6 was spent and the OPEC+ page was never read)."""
+    usable: list[tuple[Hit, Page]] = []
+    failed: list[dict] = []
+    index, cap = 0, 2 * fetch_top
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        while len(usable) < fetch_top and index < len(ranked) and index < cap:
+            batch = ranked[index:index + min(fetch_top - len(usable), cap - index)]
+            index += len(batch)
+            for hit, page in zip(batch, pool.map(lambda h: fetch_page(h.url), batch)):
+                if not page.ok:
+                    failed.append({"url": hit.url, "why": page.note or "fetch failed", "origin": "search"})
+                elif len(page.text) < MIN_USABLE_CHARS:
+                    failed.append({"url": hit.url, "why": f"thin: {len(page.text)} characters of text",
+                                   "origin": "search"})
+                else:
+                    usable.append((hit, page))
+    return usable, failed
 
 
 def _metrics(sources: list[dict]) -> dict:
@@ -196,18 +238,22 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
     queries = args.get("queries")
     if queries is not None:
         queries = _queries(queries, low=1, high=MAX_QUERIES)
-    max_chars = _int(args, "max_chars", 6000, 500, 20000)
+    requested = args.get("max_chars", 6000)
+    clamp = None
+    if isinstance(requested, int) and not isinstance(requested, bool) and requested > MAX_CHARS_LIMIT:
+        clamp = f"max_chars {requested} clamped to {MAX_CHARS_LIMIT} (the schema limit)"   # A3-07 (e)
+        requested = MAX_CHARS_LIMIT
+    max_chars = _int({"max_chars": requested}, "max_chars", 6000, 500, MAX_CHARS_LIMIT)
     page = fetch_page(url.strip())
     out = _page_view(page, url.strip())
+    if clamp:
+        out["note"] = "; ".join(n for n in [out.get("note"), clamp] if n)
     if not page.ok:
         return out
     if queries:
-        passages = best_passages(page, queries, k=4)
-        if passages:
-            out["passages"] = passages
-            return out
-        out["note"] = "; ".join(n for n in [page.note, "no passage matched the queries; first part of the page follows"]
-                                if n)
+        passages = select_passages(page, queries, k=4)
+        out["passages"] = passages
+        return out
     out["text"] = page.text[:max_chars]
     out["text_truncated"] = len(page.text) > max_chars
     return out
@@ -215,7 +261,7 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
 
 def web_research_tool(args: Any, _key: str) -> dict:
     args = _allow(args, RESEARCH_ARGS)
-    queries = _queries(args.get("queries"), low=1, high=MAX_QUERIES)
+    queries, repeated = _dedupe_queries(_queries(args.get("queries"), low=1, high=MAX_QUERIES))
     kind = _kind(args)
     timelimit, days = _recency(args)
     fetch_top = _int(args, "fetch_top", 4, 1, MAX_FETCH)
@@ -251,30 +297,29 @@ def web_research_tool(args: Any, _key: str) -> dict:
     fresh = [h for h in merged if normalise_url(h.url) not in exclude and normalise_url(h.url) not in registry_keys]
     ranked, repeats = rank_report(fresh, recency_days=days, queries=scoped, kind=kind)
     duplicates = (len(merged) - len(fresh)) + repeats + (len(registry) - len(registry_todo))
-    chosen = ranked[:fetch_top]
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        pages = list(pool.map(lambda h: fetch_page(h.url), chosen))
+    chosen, search_failed = _fetch_with_backfill(ranked, fetch_top)
 
     reads = ([("registry", p["url"], page, None, p["name"]) for p, page in zip(registry_todo, registry_read)]
-             + [("search", h.url, page, h, None) for h, page in zip(chosen, pages)])
-    sources, failed = [], []
+             + [("search", h.url, page, h, None) for h, page in chosen])
+    sources, failed = [], list(search_failed)
     for origin, url, page, hit, name in reads:
         if not page.ok:
             failed.append({"url": url, "why": page.note or "fetch failed", "origin": origin})
             continue
-        passages = best_passages(page, scoped, k=per_page)
+        passages = select_passages(page, scoped, k=per_page)
         date, date_source = _date_of(page, hit)
         source = {"origin": origin, "url": url, "final_url": page.final_url,
                   "title": page.title or (hit.title if hit else name), "date": date, "date_source": date_source,
                   "tier": credibility(page.final_url or url)[0], "sha256": page.sha256, "passages": passages}
         if name:
             source["name"] = name
-        if not passages:
-            source["note"] = "no passage matched the queries"
+        if all(p["reason"] == "head" for p in passages):
+            source["note"] = "no passage matched the queries; the opening of the page is shown"
         sources.append(source)
     for number, source in enumerate(sources, 1):
         source["id"] = f"S{number}"
-    out: dict[str, Any] = {"queries": queries, "searched_queries": scoped, "dropped_queries": dropped_queries,
+    out: dict[str, Any] = {"queries": queries, "repeated_queries": repeated, "searched_queries": scoped,
+                           "dropped_queries": dropped_queries,
                            "family": family, "region": region or None, "units": units or None,
                            "sources": sources, "failed": failed, "searched": len(ranked),
                            "new_sources": len(sources), "duplicate_sources": duplicates,
@@ -363,7 +408,8 @@ WEB_FETCH_SPEC = {
                    "(each with start offset and score); without them, the first max_chars of the text.",
     "args": {"url": "the page address from a search hit",
              "queries": "optional list of 1 to 8 strings: what you want from the page",
-             "max_chars": "whole number 500 to 20000 (default 6000), used when no passage is asked for"},
+             "max_chars": "whole number 500 to 20000 (default 6000; a larger value is clamped and reported), used when "
+                          "no passage is asked for"},
 }
 
 WEB_RESEARCH_SPEC = {
@@ -378,7 +424,9 @@ WEB_RESEARCH_SPEC = {
                    "id (S1, S2 ...). Pass in exclude_urls the URLs you already read, so they are not fetched again; the "
                    "result counts them in duplicate_sources. metrics shows unique_domains, tier1_sources, dated_sources, "
                    "the date range and new_sources: stop when a round adds no new primary domain and no dated claim. "
-                   "Pages that could not be read are listed in failed.",
+                   "Pages that could not be read or are thin are replaced by the next ranked results and listed in "
+                   "failed. Repeated queries are searched once (repeated_queries counts them). Dated passages are kept "
+                   "even without query words.",
     "args": {"queries": "list of 1 to 8 search strings, each a different angle",
              "kind": "'text' (default) or 'news'",
              "recency": "optional 'day', 'week', 'month' or 'year'",
