@@ -14,6 +14,24 @@ import functools
 import inspect
 from typing import Any
 
+import numpy as np
+
+
+class ExplainedArray(np.ndarray):
+    """An array that answers a text-key read with an explanation of what it is, instead of numpy's "only integers, slices ... are
+    valid indices" (live: one mission hit that line 30 times, reading the flags array of ``hampel`` as a dict)."""
+
+    _who = "this value"
+    _keys: list = []
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, str):
+            kind = "a boolean array of flags, one per input point" if self.dtype == bool else f"a numeric array of {self.size} values"
+            raise TypeError(f"{self._who} returned {kind} as its first item, not a dict, so [{key!r}] does not exist. Use it as an "
+                            f"array (flags.sum(), flags.nonzero()[0]). The counts and settings are in the report, the second item: "
+                            f"`value, report = ...`; report keys: {self._keys}.")
+        return super().__getitem__(key)
+
 
 class Pair(tuple):
     """``(value, report)``: read it with ``value, report = f(...)``; ``pair["key"]`` reads the report as a convenience."""
@@ -54,7 +72,14 @@ def wrap_pairs(namespace: dict) -> None:
             @functools.wraps(f)
             def wrapper(*args, **kwargs):
                 out = f(*args, **kwargs)
-                return kind(out) if isinstance(out, tuple) and type(out) is tuple else out
+                if not (isinstance(out, tuple) and type(out) is tuple):
+                    return out
+                if out and isinstance(out[0], np.ndarray) and out[0].ndim >= 1 and not isinstance(out[0], ExplainedArray):
+                    arr = out[0].view(ExplainedArray)
+                    arr._who = f"{label}()"
+                    arr._keys = sorted(out[1]) if len(out) > 1 and isinstance(out[1], dict) else []
+                    out = (arr, *out[1:])
+                return kind(out)
             return wrapper
 
         namespace[name] = make(fn, name)

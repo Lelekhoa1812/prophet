@@ -279,21 +279,43 @@ def _error_signature(h: dict) -> str | None:
     return re.sub(r"[0-9a-f]{32}|\d+", "#", last)[:160]
 
 
+def _failing_line(h: dict) -> str:
+    """The program line that raised, read from the traceback's last program.py frame ('' when it is not there)."""
+    res = h.get("result")
+    text = str(h.get("error") or (res.get("stderr_tail") if isinstance(res, dict) else "") or "")
+    lines = text.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if "program.py" in lines[i] and i + 1 < len(lines):
+            return lines[i + 1].strip()[:200]
+    return ""
+
+
 def _repeat_error_note(history: list[dict]) -> str:
-    """When the newest tool calls failed the same way three times running, say so and say what to do: one live mission rewrote its
-    whole pipeline 28 times to meet the same wrong file path. The note changes the planner's approach; it blocks nothing."""
-    sigs = []
+    """When the newest tool calls failed the same way three times running, say so, quote the failing line and say what to do. One
+    live mission rewrote its whole pipeline 28 times to meet the same wrong file path, another read a flags array as a dict 30 times.
+    After five identical failures the advice is a fresh context: a delegated analyst starts without the failed attempts. The note
+    changes the planner's approach; it blocks nothing."""
+    run = []
     for h in reversed(history):
         if h.get("kind") != "tool":
             continue
-        sigs.append(_error_signature(h))
-        if len(sigs) == 3:
+        sig = _error_signature(h)
+        if not sig or (run and sig != run[0][0]):
             break
-    if len(sigs) == 3 and sigs[0] and sigs[0] == sigs[1] == sigs[2]:
-        return ("The last three tool calls failed with the same error: " + sigs[0] + ". Do not rewrite the whole program again. Read the "
-                "error, list what exists (files under in/ and in/carried, the names a function takes), change only the failing line, "
-                "and if the helper cannot do it, do that one step in plain pandas.")
-    return ""
+        run.append((sig, h))
+        if len(run) == 8:
+            break
+    if len(run) < 3:
+        return ""
+    line = _failing_line(run[0][1])
+    text = ("The last " + str(len(run)) + " tool calls failed with the same error: " + run[0][0]
+            + (f" at the line `{line}`" if line else "") + ". Do not rewrite the whole program again. Read the error, list what exists "
+            "(files under in/ and in/carried, what the function returns), change only the failing line, and if a helper cannot do it, "
+            "do that one step in plain pandas.")
+    if len(run) >= 5:
+        text += (" This is not converging: delegate the step to an analyst sub-agent (agent_type analyst) with a fresh context, giving "
+                 "it the goal, the file and run id it needs, and this error, instead of trying a sixth time.")
+    return text
 
 
 def _skills_read_note(ctx: Ctx) -> str:

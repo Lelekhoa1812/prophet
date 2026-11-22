@@ -236,3 +236,12 @@ def test_outside_sources_are_pinned_for_the_composer_from_the_ledger(tmp_path):
     store.tool_set("k0", "done", res)
     block = _outside_block(c)
     assert "example.com" in block and "2026-11-20" in block and "$91.03" in block
+
+
+def test_repeat_note_quotes_the_failing_line_and_suggests_delegation_after_five():
+    from prophet_agent.runtime.goal import _repeat_error_note
+    bad = lambda n: {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": False, "run_id": "a" * 32, "stderr_tail":
+                     "Traceback\n  File \"/x/sandbox/abc/program.py\", line 73, in <module>\n    n = int(v['is_outlier'].sum())\nIndexError: bad"}}
+    three = _repeat_error_note([bad(1), bad(2), bad(3)])
+    assert "v['is_outlier']" in three and "analyst sub-agent" not in three
+    assert "analyst sub-agent" in _repeat_error_note([bad(i) for i in range(5)])

@@ -14,3 +14,13 @@ def test_carried_paths_resolve_by_file_name_and_load_series_round_trips(tmp_path
     assert len(pl.load("in/carried/a.csv", run_id="abc")) == 2   # run_id accepted and ignored; found by name in in/
     with pytest.raises(FileNotFoundError, match="Files you can open"):
         pl.load("in/missing.csv")
+
+
+def test_a_flags_array_explains_a_text_key_read():
+    import numpy as np
+    import pytest
+    from prophet_agent.sandbox import prophet_stats as ps
+    flags, report = ps.hampel(np.r_[np.ones(30), 50.0, np.ones(30)])
+    assert flags.sum() >= 1 and flags[30]                       # still an ordinary boolean array
+    with pytest.raises(TypeError, match=r"hampel\(\) returned a boolean array of flags.*report keys"):
+        flags["is_outlier"]
