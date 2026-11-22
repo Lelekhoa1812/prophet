@@ -1434,8 +1434,12 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if auto is not None:
             plan = ctx.step(f"auto:{tag}:{i}", lambda c: auto)
         else:
-            plan = ctx.step(f"plan:{tag}:{i}", lambda c: _decide_plan(brain, goal, tools, history, memo, context, note,
-                                                                     finish_now=cfg.finish_now, out_of_calls=out_of_calls))
+            # The allowance decision is stored with the plan (A5-07). A resumed run after a top-up recomputes out_of_calls as
+            # False, but the stored plan was made when the allowance was spent, so the gates below read the stored value.
+            plan = ctx.step(f"plan:{tag}:{i}", lambda c: {**_decide_plan(brain, goal, tools, history, memo, context, note,
+                                                                        finish_now=cfg.finish_now, out_of_calls=out_of_calls),
+                                                          "out_of_calls": out_of_calls})
+        spent = bool(plan.get("out_of_calls", out_of_calls))
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
         elif plan["action"] == "ask_user":
@@ -1509,7 +1513,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # The gate must judge a step the same way in every part: `last` moves with cfg.end, so a finish that ended part 1 was
         # judged by the evaluator then but refused on resume (replay diverged). at_part_end is fixed by the step index.
         at_part_end = (i + 1) % seg_len == 0
-        if plan["action"] == "finish" and cfg.depth == 0 and FORECAST_GOAL.search(goal) and not (at_part_end or out_of_calls or cfg.finish_now):
+        if plan["action"] == "finish" and cfg.depth == 0 and FORECAST_GOAL.search(goal) and not (at_part_end or spent or cfg.finish_now):
             # Round 3, A5-04: live, a forecast was finished with the checklist's data scan and forecast still undone, and the
             # evaluator wrote a verdict on it. A finish with items still to do is refused here, before the evaluator is asked,
             # and the refusal names the next item. Decided from the stored history, so a resumed run refuses the same finish.
@@ -1525,7 +1529,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # last step of this run to turn whatever was found into an answer or a checkpoint. Between those, it only costs time.
         # The evaluator also runs at the end of each part. The stored evaluation then replays at the same position when
         # the next part continues from there, so both runs ask the ledger for the same steps in the same order.
-        if plan["action"] != "finish" and not last and not out_of_calls and not at_part_end:
+        if plan["action"] != "finish" and not last and not spent and not at_part_end:
             continue
         eval_schema = SUB_EVAL_SCHEMA if cfg.depth else EVAL_SCHEMA
         verdict = ctx.step(f"eval:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
@@ -1548,7 +1552,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             if written is not None:
                 answer = written
             if not answer.strip():
-                if not last and not out_of_calls:
+                if not last and not spent:
                     history.append({"kind": "evaluation", "verdict": "not_met",
                                     "missing": "the goal looks met, but no written answer was given; state the answer"})
                     continue
