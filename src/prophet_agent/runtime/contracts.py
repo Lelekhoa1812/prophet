@@ -1334,6 +1334,59 @@ def _panel_rules(h: dict, res: dict) -> list[str]:
              else ln.get("centre") or "timesfm") for ln in lines.values() if isinstance(ln, dict)]
 
 
+PANEL_VERDICTS_LISTED = 20     # up to this many series get one line each; beyond it, counts and the exceptions
+
+
+def panel_verdicts(obs: dict, history) -> dict | None:
+    """Each series of a panel pack with its verdicts side by side: the pack's health check and the panel backtest's best model
+    for that series, with its MASE and the best simple rule's. None unless obs is a panel pack and a panel backtest exists.
+
+    Live Beijing rep8 (measured, 2026-11-23), goal "give each station's forecast with its verdict": the pack held each
+    station's health and panel_backtest each station's scores, in two results; the planner tried to join them from files, the
+    evaluator rejected three finishes for missing verdicts, and the mission ended partial with a correct forecast."""
+    res = obs.get("result") if isinstance(obs, dict) and obs.get("tool") == "forecast_report" and not obs.get("error") else None
+    if not isinstance(res, dict) or not res.get("n_series"):
+        return None
+    bt = next((r for h in reversed(with_delegated(history)) if isinstance(r := _ok_result(h, "panel_backtest"), dict)
+               and isinstance(r.get("per_entity"), list)), None)
+    if bt is None:
+        return None
+    rules = ("naive", "seasonal_naive", "mean_last_season", "drift")
+    scores = {str(e.get("entity")): e for e in bt["per_entity"] if isinstance(e, dict)}
+    rows: dict[str, str] = {}
+    counts: dict[str, dict[str, int]] = {"health": {}, "backtest_best": {}}
+    exceptions: list[str] = []
+    full = obs.get("full") if isinstance(obs.get("full"), dict) else {}
+    full_series = (full.get("forecast") or {}).get("series") if isinstance(full.get("forecast"), dict) else None
+    if isinstance(full_series, dict) and full_series:
+        lines = {n: {"health": (fc.get("health") or {}).get("verdict") if isinstance(fc, dict) else None}
+                 for n, fc in full_series.items()}
+    else:
+        lines = res.get("series") or {}
+    for name, line in lines.items():
+        health = line.get("health") if isinstance(line, dict) else None
+        e = scores.get(str(name)) or {}
+        models = {k: v for k, v in e.items() if k != "entity" and isinstance(v, (int, float))}
+        best = min(models, key=models.get) if models else None
+        rule = min((k for k in models if k in rules), key=models.get, default=None)
+        text = f"health {health}"
+        if best:
+            text += f"; backtest best {best} (MASE {models[best]:.3g}" + (f", best simple rule {rule} {models[rule]:.3g}"
+                                                                          if rule and rule != best else "") + ")"
+        rows[str(name)] = text
+        counts["health"][str(health)] = counts["health"].get(str(health), 0) + 1
+        if best:
+            counts["backtest_best"][best] = counts["backtest_best"].get(best, 0) + 1
+        if health != "ok" or (best in rules):
+            exceptions.append(f"{name}: {text}")
+    if len(rows) <= PANEL_VERDICTS_LISTED:
+        return {"per_series": rows, "basis": "health from this pack; scores from the newest panel_backtest"}
+    return {"counts": counts, "series_scored": f"{len(scores)} of {len(rows)} (the stored panel_backtest view)",
+            "exceptions": exceptions[:PANEL_VERDICTS_LISTED],
+            "basis": "health from this pack; scores from the newest panel_backtest; exceptions are series whose health is not "
+                     "ok or whose best model was a simple rule"}
+
+
 PANEL_SCORE_OF = {"global_blend": "blend"}     # the pack's rule name -> panel_backtest's model name
 
 

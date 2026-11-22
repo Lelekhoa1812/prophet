@@ -182,3 +182,28 @@ def test_per_series_rules_or_no_panel_backtest_add_no_panel_centre_check():
     hist[1]["result"]["series"]["MT_001"]["centre"] = "naive"
     assert check_panel_centre(hist) is None
     assert check_panel_centre(hist[1:]) is None
+
+
+def test_a_panel_pack_carries_each_series_health_and_backtest_verdict_side_by_side():
+    # live Beijing rep8 (measured, 2026-11-23): the verdicts sat in two results and the run ended partial over them
+    from prophet_agent.runtime.contracts import panel_verdicts
+    bt = {"kind": "tool", "tool": "panel_backtest", "result": {"per_entity": [
+        {"entity": "Dongsi", "timesfm": 0.67, "seasonal_naive": 1.33, "global_gbm": 1.2},
+        {"entity": "Tiantan", "timesfm": 1.4, "seasonal_naive": 1.1}], "best_overall": "timesfm"}}
+    pack = {"kind": "tool", "tool": "forecast_report", "result": {"n_series": 2, "series": {
+        "Dongsi": {"health": "ok"}, "Tiantan": {"health": "check"}}}}
+    v = panel_verdicts(pack, [bt])["per_series"]
+    assert v["Dongsi"] == "health ok; backtest best timesfm (MASE 0.67, best simple rule seasonal_naive 1.33)"
+    assert v["Tiantan"] == "health check; backtest best seasonal_naive (MASE 1.1)"
+    assert panel_verdicts(pack, []) is None
+
+
+def test_a_wide_panel_gets_counts_and_exceptions():
+    from prophet_agent.runtime.contracts import panel_verdicts
+    names = [f"MT_{i:03d}" for i in range(1, 41)]
+    bt = {"kind": "tool", "tool": "panel_backtest", "result": {"per_entity": [
+        {"entity": n, "timesfm": 1.0, "naive": 0.9 if n == "MT_007" else 2.0} for n in names[:30]]}}
+    pack = {"kind": "tool", "tool": "forecast_report", "result": {"n_series": 40, "series": {n: {"health": "ok"} for n in names}}}
+    v = panel_verdicts(pack, [bt])
+    assert v["counts"]["health"] == {"ok": 40} and v["counts"]["backtest_best"] == {"timesfm": 29, "naive": 1}
+    assert v["series_scored"].startswith("30 of 40") and v["exceptions"] == ["MT_007: health ok; backtest best naive (MASE 0.9)"]

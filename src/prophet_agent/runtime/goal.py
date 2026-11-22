@@ -1702,6 +1702,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             note = _coverage_note(obs, history)
             if note:
                 obs["coverage_note"] = note
+            if (verdicts := contracts.panel_verdicts(obs, history)) is not None:
+                obs["verdicts"] = verdicts          # derived from stored results, so a replay derives the same
         history.append(obs)
 
         if obs.get("kind") == "tool" and _stalled(history, cfg.stall_window):

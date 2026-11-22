@@ -511,7 +511,13 @@ def _panel_observe(result: dict) -> dict:
         if health.get("verdict") in ("check", "flat_unexpected") and health.get("causes"):
             line["causes"] = health["causes"][:2]
         lines[name] = line
-    return {"n_series": result["n_series"], "series": lines,
+    cfgs = [fc.get("config") or {} for _, fc in items]
+    ctx_used = [c["context_used"] for c in cfgs if isinstance(c.get("context_used"), int)]
+    config = {"horizon": len(items[0][1]["point"]) if items else None,
+              "context_points": ([min(ctx_used), max(ctx_used)] if ctx_used and min(ctx_used) != max(ctx_used)
+                                 else (ctx_used[0] if ctx_used else None)),
+              "model": next((c.get("checkpoint") for c in cfgs if c.get("checkpoint")), None)}
+    return {"n_series": result["n_series"], "series": lines, "config": config,
             **({"not_shown": len(items) - PANEL_SHOWN} if len(items) > PANEL_SHOWN else {}),
             **({"panel_total": result["panel_total"]} if result.get("panel_total") else {}),
             "run_id": result["run_id"], "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
