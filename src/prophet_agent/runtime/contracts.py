@@ -805,6 +805,46 @@ def check_ledger_claims(history, run_root) -> list[dict]:
     return out
 
 
+def _likely_recording_break(ev: dict) -> bool:
+    """A break the scan flags as possibly a recording change: on a calendar boundary, or shared by several entities on one date.
+    The flags are read from the finding and from each break row when present (the scan slice adds them; absent means unflagged)."""
+    rows = ev.get("breaks") if isinstance(ev.get("breaks"), list) else []
+    for src in [ev, *[r for r in rows if isinstance(r, dict)]]:
+        if src.get("on_calendar_boundary") is True:
+            return True
+        n = src.get("coincident_entities")
+        if _is_int(n) and n > 1:
+            return True
+    return False
+
+
+def check_shift_decisions(history, run_root) -> dict | None:
+    """Where the scan flags a level shift as a likely recording break, the ledger must name the treatment options (truncate, ignore
+    ranges, or flag) and a control_lab or backtest must have run before the shift is kept (A4-09). A warning. None when no flagged
+    shift exists or the scan cannot be read."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    flagged = [f for f in findings if f.get("id") == "changepoints.level_shift" and isinstance(f.get("evidence"), dict)
+               and _likely_recording_break(f["evidence"])]
+    if not flagged:
+        return None
+    ledgers = _saved_ledgers(history, run_root)
+    text = " ".join(str(e.get("decision", "")) for e in (ledgers[0] if ledgers else []) if isinstance(e, dict)
+                    and not e.get("superseded"))
+    names_options = bool(re.search(r"truncat|ignore_ranges|\bflag", text, re.I))
+    tested = any(_ok_result(h, "control_lab") is not None or _ok_result(h, "backtest_series") is not None
+                 for h in with_delegated(history if isinstance(history, list) else []))
+    ok = names_options and tested
+    if ok:
+        return _check("shift_decision_tested", True,
+                      "the flagged shift was tested (truncate, ignore or flag) before it was kept", "warn")
+    gap = "no control_lab or backtest_series ran" if not tested else "the ledger does not name the options (truncate, ignore_ranges or flag)"
+    return _check("shift_decision_tested", False,
+                  f"{len(flagged)} level shift(s) are flagged as likely recording breaks (calendar boundary, or shared by several "
+                  f"entities), and {gap}; test them before keeping the shift", "warn")
+
+
 OUTLIER_SHARE_RULE = 0.02     # the outliers skill: above about 2% of steps, treat the flags as noise or a broken feed until shown otherwise
 _OUTLIER_TEST = re.compile(r"winsori|robust|replace_outliers|ignore_ranges|control_lab|backtest", re.I)
 _PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
@@ -932,6 +972,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         if outliers is not None:
             checks.append(outliers)
         checks.extend(check_ledger_claims(obs, run_root))
+        shifts = check_shift_decisions(obs, run_root)
+        if shifts is not None:
+            checks.append(shifts)
 
     selection = check_selection(obs)
     if selection is not None:
