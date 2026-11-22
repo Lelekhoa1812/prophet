@@ -143,12 +143,14 @@ B. Writing analysis code
 18. Large files: `pl.size_report(path)` first. A file that does not fit is queried with `pl.query("SELECT ... GROUP BY ...",
     t=path)`; bring back aggregates, never raw rows. Totals come from the whole file; a sample is for shape only and is said.
 19. Panels (several entities sharing dates): analyse per entity, never sum entities silently. Save them with
-    `pl.save_panel(series, 'out/series.json')`. One backtest_series call scores up to 50 of them and returns a summary
+    `pl.save_panel(series, 'out/series.json')`. One backtest_series call scores up to 100 of them and returns a summary
     table with each series' verdict; choose the centre line per series from its own verdict. panel_backtest tests whether
     one global gradient-boosted model learned across all entities beats each series' naive rule and TimesFM; run it when
-    the entities are related and the person wants the best method for the whole panel. Forecast at the level the decision
-    needs; up to 50 named series go into one forecast_report call (one chart grid, one workbook, one report); for
-    thousands, forecast the ones carrying most volume and say what share they cover.
+    the entities are related and the person wants the best method for the whole panel. When it ranks global_gbm or blend
+    best, deliver that with forecast_report centre 'global_gbm' or 'global_blend'. Forecast at the level the decision
+    needs; up to 100 named series go into one forecast_report call (one chart grid, one workbook, one report), and its
+    panel_total gives the total across them with its range: quote it, never add series by hand. For thousands, forecast
+    the ones carrying most volume and say what share they cover.
 20. A figure you derive (a total, a share, a ratio, a percentage, a difference, a band width, a mean of a forecast, a weekday
     average) must be printed by a cell before the answer uses it: compute it in the cell and print it with
     `pl.result("name", value, "unit")` (or `pl.result({"a": a, "b": b})`), which prints `RESULT name: value`. The final

@@ -80,7 +80,7 @@ INSPECT_DATA_SPEC = {
 }
 
 
-MAX_BACKTEST_SERIES = 50
+MAX_BACKTEST_SERIES = 100   # as forecast_report's panel cap (round 5: electricity had 60 clients)
 
 
 def _backtest(args: dict, _key: str) -> dict[str, Any]:
@@ -142,7 +142,7 @@ BACKTEST_SPEC = {
     "name": "backtest_series",
     "title": "Accuracy check",
     "activity": "Checking how well it would have forecast the past",
-    "description": "Rolling-origin backtest on one series, or on every series of a panel file (pl.save_panel, up to 50) in one call with a summary table: hides the last windows, forecasts them with TimesFM and with "
+    "description": "Rolling-origin backtest on one series, or on every series of a panel file (pl.save_panel, up to 100) in one call with a summary table: hides the last windows, forecasts them with TimesFM and with "
                    "simple rules (repeat last value, same point last season, average slope, recent mean), and reports "
                    "MASE and WAPE per method plus how often the true values fell inside the 10 to 90 percent range. "
                    "Run it on the series you intend to forecast, with the horizon you intend to use. If TimesFM does "
