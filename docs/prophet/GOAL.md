@@ -297,3 +297,44 @@ spacing, which needs a live run that cuts a reply.
 Licence wording: locked as a permanent rule (2026-11-22). Licence and research-use wording lives only in Markdown documents;
 `tests/prophet_agent/test_licence_wording_guard.py` enforces it. The prompt and skill scrub is done. `evaluator.v9` is the
 current evaluator prompt, and the older evaluator versions and two skills no longer carry the wording.
+
+## Round 3 and 4 (2026-11-22 to 2026-11-23)
+
+Round 3 merged eight slices (`PLAN_2026-11-22_round3.md`) and the person's decisions R1 to R4: questions only for
+high-risk decisions with a `high-risk:` rationale and no fixed count (replaces MAX_ASKS = 8); per-notebook data sharing;
+deterministic context editing (stubs, the model writes the memo only at part boundaries); `.env` unchanged. Round 4
+merged six slices (`PLAN_2026-11-23_round4.md`). Offline gate after round 4: 1,760 passed, 1 skipped, 0 failed.
+
+Gate decision (D3): the panel cost guard counts model fits and training rows instead of time. A wall-clock bound and then a
+single-thread CPU bound both failed only under concurrent load (11.7 to 275 s wall, 44 to 65 s CPU) and passed alone.
+
+### Live round on the round-3 build (measured, real NIM and TimesFM 3 through the API, 2026-11-23)
+
+Six round-4 builders ran during the panel missions (load average 30 to 70), so those timings are under load.
+
+| Mission | Status | Stop reason | Seconds | Tool calls | Questions | Model compactions |
+|---|---|---|---|---|---|---|
+| retail rep 5 | partial | partial_unverified | 676 | 22 | 0 | 0 |
+| WTI rep 5 | completed | done_verified | 931 | 40 | 0 | 0 |
+| Beijing panel rep 3 | partial | stalled | 1,006 | 74 | 0 | 0 |
+| electricity panel rep 3 | partial | stalled | 3,318 | 92 | 0 | 0 |
+
+Earlier build for comparison: retail rep 4 took 1,683 s and 49 calls (partial); electricity rep 2 stopped at a checkpoint
+after 5,406 s and 93 calls; Beijing rep 2 ended partial on an unrecorded scan decision.
+
+Root causes found in these runs and fixed (each with a regression test):
+
+- Retail: the answer stated a "likely range" of 547k to 867k that no tool printed (the pack printed 606,217 to 808,160 with
+  days independent and 345,811 to 1,098,329 with days together). Grounding stopped it correctly. Planner v25 tells the
+  model to quote the pack's `table` and `headline` (A7-02, A7-03 built in round 4).
+- Panels: `read_observation` paged a summary whose middle the sandbox had already cut, and sub-agents paged the lead's
+  history instead of their own. Analysts re-ran cells to see the cut output until stall detection stopped the mission. The
+  full result is now kept beside its summary and paged; each sub-agent has its own pager; grounding reads the full result.
+- Beijing: the level-shift text stated the ten-times unit-change rule without the measured ratio, and the answer reported
+  "median jumps of 10x or more" for breaks of 1.05 to 1.34 times, then stopped without a forecast. The finding now leads
+  with the measured ratio, and v25 says a major finding never stops the forecast by itself.
+
+Observed working as designed: no questions were asked in any mission (R1), no model-written compaction between part
+boundaries (R3), retail called `ps.changepoints(..., period=7)` (planner v24), WTI completed verified.
+
+TimesFM 3 joint decoding: measured and not offered; see `EXPERIMENT_timesfm_joint_decoding.md`.
