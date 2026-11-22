@@ -35,7 +35,7 @@ from typing import Any, Callable, Protocol
 
 from prophet_agent import prompts
 from prophet_agent.nim.errors import redact
-from prophet_agent.nim.transport import DEFAULT_CHAIN
+from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN
 
 from . import contracts
 from .grounding import snap, snap_note, unverified
@@ -638,6 +638,48 @@ def _failure_text(h: dict) -> str | None:
     return None
 
 
+def _error_class(why: str) -> str:
+    """The exception name in a failure line ("TypeError: list indices ..." gives "TypeError"). Lines without one give the
+    whole line, so two identical unnamed failures still match."""
+    head = why.split(":", 1)[0].strip()
+    return head if head and " " not in head else why.strip()
+
+
+def _class_streak(history: list[dict]) -> int:
+    """How many of the latest tool calls failed with the same error class as the latest failure (round 4, A3-11)."""
+    count, cls = 0, None
+    for h in reversed(history):
+        if h.get("kind") not in ("tool", "ask_user"):
+            continue
+        why = _failure_text(h)
+        if why is None:
+            break
+        this = _error_class(why)
+        if cls is None:
+            cls = this
+        if this != cls:
+            break
+        count += 1
+    return count
+
+
+_MODULE_MISS = re.compile(r"No module named '([A-Za-z_][\w]*)'|module '[\w.]+' has no attribute '([A-Za-z_]\w*)'")
+
+
+def tool_module_hint(result: Any, names: Any) -> str | None:
+    """A sandbox cell that imports, or reads an attribute named after, a tool gets the fix in the observation (round 4,
+    A3-11). Live: `import backtest_series` and `prophet_stats.panel_backtest(...)` failed as module lookups."""
+    if not isinstance(result, dict):
+        return None
+    text = str(result.get("stderr_tail") or result.get("stderr") or "")
+    for m in _MODULE_MISS.finditer(text):
+        name = m.group(1) or m.group(2)
+        if name in names:
+            return (f"'{name}' is a tool, not a Python module. Call it with call_tool (action call_tool, tool '{name}', "
+                    "args as its JSON fields); do not import or call it from sandbox_python.")
+    return None
+
+
 def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
     """How many of the latest tool calls or questions were refused in a row, the latest error, and the kind of step.
 
@@ -699,11 +741,15 @@ def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
         left = min(left, cfg.tool_budget - _calls_used(history))
     note = f"Budget: step {i + 1} of this part of the work; {max(left, 0)} steps left in it."
     streak, err, kind = _failure_streak(history)
+    same = _class_streak(history)
     if streak >= 2 and kind == "ask_user":
         note += (f" The last {streak} questions were refused ({err}). Do not send that question again. Fix its shape, or "
                  "decide without asking and say what you assumed.")
-    elif streak >= 3:
-        note += (f" The last {streak} calls failed in a row ({err}). Stop writing the large step again. Run one small cell "
+    elif same >= 2 or streak >= 3:
+        # Round 4, A3-11: the probe is due at two failures of one error class, not three (live retail: three TypeErrors in a
+        # row before any probe). A streak of three of mixed classes keeps the probe too.
+        count = same if same >= 2 else streak
+        note += (f" The last {count} calls failed in a row ({err}). Stop writing the large step again. Run one small cell "
                  "that only prints the structure that failed (print(type(x)); print(list(x)[:20]) or x.keys()), read it, "
                  "then fix that one line; keep the part that worked in a separate cell so it is not re-run.")
     elif streak >= 2:
@@ -984,7 +1030,7 @@ def _repair_source(args: Any, history: list[dict]) -> Any:
     return args
 
 
-def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
+def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> dict:
     try:
         result = ctx.call(tool, args)
     except (BudgetExceeded, Cancelled, OutcomeUnknown, Paused):
@@ -1000,7 +1046,11 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
             result = tool.observe(result)
         except Exception:  # a broken summariser must not hide the result from the planner
             pass
-    return {"kind": "tool", "tool": name, "args": args, "result": result}
+    obs = {"kind": "tool", "tool": name, "args": args, "result": result}
+    # The hint is part of the observation only: the ledger keeps the tool's own result, so a replay reads the same rows.
+    if (hint := tool_module_hint(result, tool_names)) is not None:
+        obs["hint"] = hint
+    return obs
 
 
 def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: float) -> None:
@@ -1127,7 +1177,10 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
            "figures": [{"name": str(f["name"])[:120], "value": str(f["value"])[:60],
                         "sourced": not unverified(str(f["value"]), sub_history, task)}
                        for f in sub.get("figures") or [] if isinstance(f, dict) and "name" in f and "value" in f][:20]}
+    # A4-14: the sub-agent's own figure list is reconciled too. A figure it marked unsourced reaches the lead even when the
+    # answer text leaves it out, so the lead never reads an unsourced figure as checked.
     bad = unverified(answer, sub_history, str(spec["task"])) if answer else []
+    bad = list(dict.fromkeys(bad + [f["value"] for f in obs["figures"] if not f["sourced"]]))
     if bad:
         obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
     return obs
@@ -1384,8 +1437,12 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if auto is not None:
             plan = ctx.step(f"auto:{tag}:{i}", lambda c: auto)
         else:
-            plan = ctx.step(f"plan:{tag}:{i}", lambda c: _decide_plan(brain, goal, tools, history, memo, context, note,
-                                                                     finish_now=cfg.finish_now, out_of_calls=out_of_calls))
+            # The allowance decision is stored with the plan (A5-07). A resumed run after a top-up recomputes out_of_calls as
+            # False, but the stored plan was made when the allowance was spent, so the gates below read the stored value.
+            plan = ctx.step(f"plan:{tag}:{i}", lambda c: {**_decide_plan(brain, goal, tools, history, memo, context, note,
+                                                                        finish_now=cfg.finish_now, out_of_calls=out_of_calls),
+                                                          "out_of_calls": out_of_calls})
+        spent = bool(plan.get("out_of_calls", out_of_calls))
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
         elif plan["action"] == "ask_user":
@@ -1430,7 +1487,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 if (pos := _repeat_of(name, args, history)) is not None:
                     obs = _repeat_obs(name, args, history, pos)     # not sent again: the earlier result stands
                 else:
-                    obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args))
+                    obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args, tools))
         if obs.get("kind") == "tool":
             obs.setdefault("step", len(history) + 1)     # the number read_observation pages back by (1-based, as evidence shows)
         history.append(obs)
@@ -1459,7 +1516,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # The gate must judge a step the same way in every part: `last` moves with cfg.end, so a finish that ended part 1 was
         # judged by the evaluator then but refused on resume (replay diverged). at_part_end is fixed by the step index.
         at_part_end = (i + 1) % seg_len == 0
-        if plan["action"] == "finish" and cfg.depth == 0 and FORECAST_GOAL.search(goal) and not (at_part_end or out_of_calls or cfg.finish_now):
+        if plan["action"] == "finish" and cfg.depth == 0 and FORECAST_GOAL.search(goal) and not (at_part_end or spent or cfg.finish_now):
             # Round 3, A5-04: live, a forecast was finished with the checklist's data scan and forecast still undone, and the
             # evaluator wrote a verdict on it. A finish with items still to do is refused here, before the evaluator is asked,
             # and the refusal names the next item. Decided from the stored history, so a resumed run refuses the same finish.
@@ -1475,7 +1532,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # last step of this run to turn whatever was found into an answer or a checkpoint. Between those, it only costs time.
         # The evaluator also runs at the end of each part. The stored evaluation then replays at the same position when
         # the next part continues from there, so both runs ask the ledger for the same steps in the same order.
-        if plan["action"] != "finish" and not last and not out_of_calls and not at_part_end:
+        if plan["action"] != "finish" and not last and not spent and not at_part_end:
             continue
         eval_schema = SUB_EVAL_SCHEMA if cfg.depth else EVAL_SCHEMA
         verdict = ctx.step(f"eval:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
@@ -1498,7 +1555,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             if written is not None:
                 answer = written
             if not answer.strip():
-                if not last and not out_of_calls:
+                if not last and not spent:
                     history.append({"kind": "evaluation", "verdict": "not_met",
                                     "missing": "the goal looks met, but no written answer was given; state the answer"})
                     continue
@@ -1680,7 +1737,7 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                     last_note[0] = time.time()
                     ctx.store.append_event(ctx.mission_id, "provider.waiting", info)
 
-            bind(ctx._guard_time, note)
+            bind(ctx._guard_time, note, ctx.seconds_left)
         result = _run(ctx, brain, goal, tools, cfg, context, history)
         # Outside claims are checked against the pages first (lines whose figures no page holds are removed), then the whole
         # answer is grounded against the analysis evidence plus the text of the pages that were read.
@@ -1732,10 +1789,13 @@ class NimBrain:
         self.max_tokens = max_tokens
         self.checkpoint: Callable[[], None] | None = None
         self.on_wait: Callable[[dict], None] | None = None
+        self.remaining: Callable[[], float | None] | None = None
 
-    def bind(self, checkpoint: Callable[[], None] | None, on_wait: Callable[[dict], None] | None = None) -> None:
-        """Let a provider wait be stopped (cancel, spent time allowance) and reported. Called by the goal program."""
-        self.checkpoint, self.on_wait = checkpoint, on_wait
+    def bind(self, checkpoint: Callable[[], None] | None, on_wait: Callable[[dict], None] | None = None,
+             remaining: Callable[[], float | None] | None = None) -> None:
+        """Let a provider wait be stopped (cancel, spent time allowance) and reported. Called by the goal program. ``remaining``
+        gives the segment's seconds left, so one model call cannot run past the allowance (round 4, A5-06)."""
+        self.checkpoint, self.on_wait, self.remaining = checkpoint, on_wait, remaining
 
     def _extra(self) -> dict:
         extra: dict = {}
@@ -1743,6 +1803,8 @@ class NimBrain:
             extra["checkpoint"] = self.checkpoint
         if self.on_wait is not None:
             extra["on_wait"] = self.on_wait
+        if self.remaining is not None and (left := self.remaining()) is not None:
+            extra["budget_s"] = max(1.0, min(BUDGET_S, float(left)))
         return extra
 
     def write(self, messages: list[dict]) -> str:

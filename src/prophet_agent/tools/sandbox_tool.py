@@ -64,7 +64,9 @@ def make_run(datasets: dict[str, Path] | None = None):
             raise ValueError("code must be a non-empty string")
         if len(code) > MAX_CODE_CHARS:
             raise ValueError(f"code is longer than {MAX_CODE_CHARS} characters")
-        res = run_python(code, timeout_s=60, mem_mb=1536, inputs={**inputs, **carried_inputs(args.get("carry"))})
+        # Round 4, A5-10: the idempotency key seeds the run id, so a re-run after a crash returns the finished run.
+        run_id = _key[:32] if isinstance(_key, str) and len(_key) >= 32 else None
+        res = run_python(code, timeout_s=60, mem_mb=1536, inputs={**inputs, **carried_inputs(args.get("carry"))}, run_id=run_id)
         d = res.to_dict()
         return {"ok": d["ok"], "returncode": d["returncode"], "timed_out": d["timed_out"],
                 "stdout": d["stdout"], "stderr": d["stderr"], "run_id": d["run_id"],

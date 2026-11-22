@@ -106,6 +106,10 @@ class Ctx:
         # A long mission keeps its lease alive as it works, so another runtime cannot take it over mid-run.
         self.store.renew_lease(self.mission_id, self.rt.owner, self.rt.lease_s)
 
+    def seconds_left(self) -> float | None:
+        """Seconds left in this segment's time allowance, or None when the mission has none (round 4, A5-06)."""
+        return None if self.deadline is None else self.deadline - time.time()
+
     def _guard_budget(self) -> None:
         """The lead's calls are held to ``max_tool_calls``; a sub-agent's calls to ``max_delegated_calls``. Each lane is
         counted on its own, so a delegation cannot use up the lead's allowance (live Beijing: 44 delegated calls, lead
