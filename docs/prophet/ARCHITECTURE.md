@@ -243,3 +243,39 @@ after a Claude restart. Decisions:
 
 Not adopted: nested delegation (cost and loss of control), a shared mutable workspace between children (children write to their own run
 folders and hand files back), and a model-written verdict on a child's figures.
+
+## 12. Audit of 2026-11-22 and what changed (harness-led delegation, computed trust, one procedure)
+
+Six read-only audits (code and data, maths, research, analyst ideology, agent runtime, TimesFM coupling; notes in
+`research_notes/Prophet audit 2026-11-22/`, git-ignored) scored the slices 18 to 35 out of 100 against a principal data scientist.
+Measured from the ledger: 527 of 982 sandbox cells failed (54%); one delegation in 1,983 planner decisions; stall detection never
+fired on repeated failures because every run id differs; answers misquoted calibration and coverage, cited a web figure no page
+contained (EUR/JPY "IMF 162.34", the agent's own segment mean), and delivered TimesFM when a simple rule had won. Decisions:
+
+1. **The harness delegates, not only the model** (`goal._harness_plan`). A market or macro goal gets a researcher once the data has been
+   inspected; a long panel gets up to four parallel analysts on slices before any forecast; five identical failures hand the failing
+   cell to a fresh-context analyst. Each fires once and is stored as an `auto:` step, so replay is stable. The planner rules alone did
+   not produce delegation.
+2. **Repeats are seen.** The stall signature ignores run ids and file lists; eight identical failures end the loop with a labelled
+   partial answer; three quote the failing line in the planner note.
+3. **Figures a reader relies on are written by code.** An accuracy paragraph (backtest MASE against the best simple rule, verdict,
+   backtest and held-out coverage) is appended to every answer from the stored results. Outside-context lines whose figures appear in
+   no fetched page are removed and the removal is said. The composer sees both before it writes.
+4. **A state card** (newest file of each kind with its run id, backtest so far, sub-agent reports) is computed every step, so
+   compaction cannot lose where the work stands.
+5. **One operating procedure** (`planner.v16`, 32 rules from 70): frame the decision, read the series' own clock, scan, hypotheses,
+   funnel, prepare, outside context, baselines, one treatment gate (control_lab), forecast, range, deliver. `composer.v4` writes in
+   decision order.
+6. **The simple rule can be the centre line.** `backtest_series` reports wins, a paired bootstrap interval and a verdict over 12
+   origins; when the verdict is `baseline_better`, the checklist asks for `forecast_report(centre='naive'|'drift')`, which charts the
+   rule with TimesFM's band recentred.
+7. **Intervals.** Calibration is judged by distance to target, with a second pass and an EWMA-volatility conformal band used only when
+   it repairs a too-narrow band; held-out coverage carries a Wilson interval. Never narrowed.
+8. **Sandbox API is discoverable.** The tool spec carries a signature catalogue generated from the code; guessed argument names are
+   aliased or refused with the real signature; pandas answers polars method names; panels are never summed silently (`pl.panel`).
+9. **Research quality.** Recency-aware ranking, corrected credibility tiers, metadata-only publication dates, a primary-source registry
+   per series family fetched before search, `exclude_urls`, and coverage metrics per call.
+10. **Trading calendars.** Forecast dates skip the holidays of the exchange calendar the history follows (inferred from the data).
+
+Research behind the next steps: `reports/Foundation forecaster control and intervals.md` (random-walk gate and return target for prices,
+DtACI online adjustment, equal-weight blends, global GBM for panels, reconciliation).
