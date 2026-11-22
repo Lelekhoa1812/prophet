@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
-from prophet_agent.forecast.health import assess
+from prophet_agent.forecast.health import assess, business_day_calendar, season_check
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
 from prophet_agent.forecast.tsb import INTERMITTENT_ADI, expected_volume, is_intermittent, tsb_band  # noqa: F401
 from prophet_agent.runtime.runner import Tool
@@ -133,12 +133,21 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
     results = {name: _one(s, pairs[i][0], pairs[i][1], horizon, engine, controls[i], crossings[i])
                for i, (name, s) in enumerate(named)}
     ignored = ignored_arguments(args)
-    for name, r in results.items():
+    for name, s in named:
+        r = results[name]
         if ignored:
             r["config"]["ignored_arguments"] = ignored
-        step = _typical_step(run_dates(args, name))
+        dates = run_dates(args, name)
+        step = _typical_step(dates)
         if step is not None:
             r["config"]["series_step"] = step      # the series' own step, so a request in weeks or months can be converted
+        cal = business_day_calendar(dates)         # A6-04: a business-day series has a 5-step week, not 7
+        if cal is not None:
+            r["config"]["series_step_unit"] = "business day"
+            r["config"]["weekly_cycle_steps"] = cal["weekly_cycle_steps"]
+        chk = season_check(args.get("season"), s, dates)   # A6-04: the season given (accepted, not applied) against the cycle
+        if chk is not None:
+            r["config"]["season_check"] = chk
     if len(results) == 1 and ("values" in args or "series" in results):
         return next(iter(results.values()))        # one unnamed series keeps the flat shape
     return {"series": results}

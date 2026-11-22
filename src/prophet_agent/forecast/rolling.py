@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 
 from prophet_agent.forecast.combine import adopt_equal_blend, combine, equal_blend
+from prophet_agent.forecast.health import season_check
 from prophet_agent.forecast.metrics import paired_signflip, wis
 from prophet_agent.forecast.paired import bootstrap_gain
 from prophet_agent.forecast.season import choose_season, mase_scale_text
@@ -344,6 +345,13 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
                  if m <= 1 else (f"mean of the last {win} points, the season" if win == m else
                                  f"mean of the last {win} points: the season is {m}, but the rule keeps at least {MEAN_LAST_FLOOR}")),
     }
+    if season is not None:
+        # A6-04: a given season is checked against the cycle measured on the prefix no test window can touch, so the check
+        # reads nothing the verdict is scored on.
+        cut = season_cut(n, horizon, n_origins)
+        chk = season_check(season, x[:cut], None if dates is None else list(dates)[:cut])
+        if chk is not None:
+            out["season_check"] = chk
     if k < n_origins:
         out["origins_note"] = (f"only {k} of the {n_origins} requested windows of {horizon} fit in {n} points; "
                                "the evidence rests on these few windows")

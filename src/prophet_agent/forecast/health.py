@@ -49,6 +49,66 @@ def _expected_path(history: np.ndarray, period: int, horizon: int) -> np.ndarray
     return np.array([profile[(m + k) % period] for k in range(horizon)])
 
 
+SEASON_TOLERANCE = 0.10       # a given season this far from the measured cycle (relative) is flagged (A6-04)
+
+
+def business_day_calendar(dates: Any) -> dict[str, Any] | None:
+    """A business-day calendar from the dates: no weekend day present and a Friday-to-Monday gap present. Then one week is
+    5 steps of the series, whatever the step is called. None for calendar days, for fewer than ten dates, or unparsed dates.
+
+    Motivation vs Logic
+    Motivation: a weekly cycle on a business-day series is 5 steps, not 7 (audit A6-04). The step median is 1 day for both
+    calendars, so the step alone cannot say which one the series is.
+    Logic: weekdays from the dates (Monday = 0); the calendar is business days only when no Saturday or Sunday appears and a
+    gap of three or more days does (the weekend). The week is then 5 steps by definition.
+    """
+    if dates is None or len(dates) < 10:
+        return None
+    try:
+        d = np.array([np.datetime64(str(v).strip()[:10]) for v in dates], dtype="datetime64[D]")
+    except (ValueError, TypeError):
+        return None
+    weekday = (d.astype(np.int64) + 3) % 7        # 1970-01-01 was a Thursday: Monday = 0
+    if np.any(weekday >= 5):
+        return None
+    gaps = np.diff(d).astype(np.int64)
+    if not np.any(gaps >= 3):
+        return None
+    return {"calendar": "business_day", "weekly_cycle_steps": 5,
+            "note": "weekend days are absent: one week is 5 steps of this series"}
+
+
+def season_check(season: Any, history: Any, dates: Any = None) -> dict[str, Any] | None:
+    """Compare a given season with the cycle measured on the history. None when no season was given, when there are too
+    few points, or when no cycle is measured (nothing to compare with). A warning when they differ by more than
+    SEASON_TOLERANCE of the given season.
+
+    Motivation vs Logic
+    Motivation: season was a free parameter. Retail rep4 backtested at 7 on a series whose cycle was 5 steps (A6-04).
+    Logic: dominant_period on the history given (the caller passes only what was known before the first test window), in
+    the series' own steps, so the same check covers calendar and business-day series. Business days are named in the warning.
+    """
+    if season is None:
+        return None
+    x = np.asarray(history, dtype=float).reshape(-1)
+    if len(x) < MIN_POINTS:
+        return None
+    s = int(season)
+    period, strength = dominant_period(x)
+    if not period or s < 1:
+        return None
+    if abs(period - s) / s <= SEASON_TOLERANCE:
+        return None
+    cal = business_day_calendar(dates) if dates is not None else None
+    warning = (f"season={s} does not match the measured cycle of {period} steps (strength {strength:.2f}); "
+               f"use season={period} or say why {s} is right")
+    if cal is not None:
+        warning += (f". The dates are business days, so {period} steps is one week and season {s} is not a weekly cycle"
+                    if period == cal["weekly_cycle_steps"] else ". The dates are business days, so a week is 5 steps")
+    return {"season_given": s, "period_measured": int(period), "strength": round(float(strength), 2),
+            "measured_on_points": len(x), "warning": warning}
+
+
 def _shape(a: np.ndarray) -> float:
     return float(np.std(_detrend(np.asarray(a, dtype=float)))) if len(a) > 2 else 0.0
 
