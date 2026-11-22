@@ -11,7 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCANNED = ("src", "web/src", "console", "scripts", ".claude")
 SCANNED_FILES = ("pyproject.toml",)
-SKIP_DIRS = {"node_modules", "__pycache__", "dist", ".venv", "data", "build"}
+SKIP_DIRS = {"node_modules", "__pycache__", "dist", ".venv", "data", "build",
+             "worktrees"}   # .claude/worktrees holds temporary copies of the whole repo for sub-agents, not app content
 FORBIDDEN = re.compile(
     r"research[ -]use|research[ -]only|non-?commercial|commercial (?:decision|use|deliverable|service)|paid services"
     r"|licen[cs]e (?:terms|gate|status|wording|notice|copy|note|disclaimer|switch)|disclaimer wording",

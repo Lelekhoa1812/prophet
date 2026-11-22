@@ -14,6 +14,7 @@ the existing find_season, measured the same way. The reason names what was measu
 """
 from __future__ import annotations
 
+from statistics import NormalDist
 from typing import Any
 
 import numpy as np
@@ -21,6 +22,7 @@ import numpy as np
 from prophet_agent.sandbox.prophet_lib import find_season
 
 THRESHOLD = 0.3             # the same bar the existing season picker used: above about 0.3 suggests a repeating pattern
+ALPHA = 0.05                # family-wise false-season rate the bar is set for (A2-11)
 MIN_POINTS = 24             # below this a cycle cannot be told from noise
 CANDIDATES: dict[str, tuple[int, ...]] = {
     "business": (5, 21),    # a trading week and a trading month
@@ -72,8 +74,19 @@ def _acf(z: np.ndarray, lag: int) -> float:
     return float(np.mean(z[lag:] * z[:-lag]))
 
 
-def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None) -> dict[str, Any]:
-    """Return {"season": int, "reason": str, ...}. Season 1 means no season: use one-step changes for the MASE scale."""
+def _bar(n_changes: int, n_lags: int, alpha: float) -> float:
+    """The autocorrelation a candidate must clear: the Bonferroni bound over the candidate lags, floored at THRESHOLD.
+
+    Motivation (A2-11, measured): the strongest of many lags against a fixed 0.3 gave white-noise changes a false season
+    8 percent of the time at n = 60. Under no cycle the lag autocorrelation of n standardised changes is about N(0, 1/n),
+    so z(1 - alpha / (2K)) / sqrt(n) bounds the largest of K lags with chance alpha. Long series keep the 0.3 floor."""
+    z = NormalDist().inv_cdf(1 - alpha / (2 * max(1, n_lags)))
+    return max(THRESHOLD, z / np.sqrt(max(1, n_changes)))
+
+
+def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, alpha: float = ALPHA) -> dict[str, Any]:
+    """Return {"season": int, "reason": str, "threshold": float, ...}. Season 1 means no season: use one-step changes for
+    the MASE scale. The threshold is the bar the strongest candidate had to clear (see ``_bar``)."""
     x = np.asarray(values, dtype=float).reshape(-1)
     x = x[np.isfinite(x)]
     n = len(x)
@@ -98,15 +111,16 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None) 
         if not strengths:
             return {"season": 1, "reason": f"{label}: no candidate cycle fits the history; no season assumed"}
     best = max(strengths, key=strengths.get)
-    if strengths[best] > THRESHOLD:
+    bar = round(_bar(len(z), len(strengths), alpha), 3)
+    if strengths[best] > bar:
         return {"season": int(best), "reason": f"{label}: the one-step changes repeat every {best} periods "
-                                                f"(autocorrelation {strengths[best]:.2f}, above {THRESHOLD})",
-                "strengths": strengths, "kind": kind}
+                                                f"(autocorrelation {strengths[best]:.2f}, above {bar})",
+                "strengths": strengths, "kind": kind, "threshold": bar}
     if kind == "business":
         why = "no weekly or monthly cycle is measured in the one-step changes, so the price-like series has no season"
     else:
-        why = f"no candidate cycle is above {THRESHOLD} in the one-step changes"
-    return {"season": 1, "reason": f"{label}: {why}", "strengths": strengths, "kind": kind}
+        why = f"no candidate cycle is above {bar} in the one-step changes ({len(strengths)} lags tested)"
+    return {"season": 1, "reason": f"{label}: {why}", "strengths": strengths, "kind": kind, "threshold": bar}
 
 
 def mase_scale_text(season: int) -> str:
