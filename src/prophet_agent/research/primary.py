@@ -97,8 +97,47 @@ FAMILY_KEYWORDS: dict[str, frozenset[str]] = {
     "rates": frozenset("rate rates yield yields treasury bond bonds fomc ecb boj policy".split()),
     "equities": frozenset("stock stocks equity equities shares index nasdaq earnings".split()),
     "inflation": frozenset("inflation cpi hicp deflation prices".split()),
+    # round 3 (A3-06): the domains the goal trigger uses. They have no hand-kept registry yet, so they need a region.
+    "electricity": frozenset("electricity electric kwh megawatt megawatts".split()),
+    "retail": frozenset("retail retailer retailers grocery supermarket supermarkets christmas footfall".split()),
+    "weather": frozenset("weather rain rainfall temperature humidity".split()),
+    "prices": frozenset("tariff tariffs".split()),
+    "pm25": frozenset("pm particulate particulates pollution smog aqi".split()),
 }
 WORD = re.compile(r"[a-z]+")
+
+# Families whose figures depend on the place they describe. Research for them runs only when the planner gives a region
+# (taken from the data's metadata or the user); with no region the tool searches nothing (A4-08).
+REGIONAL_FAMILIES = frozenset({"electricity", "retail", "weather", "prices", "pm25"})
+# Wording the trigger and the planner use for a family, mapped to the family name (A3-06).
+FAMILY_ALIASES = {"tariffs": "prices", "tariff": "prices", "pm2.5": "pm25", "pm2_5": "pm25", "pm2": "pm25",
+                  "power": "electricity"}
+# US grid operators and agencies. They are dropped from queries when the region is known and is not the United States
+# (A3-06: 12 calls aimed at ISO-NE, PJM, ERCOT and NYISO for Portuguese clients).
+US_GRID_TERMS = ("ercot", "caiso", "iso-ne", "iso ne", "pjm", "nyiso", "miso", "ferc", "nerc")
+US_REGION = re.compile(r"\b(?:us|usa|u\.s\.|united states|america|texas|california|new england|new york)\b", re.I)
+
+
+def family_names() -> list[str]:
+    """Every family the research tool accepts, in a stable order: the registry families, then the regional ones."""
+    names = list(PRIMARY_SOURCES) + [f for f in FAMILY_KEYWORDS if f not in PRIMARY_SOURCES]
+    return names
+
+
+def resolve_family(value: str) -> str | None:
+    """The canonical family for a name or alias (case and spaces ignored); None when it is not a known family."""
+    key = " ".join(str(value).lower().split())
+    key = FAMILY_ALIASES.get(key, key)
+    return key if key in family_names() else None
+
+
+def is_us_region(region: str | None) -> bool:
+    return bool(region and US_REGION.search(region))
+
+
+def is_us_grid_query(query: str) -> bool:
+    lowered = query.lower()
+    return any(term in lowered for term in US_GRID_TERMS)
 
 
 def detect_family(text: str) -> str | None:

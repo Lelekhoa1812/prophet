@@ -224,3 +224,85 @@ def verify_figures(text: str, sources: list[dict]) -> list[str]:
         if _number_key(token) not in known and token not in missing:
             missing.append(token)
     return missing
+
+
+# Calendar dates in running text (A3-07). A dated sentence is kept as a passage even when no query word appears, so a
+# dated event such as "OPEC+ meeting on 29 November 2026" is not lost (round 3: the page scored 0 and was dropped).
+MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10,
+          "nov": 11, "dec": 12}
+_MONTH_WORD = r"(?:january|february|march|april|may|june|july|august|september|october|november|december|" \
+              r"jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)"
+DATE_EXPR = re.compile(rf"\b(?:\d{{1,2}}\s+{_MONTH_WORD}(?:\s+\d{{4}})?|{_MONTH_WORD}\s+\d{{1,2}}(?:,?\s+\d{{4}})?|"
+                       rf"{_MONTH_WORD}\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}})\b", re.I)
+STATED = re.compile(rf"\b(?:published|released|updated|posted|issued|as of)\s+(?:on\s+)?(\d{{1,2}}\s+{_MONTH_WORD}"
+                    rf"(?:\s+\d{{4}})?|{_MONTH_WORD}\s+\d{{1,2}}(?:,?\s+\d{{4}})?)", re.I)
+HEAD_CHARS = 320
+DATE_SCORE = 0.1
+
+
+def parse_date_expr(expr: str, default_year: int) -> tuple[str, bool] | None:
+    """(ISO date, year was written in the text) for an expression from DATE_EXPR or STATED; None when unreadable.
+    A missing year takes default_year and is reported as not written, so the caller can label it as inferred."""
+    value = expr.strip().lower()
+    iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value)
+    if iso:
+        return f"{iso.group(1)}-{iso.group(2)}-{iso.group(3)}", True
+    day_first = re.fullmatch(r"(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?", value)
+    month_first = re.fullmatch(r"([a-z]+)\s+(\d{1,2})(?:,?\s+(\d{4}))?", value)
+    if day_first:
+        day, month_word, year = day_first.groups()
+    elif month_first:
+        month_word, day, year = month_first.groups()
+    else:
+        month_only = re.fullmatch(r"([a-z]+)\s+(\d{4})", value)
+        if not month_only:
+            return None
+        month_word, day, year = month_only.group(1), "1", month_only.group(2)
+    month = MONTHS.get(month_word[:3])
+    if month is None or not 1 <= int(day) <= 31:
+        return None
+    try:
+        return f"{int(year or default_year):04d}-{month:02d}-{int(day):02d}", year is not None
+    except ValueError:
+        return None
+
+
+def stated_date(text: str, default_year: int) -> tuple[str, bool] | None:
+    """The first date a page states about its own publication ("released November 10"), read with parse_date_expr."""
+    match = STATED.search(text or "")
+    return parse_date_expr(match.group(1), default_year) if match else None
+
+
+def has_date(text: str) -> bool:
+    return bool(DATE_EXPR.search(text or ""))
+
+
+def select_passages(page, queries: list[str], k: int = 4, *, size: int = 700, overlap: int = 100) -> list[dict]:
+    """The passages to quote from a page (A3-07). Query matches come first, best score first. Then passages that carry
+    a calendar date (reason "date"), even with no query word. When nothing is chosen, the opening of the page is given
+    (reason "head") so a title-only or unmatched page is still visible. Each item has text, score, start and reason."""
+    text = page if isinstance(page, str) else getattr(page, "text", "") or ""
+    if not text or k < 1:
+        return []
+    passages = split_passages(text, size=size, overlap=overlap)
+    scores = score_passages(passages, queries) if queries else [0.0] * len(passages)
+    candidates = [(-score, passage.start, "query", score, passage) for passage, score in zip(passages, scores)
+                  if score > 0]
+    candidates += [(0.0, passage.start, "date", DATE_SCORE, passage) for passage, score in zip(passages, scores)
+                   if score <= 0 and has_date(passage.text)]
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    chosen: list[dict] = []
+    taken: list[tuple[int, int]] = []
+    for _, _, reason, score, passage in candidates:
+        if len(chosen) >= k:
+            break
+        end = passage.start + len(passage.text)
+        if any(passage.start < b and a < end for a, b in taken):
+            continue
+        taken.append((passage.start, end))
+        chosen.append({"text": passage.text, "score": score, "start": passage.start, "reason": reason})
+    if not chosen:
+        head = text[:HEAD_CHARS].strip()
+        if head:
+            chosen.append({"text": head, "score": 0.0, "start": 0, "reason": "head"})
+    return chosen
