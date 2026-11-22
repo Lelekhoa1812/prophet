@@ -17,6 +17,19 @@ from .types import Forecast
 
 CHECKPOINT = "google/timesfm-3.0-pytorch"
 N_QUANTILES = 9  # quantiles 0.1 .. 0.9; the median is index 4
+# A sales, count or volume history with a few refund days below zero is still a non-negative measure. Live retail rep3
+# (measured): two refund days (-1,683 and -1,566) in about 1,000 days switched the floor off, and Saturdays came out at
+# -3,125 and -3,606. Up to this share of points below zero, the series is treated as non-negative and floored.
+NEG_SHARE_MAX = 0.02
+
+
+def nonnegative_domain(x) -> bool:
+    """True when the series is a non-negative measure: finite, and at most NEG_SHARE_MAX of its points below zero. A signed
+    series (returns, temperatures, balances) has far more negative points and keeps its negative forecasts."""
+    a = np.asarray(x, dtype=float).reshape(-1)
+    if a.size == 0 or not np.isfinite(a).all():
+        return False
+    return float(np.mean(a < 0)) <= NEG_SHARE_MAX
 
 
 class TimesFMEngine:
@@ -52,7 +65,7 @@ class TimesFMEngine:
 
     def forecast_batch(self, series_list, horizon: int) -> Forecast:
         """Forecast many series in one model call. Returns point (n, horizon) and q (n, horizon, 9). Forecasts are floored at zero only for
-        series that never went below zero."""
+        non-negative series (see nonnegative_domain)."""
         if horizon < 1:
             raise ValueError("horizon must be at least 1")
         if len(series_list) == 0:
@@ -73,9 +86,9 @@ class TimesFMEngine:
         q = np.stack([np.asarray(o.quantiles, dtype=np.float32) for o in outs])
         if q.shape != (len(batch), horizon, N_QUANTILES):
             raise RuntimeError(f"unexpected quantile shape {q.shape}, expected {(len(batch), horizon, N_QUANTILES)}")
-        # A series that never went below zero (counts, sales) cannot be forecast below zero. A series that did (returns,
-        # temperatures, balances) is left alone: clipping it would bend a legitimate forecast.
-        nonneg = np.array([bool((x >= 0).all()) for x in batch])
+        # A non-negative measure (counts, sales, a few refund days) cannot be forecast below zero. A signed series (returns,
+        # temperatures, balances) is left alone: clipping it would bend a legitimate forecast. See NEG_SHARE_MAX.
+        nonneg = np.array([nonnegative_domain(x) for x in batch])
         point = np.where(nonneg[:, None], np.clip(point, 0, None), point)
         q = np.where(nonneg[:, None, None], np.clip(q, 0, None), q)
         q = np.sort(q, axis=-1)  # guard against quantile crossing
@@ -134,7 +147,7 @@ class TimesFMEngine:
         out = np.sort(out, axis=-1)[0, :horizon, :]
         if stats is not None:
             out = out * stats[1] + stats[0]
-        if bool((x[start:][~ign] >= 0).all()):
+        if nonnegative_domain(x[start:][~ign]):
             out = np.clip(out, 0, None)
         if out.shape != (horizon, N_QUANTILES):
             raise RuntimeError(f"unexpected quantile shape {out.shape}, expected {(horizon, N_QUANTILES)}")

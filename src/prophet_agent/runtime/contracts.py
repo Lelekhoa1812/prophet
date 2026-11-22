@@ -20,6 +20,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from prophet_agent.forecast.timesfm import nonnegative_domain
+
 EXPECTED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
 INTERVAL_SHARE = 0.9      # share of steps that must sit inside q10 <= point <= q90
 SCALE_MARGIN = 3.0        # forecast may run this many history ranges beyond the history's own range
@@ -87,11 +89,25 @@ def check_forecast(point, q10=None, q90=None, *, horizon=None, history=None) -> 
                                  f"q10 <= point <= q90 holds at {inside} of {len(p)} steps; at least "
                                  f"{round(INTERVAL_SHARE * 100)} per cent are needed", "warn"))
     hist = _numbers(history) if history is not None else None
-    if hist and all(math.isfinite(v) for v in hist) and p and min(hist) >= 0:
+    if hist and all(math.isfinite(v) for v in hist) and p and nonnegative_domain(hist):
+        # Live retail rep3 (measured): -3,606 on a Saturday, while the history held only two refund days below zero. The
+        # domain is non-negative when a small share of points is below zero (forecast.timesfm.NEG_SHARE_MAX), so those
+        # days no longer switch the check off. The band counts too: a negative q10 is an impossible sales value as well.
         neg = sum(1 for v in p if not v >= 0)
-        checks.append(_check("non_negative_when_history_is", neg == 0,
-                             "the history is never negative and the forecast is never negative" if neg == 0
-                             else f"the history is never negative but {neg} forecast steps are below zero"))
+        band_lo = _numbers(q10) if q10 is not None else None
+        band_hi = _numbers(q90) if q90 is not None else None
+        band_neg = sum(1 for v in (band_lo or []) + (band_hi or []) if math.isfinite(v) and v < 0)
+        ok = neg == 0 and band_neg == 0
+        if ok:
+            detail = "the history is essentially non-negative and the forecast and its band are never negative"
+        else:
+            parts = []
+            if neg:
+                parts.append(f"{neg} forecast steps are below zero")
+            if band_neg:
+                parts.append(f"{band_neg} band values are below zero")
+            detail = "the history is essentially non-negative but " + " and ".join(parts)
+        checks.append(_check("non_negative_when_history_is", ok, detail))
     if hist and all(math.isfinite(v) for v in hist) and p and all(math.isfinite(v) for v in p):
         lo_h, hi_h = min(hist), max(hist)
         span = hi_h - lo_h
