@@ -117,3 +117,15 @@ def test_a_panel_refuses_the_blend_because_its_check_is_per_series():
         RT._panel_centres("blend", ["A", "B"])
     with pytest.raises(ValueError, match="one series"):
         RT._panel_centres({"A": "blend"}, ["A", "B"])
+
+
+def test_the_observation_keeps_the_delivered_centre_so_the_gate_can_read_it():
+    # Live (WTI rep3, 2026-11-22): forecast_report was called with centre mean_last_season, yet baseline_compared still said the
+    # centre was TimesFM's. observe() passed the forecast through _compact, which keeps only config, health and the lines, so the
+    # gate never saw the centre the pack drew.
+    from prophet_agent.runtime import contracts
+    fc = RT._centre(_fc([80.0, 81.0]), [5.0, 8.0, 12.0], "naive")
+    obs = RT.observe({"forecast": fc, "run_id": "r", "files": [], "manifest": "m"})
+    assert obs["forecast"]["centre"]["rule"] == "naive"
+    rec = contracts._forecast_record({"kind": "tool", "tool": "forecast_report", "result": obs, "args": {}})
+    assert rec["centre"]["rule"] == "naive"

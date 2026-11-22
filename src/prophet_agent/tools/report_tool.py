@@ -420,6 +420,10 @@ def observe(result: dict) -> dict:
            "deliverables": "built and listed in the manifest; no further build is needed"}
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
+    if isinstance(result["forecast"].get("centre"), dict):
+        # The centre the pack draws. The gate reads it to judge baseline_compared; _compact drops it. The blend's evidence is
+        # the backtest behind the choice and is left out of the observation to keep it short.
+        out["forecast"]["centre"] = {k: v for k, v in result["forecast"]["centre"].items() if k != "evidence"}
     return out
 
 
