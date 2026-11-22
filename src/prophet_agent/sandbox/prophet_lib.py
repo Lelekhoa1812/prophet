@@ -509,6 +509,26 @@ def _wall_clock(x: pd.Series) -> pd.Series:
     return pd.to_datetime(x.str.replace(_TIME_OFFSET, "", regex=True), errors="coerce", format="mixed")
 
 
+def _utc_if_offsets_differ(t: pd.Series) -> pd.Series | None:
+    """Timestamps with differing offsets read as UTC instants, or None when the wall clock is enough.
+
+    Motivation vs Logic: on the Sydney fall-back day, 02:00 +11:00 and 02:00 +10:00 are two different hours. Dropping the
+    offsets (_wall_clock) gave both the same label, and build_series then summed them to 20 (repro, measured-repro in
+    audit A1-11). Converting to UTC keeps them apart. A column with one offset, or stamps at midnight (dates, not
+    instants), keeps the wall clock, because converting a date written with an offset can move it a day.
+    """
+    has = t.str.contains(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$", regex=True, na=False)
+    if not has.any():
+        return None
+    offs = t[has].str.extract(r"(Z|[+-]\d{2}:?\d{2})$")[0]
+    if offs.nunique() < 2:
+        return None
+    wall = _wall_clock(t[has]).dropna()
+    if not ((wall - wall.dt.normalize()) != pd.Timedelta(0)).any():
+        return None
+    return pd.to_datetime(t, errors="coerce", format="mixed", utc=True).dt.tz_convert(None)
+
+
 def _parse_dates(t: pd.Series, dayfirst: bool) -> pd.Series:
     """Each value is parsed on its own, by its shape:
     - year first (2024-01-07): always year-month-day, so it is never read day-first (7 January, not 1 July);
@@ -553,6 +573,11 @@ def to_datetime(s: pd.Series, dayfirst: bool | None = None) -> tuple[pd.Series, 
     t = s.astype(str).str.strip()
     t = t.mask(t.str.lower().isin(_NA_TOKENS))
     info: dict[str, Any] = {"ambiguous_day_month": False}
+    utc = _utc_if_offsets_differ(t)
+    if utc is not None:
+        info["format"] = "ISO with differing offsets, read as UTC instants"
+        info["clock"] = "UTC"
+        return utc, info
     head = t.dropna().head(60)
     if len(head) and max(_parse_dates(head, df).notna().mean() for df in (False, True)) < 0.8 \
             and pd.to_numeric(head, errors="coerce").notna().mean() < 0.8:
@@ -928,6 +953,91 @@ def _panel_guard(df: pd.DataFrame, time: str | None, value: str, agg: str | None
     return df, agg or "sum"
 
 
+_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_CLOSED_SHARE = 0.9  # share of one weekday's periods with no value that makes it look closed, not missing (proposal; A1-03)
+_CLOSED_MIN_PERIODS = 4  # periods a weekday needs before its absence is judged (proposal)
+
+
+def _is_business(freq: str) -> bool:
+    try:
+        off = pd.tseries.frequencies.to_offset(freq)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(off, (pd.offsets.BusinessDay, pd.offsets.CustomBusinessDay))
+
+
+def _grid_freq(index: pd.DatetimeIndex, freq: str | None) -> str | None:
+    """The grid to group on. A business-day grid cannot hold weekend rows: pandas folds them into a neighbouring weekday,
+    so the values land on the wrong dates. Refused with the fix named (freq='D' keeps every observed day); a business
+    grid is fine when the rows really are weekdays only.
+
+    Motivation vs Logic: live retail rep4 grouped Friday, Saturday and Sunday into one Friday value (repro: 100, 10, 20
+    gave 130) and then re-dated 504 values by position, so the forecast ended 2011-11-04 against data to 2011-12-08
+    (A1-01, A4-01).
+    """
+    if not freq or not _is_business(freq):
+        return freq
+    n_sat, n_sun = int((index.day_of_week == 5).sum()), int((index.day_of_week == 6).sum())
+    if not (n_sat or n_sun):
+        return freq
+    parts = [f"{n} on {name}" for name, n in (("Saturday", n_sat), ("Sunday", n_sun)) if n]
+    raise ValueError(f"{' and '.join(parts)} rows fall on a weekend. A business-day grid (freq={freq!r}) folds them into a "
+                     "weekday's total, so the values sit on the wrong dates. Use freq='D' to keep every observed day: closed "
+                     "days stay empty and can be dropped with .dropna(), and the dates are kept.")
+
+
+def _refuse_repeated_stamps(index: pd.DatetimeIndex, agg_given: bool) -> None:
+    """Sub-daily rows that share a timestamp are refused unless the caller names the combination.
+
+    Motivation vs Logic: at a clock change a local hour can occur twice. Summing it doubled the hour silently (Sydney
+    fall-back repro gave 20 for one hour, measured-repro, A1-11). Daily duplicates keep the sum default that prepare_series
+    documents, so existing daily callers are unchanged.
+    """
+    if agg_given or not index.has_duplicates:
+        return
+    rep = index[index.duplicated(keep=False)]
+    if not np.any((rep.hour != 0) | (rep.minute != 0)):
+        return
+    raise ValueError(f"{int(index.duplicated().sum())} sub-daily rows share a timestamp (for example {rep[0]}). At a clock change "
+                     "a local hour can occur twice, and summing it would double that hour. Pass agg='sum' only if the rows are "
+                     "parts of one total, or agg='mean', 'first' or 'last' to choose. A column whose offsets differ (+11:00 and "
+                     "+10:00) is read as UTC instants and needs no agg.")
+
+
+def _closed_mask(index: pd.DatetimeIndex, closed: Any) -> np.ndarray:
+    """Periods on closed days: weekday names ('Saturday') and dates ('2024-12-25', an exchange holiday)."""
+    mask = np.zeros(len(index), dtype=bool)
+    if not closed:
+        return mask
+    names: list[str] = []
+    dates: list[pd.Timestamp] = []
+    for c in closed:
+        text = str(c).strip()
+        if text.capitalize() in _WEEKDAYS:
+            names.append(text.capitalize())
+            continue
+        try:
+            dates.append(pd.Timestamp(text).normalize())
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"closed= takes weekday names ('Saturday') or dates ('2024-12-25'); {c!r} is neither") from err
+    if names:
+        mask |= np.asarray(pd.Index(index.day_name()).isin(names))
+    if dates:
+        mask |= np.asarray(pd.Index(index.normalize()).isin(dates))
+    return mask
+
+
+def _closed_candidates(index: pd.DatetimeIndex, missing: np.ndarray) -> dict[str, float]:
+    """Weekdays with no value on most of their periods: a closure pattern, not scattered gaps (A1-03)."""
+    days = np.asarray(index.day_name())
+    out: dict[str, float] = {}
+    for w in _WEEKDAYS:
+        on = days == w
+        if on.sum() >= _CLOSED_MIN_PERIODS and missing[on].mean() >= _CLOSED_SHARE:
+            out[w] = float(missing[on].mean())
+    return out
+
+
 def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq: str | None = None,
                  agg: str | None = None, fill: str = "keep", sentinel: list[float] | None = None,
                  entity: str | None = None, key: Any = None) -> pd.Series:
@@ -939,7 +1049,12 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
     entity="station", key="Beijing"). When entities share dates and neither is given, this raises ValueError, because a
     sum would add them together; ``agg`` given explicitly also lifts that check. Choosing these is the caller's decision,
     and it should be reported in the answer.
+
+    Dates are never re-dated by position: each value keeps the date it was recorded on, and the series ends on the last
+    observed date. A business-day ``freq`` with weekend rows is refused (see _grid_freq): use ``freq='D'`` to keep every
+    observed day. Sub-daily rows that share a timestamp are refused unless ``agg`` is named.
     """
+    agg_given = agg is not None
     df, agg = _panel_guard(df, time, value, agg, entity, key)
     num, _ = to_number(df[value])
     if sentinel:
@@ -949,7 +1064,9 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
     ts, _ = to_datetime(df[time])
     s = pd.Series(num.values, index=ts).dropna(axis=0, how="all")
     s = s[s.index.notna()].sort_index()
+    _refuse_repeated_stamps(s.index, agg_given)
     if freq:
+        freq = _grid_freq(s.index, freq)
         grouped = s.groupby(pd.Grouper(freq=freq))
         # A period with no recorded value is missing, not zero: sum() of nothing is 0 in pandas unless min_count says so.
         s = grouped.sum(min_count=1) if agg == "sum" else getattr(grouped, agg)()
@@ -969,6 +1086,13 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     only up to now (price paid) must be as long as the history; one known ahead (a planned promotion, holidays) must be as
     long as the history plus the horizon you will forecast. The forecast tools then take them by name:
     future_covariates=['promo'].
+
+    The clock is written with the series: ``step`` (a pandas alias, inferred from the dates when ``freq`` is not given)
+    and ``calendar`` ("calendar", "business" or "trading"). The kind is inferred from the step; prepare_series sets
+    "trading" in ``s.attrs`` when closed days were given, and that survives dropna(). Files without these keys still load.
+
+    Motivation vs Logic: the forecast record did not carry the step, so the horizon check could not convert "14 days"
+    into the series' own unit (A4-13). Recording it here lets later tools and checks read it from the file.
     """
     if name is not None and isinstance(series, dict):
         raise ValueError("name= labels one series; for a dict of series, the dict keys are the names")
@@ -984,6 +1108,16 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
         out["covariates"] = clean
     if freq:
         out["freq"] = freq
+    step_val = freq
+    dated = next((x.index for x in items.values() if isinstance(x, pd.Series) and isinstance(x.index, pd.DatetimeIndex)), None)
+    if step_val is None and dated is not None and len(dated) >= 3:
+        step_val = _infer_freq(dated.unique().sort_values())
+    attr_kind = next((x.attrs.get("calendar") for x in items.values() if isinstance(x, pd.Series) and x.attrs.get("calendar")), None)
+    kind = attr_kind or (("business" if _is_business(step_val) else "calendar") if step_val else None)
+    if step_val:
+        out["step"] = step_val
+    if kind:
+        out["calendar"] = kind
     for name, s in items.items():
         if isinstance(s, pd.Series):
             vals = s.astype(float).tolist()
@@ -993,7 +1127,8 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
             vals = [float(v) for v in s]
         if any(v != v for v in vals):
             raise ValueError(f"series {name!r} still has {sum(v != v for v in vals)} missing values; fill or drop them before saving "
-                             "(the choice affects the forecast, so make it explicitly)")
+                             "(the choice affects the forecast, so make it explicitly). Closed days from prepare_series(closed=...) "
+                             "are dropped with s.dropna(), which keeps every remaining date")
         out["series"][name] = vals
     only = next(iter(items)) if len(items) == 1 else None
     if only is not None and (only == "series" or name is not None):
@@ -1009,7 +1144,17 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
 def load_series(path: str | Path = "in/carried/series.json", name: str | None = None, run_id: str | None = None,
                 carry: Any = None) -> pd.Series | dict[str, pd.Series]:
     """Read a file written by ``save_series`` back as a pandas Series with its dates as the index (a dict of Series when it holds
-    several and no ``name`` is given). Earlier outputs are at in/carried/<file name> (bring them with ``carry``)."""
+    several and no ``name`` is given). Earlier outputs are at in/carried/<file name> (bring them with ``carry``).
+
+    ``run_id`` and ``carry`` are not options of this function. They were accepted and ignored (29 of 33 calls in the six live
+    runs passed run_id=), so a call that named a run could read the mounted copy. They now raise and say what to do."""
+    if run_id is not None:
+        raise TypeError("load_series reads the file this run can see, and run_id= does not pick another run's copy. To use an "
+                        "earlier output, pass carry=[{'run_id': <its id>, 'file': 'out/series.json'}] in the sandbox call, then "
+                        "load it with load_series('in/carried/series.json')")
+    if carry is not None:
+        raise TypeError("carry= belongs to the sandbox call, not to load_series. Pass carry=[{'run_id': ..., 'file': "
+                        "'out/series.json'}] when you run the code, then load_series('in/carried/series.json')")
     obj = json.loads(_resolve_input(path).read_text(encoding="utf-8"))
     series, dates = obj.get("series"), obj.get("dates")
     if isinstance(series, list):
@@ -1135,7 +1280,7 @@ def _infer_freq(idx: pd.DatetimeIndex) -> str | None:
 
 def prepare_series(data: Any, value: str | None = None, time: str | None = None, *, freq: str | None = None,
                    agg: str | None = None, max_short_gap: int | None = None, trim_tail: bool = True,
-                   entity: str | None = None, key: Any = None) -> tuple[pd.Series, dict]:
+                   entity: str | None = None, key: Any = None, closed: list[str] | None = None) -> tuple[pd.Series, dict]:
     """A forecast-ready series and a report of every choice made. ``data`` is a frame of strings (give ``value`` and
     ``time``) or a Series with a date index. ``entity`` and ``key`` pick one entity from a long table (for example
     entity="station", key="Beijing"). For several entities at once use pl.panel. When entities share dates and neither
@@ -1148,8 +1293,20 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     listed in ``ignore_ranges`` (positions in the returned series) so the forecast can be told not to read it. The report
     also holds duplicates, the observed share, the run of identical values at the end, and the strength of any repeating
     cycle. It decides nothing about meaning: whether a zero or a gap is real is the caller's judgement.
+
+    Closed days (A1-03): ``closed`` names weekdays ("Saturday") or dates (exchange holidays, "2024-12-25") on which the
+    source does not trade. Those periods stay empty and are never interpolated, and they add nothing to the total
+    (``filled_sum_share`` is the share of the total that came from interpolation). Drop them with ``.dropna()`` before
+    save_series to forecast on the trading days; the dates of the rest are kept. When one weekday is empty on most of its
+    periods and ``closed`` is not given, this raises and names the choice, because that is a closure, not missing data.
+    ``closed=[]`` says the gaps are data to interpolate.
+
+    A business-day ``freq`` with weekend rows is refused: use ``freq='D'`` to keep every observed day (see build_series).
+    The report's ``calendar`` is "trading" when closed days were given, "business" for a business-day step, else "calendar";
+    the same kind is set on ``s.attrs`` so save_series records it.
     """
     notes: list[str] = []
+    agg_given = agg is not None
     if isinstance(data, pd.Series):
         agg = agg or "sum"                      # a Series has no entity column, so the sum default applies
         raw = data.astype(float)
@@ -1165,6 +1322,7 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     if not isinstance(raw.index, pd.DatetimeIndex):
         raise ValueError("the series has no date index; pass dates or build it with time=")
     n_raw = int(raw.size)
+    _refuse_repeated_stamps(raw.dropna().index, agg_given)
     dupes = int(raw.index.duplicated().sum())
     if dupes:
         notes.append(f"{dupes} rows share a date with another row and are combined with {agg}")
@@ -1173,6 +1331,7 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     if freq is None:
         raise ValueError("the dates are not evenly spaced enough to infer a step; pass freq= (for example 'D', 'W', 'MS') "
                          "or aggregate first")
+    freq = _grid_freq(raw.dropna().index, freq)
     grouped = raw.groupby(pd.Grouper(freq=freq))
     s = grouped.sum(min_count=1) if agg == "sum" else getattr(grouped, agg)()
     s = s.astype(float)
@@ -1190,7 +1349,17 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
             notes.append(f"{tail} empty periods at the end were kept")
     end = last + 1 if trim_tail else len(s)
     s = s.iloc[first:end]
-    missing = s.isna().values
+    if closed is None:
+        cands = _closed_candidates(s.index, s.isna().values)
+        if cands:
+            names = ", ".join(cands)
+            raise ValueError(f"{names} has no value on {_CLOSED_SHARE:.0%} or more of its periods, which looks like a closed day "
+                             f"rather than missing data. Pass closed={list(cands)!r} to keep those days empty (they are not "
+                             "interpolated; drop them with s.dropna() before save_series to forecast on the trading days), or "
+                             "closed=[] if the gaps are data to interpolate.")
+    closed_mask = _closed_mask(s.index, closed)
+    n_closed = int(closed_mask.sum())
+    missing = s.isna().values & ~closed_mask            # a closed day is not a gap: nothing is interpolated into it
     gaps: list[list[int]] = []
     i = 0
     while i < len(s):
@@ -1203,19 +1372,27 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
         else:
             i += 1
     n = len(s)
+    open_n = n - n_closed
     limit = max_short_gap if max_short_gap is not None else max(3, min(30, n // 50))
     long_gaps = [g for g in gaps if g[1] - g[0] > limit]
     if gaps:
-        # limit_area="inside": a gap at either end has no observation on one side, so it is not filled. With trim_tail=False
-        # the open tail stays NaN and save_series refuses it, rather than repeating the last value (audit: [1,2,3,NaN] -> 3,3).
-        s = s.interpolate(limit_direction="both", limit_area="inside")
+        # Interpolate across the open periods only, then put the closed days back as empty. limit_area="inside": a gap at
+        # either end has no observation on one side, so it is not filled. With trim_tail=False the open tail stays NaN and
+        # save_series refuses it, rather than repeating the last value (audit: [1,2,3,NaN] -> 3,3).
+        s = s[~closed_mask].interpolate(limit_direction="both", limit_area="inside").reindex(s.index)
         notes.append(f"{int(missing.sum())} gaps in {len(gaps)} runs were filled by straight-line interpolation (never zero)")
         if not trim_tail and np.isnan(s.iloc[-1]):
             notes.append("the trailing gap is not observed and is left open: it is not filled, and it cannot be forecast from")
+    if n_closed:
+        notes.append(f"{n_closed} periods on closed days ({', '.join(str(c) for c in closed)}) are left empty: a closed day is "
+                     "not missing data, so nothing is interpolated into it")
     if long_gaps:
         notes.append(f"{len(long_gaps)} runs are longer than {limit} periods; they are filled but listed in ignore_ranges so the "
                      "forecast does not learn from them")
     vals = s.values
+    total = float(np.nansum(vals)) if n else 0.0
+    filled_sum = float(np.nansum(vals[missing])) if n and missing.any() else 0.0
+    filled_share = round(filled_sum / total, 4) if total else 0.0
     run = 0
     while run < len(vals) and vals[-1 - run] == vals[-1]:
         run += 1
@@ -1227,18 +1404,22 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     report = {
         "freq": freq, "rows_read": n_raw, "duplicate_dates": dupes, "periods": int(n), "periods_before_trim": n_periods,
         "first": str(s.index[0].date()) if n else None, "last": str(s.index[-1].date()) if n else None,
-        "observed_share": round(float(1 - missing.sum() / n), 4) if n else 0.0,
+        "observed_share": round(float(1 - missing.sum() / open_n), 4) if open_n > 0 else 0.0,
+        "closed_periods": n_closed, "closed_days": [str(c) for c in (closed or [])], "filled_sum_share": filled_share,
+        "calendar": "trading" if closed else ("business" if freq == "B" else "calendar"),
         "gap_runs": len(gaps), "filled_periods": int(missing.sum()), "short_gap_limit": int(limit),
         "long_gaps": [{"start": str(s.index[a].date()), "end": str(s.index[b - 1].date()), "periods": b - a} for a, b in long_gaps],
         "ignore_ranges": [list(g) for g in long_gaps], "dropped_leading": lead, "dropped_tail": tail if trim_tail else 0,
         "constant_tail": tail_const, "zero_periods": zeros, "notes": notes,
     }
-    period, strength = dominant_period(vals) if n else (None, 0.0)
+    observed_vals = vals[~np.isnan(vals)]                  # closed days are empty; the cycle is found on the values that exist
+    period, strength = dominant_period(observed_vals) if len(observed_vals) else (None, 0.0)
     report["period"] = period                              # periods per repeating cycle, found from the data; None when nothing repeats
     report["cycle_strength"] = round(strength, 3) if period else None
-    report["cycles_in_history"] = round(n / period, 1) if period else None
-    if period and n / period < 3:
-        notes.append(f"the history holds only {n / period:.1f} cycles of length {period}; a model cannot learn a cycle from fewer than three")
+    report["cycles_in_history"] = round(len(observed_vals) / period, 1) if period else None
+    if period and len(observed_vals) / period < 3:
+        notes.append(f"the history holds only {len(observed_vals) / period:.1f} cycles of length {period}; a model cannot learn a cycle from fewer than three")
+    s.attrs["calendar"] = report["calendar"]          # save_series records the kind; dropna() keeps the attrs
     return s, report
 
 
