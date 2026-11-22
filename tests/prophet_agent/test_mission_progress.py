@@ -208,3 +208,31 @@ def test_playbook_and_note_reads_are_not_charged_to_the_call_budget(tmp_path):
     assert store.count_tool_calls(m1) == 3
     assert store.count_tool_calls(m1, exclude=("analyst_skill",)) == 1
     assert [a["name"] for a in store.tool_args(m1, "analyst_skill")] == ["a", "b"]
+
+
+def test_three_identical_failures_in_a_row_tell_the_planner_to_change_approach():
+    from prophet_agent.runtime.goal import _repeat_error_note
+    bad = lambda n: {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": False, "run_id": "a" * 32,
+                     "stderr_tail": f"Traceback\nFileNotFoundError: no file 'in/carried/out/series.json' line {n}"}}
+    assert "same error" in _repeat_error_note([bad(1), bad(2), bad(3)])
+    assert _repeat_error_note([bad(1), bad(2)]) == ""
+    ok = {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True, "run_id": "b" * 32}}
+    assert _repeat_error_note([bad(1), bad(2), ok, bad(3)]) == ""
+
+
+def test_outside_sources_are_pinned_for_the_composer_from_the_ledger(tmp_path):
+    from prophet_agent.runtime.goal import _outside_block
+    from prophet_agent.runtime.store import Store
+
+    class C:  # the two things _outside_block reads from a Ctx
+        pass
+    store = Store(tmp_path / "s.sqlite")
+    mid = store.create_mission("goal", {})
+    c = C(); c.store, c.mission_id = store, mid
+    assert _outside_block(c) == "" and _outside_block(None) == ""
+    res = {"sources": [{"title": "Oil falls", "final_url": "https://www.example.com/a", "date": "2026-11-20", "tier": 2,
+                        "passages": [{"text": "Brent fell 1% to $91.03 a barrel."}]}]}
+    store.tool_start(mid, 0, "web_research", {"queries": ["x"]}, "k0")
+    store.tool_set("k0", "done", res)
+    block = _outside_block(c)
+    assert "example.com" in block and "2026-11-20" in block and "$91.03" in block

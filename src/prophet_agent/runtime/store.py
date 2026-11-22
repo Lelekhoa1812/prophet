@@ -484,6 +484,19 @@ class Store:
                 continue
         return out
 
+    def tool_results(self, mission_id: str, tool: str) -> list[Any]:
+        """The full stored result of every finished call of ``tool`` in this mission, in step order."""
+        with self.lock:
+            rows = self.conn.execute("SELECT result_json FROM tool_calls WHERE mission_id=? AND tool=? AND status='done' ORDER BY step_idx",
+                                     (mission_id, tool)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                out.append(json.loads(r["result_json"] or "null"))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def count_tool_calls(self, mission_id: str, exclude: tuple[str, ...] = ()) -> int:
         marks = ",".join("?" for _ in exclude)
         sql = "SELECT COUNT(*) AS n FROM tool_calls WHERE mission_id=?" + (f" AND tool NOT IN ({marks})" if exclude else "")

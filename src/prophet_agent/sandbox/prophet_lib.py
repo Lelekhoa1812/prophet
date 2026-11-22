@@ -209,6 +209,22 @@ def _blocks(rows: list[list[str]]) -> list[tuple[int, int]]:
 _WORKBOOK_EXTENSIONS = {".xlsx": "xlsx", ".xlsm": "xlsx", ".xlsb": "xlsb", ".ods": "ods", ".xls": "ole"}
 
 
+def _resolve_input(path: str | Path) -> Path:
+    """The file a path means. Earlier outputs are mounted at in/carried/<file name>, and a model that wrote out/series.json in an
+    earlier run often asks for in/carried/out/series.json (28 failed runs in one live mission). Try the path, then the same
+    file name in in/carried, in, and in/derived; when none exists, say what is there."""
+    p = Path(path)
+    if p.exists():
+        return p
+    for root in ("in/carried", "in", "in/derived"):
+        alt = Path(root) / p.name
+        if alt.exists():
+            return alt
+    here = [str(f) for root in ("in", "in/carried", "in/derived") if Path(root).is_dir() for f in sorted(Path(root).iterdir()) if f.is_file()]
+    raise FileNotFoundError(f"no file {str(path)!r}. Files you can open: {here or 'none (pass carry=[{run_id, file}] to bring an earlier output)'}. "
+                            "Earlier outputs are at in/carried/<file name>, without the out/ folder")
+
+
 def read_table(path: str | Path, sheet: str | int | None = None, block: int | None = None) -> tuple[pd.DataFrame, dict]:
     """Read a table of any common shape as text. Returns (frame of strings, report).
 
@@ -217,7 +233,7 @@ def read_table(path: str | Path, sheet: str | int | None = None, block: int | No
     others are listed. Compressed files are opened; archives with several members read the first supported one and list
     the rest. The report lists what was done and what could not be read; nothing is repaired silently.
     """
-    p = Path(path)
+    p = _resolve_input(path)
     report: dict[str, Any] = {"file": p.name, "problems": []}
     kind = sniff_kind(p)
     report["detected_type"] = kind
@@ -623,11 +639,12 @@ CONVERT_SHARE = 0.9          # a column becomes numbers or dates only when this 
 
 
 def load(path: str | Path, sheet: str | int | None = None, block: int | None = None,
-         dayfirst: bool | None = None) -> pd.DataFrame:
+         dayfirst: bool | None = None, run_id: str | None = None) -> pd.DataFrame:
     """Read a table and return a typed DataFrame: numeric columns are numbers, date columns are timestamps, the rest stay
     text. The recommended way to open a file. What was done is in ``df.attrs["report"]`` (reading notes, which columns
     were converted and how many cells failed, ambiguous dates, columns kept as text). Blank cells are NaN, never zero.
-    Identifier-like columns (leading zeros such as 00123) are kept as text."""
+    Identifier-like columns (leading zeros such as 00123) are kept as text. ``run_id`` is accepted and ignored: an earlier run's
+    file is brought in with ``carry`` on the call and opened at in/carried/<file name>."""
     df, rep = read_table(path, sheet, block)
     converted: dict[str, dict] = {}
     as_text: list[str] = []
@@ -905,6 +922,27 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(out), encoding="utf-8")
     return path
+
+
+def load_series(path: str | Path = "in/carried/series.json", name: str | None = None) -> pd.Series | dict[str, pd.Series]:
+    """Read a file written by ``save_series`` back as a pandas Series with its dates as the index (a dict of Series when it holds
+    several and no ``name`` is given). Earlier outputs are at in/carried/<file name> (bring them with ``carry``)."""
+    obj = json.loads(_resolve_input(path).read_text(encoding="utf-8"))
+    series, dates = obj.get("series"), obj.get("dates")
+    if isinstance(series, list):
+        series, dates = {"series": series}, {"series": dates}
+    if not isinstance(series, dict):
+        raise ValueError("not a file written by save_series: it has no 'series'")
+    def build(k: str) -> pd.Series:
+        d = (dates or {}).get(k) or []
+        idx = pd.DatetimeIndex(pd.to_datetime(d)) if len(d) == len(series[k]) else None
+        return pd.Series(series[k], index=idx, name=k, dtype=float)
+    if name is not None:
+        if name not in series:
+            raise KeyError(f"no series {name!r}; the file holds {sorted(series)}")
+        return build(name)
+    built = {k: build(k) for k in series}
+    return built["series"] if list(built) == ["series"] else built
 
 
 # ------------------------------------------------------------------------------------ repeating cycles --

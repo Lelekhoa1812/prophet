@@ -267,6 +267,35 @@ def _calls_used(history: list[dict]) -> int:
                and not str(h.get("error", "")).startswith("unknown tool"))
 
 
+def _error_signature(h: dict) -> str | None:
+    """The last line of a failed tool call's error, with numbers and run ids removed, or None when the call did not fail."""
+    if h.get("kind") != "tool":
+        return None
+    res = h.get("result")
+    text = h.get("error") or (res.get("stderr_tail") if isinstance(res, dict) and res.get("ok") is False else None)
+    if not text:
+        return None
+    last = [ln for ln in str(text).strip().splitlines() if ln.strip()][-1]
+    return re.sub(r"[0-9a-f]{32}|\d+", "#", last)[:160]
+
+
+def _repeat_error_note(history: list[dict]) -> str:
+    """When the newest tool calls failed the same way three times running, say so and say what to do: one live mission rewrote its
+    whole pipeline 28 times to meet the same wrong file path. The note changes the planner's approach; it blocks nothing."""
+    sigs = []
+    for h in reversed(history):
+        if h.get("kind") != "tool":
+            continue
+        sigs.append(_error_signature(h))
+        if len(sigs) == 3:
+            break
+    if len(sigs) == 3 and sigs[0] and sigs[0] == sigs[1] == sigs[2]:
+        return ("The last three tool calls failed with the same error: " + sigs[0] + ". Do not rewrite the whole program again. Read the "
+                "error, list what exists (files under in/ and in/carried, the names a function takes), change only the failing line, "
+                "and if the helper cannot do it, do that one step in plain pandas.")
+    return ""
+
+
 def _skills_read_note(ctx: Ctx) -> str:
     """The playbooks already read in this mission, from the ledger (compaction drops their text from the view, and a planner that
     cannot see them reads them again: ten of twenty calls in one live run). Replay-safe: it only feeds a planner step."""
@@ -366,11 +395,36 @@ def _repair_messages(goal: str, history: list[dict], memo: Memo, answer: str, ba
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+OUTSIDE_SOURCES = 8        # web sources shown to the composer
+OUTSIDE_PASSAGE = 320      # characters of the best passage per source
+
+
+def _outside_block(ctx: Ctx | None) -> str:
+    """The web sources this mission read, as one pinned block for the composer, taken from the ledger so compaction cannot drop them
+    (live: research ran, yet the answer said no outside drivers were considered). Newest research first, deduplicated by url."""
+    if ctx is None:
+        return ""
+    seen: dict[str, str] = {}
+    for res in reversed(ctx.store.tool_results(ctx.mission_id, "web_research")):
+        for src in (res.get("sources") or []) if isinstance(res, dict) else []:
+            url = str(src.get("final_url") or src.get("url") or "")
+            if not url or url in seen:
+                continue
+            best = (src.get("passages") or [{}])[0].get("text", "")
+            host = re.sub(r"^https?://(?:www\.)?", "", url).split("/")[0]
+            seen[url] = (f"- {src.get('title', '')[:140]} | {host} | {src.get('date') or 'undated'} | tier {src.get('tier', '?')}: "
+                         f"{' '.join(str(best).split())[:OUTSIDE_PASSAGE]}")
+    if not seen:
+        return ""
+    return "Outside sources read by the research step (cite by site and date; context, never a forecast input):\n" + "\n".join(list(seen.values())[:OUTSIDE_SOURCES])
+
+
 def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, draft: str,
-                      bad: list[str] | None = None) -> list[dict]:
+                      bad: list[str] | None = None, ctx: Ctx | None = None) -> list[dict]:
     system = prompts.current("composer").text
+    outside = _outside_block(ctx)
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
-            f"\n\nDraft (the content to keep; its formatting was lost):\n{draft}")
+            f"\n\n{outside + chr(10) + chr(10) if outside else ''}Draft (the content to keep; its formatting was lost):\n{draft}")
     if bad:
         user += (f"\n\nThese figures in the draft do not appear in the evidence: {', '.join(bad)}. Remove each of them, "
                  "row numbers included. Describe a row in words if the evidence gives no number for it.")
@@ -446,7 +500,7 @@ def _compose(ctx: Ctx, brain: Any, step: str, goal: str, history: list[dict], me
     write = getattr(brain, "write", None)
     if write is None or not draft.strip():
         return None
-    return ctx.step(step, lambda c: write(_compose_messages(goal, history, memo, context, draft, bad)))
+    return ctx.step(step, lambda c: write(_compose_messages(goal, history, memo, context, draft, bad, ctx)))
 
 
 def _signature(obs: dict) -> str:
@@ -686,6 +740,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         note = _budget_note(i, cfg, history)
         if (read_note := _skills_read_note(ctx)):
             note += "\n\n" + read_note
+        if (repeat_note := _repeat_error_note(history)):
+            note += "\n\n" + repeat_note
         if cfg.depth == 0 and FORECAST_GOAL.search(goal):
             # The checklist is derived from the evidence on every step, so it cannot drift and a resumed run sees the same one.
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
