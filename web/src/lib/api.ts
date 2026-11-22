@@ -170,6 +170,10 @@ export type Notebook = {
   turns: TurnRow[];
 };
 
+// What a notebook may share (A7-12). providers: null means every configured provider may receive its data.
+export type ProviderState = { name: string; label: string; enabled: boolean; ready: boolean };
+export type NotebookSharing = { web_research: boolean; providers: string[] | null; available: ProviderState[] };
+
 export type NotebookRow = {
   id: string;
   title: string;
@@ -277,6 +281,9 @@ export const api = {
   patchNotebook: (nid: string, body: { title?: string; pinned?: boolean; archived?: boolean }) =>
     req<NotebookRow>(`/api/notebooks/${nid}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteNotebook: (nid: string) => req<{ id: string }>(`/api/notebooks/${nid}`, { method: "DELETE" }),
+  notebookSharing: (nid: string) => req<NotebookSharing>(`/api/notebooks/${nid}/sharing`),
+  setNotebookSharing: (nid: string, body: { web_research?: boolean; providers?: string[] | null }) =>
+    req<NotebookSharing>(`/api/notebooks/${nid}/sharing`, { method: "PUT", body: JSON.stringify(body) }),
   patchSource: (notebookId: string, sourceId: string, body: { included?: boolean; removed?: boolean }) =>
     req<Source>(`/api/notebooks/${notebookId}/sources/${sourceId}`, { method: "PATCH", body: JSON.stringify(body) }),
   // The model id is sent only when one is selected, so the server default applies otherwise (as for quick forecasts).

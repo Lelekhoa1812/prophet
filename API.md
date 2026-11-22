@@ -218,6 +218,27 @@ curl -OJ localhost:8010/api/missions/$TURN/repro        # prophet-<id>-repro.zip
 
 It holds the code cells, the inputs and outputs with their sha256 (`hashes.json`), the ledger, the configuration (prompts, budget, packages), the events, the mission record, the answer and a `README.txt`. It is read-only and never includes `.env` or key-shaped text. Inputs over 200 MB are listed by hash and not copied. The README says that rerunning the same code on the same input should give the same figures. The bundle does not rerun anything, so checking the figures needs a fresh run.
 
+### Data sharing per notebook
+
+Each notebook may switch web research off and limit which configured model providers receive its data. Defaults keep everything on.
+
+```bash
+curl -s localhost:8010/api/notebooks/$NID/sharing     # {"web_research": true, "providers": null, "available": [{"name","label","enabled","ready"}]}
+curl -s -X PUT localhost:8010/api/notebooks/$NID/sharing -H 'content-type: application/json' \
+     -d '{"web_research": false, "providers": ["claude"]}'
+```
+
+Only the fields sent change. `providers: null` allows every configured provider. An empty list allows none. An unknown provider or a non-boolean `web_research` returns 422, and an unknown notebook returns 404.
+
+The rules apply where the work runs, not only in the UI:
+
+- With web research off, the web search, fetch and research tools are left out of every mission in the notebook, including sub-agents and the automatic research step.
+- A new question naming a model from a provider the notebook does not allow returns 409 and writes no turn. Without a named model, the first allowed provider that is turned on and ready is used; if none is, the turn returns 409.
+- Continue, answer-now and resume check the same rule and return 409 before anything changes. An automatic part that would break the rule is not started; the mission waits at its checkpoint.
+- While a provider list is restricted, the notebook's title is not improved by a model call; the fallback title stays.
+
+Changes apply to questions asked after the change and to parts that start after it. Quick forecasts (no notebook) are not covered by these settings.
+
 ## One-off quick forecasts (no notebook)
 
 ```bash

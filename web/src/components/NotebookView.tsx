@@ -10,6 +10,7 @@ import { cn, isWorking } from "../lib/utils";
 import { Composer } from "./Composer";
 import { ComposerControls } from "./ComposerControls";
 import { NotebookTurn } from "./NotebookTurn";
+import { SharingPanel } from "./SharingPanel";
 import { SourcesPanel } from "./SourcesPanel";
 import { IconButton, Spinner } from "./ui";
 
@@ -260,6 +261,8 @@ export function NotebookView({
               ))}
             </ul>
           )}
+
+          <SharingPanel notebookId={notebookId} />
 
           {manage && hasFiles && (
             <SourcesPanel notebookId={notebookId} sources={notebook.sources} tables={notebook.tables} uploads={uploads} onChanged={changed} />

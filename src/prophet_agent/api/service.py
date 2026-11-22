@@ -28,6 +28,8 @@ from prophet_agent.runtime.runner import Runtime, Tool
 from prophet_agent.runtime.store import LeaseHeld, Store
 from prophet_agent.tools.notebook_tools import NotebookBinding
 from prophet_agent.api.outcome import outcome_for
+from prophet_agent.api.sharing import DEFAULT_SHARING, PolicyRefused, tools_allowed
+from prophet_agent.nim.providers import CATALOG, MODELS, PROVIDERS
 
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
@@ -43,6 +45,10 @@ class MissionService:
                  goal_cfg: GoalConfig | None = None, *, tools_factory: ToolsFactory | None = None,
                  datasets: DatasetStore | None = None, settings: Settings | None = None):
         self.store = Store(db_path)
+        # Per-notebook data sharing (A7-12). A row exists only once a notebook's setting differs from the default.
+        with self.store._tx() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS notebook_sharing (notebook_id TEXT PRIMARY KEY, "
+                      "web_research INTEGER NOT NULL DEFAULT 1, providers TEXT)")
         # When a settings store is given, its limits override goal_cfg at every start, so a change applies to the next part.
         # Without one, goal_cfg is used as passed. The fallback store keeps its files beside the database, so a test never
         # writes the real .env; it serves the settings endpoints only.
@@ -162,9 +168,11 @@ class MissionService:
         self.notebooks.get(notebook_id)
         last = self.store.conn.execute(
             "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
+        # The notebook's provider rule is checked before any row is written. With every provider allowed this is the model as sent.
+        chosen = self._allowed_model(self.get_sharing(notebook_id), model)
         budget = self.default_budget()
-        if model is not None:
-            budget["model"] = model
+        if chosen is not None:
+            budget["model"] = chosen
         turn_id = self.store.create_mission(goal, budget, notebook_id=notebook_id,
                                             parent_turn_id=last["id"] if last else None)
         if last is None:
@@ -181,6 +189,8 @@ class MissionService:
         fallback = fallback_title(goal)
         with self.store._tx() as c:
             c.execute("UPDATE notebooks SET title=? WHERE id=? AND title='New notebook'", (fallback, notebook_id))
+        if self.get_sharing(notebook_id)["providers"] is not None:
+            return      # the naming model is the default provider, which this notebook may not allow: the fallback stays
 
         def improve(title: str) -> None:
             # Replace the fallback only while it is still there, so a rename made in the meantime wins.
@@ -241,6 +251,12 @@ class MissionService:
         return mentions.context_block(goal, skill_body=skill_body, tool_info=tool_info, file_name=file_name)
 
     def tools_for(self, mission: dict) -> dict[str, Tool]:
+        """The mission's tools. A notebook with web research off never gets the research tools, whatever the factory offers."""
+        tools = self._mission_tools(mission)
+        nb = mission.get("notebook_id")
+        return tools_allowed(tools, self.get_sharing(nb)) if nb else tools
+
+    def _mission_tools(self, mission: dict) -> dict[str, Tool]:
         if self.tools_factory is None:
             return self.tools
         nb = mission.get("notebook_id")
@@ -249,6 +265,65 @@ class MissionService:
             mounts.update(self.notebooks.derived_mounts(nb))
             return self.tools_factory(mounts, NotebookBinding(self.notebooks, nb, mission["id"]))
         return self.tools_factory(self.datasets.mount(mission["budget"].get("dataset_ids", [])))
+
+    # -- per-notebook data sharing (A7-12) -----------------------------------------------------------------------
+
+    def get_sharing(self, notebook_id: str) -> dict:
+        """web_research (bool) and providers (sorted names, or None for every configured provider). KeyError for no notebook."""
+        self.notebooks.get(notebook_id)
+        with self.store.lock:
+            row = self.store.conn.execute(
+                "SELECT web_research, providers FROM notebook_sharing WHERE notebook_id=?", (notebook_id,)).fetchone()
+        if row is None:
+            return dict(DEFAULT_SHARING)
+        return {"web_research": bool(row["web_research"]),
+                "providers": json.loads(row["providers"]) if row["providers"] is not None else None}
+
+    def set_sharing(self, notebook_id: str, patch: dict) -> dict:
+        """Change only the keys in ``patch``. Already checked by sharing.normalise_patch. KeyError for no notebook."""
+        current = self.get_sharing(notebook_id)
+        current.update(patch)
+        with self.store._tx() as c:
+            c.execute("INSERT INTO notebook_sharing (notebook_id, web_research, providers) VALUES (?,?,?) "
+                      "ON CONFLICT(notebook_id) DO UPDATE SET web_research=excluded.web_research, providers=excluded.providers",
+                      (notebook_id, int(current["web_research"]),
+                       None if current["providers"] is None else json.dumps(current["providers"])))
+        return current
+
+    def _allowed_model(self, sharing: dict, model: str | None) -> str | None:
+        """The model a notebook turn runs on under its provider rule. With every provider allowed the choice is returned as
+        sent (None stays None, so the default chain applies as before). A chosen model from a provider the notebook does not
+        allow is refused. Without a choice, the first allowed provider that is turned on and ready supplies its first
+        enabled model. Raises PolicyRefused."""
+        allowed = sharing["providers"]
+        if allowed is None:
+            return model
+        if model is not None:
+            info = MODELS.get(model)
+            if info is None:
+                raise PolicyRefused("that model is not in the catalogue")
+            if info.provider not in allowed:
+                raise PolicyRefused(f"This notebook does not let {PROVIDERS[info.provider].label} receive its data. "
+                                    "Choose a model from a provider it allows, or change the notebook's sharing settings.")
+            return model
+        for name in PROVIDERS:
+            if name not in allowed or not self.settings.provider_enabled(name) or not self.settings.provider_ready(name):
+                continue
+            ids = [m.id for m in CATALOG if m.provider == name and self.settings.model_enabled(m.id)]
+            if ids:
+                return ids[0]
+        raise PolicyRefused("No model provider this notebook allows is turned on and ready. Allow one in the notebook's "
+                            "sharing settings, or set up its key in Settings.")
+
+    def _sharing_budget(self, mission: dict) -> dict:
+        """The mission's budget under its notebook's rules (a copy). Missions outside a notebook are not affected. Raises PolicyRefused."""
+        budget = dict(mission["budget"])
+        nb = mission.get("notebook_id")
+        if nb:
+            chosen = self._allowed_model(self.get_sharing(nb), budget.get("model"))
+            if chosen is not None:
+                budget["model"] = chosen
+        return budget
 
     # -- running -------------------------------------------------------------------------------------------------
 
@@ -272,6 +347,11 @@ class MissionService:
             live = self._threads.get(mission_id)
             if live is not None and live.is_alive():
                 raise LeaseHeld(f"mission {mission_id} is already running")
+            # The notebook's provider rule applies to every start, including a resume: refused before a thread exists.
+            budget = self._sharing_budget(mission)
+            if budget != mission["budget"]:
+                self.store.set_budget(mission_id, budget)
+                mission = self.store.mission(mission_id)
             program = self._build_program(mission)
             # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
             runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
@@ -300,7 +380,11 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             return None
-        budget = dict(mission["budget"])
+        try:
+            budget = self._sharing_budget(mission)
+        except PolicyRefused as exc:
+            self.store.append_event(mission_id, "mission.auto_continue_stopped", {"reason": str(exc)})
+            return None
         used = int(budget.get("auto_continued", 0))
         if used >= int(budget.get("auto_continue", AUTO_CONTINUE_PARTS)):
             return None
@@ -357,7 +441,7 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can continue")
-        budget = dict(mission["budget"])
+        budget = self._sharing_budget(mission)
         budget["segment"] = int(budget.get("segment", 0)) + 1
         budget["max_tool_calls"] = self.store.count_tool_calls(mission_id) + int(self.default_budget()["max_tool_calls"])
         budget["finish_now"] = False
@@ -369,7 +453,7 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can be answered now")
-        budget = dict(mission["budget"])
+        budget = self._sharing_budget(mission)
         budget["finish_now"] = True
         self.store.set_budget(mission_id, budget)
         self.start(mission_id)

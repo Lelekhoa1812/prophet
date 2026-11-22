@@ -33,6 +33,7 @@ from prophet_agent.usage import ledger_for
 from .bundle import build_bundle
 from .panels import entity_page, panel_summary
 from .service import MissionService
+from .sharing import PolicyRefused, normalise_patch
 
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
 LOOPBACK_NAMES = {"127.0.0.1", "localhost"}
@@ -412,6 +413,33 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(404, "no such table or version")
         return FileResponse(path, media_type="text/csv", filename=f"{name}{'' if version is None else f'_v{version}'}.csv")
 
+    def _provider_states() -> list[dict]:
+        return [{"name": name, "label": p.label, "enabled": service.settings.provider_enabled(name),
+                 "ready": service.settings.provider_ready(name)} for name, p in PROVIDERS.items()]
+
+    @app.get("/api/notebooks/{nid}/sharing")
+    def get_sharing(nid: str) -> dict:
+        """What this notebook may share: web research on or off, and the providers that may receive its data (null: all).
+        ``available`` lists every provider with whether it is turned on and ready. Defaults keep everything on."""
+        try:
+            sharing = service.get_sharing(nid)
+        except KeyError:
+            raise HTTPException(404, "no such notebook")
+        return {**sharing, "available": _provider_states()}
+
+    @app.put("/api/notebooks/{nid}/sharing")
+    def put_sharing(nid: str, body: dict = Body(...)) -> dict:
+        """A partial update of the notebook's sharing. Only the fields sent change; ``providers: null`` allows every provider."""
+        try:
+            patch = normalise_patch(body)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        try:
+            sharing = service.set_sharing(nid, patch)
+        except KeyError:
+            raise HTTPException(404, "no such notebook")
+        return {**sharing, "available": _provider_states()}
+
     @app.post("/api/notebooks/{nid}/turns", status_code=201)
     def create_turn(nid: str, body: TurnIn) -> dict:
         _model_gate(body.model)
@@ -421,6 +449,8 @@ def create_app(service: MissionService) -> FastAPI:
         except KeyError:
             raise HTTPException(404, "no such notebook")
         except NotebookBusy as exc:
+            raise HTTPException(409, str(exc))
+        except PolicyRefused as exc:
             raise HTTPException(409, str(exc))
         try:
             service.start(mission_id)
@@ -455,6 +485,8 @@ def create_app(service: MissionService) -> FastAPI:
             service.start(mission_id)
         except LeaseHeld:
             raise HTTPException(409, "this mission is already running")
+        except PolicyRefused as exc:
+            raise HTTPException(409, str(exc))
         except NotConfigured:
             raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"id": mission_id, "status": "running"}
