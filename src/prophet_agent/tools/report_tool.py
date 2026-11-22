@@ -315,7 +315,7 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     }
 
 
-_RULE_TEXT = {"naive": "the last value repeated", "drift": "the average historical change extended"}
+_RULE_TEXT = RULE_TEXT   # every rule a panel centre may name (live electricity rep8: 'seasonal_naive' raised KeyError)
 PANEL_SHOWN = 30     # series with a line of their own in the observation; the rest are counted, and in the files
 
 

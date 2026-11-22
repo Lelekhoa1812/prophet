@@ -15,7 +15,8 @@ from typing import Any
 from prophet_agent.sandbox.runner import SandboxResult, run_python
 
 REQUIRED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
-MAX_PANEL = 50           # series per panel pack; more than this is refused, not silently cut
+MAX_PANEL = 100          # series per panel pack (series_io's limit per call); more is refused, not silently cut.
+                         # Was 50: live electricity rep8 (60 clients) could never be delivered in one pack
 PANEL_PER_FIGURE = 12    # panels per grid figure: forecast_grid.png, then forecast_grid_2.png, and so on
 
 _TEMPLATE = r'''

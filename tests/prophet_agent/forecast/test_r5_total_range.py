@@ -9,6 +9,7 @@ from __future__ import annotations
 from statistics import NormalDist
 
 import numpy as np
+import pytest
 
 from prophet_agent.forecast import rolling as R
 from prophet_agent.forecast.types import Forecast
@@ -103,7 +104,8 @@ def test_bounds_and_held_counts_follow_report_formulas():
     assert out["variance_ratio"] == 1.0        # all errors zero: the fallback ratio
 
 
-def test_measured_total_range_none_when_horizon_differs_from_table(monkeypatch):
+def test_a_different_backtest_horizon_is_extended_at_the_same_average_correlation(monkeypatch):
+    # Changed in round 5 (live retail_biz rep3: backtest 20 steps, pack 43, no range applied and the answer mixed the bounds).
     from prophet_agent.runtime import contracts as C
     rows = [{"step": i + 1, "point": 10.0, "q10": 8.0, "q90": 12.0} for i in range(6)]
     report = {"table": {"rows": rows, "rows_omitted": 0}, "total_range_80": {"centre": 60.0}}
@@ -111,7 +113,13 @@ def test_measured_total_range_none_when_horizon_differs_from_table(monkeypatch):
     bt_other = {"horizon": 7, "total_error": te, "models": {}}
     hist = [{"kind": "tool", "tool": "backtest_series", "result": bt_other},
             {"kind": "tool", "tool": "forecast_report", "result": report}]
-    assert C.measured_total_range(hist) is None
+    r = C.measured_total_range(hist)
+    # R = 2 over 7 steps: rho = 1/6; over 6 steps R' = 1 + 5/6. Per-day sd = 4 / (2 Z90); total sd = sqrt(R' * 6) * sd.
+    sd = 4.0 / (2 * Z90)
+    assert r["measured_horizon"] == 7
+    assert r["q90"] - r["centre"] == pytest.approx(Z90 * ((1 + 5 / 6) * 6) ** 0.5 * sd)
+    stmt = C.trust_statement(hist)
+    assert "windows of 7 steps, extended to 6 steps" in stmt
     assert C.measured_total_range([{"kind": "tool", "tool": "forecast_report", "result": report}]) is None
 
 

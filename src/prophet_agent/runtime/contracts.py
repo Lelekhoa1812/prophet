@@ -1205,23 +1205,29 @@ def _measured_total(history) -> tuple[dict, int] | None:
         return None
     rows = table.get("rows") or []
     horizon = len(rows)
-    te = None
-    for h in reversed(obs):
-        r = _ok_result(h, "backtest_series")
-        if isinstance(r, dict) and r.get("horizon") == horizon and isinstance(r.get("total_error"), dict):
-            te = r["total_error"]
-            break
-    if te is None:
+    te, measured_h = None, None
+    with_te = [r for h in reversed(obs) if isinstance(r := _ok_result(h, "backtest_series"), dict)
+               and isinstance(r.get("total_error"), dict) and _is_int(r.get("horizon"))]
+    same = next((r for r in with_te if r["horizon"] == horizon), None)
+    pick = same or (with_te[0] if with_te else None)
+    if pick is None:
         return None
+    te, measured_h = pick["total_error"], pick["horizon"]
     try:
         sd2 = sum(((float(row["q90"]) - float(row["q10"])) / (2 * TOTAL_Z90)) ** 2 for row in rows)
         centre, ratio = float(tr["centre"]), float(te["variance_ratio"])
     except (KeyError, TypeError, ValueError):
         return None
+    if measured_h != horizon and measured_h > 1 and horizon > 1:
+        # Live retail_biz rep3: the backtest ran 20 steps and the pack 43, so no measured range applied and the answer mixed
+        # the two bounds into a range no tool printed. The ratio is carried to the pack's horizon at the same average
+        # correlation between days, rho = (R - 1) / (h - 1), so R' = 1 + (h' - 1) * rho; the sentence says it was extended.
+        rho = min(max((ratio - 1.0) / (measured_h - 1), -1.0 / (horizon - 1)), 1.0)
+        ratio = min(max(1.0 + (horizon - 1) * rho, 1.0 / horizon), float(horizon))
     half = TOTAL_Z90 * (ratio * sd2) ** 0.5
     return ({"q10": centre - half, "q90": centre + half, "centre": centre, "variance_ratio": ratio,
              "mean": centre / horizon, "mean_q10": (centre - half) / horizon, "mean_q90": (centre + half) / horizon,
-             "origins": te.get("origins"), "held_measured": te.get("held_measured")}, horizon)
+             "origins": te.get("origins"), "held_measured": te.get("held_measured"), "measured_horizon": measured_h}, horizon)
 
 
 def measured_total_range(history) -> dict | None:
@@ -1242,8 +1248,10 @@ def trust_statement(history) -> str:
         mr, h = found
         extra = (f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f} (per step on average: "
                  f"{mr['mean']:,.2f}, range {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f}), using the day-to-day error correlation "
-                 f"measured over {mr['origins']} past windows; built the same way, the range held the actual total in "
-                 f"{mr['held_measured']} of {mr['origins']} windows.")
+                 f"measured over {mr['origins']} past windows of {mr['measured_horizon']} steps"
+                 + (f", extended to {h} steps at the same average correlation between days"
+                    if mr["measured_horizon"] != h else "")
+                 + f"; built the same way, the range held the actual total in {mr['held_measured']} of {mr['origins']} windows.")
     if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
         return ("**Accuracy check (computed from the stored backtest):**" + extra) if extra else ""
     rule = BASELINE_NAMES.get(f["best_baseline"], str(f["best_baseline"]))

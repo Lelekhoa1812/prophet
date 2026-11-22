@@ -1,4 +1,4 @@
-"""Panel pack: one forecast_report call delivers a whole panel (up to 50 series), with a grid, a workbook, a report and a PDF.
+"""Panel pack: one forecast_report call delivers a whole panel (up to 100 series), with a grid, a workbook, a report and a PDF.
 
 No real TimesFM: the engine is a fake that forecasts the last value plus 1.0, so a naive centre rule is visibly different
 from TimesFM's centre. The packs themselves are built in the real sandbox, as the other artefact tests do.
@@ -53,7 +53,7 @@ def sandbox(tmp_path, monkeypatch):
     out.mkdir(parents=True)
     stations = {"Station A": _values(0), "Station B": _values(10), "Station C": _values(20)}
     (out / "series.json").write_text(json.dumps({"series": stations, "dates": {"Station A": _daily("2025-01-01", N)}}))
-    many = {f"s{i}": _values(i) for i in range(51)}
+    many = {f"s{i}": _values(i) for i in range(101)}
     (out / "many.json").write_text(json.dumps({"series": many}))
     return stations
 
@@ -117,10 +117,10 @@ def test_more_than_twelve_series_go_on_to_a_second_grid_figure():
 
 
 def test_a_panel_outside_one_to_fifty_series_is_refused_before_any_build():
-    with pytest.raises(ValueError, match="1 to 50"):
+    with pytest.raises(ValueError, match="1 to 100"):
         build_panel_pack(series=[_series(f"s{i}") for i in range(MAX_PANEL + 1)], title="too many")
-    assert MAX_PANEL == 50
-    with pytest.raises(ValueError, match="1 to 50"):
+    assert MAX_PANEL == 100
+    with pytest.raises(ValueError, match="1 to 100"):
         build_panel_pack(series=[], title="none")
 
 
@@ -173,8 +173,8 @@ def test_bad_centre_names_and_rules_are_refused(sandbox):
         rt._run(_args(centre={"Station A": "median"}), "k")
 
 
-def test_a_file_with_more_than_fifty_series_is_refused(sandbox):
-    with pytest.raises(ValueError, match="up to 50"):
+def test_a_file_with_more_than_a_hundred_series_is_refused(sandbox):
+    with pytest.raises(ValueError, match="100"):
         rt._run({"source": {"run_id": RUN, "file": "out/many.json"}, "horizon": H, "title": "t"}, "k")
 
 
@@ -214,3 +214,10 @@ def test_both_packs_also_write_the_numbers_as_json():
     panel = build_panel_pack(series=[s("A"), s("B")], title="t")
     assert panel.ok, panel.stderr
     assert sorted(json.loads((Path(panel.workdir) / "out" / "forecast.json").read_text())["series"]) == ["A", "B"]
+
+
+def test_a_per_series_centre_dict_with_any_rule_builds(sandbox):
+    # Live electricity rep8: {"MT_001": "seasonal_naive", ...} raised KeyError 'seasonal_naive' twice (the panel's rule text
+    # table held only naive and drift).
+    out = rt._run(_args(centre={"Station A": "seasonal_naive", "Station B": "mean_last_season"}, season=7), "k")
+    assert out["n_series"] == 3
