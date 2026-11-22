@@ -403,6 +403,14 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
         reports = [r for h in obs if isinstance(r := _ok_result(h, "forecast_report"), dict)]
         items.append({"item": "produce the requested charts, workbook or report (forecast_report)",
                       "status": "done" if reports else "todo"})
+    facts = trust_facts(obs)
+    if facts and facts.get("verdict") == "baseline_better" and (wants_files or forecasts):
+        # The delivery gate: a simple rule that beat TimesFM in the backtest is the centre line the person should see.
+        packs = [h for h in obs if _ok_result(h, "forecast_report") is not None]
+        recentred = any(str((h.get("args") or {}).get("centre", "timesfm")) != "timesfm" for h in packs)
+        items.append({"item": f"the backtest found {facts['best_baseline']} more accurate than TimesFM: build the pack with "
+                              "centre 'naive' or 'drift' (TimesFM's band around it), or say plainly why not",
+                      "status": "done" if recentred or not packs and not wants_files else "todo"})
     first = next((it for it in items if it["status"] == "todo"), None)
     if first is not None:
         first["next"] = True

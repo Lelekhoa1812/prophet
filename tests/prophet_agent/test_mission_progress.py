@@ -245,3 +245,13 @@ def test_repeat_note_quotes_the_failing_line_and_suggests_delegation_after_five(
     three = _repeat_error_note([bad(1), bad(2), bad(3)])
     assert "v['is_outlier']" in three and "analyst sub-agent" not in three
     assert "analyst sub-agent" in _repeat_error_note([bad(i) for i in range(5)])
+
+
+def test_a_baseline_that_won_the_backtest_asks_for_its_centre_line_in_the_pack(tmp_path):
+    bt = {"kind": "tool", "tool": "backtest_series", "args": {}, "result": {"best_baseline": "naive", "horizon": 5, "origins": 12,
+          "models": {"naive": {"mase": 0.9}, "timesfm": {"mase": 1.0}}, "verdict": "baseline_better"}}
+    pack = lambda centre: {"kind": "tool", "tool": "forecast_report", "args": {"centre": centre}, "result": {"run_id": "r", "files": []}}
+    item = lambda h: next(it for it in contracts.progress(h, run_root=tmp_path, wants_files=True) if "more accurate than TimesFM" in it["item"])
+    assert item([bt])["status"] == "todo"
+    assert item([bt, pack("timesfm")])["status"] == "todo"
+    assert item([bt, pack("naive")])["status"] == "done"
