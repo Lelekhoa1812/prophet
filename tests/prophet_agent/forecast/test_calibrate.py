@@ -109,3 +109,22 @@ def test_a_second_pass_refits_at_a_higher_level_when_the_held_out_coverage_is_st
 def test_no_second_pass_when_the_first_pass_is_already_close():
     out = cal.calibrate(_series(0.5, seed=3), 4, engine=Engine(sd=3.0), n_origins=18)
     assert out["second_pass"] is None and out["scale_level"] == out["target"]
+
+
+def test_volatility_clustering_is_repaired_by_the_ewma_band_and_coverage_has_a_wilson_interval():
+    rng = np.random.default_rng(7)
+    sd = np.where((np.arange(900) // 150) % 2 == 0, 0.3, 3.0)          # calm and turbulent regimes alternate
+    x = 100 + np.cumsum(rng.normal(0, sd))
+    out = cal.calibrate(x, 10, engine=Engine(sd=0.5), n_origins=18)    # the model's band ignores the regime
+    assert out["heldout_coverage_raw"] < 0.75
+    assert out["method"] == "ewma_volatility" and out["recommend"] == "use_calibrated"
+    assert abs(out["heldout_coverage_calibrated"] - 0.8) < abs(out["heldout_coverage_raw"] - 0.8)
+    lo, hi = out["heldout_calibrated_wilson90"]
+    assert lo <= out["heldout_coverage_calibrated"] <= hi
+    assert cal.wilson(9, 12) == cal.wilson(9, 12) and cal.wilson(0, 0) == [0.0, 1.0]
+
+
+def test_ewma_sigma_uses_only_the_history_it_is_given():
+    a = np.cumsum(np.ones(50))
+    assert cal.ewma_sigma(a) == pytest.approx(1.0)
+    assert cal.ewma_sigma(np.r_[a, 1000.0]) > cal.ewma_sigma(a)
