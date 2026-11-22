@@ -182,6 +182,29 @@ choice depended on the call allowance. That is fixed (the loop follows the step 
 round 13's retail resumed twice without diverging. Sandbox cells failed: 13 of 107 in round 7, 31 of 82 in round 13 (27
 of them in retail, 12 on `if report['outliers']:`, which now reads as "any outlier").
 
+### Evidence, live rounds 14 to 16 (retail grounding, real UCI Online Retail II daily sales through the real API, TimesFM 3, 2026-11-22)
+
+Measured on one mission per round; a single run is not a rate.
+
+| Round | Change under test | Retail result | Calls | Seconds |
+|---|---|---|---|---|
+| 13 | none (baseline) | partial: 10 figures unmatched (range totals, "27.9k"-style means, rounded stats) | 73 | 1,883 |
+| 14 | `pl.result` helper; scaled figures ("27.9k") matched to the printed value; `planner.v19`, `composer.v5` | completed, verified | 14 | 280 |
+| 15 | pack prints `total_range_80`; `planner.v20`, `composer.v6` | partial: four figures were copying slips (557,050 for the printed 557,051.21; 352,702 for 352,602.3; 849,585 for 843,784; one more) | 23 | 481 |
+| 16 | large-figure copying slips corrected to the single printed value within 0.05 percent, with a note in the answer | completed, verified | 9 | 140 |
+
+- WTI re-run in round 15 as the regression check: completed, verified, 31 calls.
+- What each change fixes: the planner derived totals, shares and ratios in its head and the grounding check refused them
+  (right to). Printing them with `pl.result` makes them evidence. A person writing "27.9k" for a printed 27,912 is rounding,
+  not inventing, so the check reads scale words. The planner also summed the per-day q10 and q90 into a range for the 14-day
+  total (329,049 to 851,044); that is the widest case, not the range. The pack now prints both bounds (days miss
+  independently, days miss together) and the answer states both.
+- What it does not prove: one passing run per round. Round 15 shows the composer can still miscopy a printed figure; round 16
+  passed after the snap correction, which only repairs slips under 0.05 percent on figures of 1,000 or more that have a
+  single printed non-integer neighbour. A figure that is merely unprinted is still refused and still makes the answer partial.
+- The independent-days bound assumes a normal shape per day and zero correlation between days; the together bound assumes
+  perfect correlation. The true range lies between. Neither has been calibrated against backtested totals.
+
 ### Pre-existing helpers that are not causal (found with `ps.causal_canary`, 2026-11-22)
 
 `ps.changepoints` and `ps.isolation_outliers` are fitted on every row passed, so a flag at time t depends on later rows. Their
