@@ -188,7 +188,7 @@ def test_invalid_questions_do_not_pause(store):
 
 
 def test_ask_pauses_then_resumes_from_the_answer(store):
-    question = {"action": "ask_user", "rationale": "horizon", "questions": [
+    question = {"action": "ask_user", "rationale": "high-risk: the horizon sets every delivered number and the data cannot say it", "questions": [
         {"question": "How far ahead should I forecast?", "header": "Horizon", "multiSelect": False,
          "options": [{"label": "4 weeks", "description": "short"}, {"label": "12 weeks", "description": "quarter"}]}]}
     # Round 3, A5-04: the two premature finishes of a forecast are refused before the evaluator, which sees the third.

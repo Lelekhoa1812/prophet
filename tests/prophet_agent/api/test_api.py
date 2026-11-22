@@ -73,7 +73,7 @@ def test_mission_runs_to_completion_and_is_visible(tmp_path):
 
 
 def test_question_round_trip_over_http(tmp_path):
-    ask = {"action": "ask_user", "rationale": "need horizon", "questions": [
+    ask = {"action": "ask_user", "rationale": "high-risk: the horizon sets every delivered number and the data cannot say it", "questions": [
         {"question": "How far ahead?", "header": "Horizon", "multiSelect": False,
          "options": [{"label": "4 weeks", "description": ""}, {"label": "12 weeks", "description": ""}]}]}
     # A5-04: a forecast goal's first two finishes are refused for checklist items still to do; the third reaches the evaluator.

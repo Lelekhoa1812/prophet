@@ -24,7 +24,7 @@ from prophet_agent import mentions
 from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
-from prophet_agent.runtime.runner import Runtime, Tool
+from prophet_agent.runtime.runner import DELEGATED_CALLS, UNCHARGED, Runtime, Tool
 from prophet_agent.runtime.store import LeaseHeld, Store
 from prophet_agent.tools.notebook_tools import NotebookBinding
 from prophet_agent.api.outcome import outcome_for
@@ -87,6 +87,15 @@ class MissionService:
                 logging.getLogger(__name__).warning("orphan sweep failed: %s", type(exc).__name__)
 
     # -- one-off missions ----------------------------------------------------------------------------------------
+
+    def _top_up(self, mission_id: str, budget: dict) -> None:
+        """A new part's allowance on each lane, counted the way the runtime counts it (round 3, A5-01): the lead's charged
+        calls plus one default part, and the sub-agents' calls plus their own grant. Counting every lane and read-only call
+        here, as before, gave the lead an allowance that did not match the check it is held to."""
+        lead = self.store.count_tool_calls(mission_id, exclude=UNCHARGED, lane="lead")
+        budget["max_tool_calls"] = lead + int(self.default_budget()["max_tool_calls"])
+        delegated = self.store.count_tool_calls(mission_id, exclude=UNCHARGED, lane="delegated")
+        budget["max_delegated_calls"] = delegated + DELEGATED_CALLS
 
     def default_budget(self) -> dict:
         return self.settings.default_budget() if self._use_settings else dict(DEFAULT_BUDGET)
@@ -397,7 +406,7 @@ class MissionService:
         budget["auto_progress"] = done
         budget["auto_continued"] = used + 1
         budget["segment"] = int(budget.get("segment", 0)) + 1
-        budget["max_tool_calls"] = self.store.count_tool_calls(mission_id) + int(self.default_budget()["max_tool_calls"])
+        self._top_up(mission_id, budget)
         budget["finish_now"] = False
         self.store.set_budget(mission_id, budget)
         self.store.append_event(mission_id, "mission.auto_continue", {"part": budget["segment"] + 1,
@@ -443,7 +452,7 @@ class MissionService:
             raise ValueError("only a mission paused at a checkpoint can continue")
         budget = self._sharing_budget(mission)
         budget["segment"] = int(budget.get("segment", 0)) + 1
-        budget["max_tool_calls"] = self.store.count_tool_calls(mission_id) + int(self.default_budget()["max_tool_calls"])
+        self._top_up(mission_id, budget)
         budget["finish_now"] = False
         self.store.set_budget(mission_id, budget)
         self.start(mission_id)

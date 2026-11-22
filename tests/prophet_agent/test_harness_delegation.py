@@ -24,12 +24,20 @@ def test_a_market_goal_gets_a_researcher_once():
 
 
 def test_a_panel_gets_parallel_analysts_on_slices_before_any_forecast():
-    plan = _harness_plan("Forecast PM2.5 for every station", [INSPECT], TOOLS)
+    # A goal the research trigger does not match, so the panel rule is the first to fire (PM2.5 now triggers research first,
+    # round 3 follow-up: the Beijing mission was never researched).
+    plan = _harness_plan("Forecast sensor readings for every station", [INSPECT], TOOLS)
     assert plan["auto"] == "panel" and len(plan["tasks"]) == 4
     assert "ranked 1 to 3" in plan["tasks"][0]["task"] and "ranked 10 to 12" in plan["tasks"][3]["task"]
     assert all(t["agent_type"] == "analyst" for t in plan["tasks"])
     done = [INSPECT] + [{"kind": "subagent", "agent_type": "analyst", "auto": "panel"}]
-    assert _harness_plan("Forecast PM2.5 for every station", done, TOOLS) is None
+    assert _harness_plan("Forecast sensor readings for every station", done, TOOLS) is None
+
+
+def test_a_pollution_panel_is_researched_first_then_sliced():
+    assert _harness_plan("Forecast PM2.5 for every station", [INSPECT], TOOLS)["auto"] == "research"
+    researched = [INSPECT, {"kind": "subagent", "agent_type": "researcher", "auto": "research"}]
+    assert _harness_plan("Forecast PM2.5 for every station", researched, TOOLS)["auto"] == "panel"
 
 
 def test_five_identical_failures_hand_the_cell_to_a_fresh_analyst_once_per_error():
@@ -92,8 +100,8 @@ def test_outside_claims_whose_figures_no_page_contains_are_removed(tmp_path):
 
 def test_the_panel_trigger_reads_the_full_profile_from_the_ledger_when_history_holds_the_compact_view():
     compact = {"kind": "tool", "tool": "inspect_data", "args": {}, "result": {"file": "a.csv", "columns": ["text unique=12"]}}
-    assert _harness_plan("Forecast PM2.5 for every station", [compact], TOOLS) is None
-    plan = _harness_plan("Forecast PM2.5 for every station", [compact], TOOLS, lambda t: [INSPECT["result"]] if t == "inspect_data" else [])
+    assert _harness_plan("Forecast sensor readings for every station", [compact], TOOLS) is None
+    plan = _harness_plan("Forecast sensor readings for every station", [compact], TOOLS, lambda t: [INSPECT["result"]] if t == "inspect_data" else [])
     assert plan["auto"] == "panel"
 
 

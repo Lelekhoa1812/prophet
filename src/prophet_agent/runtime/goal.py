@@ -112,7 +112,8 @@ ASKS_KEEP_CHARS = 2000    # head of the memo (the ASKS section) that a cut to fi
 EXTERNAL_GOAL = re.compile(r"\b(?:wti|brent|crude|oil|gas|gold|silver|copper|commodit\w*|fx|forex|exchange rate|usd|eur|gbp|jpy|aud|"
                            r"stock|equit\w*|share price|s&p|nasdaq|index|yield|bond|treasur\w*|bitcoin|btc|crypto\w*|spot price|"
                            r"interest rate|inflation|cpi|unemployment|gdp|retail|prices?|electricity|energy|weather|"
-                           r"rainfall|temperature|tariffs?|housing|tourism|passengers|traffic|footfall)\b", re.I)
+                           r"rainfall|temperature|tariffs?|housing|tourism|passengers|traffic|footfall|"
+                           r"pm2\.?5|pm10|particulates?|pollution|smog|air quality)\b", re.I)
 FORECAST_GOAL = re.compile(r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook", re.I)
 FILES_GOAL = re.compile(r"\b(?:chart|graph|plot|workbook|spreadsheet|xlsx|docx|pdf|png|svg|report|deliverable)s?\b", re.I)
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
@@ -126,7 +127,10 @@ MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finis
 REPAIR_CALLS = 8          # one extra allowance, granted once, when a blocked answer meets a spent tool budget (2026-11-22)
 MAX_PREMATURE_FINISHES = 2  # round 3, A5-04: finishes refused for checklist items still to do, per run, before the evaluator judges
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
-MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
+# Decision R1 (the person, 2026-11-22): no fixed number of questions. A question reaches the person only when the planner
+# declares it high-risk and says how a wrong guess changes the numbers; anything else the agent decides and states as an
+# assumption. Replaces MAX_ASKS = 8, which was set after a mission asked 109 low-value questions (mission 0c7432c7).
+HIGH_RISK = re.compile(r"\bhigh[- ]risk\b\s*[:,-]?\s*(.{20,})", re.I | re.S)
 SUB_STEPS = 14            # default step budget of a delegated sub-agent
 BRANCH_BLOCK = 100_000    # step numbers reserved per plan step for parallel sub-agents, and per agent within it
 BRANCH_STRIDE = 20_000
@@ -283,11 +287,6 @@ def _evidence_block(history: list[dict], memo: Memo) -> str:
 # A new question is the same question as an earlier one when its header matches or its wording is nearly identical. Two
 # questions about one decision are one decision: the second is dropped and the earlier answer stands.
 SAME_QUESTION_RATIO = 0.75
-
-
-def _asks_made(history: list[dict]) -> int:
-    """Pauses for the person so far in this mission: every answered question set, planner or evaluator."""
-    return sum(1 for h in history if h.get("kind") in ("ask_user", "evaluator_question") and h.get("answers"))
 
 
 # Values a question is about: dates, and numbers of three or more digits. Two questions that name the same dates and
@@ -448,6 +447,32 @@ def _panel_hint(history: list[dict], full: Callable[[str], list] | None = None) 
     return None
 
 
+LAST_DATE = re.compile(r"\blast=(\d{4}-\d{2}-\d{2})")
+
+
+def _data_facts(history: list[dict], full: Callable[[str], list] | None = None) -> dict:
+    """The inspected file names and the last date in their time columns, for a researcher's brief (round 3, A4-08 and
+    A3-08: web_research scopes a regional family by region and places dated events against data_end). Reads the full
+    inspect_data profile when the ledger is given, else the planner's compact column lines."""
+    files, ends = [], []
+    results = list(full("inspect_data")) if full is not None else []
+    results += [h.get("result") for h in history if h.get("kind") == "tool" and h.get("tool") == "inspect_data"]
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        if res.get("file") and res["file"] not in files:
+            files.append(str(res["file"]))
+        prof = res.get("profile")
+        cols = prof.get("columns") if isinstance(prof, dict) else res.get("columns")
+        for c in cols or []:
+            if isinstance(c, dict) and c.get("kind") == "time" and c.get("last"):
+                ends.append(str(c["last"])[:10])
+            elif isinstance(c, str) and ": time" in c and (m := LAST_DATE.search(c)):
+                ends.append(m.group(1))
+    valid = [e for e in ends if re.fullmatch(r"\d{4}-\d{2}-\d{2}", e)]
+    return {"files": files[:4], "data_end": max(valid) if valid else None}
+
+
 def _last_failure(history: list[dict]) -> tuple[str, str]:
     """(code of the newest failed sandbox cell, its last error line), for a hand-over brief."""
     for h in reversed(history):
@@ -505,10 +530,18 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
     if not inspected:
         return None
     if "research" not in kinds and EXTERNAL_GOAL.search(goal) and "web_research" in tools and not contracts.researched(history):
+        facts = _data_facts(history, full)
+        scope = ("\nThe data: file " + (", ".join(facts["files"]) or "unknown")
+                 + (", last observed date " + facts["data_end"] if facts["data_end"] else "") + ". Pass to every "
+                 "web_research call: region (the place the data covers, from the goal, the file name or the entity names; "
+                 "for electricity, retail, weather, prices or pollution a call without a region runs no search), units, "
+                 + ("data_end='" + facts["data_end"] + "', " if facts["data_end"] else "")
+                 + "and horizon_end (the last date the forecast covers). Its events list says which dated events fall "
+                 "inside the data and which inside the horizon.")
         return {"action": "delegate", "auto": "research", "agent_type": "researcher",
                 "rationale": "a market or macro series is driven by things its history cannot show",
                 "task": "Research what is driving the series in this goal now, and what is scheduled inside the forecast "
-                        "horizon. Goal: " + goal + "\nToday is " + time.strftime("%Y-%m-%d") + ". Plan four to six angles "
+                        "horizon. Goal: " + goal + scope + "\nToday is " + time.strftime("%Y-%m-%d") + ". Plan four to six angles "
                         "first (current regime and level, policy path and the next decision dates, scheduled data releases, "
                         "supply or demand shocks, consensus or market-implied levels, the case against the consensus), "
                         "search them together, read primary sources first, then follow up on gaps.",
@@ -1360,15 +1393,17 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             payload = {"questions": open_qs}
             problems = (validate_questions(payload) if open_qs or not repeated
                         else ["every question was already asked and answered"])
-            asks = _asks_made(history)
-            if asks >= MAX_ASKS:
-                obs = {"kind": "ask_user", "error": f"no more questions: the person has already been asked {asks} times in this "
-                       "mission. Decide with what is known, state each assumption in the answer, and finish."}
-            elif problems and repeated:
+            if problems and repeated:
                 obs = {"kind": "ask_user", "error": "not asked again, the person already answered: " + "; ".join(repeated)
                        + ". The decision is in the decisions list; act on it."}
             elif problems:
                 obs = {"kind": "ask_user", "error": "invalid questions: " + "; ".join(problems)}
+            elif not HIGH_RISK.search(str(plan.get("rationale", ""))):
+                obs = {"kind": "ask_user", "error": "not asked: a question goes to the person only for a high-risk decision, "
+                       "one that changes the delivered numbers materially, that the data cannot settle and where a wrong guess "
+                       "is costly. Decide this yourself with the option that has the better expected outcome, state the "
+                       "assumption in the answer, and carry on. If it is high-risk, ask again with a rationale that starts "
+                       "'high-risk:' and says how a wrong guess changes the numbers."}
             else:
                 # Pauses the run here. The answer, once given, is returned as the step's value. Questions that repeat an
                 # earlier one are left out; the earlier answer stands.

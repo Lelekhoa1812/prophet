@@ -25,8 +25,11 @@ class ScriptedBrain:
         return queue.pop(0)
 
 
-def ask(question, header, options=("Model it as a promotion", "Ignore it")):
-    return {"action": "ask_user", "rationale": "decision", "questions": [
+HIGH = "high-risk: the horizon sets every delivered number and the data cannot say it"
+
+
+def ask(question, header, options=("Model it as a promotion", "Ignore it"), rationale=HIGH):
+    return {"action": "ask_user", "rationale": rationale, "questions": [
         {"question": question, "header": header, "multiSelect": False,
          "options": [{"label": o, "description": ""} for o in options]}]}
 
@@ -143,24 +146,20 @@ def test_already_asked_keeps_only_questions_not_yet_answered():
     assert repeated and "2025-06-03" in repeated[0]
 
 
-def test_questions_per_mission_are_capped_and_the_run_still_finishes(store):
-    """Regression for the fake-workbook run (mission 0c7432c7): the planner asked 109 questions in one mission. Past the
-    cap the question is refused as an observation and the work decides with what it has."""
-    from prophet_agent.runtime.goal import MAX_ASKS
+TOPICS = [
+    "How many weeks ahead should the forecast go?",
+    "Which currency is the sales column recorded in?",
+    "Should the warehouse split be kept as a separate series?",
+    "Is the Tuesday dip a public holiday in your region?",
+    "Do returns count as negative sales or get dropped?",
+    "Should promotion weeks be shown as a separate line?",
+    "Which store group should the total cover?",
+    "Do you want prediction intervals at 80 or 95 percent?",
+    "Is the field labelled units in cases or in single items?",
+]
 
-    topics = [
-        "How many weeks ahead should the forecast go?",
-        "Which currency is the sales column recorded in?",
-        "Should the warehouse split be kept as a separate series?",
-        "Is the Tuesday dip a public holiday in your region?",
-        "Do returns count as negative sales or get dropped?",
-        "Should promotion weeks be shown as a separate line?",
-        "Which store group should the total cover?",
-        "Do you want prediction intervals at 80 or 95 percent?",
-        "Is the field labelled units in cases or in single items?",
-    ]
-    assert len(topics) > MAX_ASKS
-    plans = [ask(t, f"H{i}") for i, t in enumerate(topics)] + [finish(), finish(), finish()]  # A5-04: two refusals, then the evaluator
+
+def _run_answering(store, plans):
     brain = ScriptedBrain(plans=plans, evals=[met()])
     program = goal_program("forecast sales", {}, brain)
     mid = store.create_mission("forecast sales", {})
@@ -170,11 +169,26 @@ def test_questions_per_mission_are_capped_and_the_run_still_finishes(store):
         header = q["payload"]["questions"][0]["header"]
         store.answer_question(q["id"], {header: "Ignore it"})
         out = Runtime(store, owner="r2").run(mid, program)
+    return mid, out
 
+
+def test_questions_without_a_high_risk_reason_are_decided_not_asked(store):
+    """Decision R1 (2026-11-22) replaces the cap of 8 set after the fake-workbook run (mission 0c7432c7, 109 questions):
+    a question that does not say why it is high-risk is refused as an observation, and the work decides and goes on."""
+    plans = [ask(t, f"H{i}", rationale="decision") for i, t in enumerate(TOPICS)] + [finish(), finish(), finish()]
+    mid, out = _run_answering(store, plans)
     assert out["status"] == "completed" and out["result"]["status"] == "met"
-    assert len(_opened(store, mid)) == MAX_ASKS
-    refused = [h for h in out["result"]["evidence"] if "no more questions" in str(h.get("error", ""))]
-    assert refused, "the question past the cap is refused, not asked"
+    assert len(_opened(store, mid)) == 0
+    refused = [h for h in out["result"]["evidence"] if str(h.get("error", "")).startswith("not asked: a question goes")]
+    assert len(refused) == len(TOPICS)
+
+
+def test_high_risk_questions_have_no_fixed_cap(store):
+    """R1: no fixed number. Nine distinct high-risk questions are all put to the person, one pause each."""
+    plans = [ask(t, f"H{i}") for i, t in enumerate(TOPICS)] + [finish(), finish(), finish()]
+    mid, out = _run_answering(store, plans)
+    assert out["status"] == "completed" and out["result"]["status"] == "met"
+    assert len(_opened(store, mid)) == len(TOPICS)
 
 
 def _answered(question, header):
