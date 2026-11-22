@@ -82,3 +82,10 @@ def test_outside_claims_whose_figures_no_page_contains_are_removed(tmp_path):
     assert removed == ["162.34"] and "159.47" in out and "162.34 ." not in out.split("_Some")[0]
     assert "EUR/JPY 162.34" not in out and "## Files" in out and "left out" in out
     assert _check_outside(c, "No outside section.") == ("No outside section.", [])
+
+
+def test_the_panel_trigger_reads_the_full_profile_from_the_ledger_when_history_holds_the_compact_view():
+    compact = {"kind": "tool", "tool": "inspect_data", "args": {}, "result": {"file": "a.csv", "columns": ["text unique=12"]}}
+    assert _harness_plan("Forecast PM2.5 for every station", [compact], TOOLS) is None
+    plan = _harness_plan("Forecast PM2.5 for every station", [compact], TOOLS, lambda t: [INSPECT["result"]] if t == "inspect_data" else [])
+    assert plan["auto"] == "panel"

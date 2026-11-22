@@ -322,10 +322,12 @@ def _repeat_error_note(history: list[dict]) -> str:
 AUTO_REPEAT = 5          # identical failures in a row after which the harness hands the step to a fresh analyst
 
 
-def _panel_hint(history: list[dict]) -> dict | None:
-    """The grouping column of a long panel (several entities sharing dates), read from inspect_data's profile, or None."""
-    for h in history:
-        res = h.get("result") if h.get("kind") == "tool" and h.get("tool") == "inspect_data" else None
+def _panel_hint(history: list[dict], full: Callable[[str], list] | None = None) -> dict | None:
+    """The grouping column of a long panel (several entities sharing dates), read from inspect_data's full profile, or None.
+    The loop's history holds the planner's compact view of a result, so the full one is read from the ledger when given."""
+    results = list(full("inspect_data")) if full is not None else []
+    results += [h.get("result") for h in history if h.get("kind") == "tool" and h.get("tool") == "inspect_data"]
+    for res in results:
         prof = res.get("profile") if isinstance(res, dict) else None
         if not isinstance(prof, dict):
             continue
@@ -348,7 +350,8 @@ def _last_failure(history: list[dict]) -> tuple[str, str]:
     return "", ""
 
 
-def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
+                  full: Callable[[str], list] | None = None) -> dict | None:
     """Delegations the harness starts itself instead of hoping the planner will. Live, the planner delegated once in 1,983
     decisions although its rules ask for it, so three situations are routed deterministically:
     1. a market or macro series with no outside research yet, once the data has been looked at: a researcher;
@@ -388,7 +391,7 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool]) -> dic
                                "source. Every number must appear in a fetched passage and carry its source id.",
                 "constraints": "Do not forecast and do not analyse the data file. Primary sources (central banks, "
                                "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
-    panel = _panel_hint(history)
+    panel = _panel_hint(history, full)
     forecast_done = any(contracts._forecast_record(h) for h in history)
     if "panel" not in kinds and panel and not forecast_done and "sandbox_python" in tools:
         n = int(panel["entities"])
@@ -927,7 +930,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                        external=bool(EXTERNAL_GOAL.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
             _status(ctx, i, history, items, started)
-        auto = (_harness_plan(goal, history, tools)
+        auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t))
                 if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
         if auto is not None:
             plan = ctx.step(f"auto:{tag}:{i}", lambda c: auto)
