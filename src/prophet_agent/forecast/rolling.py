@@ -13,6 +13,9 @@ the wins per origin and a seeded paired bootstrap interval (90 percent) of the r
 timesfm_better, baseline_better, or no_clear_difference. With combine on, a blend of TimesFM and the baseline that was
 best on earlier origins is scored too, with weights fitted on earlier origins only. The result applies no pass or fail
 bar beyond that verdict.
+With blend_centre on, an equal-weight blend of TimesFM and the simple centre rule with the lowest mean MASE over all the
+windows is scored as well. centre_choice says whether the blend beats both TimesFM's centre and that rule on these windows.
+The rule and that choice are both selected on these windows, so the result labels them as selected, not unbiased.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-from prophet_agent.forecast.combine import combine
+from prophet_agent.forecast.combine import adopt_equal_blend, combine, equal_blend
 from prophet_agent.forecast.paired import bootstrap_gain
 from prophet_agent.forecast.season import choose_season, mase_scale_text
 from prophet_agent.forecast.tsb import expected_volume
@@ -33,6 +36,9 @@ RESAMPLES = 2000
 SEED = 20260                # fixed so the same series and settings replay to the same interval
 WIN_SHARE = 0.6             # TimesFM must win at least this share of origins for a "timesfm_better" verdict
 SIMPLE = ("naive", "seasonal_naive", "drift", "mean_last_season", "tsb_expected")
+EQUAL_BLEND_RULES = ("naive", "drift", "seasonal_naive", "mean_last_season")   # the simple centre rules the report can deliver
+BLEND_CAVEAT = ("The rule and the adoption were both chosen on these same windows, so the blend's scores here are optimistic. "
+                "This is a selection on the backtest, not an unbiased estimate of accuracy; confirm on later windows before relying on it.")
 
 
 def _snaive(x: np.ndarray, h: int, m: int) -> np.ndarray:
@@ -105,9 +111,54 @@ def _combined_forecasts(x: np.ndarray, origins: list[int], m: int, preds: list[d
     return combined, chosen, weights
 
 
+def _equal_blend_rule(x: np.ndarray, origins: list[int], m: int, preds: list[dict[str, np.ndarray]],
+                      actuals: list[np.ndarray]) -> str | None:
+    """The simple centre rule the equal blend uses: the one with the lowest mean MASE over all the windows, among
+    EQUAL_BLEND_RULES. None when no rule can be scored (every scale is flat).
+
+    Motivation vs Logic
+    Motivation: an equal blend needs one rule, and the rule that did best overall is the natural one. But picking it on the
+    same windows the blend is then scored on is a selection, so the caller labels it as one.
+    Logic: score each rule's MASE per origin with the backtest's own scale, average over the finite origins, and take the
+    lowest, ties going to the rule listed first. Nothing about the TimesFM forecast enters this choice.
+    """
+    scales = [_mase_scale(x[:o], m) for o in origins]
+    mase: dict[str, float] = {}
+    for nm in EQUAL_BLEND_RULES:
+        vals = [float(np.abs(actuals[i] - preds[i][nm]).mean() / scales[i]) for i in range(len(origins)) if np.isfinite(scales[i])]
+        if vals:
+            mase[nm] = float(np.mean(vals))
+    return min(mase, key=lambda nm: (mase[nm], EQUAL_BLEND_RULES.index(nm))) if mase else None
+
+
+def _blend_choice(errs: dict[str, list[float]], rule: str | None, k: int, horizon: int, models: dict[str, Any]) -> dict[str, Any]:
+    """Whether the equal blend is adopted as the centre, with the evidence and the selection caveat.
+
+    Motivation vs Logic
+    Motivation: the report must not deliver a blend because the planner liked it. The adoption is decided here, on the same
+    windows as the verdict, and the result says exactly what was compared.
+    Logic: adopt_equal_blend compares the blend with TimesFM's centre and with the chosen rule on the same origins. The
+    result keeps the counts, the paired intervals and the MASE of each, and always carries the selection caveat, because
+    the windows that chose the rule and the adoption are the windows that score it.
+    """
+    base = {"windows": k, "horizon": horizon, "selected_on_these_windows": True, "caveat": BLEND_CAVEAT}
+    if rule is None:
+        return {**base, "adopt": False, "reason": "no simple centre rule could be scored on these windows"}
+    ev = adopt_equal_blend(errs["timesfm"], errs["timesfm_equal_blend"], errs[rule], seed=SEED, confidence=CONFIDENCE,
+                           resamples=RESAMPLES, win_share=WIN_SHARE)
+    if ev["adopt"]:
+        reason = f"the blend beat TimesFM's centre and {rule} on these {k} windows of {horizon}"
+    else:
+        lost = [name for name, ok in (("TimesFM's centre", ev["vs_timesfm"]["beats"]), (rule, ev["vs_rule"]["beats"])) if not ok]
+        reason = f"the blend did not beat {' or '.join(lost)} on these windows, so the centre stays TimesFM's"
+    return {**base, "rule": rule, **ev, "reason": reason,
+            "mase": {"timesfm": models["timesfm"]["mase"], "blend": models["timesfm_equal_blend"]["mase"],
+                     rule: models[rule]["mase"]}}
+
+
 def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origins: int = DEFAULT_ORIGINS,
                      season: int | None = None, engine: Any = None, control: Any = None, combine_forecasts: bool = False,
-                     freq_hint: str | None = None, dates: Any = None) -> dict:
+                     blend_centre: bool = False, freq_hint: str | None = None, dates: Any = None) -> dict:
     x = np.asarray(values, dtype=float)
     n = len(x)
     if not np.isfinite(x).all():
@@ -158,9 +209,16 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
                                  "with the lowest mean MASE on earlier origins only",
                        "baseline_by_origin": chosen, "weight_timesfm_by_origin": weights,
                        "note": "origin 1 has no earlier origin, so it uses naive and equal weights"}
+    blend_rule: str | None = None
+    if blend_centre:
+        blend_rule = _equal_blend_rule(x, origins, m, preds, actuals)
+        if blend_rule is not None:
+            for p in preds:
+                p["timesfm_equal_blend"] = equal_blend(p["timesfm"], p[blend_rule])     # plain mean: nothing is fitted
 
     names = ["timesfm", "naive", "seasonal_naive", "drift", "mean_last_season", "tsb_expected"] + (
-        ["timesfm_default"] if configured else []) + (["timesfm_combined"] if combine_forecasts else [])
+        ["timesfm_default"] if configured else []) + (["timesfm_combined"] if combine_forecasts else []) + (
+        ["timesfm_equal_blend"] if blend_rule is not None else [])
     errs: dict[str, list[float]] = {nm: [] for nm in names}
     act_sum, abs_err = 0.0, {nm: 0.0 for nm in names}
     signed = {nm: 0.0 for nm in names}          # sum of (forecast - actual): the volume bias, not the error
@@ -214,6 +272,8 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
     if combination is not None:
         out["combination"] = combination
         out["timesfm_combined_mase_note"] = "timesfm_combined is TimesFM blended with the earlier-best baseline; compare its mase with timesfm and best_baseline"
+    if blend_centre:
+        out["centre_choice"] = _blend_choice(errs, blend_rule, k, horizon, models)
     if best is not None and models["timesfm"]["mase"] is not None:
         out["best_baseline"] = best
         gain = (base[best] - models["timesfm"]["mase"]) / base[best] * 100 if base[best] else None
