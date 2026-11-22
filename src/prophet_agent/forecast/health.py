@@ -154,7 +154,11 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
         verdict = "flat_unexpected"
         causes.insert(0, f"the history repeats every {period} steps (strength {strength:.2f}) but the forecast has "
                          f"{out['shape_ratio']:.0%} of that shape")
-        if not fixes:
+        # A6-07: the instruction names the detected period, so the planner runs the lab on it instead of guessing one.
+        had_fixes = bool(fixes)
+        fixes.insert(0, f"run control_lab with period={period} and backtest_series with season={period} on the same series; "
+                        "keep a treatment only if the lab adopts it")
+        if not had_fixes:
             fixes.append("check how the series was prepared (aggregation, gap filling, rounding) and run backtest_series to see "
                          "whether a seasonal baseline beats it")
     elif flat:
