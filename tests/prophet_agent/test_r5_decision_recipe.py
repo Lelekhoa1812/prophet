@@ -61,3 +61,20 @@ def test_a_stopped_run_without_a_draft_asks_for_the_results_not_the_gap_alone():
     d = _gap_draft({"answer": "", "reason": "eight scan findings have no ledger decision"})
     assert "every result the analysis established" in d and "Not settled" in d
     assert d.endswith("eight scan findings have no ledger decision")
+
+
+def test_the_open_ledger_item_gives_the_decide_cell_for_the_scan(tmp_path):
+    # live retail_biz rep6 (measured, 2026-11-23): the scan was saved and the ledger item open; 25 cells printed the scan
+    # findings and none recorded a decision, so the mission stalled with no forecast
+    (tmp_path / SCAN_RUN / "out").mkdir(parents=True)
+    (tmp_path / SCAN_RUN / "out" / "scan.json").write_text(json.dumps({"findings": [
+        {"id": "calendar.closed_days", "severity": "major", "scope": "all"},
+        {"id": "values.negative", "severity": "minor", "scope": "all"},
+        {"id": "seasonality.strength", "severity": "info", "scope": "all"}], "summary": {}}))
+    hist = [{"kind": "tool", "tool": "sandbox_python", "args": {"code": "x"},
+             "result": {"run_id": SCAN_RUN, "outputs": ["out/scan.json (10 bytes)"]}}]
+    item = next(i for i in contracts.progress(hist, run_root=tmp_path) if i["item"].startswith("analysis ledger"))
+    d = item["detail"]
+    assert item["status"] == "todo" and d.startswith("0 of")
+    assert d.index("calendar.closed_days") < d.index("values.negative") < d.index("seasonality.strength")
+    assert "led.decide('values.negative'" in d and SCAN_RUN in d and "only saved decisions" in d

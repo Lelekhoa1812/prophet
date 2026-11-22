@@ -526,7 +526,7 @@ def _agent_for(item: str) -> str:
 
 
 def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
-                  full: Callable[[str], list] | None = None, stuck: tuple[str, int] | None = None) -> dict | None:
+                  full: Callable[[str], list] | None = None, stuck: tuple | None = None) -> dict | None:
     """Delegations the harness starts itself instead of hoping the planner will. Live, the planner delegated once in 1,983
     decisions although its rules ask for it, so three situations are routed deterministically:
     1. a market or macro series with no outside research yet, once the data has been looked at: a researcher;
@@ -542,7 +542,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
         return {"action": "delegate", "auto": "stuck:" + stuck[0], "agent_type": _agent_for(stuck[0]),
                 "rationale": f"no checklist item was ticked in {stuck[1]} calls; a fresh context does the next one",
                 "task": "A lead agent working on this goal has gone " + str(stuck[1]) + " calls without finishing one step: "
-                        + goal + "\n\nThe step to do now: " + stuck[0] + "\n\nWhat already exists (pass files in carry and "
+                        + goal + "\n\nThe step to do now: " + stuck[0]
+                        + (f" ({stuck[2]})" if len(stuck) > 2 and stuck[2] else "") + "\n\nWhat already exists (pass files in carry and "
                         "open them at in/carried/<file name>; do not redo this work):\n" + (card or "nothing saved yet")
                         + "\n\nDo exactly this step and nothing else, in as few cells as possible, from the saved files.",
                 "deliverable": "The run id and files the step wrote, and in a few lines what each holds.",
@@ -1621,8 +1622,12 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 best_done, calls_at_best = done_now, calls_now
             if (idle := _idle_note(calls_now - calls_at_best, items)):
                 note += "\n\n" + idle
-            nxt = next((it["item"] for it in items if it.get("next")), None)
-            stuck = (nxt, STUCK_CALLS if rescue else calls_now - calls_at_best) if nxt else None
+            nxt_item = next((it for it in items if it.get("next")), None)
+            nxt = nxt_item["item"] if nxt_item else None
+            # The item's detail rides along for the rescue brief only (live retail_biz rep6: the ledger item's analyst got
+            # the item's name, not the cell that closes it, and printed the scan 14 times). The dedup key stays the item.
+            stuck = ((nxt, STUCK_CALLS if rescue else calls_now - calls_at_best, nxt_item.get("detail") or "")
+                     if nxt else None)
             rescue = False
             _status(ctx, i, history, items, started)
         stored = _stored_step_name(ctx)

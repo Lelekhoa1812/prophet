@@ -430,7 +430,7 @@ def _decision_recipe(findings: list[dict], missing: list[str], history, run_root
     # censoring.plateau for six clients, so the recipe covered one of the eight ids, and 480 adds were never going to be written).
     scopes: dict[str, list[str]] = {}
     for f in findings:
-        if f.get("id") in missing and f.get("severity") in ("blocker", "major"):
+        if f.get("id") in missing:
             got = scopes.setdefault(f["id"], [])
             if str(f.get("scope")) not in got:
                 got.append(str(f.get("scope")))
@@ -443,10 +443,11 @@ def _decision_recipe(findings: list[dict], missing: list[str], history, run_root
     # led.decide reads the stage and the finding text from the saved scan, so the cell has no scan parsing to get wrong
     # (live retail_biz rep5: guards on scan keys that do not exist skipped both adds, and the save changed nothing).
     adds = "; ".join(f"led.decide('{i}', '<your decision and why>')  # {scope}" for i, scope in rows)
-    scan_run = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
-                     if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
-                     and any(SCAN_FILE.fullmatch(_output_path(o)) for o in (h["result"].get("outputs") or []))), None)
-    scan_carry = f" Carry the scan too ({{run_id: '{scan_run}', file: 'out/scan.json'}}) so decide can read it." if scan_run else ""
+    scan_at = next(((h["result"]["run_id"], p) for h in reversed(with_delegated(history))
+                    if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
+                    for p in [_output_path(o) for o in (h["result"].get("outputs") or [])] if SCAN_FILE.fullmatch(p)), None)
+    scan_carry = (f" Carry the scan too ({{run_id: '{scan_at[0]}', file: '{scan_at[1]}'}}) so decide can read it."
+                  if scan_at else "")
     return (f". One cell does it: {carry}; {adds}; led.save(). Write no code that reads the scan file and no if around the "
             f"calls: decide finds each finding itself, and one call covers every series it names.{scan_carry}")
 
@@ -738,6 +739,29 @@ def panel_entities(history) -> dict | None:
 
 
 
+def _ledger_recipe(history, run_root) -> str:
+    """The cell that fills the ledger from the saved scan: one led.decide per finding id, blockers and majors first.
+
+    Live retail_biz rep6 (measured, 2026-11-23): with the scan saved and this item open, the lead printed the scan's findings
+    in eleven cells and its rescue analyst in fourteen more, and no decision was recorded; the mission stalled with no
+    forecast. The item said what was missing, not how to close it."""
+    findings = _saved_scan_findings(history, run_root) or []
+    rank = {"blocker": 0, "major": 1, "minor": 2, "info": 3}
+    ids: list[str] = []
+    for f in sorted((f for f in findings if isinstance(f.get("id"), str)), key=lambda f: rank.get(f.get("severity"), 4)):
+        if f["id"] not in ids:
+            ids.append(f["id"])
+    if not ids:
+        return ""
+    texts = [" ".join(str(e.get(k, "")) for k in ("stage", "finding", "decision")) for entries in _saved_ledgers(history, run_root)
+             for e in entries if isinstance(e, dict)]
+    open_ids = [i for i in ids if not any(i in t for t in texts)][:8]
+    if not open_ids:
+        return ""
+    return ("; " + _decision_recipe(findings, open_ids, history, run_root).lstrip(". ")
+            + ". Printing the scan again does not count: only saved decisions do")
+
+
 def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
     """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
 
@@ -760,7 +784,8 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
         items.append({"item": f"analysis ledger: at least {MIN_LEDGER_STAGES} stages with a finding and a decision "
                               "(time index, coverage, zeros and censoring, outliers and level shifts, seasonality)",
                       "status": "done" if stages >= MIN_LEDGER_STAGES else "todo",
-                      "detail": f"{stages} of {MIN_LEDGER_STAGES} recorded"})
+                      "detail": f"{stages} of {MIN_LEDGER_STAGES} recorded" + (_ledger_recipe(obs, run_root)
+                                                                                if stages < MIN_LEDGER_STAGES else "")})
     if external:
         items.append({"item": "outside context: the series is driven by things its history cannot show, so delegate a researcher "
                               "(agent_type researcher) for the regime, scheduled events in the horizon and the main risks, or say "

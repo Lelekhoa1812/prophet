@@ -134,3 +134,11 @@ def test_a_stuck_checklist_item_goes_to_a_fresh_analyst_once_and_its_ledger_coun
            "result": {"ok": True, "run_id": run, "outputs": ["out/ledger.json (200 bytes)", "out/scan_A.json (9 bytes)"]}}]}
     assert contracts.ledger_stages([sub], tmp_path) == 4 and contracts.scan_ran([sub])
     assert contracts.ledger_stages([], tmp_path) == 0
+
+
+def test_the_rescue_brief_carries_the_items_recipe():
+    # live retail_biz rep6 (2026-11-23): the analyst got the ledger item's name only and printed the scan 14 times
+    recipe = "0 of 4 recorded; One cell does it: led = ps.Ledger(); led.decide('calendar.closed_days', '<your decision>')"
+    plan = _harness_plan("Forecast daily sales", [FLAT], TOOLS, stuck=("analysis ledger: at least 4 stages", 16, recipe))
+    assert plan["auto"] == "stuck:analysis ledger: at least 4 stages"          # the dedup key is the item alone
+    assert "led.decide('calendar.closed_days'" in plan["task"]
