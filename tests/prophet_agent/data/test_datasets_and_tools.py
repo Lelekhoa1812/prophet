@@ -153,6 +153,8 @@ class Scripted:
 
 def test_mission_with_an_uploaded_file_runs_inspect_data_through_the_api(tmp_path):
     brain = Scripted([{"action": "call_tool", "tool": "inspect_data", "args": {}, "rationale": "look first"},
+                      # A5-04: a forecast goal's first two finishes are refused for checklist items still to do.
+                      {"action": "finish", "rationale": "done"}, {"action": "finish", "rationale": "done"},
                       {"action": "finish", "rationale": "done"}],
                      [{"verdict": "met", "reason": "ok", "answer": "read it"}])
     service = MissionService(tmp_path / "t.sqlite", lambda: brain, tool_catalogue(), tools_factory=default_tools)

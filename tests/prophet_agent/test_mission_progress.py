@@ -7,6 +7,7 @@ import json
 from prophet_agent import prompts
 from prophet_agent.runtime import contracts
 from prophet_agent.runtime.goal import ASKS_KEEP_CHARS, GoalConfig, goal_program
+from prophet_agent.runtime.runner import Runtime
 from tests.prophet_agent.test_goal_loop import ScriptedBrain, _tool, call, finish, met, run, store  # noqa: F401
 
 
@@ -112,10 +113,17 @@ def test_a_memory_cut_to_fit_keeps_the_asks_at_its_head(store):
         counter["n"] += 1
         return {"n": counter["n"], "pad": "x" * 200}
 
-    brain = Writer([call("a")] * 5 + [finish()], [met()])
-    cfg = GoalConfig(view_chars=300, keep_recent=2, memory_chars=3000)
-    _, out = run(store, goal_program("g", {"a": _tool("a", changing)}, brain, cfg))
-    assert out["result"]["status"] == "met"
+    # A5-03: the model writes the memo only at a part boundary, so the cut happens in part 2 (step 3 is the boundary).
+    # Distinct arguments: identical calls are repeat pointers now (A5-09), so they would stall the run before the cut.
+    brain = Writer([call("a", {"k": k}) for k in range(5)] + [finish()],
+                   [{"verdict": "not_met", "reason": "more"}, met()])
+    part1 = GoalConfig(max_iterations=3, view_chars=300, keep_recent=2, memory_chars=3000, segment=0)
+    mid, first = run(store, goal_program("g", {"a": _tool("a", changing)}, brain, part1))
+    assert first["status"] == "checkpoint"
+    second = Runtime(store, owner="r2").run(mid, goal_program(
+        "g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=3, view_chars=300, keep_recent=2,
+                                                            memory_chars=3000, segment=1)))
+    assert second["result"]["status"] == "met"
     last = brain.prompts[-1]
     assert "keep this exactly. keep this exactly." in last, "the head of the memory (the asks) survived the cut"
     assert "[middle of the memory cut to fit]" in last
@@ -173,7 +181,8 @@ def test_compaction_folds_in_batches_not_one_observation_per_step():
     goal._compact(ctx, Brain(), "goal", history, memo, "t", view_chars=20000, keep_recent=4)
     assert ctx.steps == [], "two older observations wait for a batch while the view is not far over"
     history += [dict(big) for _ in range(2)]      # now 4 older observations
-    goal._compact(ctx, Brain(), "goal", history, memo, "t", view_chars=20000, keep_recent=4)
+    # A5-03: the model writes the memo only at a part boundary, so the batch is folded there (boundary=True).
+    goal._compact(ctx, Brain(), "goal", history, memo, "t", view_chars=20000, keep_recent=4, boundary=True)
     assert len(ctx.steps) == 1 and memo.covered == 4
 
 

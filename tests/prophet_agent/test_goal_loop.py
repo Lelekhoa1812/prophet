@@ -113,7 +113,8 @@ def test_goal_and_argument_names_survive_a_large_observation(store):
     big = {"pad": list(range(3000))}       # far over OBS_CHARS once serialised
     tool = Tool("a", lambda args, key: big, idempotent=True,
                 doc="Echo a large payload. Arguments (use these names only): none.")
-    brain = Recording(plans=[call("a"), finish(), finish()], evals=[not_met(), met()])
+    # Round 3, A5-04: a forecast's first two finishes are refused for checklist items still to do, before the evaluator.
+    brain = Recording(plans=[call("a"), finish(), finish(), finish(), finish()], evals=[not_met(), met()])
     goal = "Forecast marker ZX-42 for 8 weeks"
     _, out = run(store, goal_program(goal, {"a": tool}, brain))
     assert out["result"]["status"] == "met"
@@ -121,7 +122,8 @@ def test_goal_and_argument_names_survive_a_large_observation(store):
     eval_texts = [c for n, c in seen if n == "eval"]
     assert f"Goal:\n{goal}" in plan_text and "Arguments (use these names only)" in plan_text
     assert all(f"Goal:\n{goal}" in text for text in eval_texts), "the goal must never be clipped away"
-    assert "...[clipped]" in eval_texts[-1], "the large observation is clipped on its own"
+    # Round 3, A5-02: the clip names the step whose full result read_observation pages back.
+    assert "...[clipped; read_observation with step" in eval_texts[-1], "the large observation is clipped on its own"
 
 
 def test_iteration_budget_caps_an_endless_loop(store):
@@ -131,7 +133,8 @@ def test_iteration_budget_caps_an_endless_loop(store):
         counter["n"] += 1
         return {"n": counter["n"]}
 
-    plans = [call("a")] * 4
+    # Round 3, A5-09: identical calls are answered with a pointer, not run again, so distinct arguments keep this a loop of work.
+    plans = [call("a", {"n": k}) for k in range(4)]
     brain = ScriptedBrain(plans=plans, evals=[not_met()])     # only the last iteration is evaluated
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=4))
     _, out = run(store, program)
@@ -146,7 +149,7 @@ def test_tool_budget_from_the_runtime_stops_the_mission(store):
         counter["n"] += 1
         return {"n": counter["n"]}
 
-    brain = ScriptedBrain(plans=[call("a")] * 10, evals=[])
+    brain = ScriptedBrain(plans=[call("a", {"n": k}) for k in range(10)], evals=[])     # Round 3, A5-09: distinct calls
     program = goal_program("g", {"a": _tool("a", changing)}, brain, GoalConfig(max_iterations=10))
     mid, out = run(store, program, budget={"max_tool_calls": 2})
     assert out["status"] == "checkpoint" and out["which"] == "max_tool_calls", "a spent allowance is resumable, not terminal"
@@ -188,7 +191,8 @@ def test_ask_pauses_then_resumes_from_the_answer(store):
     question = {"action": "ask_user", "rationale": "horizon", "questions": [
         {"question": "How far ahead should I forecast?", "header": "Horizon", "multiSelect": False,
          "options": [{"label": "4 weeks", "description": "short"}, {"label": "12 weeks", "description": "quarter"}]}]}
-    brain = ScriptedBrain(plans=[question, finish()], evals=[met("12-week forecast")])
+    # Round 3, A5-04: the two premature finishes of a forecast are refused before the evaluator, which sees the third.
+    brain = ScriptedBrain(plans=[question, finish(), finish(), finish()], evals=[met("12-week forecast")])
     program = goal_program("forecast demand", {}, brain)
 
     mid, first = run(store, program)
@@ -199,7 +203,7 @@ def test_ask_pauses_then_resumes_from_the_answer(store):
     done = Runtime(store, owner="r2").run(mid, program)
     assert done["status"] == "completed"
     assert done["result"]["status"] == "met"
-    assert brain.calls == {"plan": 2, "eval": 1}, "plan:0 is not asked again after the answer"
+    assert brain.calls == {"plan": 4, "eval": 1}, "plan:0 is not asked again after the answer"
     assert len(store.open_questions(mid)) == 0
 
 
@@ -512,13 +516,14 @@ def test_a_checkpoint_continues_from_the_stored_steps_with_a_new_part(store):
         return {"n": counter["n"]}
 
     mid = store.create_mission("g", {})
-    first = ScriptedBrain(plans=[call("a"), call("a")], evals=[not_met()])
+    # Round 3, A5-09: distinct calls, so each one is a tool run and the count below means what it says.
+    first = ScriptedBrain(plans=[call("a", {"k": 1}), call("a", {"k": 2})], evals=[not_met()])
     out = Runtime(store, owner="r1").run(mid, goal_program("g", {"a": _tool("a", changing)}, first, GoalConfig(max_iterations=2)))
     assert out["result"]["status"] == "checkpoint" and out["result"]["segment"] == 0
     assert store.mission(mid)["status"] == "checkpoint"
 
     # Continue: part 1 has four steps; the model is asked only for the steps that are new.
-    second = ScriptedBrain(plans=[call("a"), finish()], evals=[met("Total 3.")])
+    second = ScriptedBrain(plans=[call("a", {"k": 3}), finish()], evals=[met("Total 3.")])
     cfg = GoalConfig(max_iterations=2, segment=1)
     out = Runtime(store, owner="r2").run(mid, goal_program("g", {"a": _tool("a", changing)}, second, cfg))
     assert out["result"]["status"] == "met", out
@@ -541,32 +546,35 @@ class CompactingBrain(ScriptedBrain):
         return super().decide(messages, schema, name)
 
     def write(self, messages):
-        self.writes += 1
+        # The writer also composes the answer, so only a compaction (round 3, A5-03) is counted here.
+        if "New observations to fold in" in messages[-1]["content"]:
+            self.writes += 1
         return "MEMO-1: the tool a was called for each earlier step."     # no figures: grounding would rightly reject them
 
 
 def test_older_observations_fold_into_memory_and_the_record_is_kept(store):
     """Context management: once the view outgrows its budget, older steps fold into a memo the planner reads, while
-    every observation stays in the stored record for replay and audit."""
+    every observation stays in the stored record for replay and audit. Round 3, A5-03: inside one part the fold is a set of
+    deterministic stubs (step and key fields), and the model writes no memo."""
     counter = {"n": 0}
 
     def changing(args, key):
         counter["n"] += 1
         return {"n": counter["n"], "pad": "x" * 200}
 
-    brain = CompactingBrain(plans=[call("a")] * 5 + [finish()], evals=[met()])
+    brain = CompactingBrain(plans=[call("a", {"k": k}) for k in range(5)] + [finish()], evals=[met()])
     cfg = GoalConfig(view_chars=300, keep_recent=2, memory_chars=4000)
     _, out = run(store, goal_program("g", {"a": _tool("a", changing)}, brain, cfg))
     assert out["result"]["status"] == "met"
-    assert brain.writes >= 1, "the older steps were folded by the compactor, not dropped"
+    assert brain.writes == 0, "inside one part no model call writes the memo (round 3, A5-03)"
     assert "Memory of earlier steps" in brain.planner_prompts[-1]
-    assert "MEMO-1" in brain.planner_prompts[-1]
+    assert "read_observation pages the full result" in brain.planner_prompts[-1], "the folded steps are stubs with their step"
     tool_steps = [h for h in out["result"]["evidence"] if h.get("kind") == "tool"]
     assert len(tool_steps) == 5, "compaction never deletes an observation from the record"
 
 
-def test_a_brain_that_cannot_write_cuts_older_steps_and_says_so(store):
-    """Without a writer the planner is told how many steps were left out of its view; nothing is invented."""
+def test_a_brain_that_cannot_write_folds_older_steps_into_stubs_and_invents_nothing(store):
+    """Without a writer the older steps are stubs (round 3, A5-03); nothing is invented for them."""
     counter = {"n": 0}
 
     def changing(args, key):
@@ -583,12 +591,12 @@ def test_a_brain_that_cannot_write_cuts_older_steps_and_says_so(store):
                 self.planner_prompts.append("\n".join(m["content"] for m in messages))
             return super().decide(messages, schema, name)
 
-    brain = NoWriter(plans=[call("a")] * 5 + [finish()], evals=[met()])
+    brain = NoWriter(plans=[call("a", {"k": k}) for k in range(5)] + [finish()], evals=[met()])
     cfg = GoalConfig(view_chars=300, keep_recent=2)
     _, out = run(store, goal_program("g", {"a": _tool("a", changing)}, brain, cfg))
     assert out["result"]["status"] == "met"
-    assert "left out of this view" in brain.planner_prompts[-1]
-    assert "MEMO-1" not in brain.planner_prompts[-1], "nothing is invented for the cut steps"
+    assert "read_observation pages the full result" in brain.planner_prompts[-1]
+    assert "MEMO-1" not in brain.planner_prompts[-1], "nothing is invented for the folded steps"
     tool_steps = [h for h in out["result"]["evidence"] if h.get("kind") == "tool"]
     assert len(tool_steps) == 5, "the record is complete even when the view is cut"
 
@@ -759,19 +767,22 @@ def _gate_tools():
 
 
 def test_a_forecast_never_compared_with_baselines_is_sent_back_before_it_counts_as_met(store):
+    # Round 3, A5-04: the first two finishes are refused for the checklist (the backtest is still to do), so the third reaches
+    # the evaluator, whose "met" the contract check sends back; the backtest then runs and the last finish is met.
     brain = ScriptedBrain(
-        plans=[call("sandbox_python"), call("timesfm_forecast"), finish(), call("backtest_series"), finish()],
+        plans=[call("sandbox_python"), call("timesfm_forecast"), finish(), finish(), finish(), call("backtest_series"), finish()],
         evals=[met("forecast 1, 2, 3"), met("forecast 1, 2, 3")])
     _, out = run(store, goal_program("forecast", _gate_tools(), brain))
     assert out["result"]["status"] == "met"
-    assert brain.calls["plan"] == 5, "the first finish was refused and a backtest was run before the second"
+    assert brain.calls["plan"] == 7, "the first finishes were refused and a backtest was run before the last"
     refusals = [h for h in out["result"]["evidence"] if h.get("contract")]
     assert refusals and "baseline_compared" in refusals[0]["contract"]
 
 
 def test_a_check_that_keeps_failing_leaves_the_answer_labelled_partial(store):
-    brain = ScriptedBrain(plans=[call("sandbox_python"), call("timesfm_forecast"), finish(), finish(), finish()],
-                          evals=[met("forecast 1, 2, 3")] * 3)
+    # Round 3, A5-04: two refusals first; the rest are finishes the contract check keeps sending back.
+    brain = ScriptedBrain(plans=[call("sandbox_python"), call("timesfm_forecast")] + [finish()] * 12,
+                          evals=[met("forecast 1, 2, 3")] * 12)
     _, out = run(store, goal_program("forecast", _gate_tools(), brain))
     assert out["result"]["status"] == "partial"
     assert "baseline_compared" in out["result"]["contract_failures"]
@@ -779,8 +790,9 @@ def test_a_check_that_keeps_failing_leaves_the_answer_labelled_partial(store):
 
 
 def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_after_inspection(store):
+    # Round 3, A5-04: the data inspection is still to do, so the first two finishes are refused before the evaluator.
     brain = ScriptedBrain(
-        plans=[call("timesfm_forecast"), call("backtest_series"), finish(), call("sandbox_python"),
+        plans=[call("timesfm_forecast"), call("backtest_series"), finish(), finish(), finish(), call("sandbox_python"),
                call("timesfm_forecast"), finish()],
         evals=[met("forecast 1, 2, 3"), met("forecast 1, 2, 3")])
     _, out = run(store, goal_program("forecast", _gate_tools(), brain))
@@ -791,8 +803,9 @@ def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_
 
 def test_a_forecast_without_the_analysis_ledger_is_sent_back_until_one_is_saved(store, tmp_path, monkeypatch):
     monkeypatch.setattr("prophet_agent.runtime.goal.SANDBOX_ROOT", tmp_path / "nowhere")      # no ledger anywhere
-    brain = ScriptedBrain(plans=[call("sandbox_python"), call("backtest_series"), call("timesfm_forecast"), finish(), finish(),
-                                 finish()], evals=[met("forecast 1, 2, 3")] * 3)
+    # Round 3, A5-04: two refusals for the open checklist items, then the contract check sends each finish back.
+    brain = ScriptedBrain(plans=[call("sandbox_python"), call("backtest_series"), call("timesfm_forecast")] + [finish()] * 12,
+                          evals=[met("forecast 1, 2, 3")] * 12)
     _, out = run(store, goal_program("forecast", _gate_tools(), brain))
     assert out["result"]["status"] == "partial"
     assert out["result"]["contract_failures"] == ["analysis_ledger"]
@@ -808,14 +821,17 @@ def test_a_figure_marked_as_approximate_matches_a_printed_one_within_one_percent
 
 
 def test_the_call_count_includes_calls_a_sub_agent_made():
-    """Audit 2026-11-22, item 7: the planner's budget must see the work a delegated sub-agent did."""
-    from prophet_agent.runtime.goal import _calls_used
+    """Audit 2026-11-22, item 7: the work a delegated sub-agent did is counted, but on its own grant.
+    Round 3 (A5-01, A3-01): the lead's count no longer includes a sub-agent's calls, or a delegation starves the lead;
+    they are counted by ``_delegated_calls`` instead."""
+    from prophet_agent.runtime.goal import _calls_used, _delegated_calls
     history = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True}},
                {"kind": "subagent", "agent_type": "analyst", "status": "met", "answer": "done", "evidence": [
                    {"kind": "tool", "tool": "web_fetch", "args": {}, "result": {"ok": True}},
                    {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True}}]},
                {"kind": "tool", "tool": "sandbox_python", "error": "unknown tool 'x'", "args": {}}]
-    assert _calls_used(history) == 3
+    assert _calls_used(history) == 1, "the lead's own call only"
+    assert _delegated_calls(history) == 2
 
 
 def test_the_research_trigger_covers_retail_demand_weather_and_power_goals():

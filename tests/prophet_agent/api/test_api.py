@@ -76,7 +76,8 @@ def test_question_round_trip_over_http(tmp_path):
     ask = {"action": "ask_user", "rationale": "need horizon", "questions": [
         {"question": "How far ahead?", "header": "Horizon", "multiSelect": False,
          "options": [{"label": "4 weeks", "description": ""}, {"label": "12 weeks", "description": ""}]}]}
-    brain = ScriptedBrain(plans=[ask, {"action": "finish", "rationale": "x"}],
+    # A5-04: a forecast goal's first two finishes are refused for checklist items still to do; the third reaches the evaluator.
+    brain = ScriptedBrain(plans=[ask, {"action": "finish", "rationale": "x"}, {"action": "finish", "rationale": "x"}, {"action": "finish", "rationale": "x"}],
                           evals=[{"verdict": "met", "reason": "ok", "answer": "12-week plan"}])
     client, service = _client(tmp_path, lambda: brain)
     mid = client.post("/api/missions", json={"goal": "forecast demand"}).json()["id"]
@@ -129,7 +130,7 @@ def test_forecast_report_produces_downloadable_files(tmp_path, stub_timesfm, mon
     brain = ScriptedBrain(
         plans=[{"action": "call_tool", "tool": "forecast_report", "rationale": "pack",
                 "args": {"values": values, "horizon": 4, "title": "Demand (synthetic)"}},
-               {"action": "finish", "rationale": "x"}],
+               {"action": "finish", "rationale": "x"}, {"action": "finish", "rationale": "x"}, {"action": "finish", "rationale": "x"}],  # A5-04: two refused finishes first
         evals=[{"verdict": "met", "reason": "files built", "answer": "pack ready"}])
     client, service = _client(tmp_path, lambda: brain)
     mid = client.post("/api/missions", json={"goal": "make a forecast pack"}).json()["id"]
@@ -192,7 +193,8 @@ def test_an_interrupted_mission_is_marked_at_startup_and_can_be_resumed(tmp_path
     seed.store.set_status(mid, "running")
     seed.store.close()
 
-    brain = ScriptedBrain([{"action": "finish", "rationale": "nothing to do"}],
+    # A5-04: the forecast goal's finish is refused twice for checklist items still to do before the evaluator is asked.
+    brain = ScriptedBrain([{"action": "finish", "rationale": "nothing to do"}] * 3,
                           [{"verdict": "met", "reason": "ok", "answer": "Nothing was needed."}])
     client, service = _client(tmp_path, lambda: brain)
     assert service.interrupted_at_start == [mid]

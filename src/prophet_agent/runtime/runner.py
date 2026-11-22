@@ -16,6 +16,7 @@ kill: the lease and the status stay as they were, and a later runtime must wait 
 """
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,11 +35,31 @@ class Paused(Exception):
         self.question_id = question_id
 
 
-READ_ONLY = ("analyst_skill", "notes")   # reads of playbooks and notes are not charged to a call budget
+# Calls that do no work on the data are not charged to a call budget: reads of playbooks and notes, and a read of a stored
+# observation (round 3, A5-02). ``ask_user`` is not a tool call either: the question is the cost, the answer is free.
+READ_ONLY = ("analyst_skill", "notes", "read_observation")
+UNCHARGED = READ_ONLY + ("ask_user",)
+# Mission-wide cap on calls made by delegated sub-agents (round 3, A5-01): a safety stop, not the lead's allowance. It is
+# the largest type's step budget (14) times the mission's sub-agent limit (24), so it is reached only by runaway delegation.
+DELEGATED_CALLS = 14 * 24
 
 
 class Cancelled(Exception):
     """The person asked this mission to stop."""
+
+
+class ArgumentRejected(Exception):
+    """A tool refused its arguments before doing any work (round 3, A5-12). The call is recorded as "rejected": it is not
+    charged to a budget, and the same refusal is returned on a replay without running the tool again."""
+
+
+# The refusals the tools raise today, matched by their wording: "unknown arguments ...; allowed: ...", "x must be one of
+# [...]". Tools should raise ArgumentRejected directly; until they do, the wording is the signal.
+_ARG_REFUSAL = re.compile(r"unknown arguments|must be one of|allowed: |use these names|is required|missing required", re.I)
+
+
+def is_argument_refusal(exc: BaseException) -> bool:
+    return isinstance(exc, (ValueError, TypeError, ArgumentRejected)) and bool(_ARG_REFUSAL.search(str(exc)))
 
 
 class BudgetExceeded(Exception):
@@ -65,6 +86,9 @@ class Ctx:
         self.mission_id = mission_id
         self.step_idx = -1
         self.deadline = runtime.deadline
+        # "lead" for the lead agent's calls, "delegated" while a sub-agent runs on this context (round 3, A5-01). The lane
+        # is set by the program, so a replay charges the same calls to the same allowance.
+        self.lane = "lead"
 
     def branch(self, base: int) -> "Ctx":
         """A context for work that runs beside this one (a parallel sub-agent). It shares the mission, store and runtime but
@@ -83,8 +107,16 @@ class Ctx:
         self.store.renew_lease(self.mission_id, self.rt.owner, self.rt.lease_s)
 
     def _guard_budget(self) -> None:
+        """The lead's calls are held to ``max_tool_calls``; a sub-agent's calls to ``max_delegated_calls``. Each lane is
+        counted on its own, so a delegation cannot use up the lead's allowance (live Beijing: 44 delegated calls, lead
+        forced to finish at 45 of 20)."""
+        if self.lane == "delegated":
+            cap = self.rt.budget.get("max_delegated_calls")
+            if cap is not None and self.store.count_tool_calls(self.mission_id, exclude=UNCHARGED, lane="delegated") >= int(cap):
+                raise BudgetExceeded("max_delegated_calls")
+            return
         limit = self.rt.budget.get("max_tool_calls")
-        if limit is not None and self.store.count_tool_calls(self.mission_id, exclude=READ_ONLY) >= int(limit):
+        if limit is not None and self.store.count_tool_calls(self.mission_id, exclude=UNCHARGED, lane="lead") >= int(limit):
             raise BudgetExceeded("max_tool_calls")
 
     def step(self, name: str, fn: Callable[["Ctx"], Any]) -> Any:
@@ -111,6 +143,8 @@ class Ctx:
         rec = self.store.tool_get(key)
         if rec is not None and rec.status == "done":
             return rec.result
+        if rec is not None and rec.status == "rejected":
+            raise ArgumentRejected(rec.error or "the arguments were refused")
         if rec is not None and rec.status == "started" and not tool.idempotent:
             raise OutcomeUnknown(f"{tool.name} started in an earlier run and its outcome was not recorded")
         if rec is not None and rec.status == "failed" and not tool.idempotent:
@@ -119,12 +153,16 @@ class Ctx:
                                  f"{rec.error or 'no detail'}")
         self._guard_budget()
         self._guard_time()
-        self.store.tool_start(self.mission_id, self.step_idx, tool.name, args, key)
+        self.store.tool_start(self.mission_id, self.step_idx, tool.name, args, key, lane=self.lane)
         self.store.append_event(self.mission_id, "tool.started", {"tool": tool.name, "key": key})
         try:
             result = tool.fn(args, key)
         except Exception as exc:
             msg = redact(str(exc))
+            if is_argument_refusal(exc):
+                self.store.tool_set(key, "rejected", error=msg)
+                self.store.append_event(self.mission_id, "tool.rejected", {"tool": tool.name, "error": msg})
+                raise ArgumentRejected(msg) from None
             self.store.tool_set(key, "failed", error=msg)
             self.store.append_event(self.mission_id, "tool.failed", {"tool": tool.name, "error": msg})
             raise
@@ -162,6 +200,7 @@ class Runtime:
     def run(self, mission_id: str, program: Callable[[Ctx], Any], *, lease_s: float = 300.0) -> dict:
         mission = self.store.mission(mission_id)
         self.budget = dict(mission["budget"])
+        self.budget.setdefault("max_delegated_calls", DELEGATED_CALLS)
         max_s = self.budget.get("max_seconds")
         self.deadline = time.time() + float(max_s) if max_s else None
         self.lease_s = lease_s
@@ -211,4 +250,4 @@ class Runtime:
 
 
 
-__all__ = ["Runtime", "Ctx", "Tool", "Paused", "BudgetExceeded", "Cancelled", "LeaseHeld"]
+__all__ = ["Runtime", "Ctx", "Tool", "Paused", "BudgetExceeded", "Cancelled", "ArgumentRejected", "LeaseHeld"]

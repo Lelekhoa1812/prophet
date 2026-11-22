@@ -210,6 +210,14 @@ class Store:
                 for col, decl in cols.items():
                     if col not in present:
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            # Round 3 (A5-01): each tool call belongs to the lead agent or to a delegated sub-agent, so the two allowances are
+            # counted apart. Existing rows are labelled from their step names ("act:d1.*" is a sub-agent's step).
+            present = {r["name"] for r in self.conn.execute("PRAGMA table_info(tool_calls)")}
+            if "lane" not in present:
+                self.conn.execute("ALTER TABLE tool_calls ADD COLUMN lane TEXT NOT NULL DEFAULT 'lead'")
+                self.conn.execute("UPDATE tool_calls SET lane='delegated' WHERE EXISTS (SELECT 1 FROM steps s "
+                                  "WHERE s.mission_id=tool_calls.mission_id AND s.idx=tool_calls.step_idx "
+                                  "AND s.name LIKE 'act:d1.%')")
             self.conn.execute("CREATE INDEX IF NOT EXISTS missions_by_notebook ON missions(notebook_id, seq)")
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -415,12 +423,13 @@ class Store:
             return None
         return ToolRecord(row["idem_key"], row["status"], json.loads(row["result_json"] or "null"), row["error"])
 
-    def tool_start(self, mission_id: str, step_idx: int, tool: str, args: Any, key: str) -> None:
-        """Record that a call is starting. Never downgrades a call that already has a result (DO NOTHING on conflict)."""
+    def tool_start(self, mission_id: str, step_idx: int, tool: str, args: Any, key: str, lane: str = "lead") -> None:
+        """Record that a call is starting. Never downgrades a call that already has a result (DO NOTHING on conflict).
+        ``lane`` is "lead" for the lead agent's call and "delegated" for a sub-agent's (each has its own allowance)."""
         with self._tx() as c:
-            c.execute("INSERT INTO tool_calls (idem_key, mission_id, step_idx, tool, args_json, status, updated) "
-                      "VALUES (?,?,?,?,?,?,?) ON CONFLICT(idem_key) DO NOTHING",
-                      (key, mission_id, step_idx, tool, canonical(args), "started", time.time()))
+            c.execute("INSERT INTO tool_calls (idem_key, mission_id, step_idx, tool, args_json, status, updated, lane) "
+                      "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(idem_key) DO NOTHING",
+                      (key, mission_id, step_idx, tool, canonical(args), "started", time.time(), lane))
 
     def tool_set(self, key: str, status: str, result: Any = None, error: str | None = None) -> None:
         with self._tx() as c:
@@ -497,11 +506,20 @@ class Store:
                 continue
         return out
 
-    def count_tool_calls(self, mission_id: str, exclude: tuple[str, ...] = ()) -> int:
+    def count_tool_calls(self, mission_id: str, exclude: tuple[str, ...] = (), lane: str | None = None) -> int:
+        """Tool calls made in this mission: every lane, or one lane ("lead" or "delegated"). A call whose arguments were
+        rejected before it ran (status "rejected", round 3 A5-12) is not work and is not counted."""
         marks = ",".join("?" for _ in exclude)
-        sql = "SELECT COUNT(*) AS n FROM tool_calls WHERE mission_id=?" + (f" AND tool NOT IN ({marks})" if exclude else "")
+        sql = "SELECT COUNT(*) AS n FROM tool_calls WHERE mission_id=? AND status!='rejected'"
+        args: list = [mission_id]
+        if exclude:
+            sql += f" AND tool NOT IN ({marks})"
+            args += list(exclude)
+        if lane is not None:
+            sql += " AND lane=?"
+            args.append(lane)
         with self.lock:
-            row = self.conn.execute(sql, (mission_id, *exclude)).fetchone()
+            row = self.conn.execute(sql, args).fetchone()
         return int(row["n"])
 
     def tool_keys_waiting(self, mission_id: str) -> list[str]:
