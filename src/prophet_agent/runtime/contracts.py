@@ -1257,12 +1257,57 @@ def measured_total_range(history) -> dict | None:
     return found[0] if found else None
 
 
+CENTRE_WORDS = {"timesfm": "TimesFM", "global_gbm": "the pooled gradient-boosted model",
+                "global_blend": "the equal-weight blend of the pooled model and TimesFM", "naive": "the last value",
+                "seasonal_naive": "the same step a season earlier", "mean_last_season": "the average of the last season",
+                "drift": "the drift rule", "blend": "the blend"}
+
+
+def panel_sentence(history) -> str:
+    """The newest panel pack in plain words: which centre line it drew for how many series, and the panel total with both
+    bounds named for what they assume.
+
+    Live electricity rep10 (measured, 2026-11-23): the pack drew TimesFM for all 60 clients and the answer said the blend was
+    the centre line; it called the sum of the clients' 10-90% bounds the likely range and said that assumed independent
+    errors (summing bounds assumes every client misses the same way at once)."""
+    for h in reversed(with_delegated(history)):
+        res = _ok_result(h, "forecast_report")
+        if not isinstance(res, dict) or not res.get("n_series"):
+            continue
+        full = h.get("full") if isinstance(h.get("full"), dict) else {}
+        lines = ((full.get("forecast") or {}).get("series") if isinstance(full.get("forecast"), dict) else None) \
+            or res.get("series") or {}
+        rules = [((ln.get("centre") or {}).get("rule", "timesfm") if isinstance(ln.get("centre"), dict)
+                  else ln.get("centre") or "timesfm") for ln in lines.values() if isinstance(ln, dict)]
+        counts: dict[str, int] = {}
+        for r in rules:
+            counts[r] = counts.get(r, 0) + 1
+        n = res.get("n_series")
+        shown = sum(counts.values())
+        if counts and shown == n:
+            parts = [f"{CENTRE_WORDS.get(r, r)} for {'all ' if k == n else ''}{k} series" for r, k in
+                     sorted(counts.items(), key=lambda kv: -kv[1])]
+            text = " The panel pack's centre line: " + "; ".join(parts) + "."
+        else:
+            text = ""
+        pt = res.get("panel_total")
+        if isinstance(pt, dict) and isinstance(pt.get("centre"), (int, float)):
+            ind, tog = pt.get("if_entities_miss_independently") or {}, pt.get("if_entities_miss_together") or {}
+            if all(isinstance(d.get(k), (int, float)) for d in (ind, tog) for k in ("q10", "q90")):
+                text += (f" Panel total over {pt.get('steps')} steps: {pt['centre']:,.0f}. Its 80% range lies between two bounds: "
+                         f"{ind['q10']:,.0f} to {ind['q90']:,.0f} if the series miss independently, and {tog['q10']:,.0f} to "
+                         f"{tog['q90']:,.0f} if they all miss the same way at once (the sum of each series' own bounds, the "
+                         "cautious one).")
+        return text
+    return ""
+
+
 def trust_statement(history) -> str:
     """One computed paragraph on how far to trust the forecast: the backtest score against the best simple rule, what that
     means for the centre line, and how often the range held. It is appended to the answer as written by code, so a model can
     never misquote it (live: an answer said a range "reached 87.5%" when the stored calibration said otherwise)."""
     f = trust_facts(history)
-    extra = ""
+    extra = panel_sentence(history)
     found = _measured_total(history)
     if found is not None:
         mr, h = found
@@ -1271,7 +1316,8 @@ def trust_statement(history) -> str:
                  f"measured over {mr['origins']} past windows of {mr['measured_horizon']} steps"
                  + (f", extended to {h} steps at the same average correlation between days"
                     if mr["measured_horizon"] != h else "")
-                 + f"; built the same way, the range held the actual total in {mr['held_measured']} of {mr['origins']} windows.")
+                 + f"; built the same way, the range held the actual total in {mr['held_measured']} of {mr['origins']} windows."
+                 + extra)
     if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
         return ("**Accuracy check (computed from the stored backtest):**" + extra) if extra else ""
     rule = BASELINE_NAMES.get(f["best_baseline"], str(f["best_baseline"]))

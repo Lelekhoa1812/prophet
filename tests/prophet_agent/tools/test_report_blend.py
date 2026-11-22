@@ -112,10 +112,12 @@ def test_the_observation_carries_the_blend_check_for_the_planner(engine):
     assert obs["blend_check"]["adopt"] is False
 
 
-def test_a_panel_refuses_the_blend_because_its_check_is_per_series():
-    with pytest.raises(ValueError, match="one series"):
+def test_a_per_series_blend_on_a_panel_is_refused_with_the_whole_panel_form():
+    # Changed in round 5 (live electricity rep10): _panel maps centre "blend" to global_blend before it gets here; a per-series
+    # blend is still refused, and the message names the form that works
+    with pytest.raises(ValueError, match="as one string"):
         RT._panel_centres("blend", ["A", "B"])
-    with pytest.raises(ValueError, match="one series"):
+    with pytest.raises(ValueError, match="series on its own"):
         RT._panel_centres({"A": "blend"}, ["A", "B"])
 
 

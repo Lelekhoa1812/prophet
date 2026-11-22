@@ -119,3 +119,37 @@ def test_observe_carries_the_panel_total_and_the_centre_rule(sandbox):
     view = rt.observe(out)
     assert view["panel_total"] == out["panel_total"]
     assert all(line["centre"] == "global_gbm" for line in view["series"].values())
+
+
+def test_blend_on_a_panel_is_the_pooled_blend(sandbox):
+    # live electricity rep10 (2026-11-23): panel_backtest ranked "blend" (pooled model + TimesFM); the pack refused "blend"
+    # twice, fell back to TimesFM, and the answer still named the blend as the centre line
+    out = rt._run(_args(centre="blend"), "k")
+    ref = rt._run(_args(centre="global_blend"), "k")
+    for name, fc in out["forecast"]["series"].items():
+        assert fc["centre"] == {"rule": "global_blend"}
+        assert fc["point"] == pytest.approx(ref["forecast"]["series"][name]["point"], abs=1e-6)
+
+
+def test_a_per_series_blend_on_a_panel_names_the_whole_panel_form(sandbox):
+    with pytest.raises(ValueError, match="as one string"):
+        rt._run(_args(centre={"Station A": "blend"}), "k")
+
+
+def test_the_accuracy_facts_name_the_drawn_centre_and_both_total_bounds():
+    from prophet_agent.runtime.contracts import panel_sentence, trust_statement
+    series = {f"MT_{i:03d}": {"centre": "timesfm"} for i in range(1, 4)}
+    pt = {"centre": 4375772.9, "steps": 7, "if_entities_miss_independently": {"q10": 4320869.3, "q90": 4430676.6},
+          "if_entities_miss_together": {"q10": 3871340.6, "q90": 5089679.0}}
+    hist = [{"kind": "tool", "tool": "forecast_report", "result": {"n_series": 3, "series": series, "panel_total": pt}}]
+    s = panel_sentence(hist)
+    assert "TimesFM for all 3 series" in s
+    assert "4,320,869 to 4,430,677 if the series miss independently" in s
+    assert "3,871,341 to 5,089,679 if they all miss the same way at once" in s
+    assert s in trust_statement(hist)
+    mixed = {"A": {"centre": "global_blend"}, "B": {"centre": "naive"}}
+    assert "blend of the pooled model and TimesFM for 1 series" in panel_sentence(
+        [{"kind": "tool", "tool": "forecast_report", "result": {"n_series": 2, "series": mixed}}])
+    # a pack that shows only some of its series names no centre count, rather than a wrong one
+    assert "centre line" not in panel_sentence(
+        [{"kind": "tool", "tool": "forecast_report", "result": {"n_series": 60, "series": series}}])

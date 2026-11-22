@@ -382,8 +382,9 @@ def _panel_total(fcs: dict[str, dict], horizon: int, withheld: list[str]) -> dic
 def _panel_centres(centre: Any, names: list[str]) -> dict[str, str]:
     """The centre rule per series: one rule for every series, or a dict {series name: rule}. Series not named keep TimesFM;
     the result holds only the series whose centre is not TimesFM's."""
-    blend_refused = ("the equal-weight blend is checked on one series's backtest, so it needs one series at a time: build the "
-                     "panel with the other rules, then forecast that series with forecast_report and centre 'blend'")
+    blend_refused = ("on a panel the blend is the pooled model's blend, set for every series at once: pass centre 'blend' or "
+                     "'global_blend' as one string, not per series. A per-series blend needs that series on its own with "
+                     "forecast_report and centre 'blend'")
     if isinstance(centre, str):
         if centre == "blend":
             raise ValueError(blend_refused)
@@ -425,6 +426,11 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
         raise ValueError(f"control options {used} apply to one series; build the panel with the defaults, then forecast the series "
                          "that needs them on its own with forecast_report")
     centre_arg = args.get("centre", "timesfm")
+    if centre_arg == "blend":
+        # panel_backtest's "blend" is the equal-weight mean of the pooled model and TimesFM, which is global_blend here. Live
+        # electricity rep10 (2026-11-23): "blend" was refused twice, the pack fell back to TimesFM, and the answer still said
+        # the blend was the centre line.
+        centre_arg = "global_blend"
     global_mode = centre_arg if isinstance(centre_arg, str) and centre_arg in GLOBAL_CENTRES else None
     rules = {} if global_mode else _panel_centres(centre_arg, names)
     title = str(args.get("title", "Forecast"))[:MAX_TITLE] or "Forecast"
@@ -694,7 +700,7 @@ FORECAST_REPORT_SPEC = {
                    "your backtest, or the pack will show the default forecast. n_origins belongs to backtest_series and is refused "
                    "here; season is used only by the seasonal centre rules and the blend's rule.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
-             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm); 'global_gbm' or 'global_blend' (panel only, the whole panel) sets the pooled gradient-boosted model, or its blend with TimesFM, as the centre",
+             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm); 'global_gbm' or 'global_blend' (panel only, the whole panel) sets the pooled gradient-boosted model, or its blend with TimesFM, as the centre ('blend' on a panel means global_blend)",
              "season": "optional integer, only for the seasonal centre rules: the season backtest_series used (default: chosen from the data by the same rule as the backtest)",
              "calibrate": "optional true, one series only (refused for a panel): replace the 10-90 percent band by the calibrated one when a held-out test on past windows shows it covers closer to 80 percent (the point forecast never changes)",
              **CONTROL_HELP},
