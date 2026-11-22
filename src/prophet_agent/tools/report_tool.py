@@ -289,13 +289,17 @@ def _run(args: dict, key: str) -> dict[str, Any]:
         fc = _blend_centre(fc, values, args)
     elif centre != "timesfm":
         fc = _centre(fc, values, centre, _season_arg(args))
+    fc = _floor_at_zero(fc, values)
     hist_dates = run_dates(args, named[0][0])
     if hist_dates is not None and len(hist_dates) != len(values):
         hist_dates = None
     ahead = _future_dates(hist_dates, len(fc["point"])) if hist_dates else None
+    if ahead:
+        fc = {**fc, "future_dates": ahead}     # the table's date column, read by observe from the same forecast
     q = fc["quantiles"]
     pack = build_forecast_pack(history=values, point=fc["point"], q10=q["0.1"], q90=q["0.9"], title=title,
-                               note=_method_note(fc["config"], fc.get("centre")) + _health_note(fc.get("health")), dates=hist_dates if ahead else None, future_dates=ahead,
+                               note=_method_note(fc["config"], fc.get("centre")) + _health_note(fc.get("health")) + _floor_note(fc),
+                               dates=hist_dates if ahead else None, future_dates=ahead,
                                events=_event_spans(args, len(values), len(fc["point"])),
                                ignored=args.get("ignore_ranges"), q30=q.get("0.3"), q70=q.get("0.7"))
     if not pack.ok:
@@ -357,6 +361,7 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
         rule = rules.get(name, "timesfm")
         if rule != "timesfm":
             fc = _centre(fc, values, rule, _season_arg(args))
+        fc = _floor_at_zero(fc, values)
         out_fc[name] = fc
         dates = run_dates(args, name)
         if dates is not None and len(dates) != len(values):
@@ -376,6 +381,9 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
         note += " Centre line from a simple rule, where the backtest found it more accurate: " + ", ".join(ruled[:20]) + "."
     if flagged:
         note += " Read the health check for: " + ", ".join(flagged[:20]) + "."
+    floored = [n for n in names if out_fc[n].get("floor")]
+    if floored:
+        note += " Days below zero were floored at zero (history never negative) in: " + ", ".join(floored[:20]) + "."
     pack = build_panel_pack(series=items, title=title, note=note)
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
@@ -393,9 +401,12 @@ def _panel_observe(result: dict) -> dict:
     lines = {}
     for name, fc in items[:PANEL_SHOWN]:
         p, q, health = fc["point"], fc["quantiles"], fc.get("health") or {}
+        head = _headline(fc)
         line = {"point_step_1": p[0], "point_last_step": p[-1], "q10_last_step": q["0.1"][-1], "q90_last_step": q["0.9"][-1],
                 "centre": (fc.get("centre") or {}).get("rule", "timesfm"), "health": health.get("verdict"),
-                "range_vs_centre_pct": range_vs_centre(fc), "centre_line_total": _total(fc)}
+                "range_vs_centre_pct": range_vs_centre(fc), "centre_line_total": head["total"]}
+        if head["withheld"]:
+            line["total_withheld"] = head["withheld"]
         if health.get("verdict") in ("check", "flat_unexpected") and health.get("causes"):
             line["causes"] = health["causes"][:2]
         lines[name] = line
@@ -404,6 +415,35 @@ def _panel_observe(result: dict) -> dict:
             "run_id": result["run_id"], "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
             "deliverables": "one chart grid per 12 series (forecast_grid.png and .svg, then forecast_grid_2 and so on), a workbook "
                             "with Summary and Forecast sheets, a report and a PDF, all listed in the manifest; no further build is needed"}
+
+
+TABLE_FULL = 120     # a horizon up to this many periods is tabulated in full (timesfm_tool._compact thins beyond it)
+TABLE_EDGE = 5       # beyond TABLE_FULL, this many rows from each end are shown and the rest are named
+
+
+def _table(fc: dict) -> dict:
+    """The forecast's rows, read from the same arrays the pack writes to out/forecast.json (audit A7-02).
+
+    Motivation vs Logic
+    Motivation: the answer printed a table the planner wrote from memory: day 1 showed day 14's band and the totals did not
+    match the file. The planner needs each step's own numbers, exactly as they are in the file, so it can quote them.
+    Logic: one row per step, with the floats the pack was given (no rounding), so a quoted value equals the file's value.
+    A horizon above TABLE_FULL keeps its first and last TABLE_EDGE rows and names the file for the rest.
+    """
+    point, q = fc["point"], fc["quantiles"]
+    dates = fc.get("future_dates")
+    rows = []
+    for i, p in enumerate(point):
+        row = {"step": i + 1, "point": float(p), "q10": float(q["0.1"][i]), "q90": float(q["0.9"][i])}
+        if dates:
+            row["date"] = dates[i]
+        rows.append(row)
+    out = {"file": "out/forecast.json", "columns": ["step", "date", "point", "q10", "q90"] if dates else ["step", "point", "q10", "q90"]}
+    if len(rows) > TABLE_FULL:
+        out.update(rows=rows[:TABLE_EDGE] + rows[-TABLE_EDGE:], rows_omitted=len(rows) - 2 * TABLE_EDGE)
+    else:
+        out.update(rows=rows, rows_omitted=0)
+    return out
 
 
 def observe(result: dict) -> dict:
@@ -415,8 +455,10 @@ def observe(result: dict) -> dict:
     out = {"forecast": _compact(result["forecast"]), "run_id": result["run_id"],
            "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
            "range_vs_centre_pct": range_vs_centre(result["forecast"]),
-           "centre_line_total": _total(result["forecast"]),
+           "headline": _headline(result["forecast"]),
+           "centre_line_total": _headline(result["forecast"])["total"],
            "total_range_80": total_range(result["forecast"]),
+           "table": _table(result["forecast"]),
            "deliverables": "built and listed in the manifest; no further build is needed"}
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
@@ -434,6 +476,56 @@ def _total(fc: dict) -> float | None:
         return round(float(sum(float(v) for v in fc["point"])), 2)
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _floor_at_zero(fc: dict, values: list[float]) -> dict:
+    """For a series whose history is never negative (sales, counts, prices), a forecast day below zero is not a forecast:
+    the point and the band are floored at zero, and the forecast records what was floored. Otherwise the forecast is unchanged.
+
+    Motivation vs Logic
+    Motivation (audit A7-03): a 14-day total with a day at minus 3,606 was the headline of a series that cannot go below zero.
+    Logic: only when the history has no negative value and the forecast does. The floor is recorded (``floor``) so the
+    observation and the pack's note say what was changed, and the headline total is withheld (see _headline).
+    """
+    if not values or min(values) < 0:
+        return fc                       # a series that goes negative in its history (net sales, returns) keeps its forecast
+    raw = [float(v) for v in fc["point"]]
+    if min([*raw, *(float(v) for vs in fc["quantiles"].values() for v in vs)]) >= 0:
+        return fc
+    days = sum(1 for v in raw if v < 0)
+    # "applied" means a centre day was below zero, which is what withholds the total. A band that dips below zero is floored
+    # too (it cannot be below zero for this series), but on its own it does not change the total.
+    floor = {"applied": days > 0, "days_below_zero": days, "raw_min_point": round(min(raw), 3)}
+    return {**fc, "point": [max(0.0, v) for v in raw],
+            "quantiles": {k: [max(0.0, float(v)) for v in vs] for k, vs in fc["quantiles"].items()}, "floor": floor}
+
+
+def _floor_note(fc: dict) -> str:
+    """The pack's note for a floored forecast, in words a reader can check against the file."""
+    f = fc.get("floor") or {}
+    if not f.get("applied"):
+        return ""
+    return (f" Forecast days below zero: {f['days_below_zero']} (lowest raw day {f['raw_min_point']:,}). The history never goes "
+            "below zero, so these days are floored at zero in the chart, the workbook and the table.")
+
+
+def _headline(fc: dict) -> dict:
+    """The one total an answer may headline, with the health verdict beside it (audit A7-03).
+
+    Motivation vs Logic
+    Motivation: the headline total was shown next to a health verdict of flat_unexpected and a day below zero, and the answer
+    text called the verdict ok. The total must not stand alone when the check that judges the forecast did not pass.
+    Logic: the total is shown only when the health verdict is ok and no day had to be floored. Otherwise it is withheld and
+    ``withheld`` says why, in words, so the answer can show the reason first. The verdict is always reported.
+    """
+    verdict = (fc.get("health") or {}).get("verdict")
+    reasons = []
+    if (fc.get("floor") or {}).get("applied"):
+        reasons.append(f"{fc['floor']['days_below_zero']} forecast day(s) were below zero in a series whose history never is, "
+                       "so they are floored at zero and the total is not a headline")
+    if verdict != "ok":
+        reasons.append(f"the health check verdict is {verdict or 'missing'}, not ok")
+    return {"verdict": verdict, "total": None if reasons else _total(fc), "withheld": "; ".join(reasons) or None}
 
 
 Z90 = 1.2815515655446004          # the 90th percentile of a standard normal: the 10-90 band is +-Z90 standard deviations
