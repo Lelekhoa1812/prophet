@@ -110,7 +110,22 @@ def observe(result: dict) -> dict:
                                   f"{MAX_PICK}); the same call again returns the same result")
         out["median_mase_all_entities"] = {m: round(float(np.median(vals)), 4) for m in _model_names(rows)
                                            if (vals := [float(r[1][m]) for r in rows if _finite_num(r[1].get(m))])}
+    if any("naive" in models for _, models in rows):
+        # Live (electricity panel, 2026-11-23): the answer was asked for each client against naive, and only the first 30 rows
+        # were visible, so the comparison was called missing. Counts over every entity answer it without the rows.
+        out["beats_naive_on"], out["beats_naive_out_of"] = _beats_naive(rows)
     return out
+
+
+def _beats_naive(rows) -> tuple[dict[str, int], int]:
+    """For each model, the entities on which its MASE is below naive's, and the entities that have both."""
+    scored = [models for _, models in rows if _finite_num(models.get("naive"))]
+    counts: dict[str, int] = {}
+    for m in _model_names(rows):
+        if m == "naive":
+            continue
+        counts[m] = sum(1 for models in scored if _finite_num(models.get(m)) and float(models[m]) < float(models["naive"]))
+    return counts, len(scored)
 
 
 def _model_names(rows) -> list[str]:

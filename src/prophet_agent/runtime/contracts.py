@@ -1770,9 +1770,13 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
             wrong = [(n, s) for n, s in periods if not any(abs(n - p) <= p // 100 for p in stored)]
             if wrong:
                 n, s = wrong[0]
+                # Live (retail business user, 2026-11-23): the rewrite was asked to "state the measured period" and kept the
+                # backtest's 3 steps. Name the number to write, and why the other figure is not the cycle.
+                measured = " or ".join(f"{p} steps" for p in sorted(stored))
                 checks.append(_check("answer_cycle_matches_health", False,
-                                     f"the answer states a cycle of {n} steps ({s[:160]}), but the health record measured period "
-                                     f"{', '.join(str(p) for p in sorted(stored))}; state the measured period"))
+                                     f"the answer states a cycle of {n} steps ({s[:160]}), but the health record measured "
+                                     f"{measured}; write {measured} as the cycle, and do not use the backtest's season check "
+                                     f"for it"))
             else:
                 checks.append(_check("answer_cycle_matches_health", True,
                                      "every cycle the answer states is the period the health record measured"))

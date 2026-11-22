@@ -224,6 +224,11 @@ SNAP_TOLERANCE = 0.0005
 SNAP_MIN = 1000.0
 
 
+def _token_pattern(digits: str) -> re.Pattern:
+    """The digits as a whole figure: not inside a longer number, and not the integer part of a decimal."""
+    return re.compile(r"(?<![\d.,])" + re.escape(digits.lstrip("-")) + r"(?!\d|[.,]\d)")
+
+
 def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, str]]]:
     """The answer with transcription slips in large figures corrected to the printed value, and the (old, new) pairs."""
     bad = unverified(answer, history, goal)
@@ -238,7 +243,19 @@ def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, st
     for token in bad:
         value, decimals, pct = _parse(token)
         v = abs(value)
-        if pct or _scale_of(token) != 1.0 or v < SNAP_MIN or _YEAR.fullmatch(token):
+        if pct or _scale_of(token) != 1.0 or _YEAR.fullmatch(token) or value < 0:
+            continue
+        if decimals == 0 and v < SNAP_MIN:
+            # A whole number cut down from a printed decimal: 198 for 198.77 (Beijing, live 2026-11-23). Cut down, not rounded.
+            # Corrected only when every printed value that the figure could be cut from rounds up to the same whole number.
+            ups = {int(p // 1) + 1 for p in printed if int(p // 1) == int(v) and p - p // 1 >= 0.5}
+            pattern = _token_pattern(token)
+            if len(ups) == 1 and pattern.search(answer):
+                new = str(ups.pop())
+                answer = pattern.sub(new, answer)
+                fixed.append((token, new))
+            continue
+        if v < SNAP_MIN:
             continue
         near = sorted({p for p in printed if abs(p - v) <= SNAP_TOLERANCE * v})
         if len(near) != 1:
@@ -253,7 +270,8 @@ def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, st
 
 
 def snap_note(fixed: list[tuple[str, str]]) -> str:
-    return (f"\n\n_{len(fixed)} figure(s) were corrected to the value the analysis printed (a copying slip, under 0.05%)._"
+    return (f"\n\n_{len(fixed)} figure(s) were corrected to the value the analysis printed (a copying slip, or a printed decimal "
+            "cut down to its whole part)._"
             if fixed else "")
 
 

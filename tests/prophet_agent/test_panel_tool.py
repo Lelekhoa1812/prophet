@@ -114,3 +114,18 @@ def test_observe_says_how_to_see_the_entities_it_leaves_out_and_summarises_all_o
     assert "entities" in view["per_entity_note"] and "same result" in view["per_entity_note"]
     assert set(view["median_mase_all_entities"]) >= {"naive", "timesfm"}
     assert all(isinstance(v, float) for v in view["median_mase_all_entities"].values())
+
+
+def test_observe_counts_the_entities_on_which_each_model_beats_naive_over_all_of_them(sandbox):
+    # Live (electricity panel, 60 clients, 2026-11-23): the answer was asked for each client against naive, and only 30 rows
+    # were visible, so the comparison was called missing. The view must count every entity, not only the rows it shows.
+    (sandbox / RUN / "out" / "series.json").write_text(json.dumps({"series": _panel(entities=40, n=60), "dates": {}}))
+    res = _run(_args(horizon=2, n_origins=3))
+    view = pt.observe(res)
+    out_of = sum(1 for m in res["per_entity"].values() if isinstance(m.get("naive"), float))
+    assert view["beats_naive_out_of"] == 40 and out_of == 40
+    for model, n in view["beats_naive_on"].items():
+        assert model != "naive" and 0 <= n <= 40
+        expected = sum(1 for m in res["per_entity"].values() if m[model] < m["naive"])
+        assert n == expected
+    assert "timesfm" in view["beats_naive_on"]
