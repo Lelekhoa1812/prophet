@@ -274,10 +274,9 @@ def _forecast_record(h: dict) -> dict | None:
     if isinstance(res, dict) and isinstance(res.get("forecast"), dict):
         return res["forecast"]
     if isinstance(res, dict) and "n_series" in res and isinstance(res.get("series"), dict):
-        # A panel pack, seen as one line per series. It is held only when a series delivered on TimesFM's own line lost its
-        # cycle; a series centred on a simple rule does not deliver TimesFM's line.
-        lost = [n for n, ln in res["series"].items() if isinstance(ln, dict) and ln.get("health") == "flat_unexpected"
-                and ln.get("centre", "timesfm") == "timesfm"]
+        # A panel pack, seen as one line per series. It is held when a series' band lost its cycle, whatever its centre line:
+        # the band is TimesFM's either way (A6-03, live retail rep4: a naive centre on a flat_unexpected band was delivered).
+        lost = [n for n, ln in res["series"].items() if isinstance(ln, dict) and ln.get("health") == "flat_unexpected"]
         return {"panel": True, "n_series": res["n_series"],
                 "health": {"verdict": "flat_unexpected" if lost else "ok", "causes": [f"cycle lost: {', '.join(lost[:6])}"] if lost else []}}
     return None
@@ -494,12 +493,10 @@ def check_controls(history, args: dict, record: dict | None = None) -> dict | No
 
 
 def delivered_health(rec: dict) -> str | None:
-    """The health verdict of the line actually delivered. When the pack's centre line is a simple rule (the backtest found it
-    more accurate), TimesFM's line is shown for reference only, so its health does not hold the mission (live retail: 17
-    pack builds with a rule as centre, each held because TimesFM's own line had lost the weekly cycle)."""
-    centre = rec.get("centre") if isinstance(rec, dict) else None
-    if isinstance(centre, dict) and centre.get("rule"):
-        return f"centre_rule:{centre['rule']}"
+    """The health verdict of the band the pack delivers. The band is TimesFM's whatever centre line is drawn (forecast_report
+    shifts it, it does not redraw it), so a simple rule as the centre does not clear a flat band. Live retail rep4 (measured):
+    centre naive, health flat_unexpected, and the answer quoted "80% range 810k to 1.57m" built on that band. An earlier
+    version returned "centre_rule:<rule>" here and let such a band through (A6-03)."""
     health = rec.get("health") if isinstance(rec, dict) else None
     return health.get("verdict") if isinstance(health, dict) else None
 
