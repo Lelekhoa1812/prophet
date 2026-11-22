@@ -206,7 +206,26 @@ def observe(result: dict) -> dict:
     # where it went (seen live, as "the forecast workbook could not be found").
     return {"forecast": _compact(result["forecast"]), "run_id": result["run_id"],
             "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
+            "range_vs_centre_pct": range_vs_centre(result["forecast"]),
             "deliverables": "built and listed in the manifest; no further build is needed"}
+
+
+def range_vs_centre(fc: dict) -> dict | None:
+    """How far the 10-90 percent band reaches below and above the centre line on the first and last step, in percent of the
+    centre. Answers quote these ("day 30: +3.2% / -3.5%"); live, the grounding check flagged them because no tool had
+    printed them."""
+    try:
+        point, lo, hi = fc["point"], fc["quantiles"]["0.1"], fc["quantiles"]["0.9"]
+        out = {}
+        for name, i in (("first_step", 0), ("last_step", len(point) - 1)):
+            c = float(point[i])
+            if c == 0:
+                return None
+            out[name] = {"below_pct": round((float(lo[i]) - c) / abs(c) * 100, 1),
+                         "above_pct": round((float(hi[i]) - c) / abs(c) * 100, 1)}
+        return out
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
 
 
 def forecast_report_tool() -> Tool:

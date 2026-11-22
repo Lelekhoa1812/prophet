@@ -42,3 +42,12 @@ def test_a_simple_rule_can_be_the_centre_line_with_timesfms_band_recentred():
     assert out["quantiles"]["0.1"] == [11.0, 10.5] and out["quantiles"]["0.9"] == [13.0, 13.5]   # widths kept
     assert _centre(fc, [5.0, 8.0, 12.0], "drift")["point"] == [15.5, 19.0]
     assert "more accurate than TimesFM" in _method_note({}, out["centre"])
+
+
+def test_the_pack_states_how_far_the_band_reaches_from_the_centre():
+    from prophet_agent.tools.report_tool import range_vs_centre
+    fc = {"point": [100.0, 100.0, 174.35], "quantiles": {"0.1": [99.2, 98, 168.3], "0.9": [100.8, 102, 180.0]}}
+    r = range_vs_centre(fc)
+    assert r["first_step"] == {"below_pct": -0.8, "above_pct": 0.8}
+    assert r["last_step"] == {"below_pct": -3.5, "above_pct": 3.2}
+    assert range_vs_centre({"point": [0.0], "quantiles": {"0.1": [-1], "0.9": [1]}}) is None
