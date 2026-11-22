@@ -324,16 +324,37 @@ def _saved_ledgers(history, run_root) -> list[list]:
 
 
 def ledger_stages(history, run_root) -> int | None:
-    """The most distinct stages (with a finding and a decision each) any saved ledger in this mission records. None when
-    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look"."""
+    """The distinct stages (with a finding and a decision each) in the newest saved ledger of this mission. None when
+    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look". The newest, not the best: a later cell that saved
+    an empty ps.Ledger() over the record must be seen (live WTI rep3, A4-05, measured: the file of run d908f0a5 is [])."""
     if run_root is None:
         return None
-    best = 0
-    for entries in _saved_ledgers(history, run_root):
-        stages = {str(e.get("stage", "")).strip().lower() for e in entries
-                  if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
-        best = max(best, len(stages - {""}))
-    return best
+    ledgers = _saved_ledgers(history, run_root)
+    if not ledgers:
+        return 0
+    stages = {str(e.get("stage", "")).strip().lower() for e in ledgers[0]
+              if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
+    return len(stages - {""})
+
+
+def check_ledger_kept(history, run_root) -> dict | None:
+    """Warns when a later saved ledger of the mission holds fewer entries than an earlier one: a record was overwritten (A4-05,
+    live WTI rep3). None when no ledger was saved or ``run_root`` is unknown."""
+    if run_root is None:
+        return None
+    ledgers = list(reversed(_saved_ledgers(history, run_root)))      # oldest first
+    if not ledgers:
+        return None
+    peak = 0
+    for entries in ledgers:
+        n = len(entries)
+        if n < peak:
+            return _check("ledger_kept", False,
+                          f"a later saved ledger holds {n} entries, fewer than the {peak} an earlier ledger of this mission "
+                          "holds: a record was overwritten. Load the earlier ledger with ps.Ledger.open(path) before adding "
+                          "to it, then save", "warn")
+        peak = max(peak, n)
+    return _check("ledger_kept", True, f"the saved ledgers never shrink (the largest holds {peak} entries)", "warn")
 
 
 def _saved_scan_findings(history, run_root) -> list[dict] | None:
@@ -705,6 +726,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         ledger = check_ledger(obs, run_root)
         if ledger is not None:
             checks.append(ledger)
+        kept = check_ledger_kept(obs, run_root)
+        if kept is not None:
+            checks.append(kept)
         decisions = check_scan_decisions(obs, run_root)
         if decisions is not None:
             checks.append(decisions)
