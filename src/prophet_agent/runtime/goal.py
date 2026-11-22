@@ -37,6 +37,7 @@ from prophet_agent.nim.transport import DEFAULT_CHAIN
 
 from . import contracts
 from .grounding import unverified
+from . import agents
 from .questions import QUESTIONS_SCHEMA, validate_questions
 from .runner import BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import OutcomeUnknown, canonical
@@ -54,6 +55,18 @@ PLAN_SCHEMA: dict[str, Any] = {
         "questions": QUESTIONS_SCHEMA["properties"]["questions"],
         "task": {"type": "string", "maxLength": 1200},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+        "agent_type": {"type": "string", "enum": sorted(agents.TYPES)},
+        "deliverable": {"type": "string", "maxLength": 600},
+        "constraints": {"type": "string", "maxLength": 600},
+        "resume": {"type": "string", "maxLength": 12},
+        "tasks": {"type": "array", "maxItems": agents.MAX_PARALLEL, "items": {
+            "type": "object", "required": ["task"], "additionalProperties": False,
+            "properties": {"task": {"type": "string", "maxLength": 1200},
+                           "agent_type": {"type": "string", "enum": sorted(agents.TYPES)},
+                           "deliverable": {"type": "string", "maxLength": 600},
+                           "constraints": {"type": "string", "maxLength": 600},
+                           "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+                           "resume": {"type": "string", "maxLength": 12}}}},
         "rationale": {"type": "string", "maxLength": 400},
     },
     # A call_tool plan names the tool and its arguments. Without this a plan with no tool passed the check, ran nothing and
@@ -94,7 +107,9 @@ STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "imposs
 MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
-SUB_STEPS = 12            # default step budget of a delegated sub-agent
+SUB_STEPS = 14            # default step budget of a delegated sub-agent
+BRANCH_BLOCK = 100_000    # step numbers reserved per plan step for parallel sub-agents, and per agent within it
+BRANCH_STRIDE = 20_000
 
 
 @dataclass
@@ -109,6 +124,7 @@ class GoalConfig:
     view_chars: int = VIEW_CHARS      # uncompacted observations the planner sees before older ones fold into memory
     keep_recent: int = KEEP_RECENT    # newest observations that are never folded
     memory_chars: int = MEMORY_CHARS  # cap on the folded memory
+    tag: str = ""                     # names this loop's steps: "d0" for the goal, "d1.a2" for sub-agent a2
 
     @property
     def end(self) -> int:
@@ -138,7 +154,8 @@ class Trace:
 def _view(obs: dict) -> dict:
     """What the planner sees of an observation. A sub-agent shows its report, not its own working."""
     if obs.get("kind") == "subagent":
-        return {k: obs[k] for k in ("kind", "task", "tools", "status", "answer", "reason", "steps") if k in obs}
+        return {k: obs[k] for k in ("kind", "agent_id", "agent_type", "task", "tools", "status", "answer", "reason",
+                                    "steps", "files", "unverified") if k in obs}
     return obs
 
 
@@ -489,23 +506,130 @@ def _stalled(history: list[dict], window: int) -> bool:
     return len(set(last)) == 1
 
 
-def _delegate(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: GoalConfig, context: str) -> dict:
-    """Runs a sub-agent on one task with its own history and memo. Only its report returns to the parent."""
-    task = str(plan.get("task") or "").strip()
-    if cfg.depth > 0:
-        return {"kind": "delegate", "error": "a sub-agent cannot start another sub-agent; do the step yourself"}
-    if not task:
-        return {"kind": "delegate", "error": "a delegated task needs a task description"}
-    names = [n for n in (plan.get("tools") or []) if n in tools]
-    sub_tools = {n: tools[n] for n in names} if names else dict(tools)
-    sub_cfg = GoalConfig(max_iterations=cfg.sub_steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps)
-    sub_history: list[dict] = []
+def _specs(plan: dict) -> list[dict]:
+    """The delegations in a plan: ``tasks`` (parallel) or the single ``task`` with its optional fields."""
+    keys = ("task", "agent_type", "deliverable", "constraints", "tools", "resume")
+    raw = plan.get("tasks")
+    if isinstance(raw, list) and raw:
+        return [{k: t.get(k) for k in keys} for t in raw if isinstance(t, dict)][: agents.MAX_PARALLEL]
+    return [{k: plan.get(k) for k in keys}]
+
+
+def _brief(spec: dict, agent: agents.AgentType, agent_id: str, resumed: bool) -> str:
+    """What a sub-agent works from. It does not see the parent's conversation, so the brief carries the task, the shape of
+    the answer, the boundaries and how to use its notes."""
+    deliverable = str(spec.get("deliverable") or "").strip() or (
+        "A short report: what you found with the figures your tools printed, what you recommend and why, and any file you "
+        "wrote as run id and path. Say plainly what you could not establish.")
+    parts = [f"You are sub-agent {agent_id} (type {agent.name}) working for a lead agent. {agent.role}",
+             f"Task: {str(spec['task']).strip()}", f"Return: {deliverable}"]
+    if str(spec.get("constraints") or "").strip():
+        parts.append(f"Boundaries: {str(spec['constraints']).strip()}")
+    parts.append("You do not see the lead agent's conversation: this brief and the context below are all you have. Keep "
+                 "anything you must not lose (a decision, a run id and file, open questions) in your notes. Report only "
+                 "figures a tool printed. The lead agent reads your final report and nothing else; it can read your notes.")
+    if resumed:
+        parts.append("You are continuing earlier work: your earlier steps are in the evidence. Build on them.")
+    return "\n\n".join(parts)
+
+
+def _files_of(evidence: list[dict]) -> list[str]:
+    """Files a sub-agent's analysis cells wrote, as run_id:path, so the lead agent can carry them into its own cells."""
+    out: list[str] = []
+    for h in evidence:
+        res = h.get("result") if h.get("kind") == "tool" else None
+        if isinstance(res, dict) and res.get("run_id") and isinstance(res.get("outputs"), list):
+            for o in res["outputs"]:
+                out.append(f"{res['run_id']}:{str(o).split(' (')[0]}")
+    return out[:30]
+
+
+def _notes_for(ctx: Ctx, scope: str):
+    from prophet_agent.tools.notes_tool import NOTES_SPEC, notes_tool
+    from prophet_agent.tools import spec_doc
+    from dataclasses import replace
+    return replace(notes_tool(ctx.store, ctx.mission_id, scope), doc=spec_doc(NOTES_SPEC), title=NOTES_SPEC["title"],
+                   activity=NOTES_SPEC["activity"])
+
+
+def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, Tool], cfg: GoalConfig, context: str,
+               history: list[dict]) -> dict:
+    """Runs one sub-agent with its own history, memo, notes and a tool list scoped by its type."""
+    agent = agents.get(spec.get("agent_type")) or agents.TYPES["general"]
+    agent_id = f"a{number}"
+    sub_tools = agents.allowed(agent, tools)
+    asked = [n for n in (spec.get("tools") or []) if n in sub_tools]
+    if asked:
+        sub_tools = {n: sub_tools[n] for n in asked}
+    sub_tools.pop("notes", None)
+    sub_tools["notes"] = _notes_for(ctx, agent_id)
+    prior = None
+    if spec.get("resume"):
+        prior = next((h for h in reversed(history) if h.get("kind") == "subagent" and h.get("agent_id") == spec["resume"]), None)
+        if prior is None:
+            return {"kind": "delegate", "error": f"no earlier sub-agent {spec['resume']!r} to resume; known: "
+                    + (", ".join(sorted({h['agent_id'] for h in history if h.get('kind') == 'subagent' and h.get('agent_id')})) or "none")}
+    sub_cfg = GoalConfig(max_iterations=cfg.sub_steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps,
+                         tag=f"d1.{agent_id}")
+    sub_history: list[dict] = list(prior["evidence"]) if prior else []
+    goal = _brief(spec, agent, agent_id, prior is not None)
+    play = agents.playbooks(agent)
+    sub_context = (context + "\n\n" if context else "") + (play[:7000] if play else "")
     # Sub-agent steps are top-level steps of the same ledger, numbered in call order like any others, so a resumed run
     # replays them. They are not wrapped in an outer ctx.step, which would nest their numbers inside one another.
-    sub = _run(ctx, brain, task, sub_tools, sub_cfg, context, sub_history)
-    return {"kind": "subagent", "task": task, "tools": sorted(sub_tools), "status": sub.get("status"),
-            "answer": sub.get("answer", "") or sub.get("draft", ""), "reason": sub.get("reason", ""),
-            "steps": len(sub_history), "evidence": sub_history}
+    sub = _run(ctx, brain, goal, sub_tools, sub_cfg, sub_context.strip(), sub_history)
+    answer = sub.get("answer", "") or sub.get("draft", "")
+    obs = {"kind": "subagent", "agent_id": agent_id, "agent_type": agent.name, "task": str(spec["task"]).strip(),
+           "tools": sorted(sub_tools), "status": sub.get("status"), "answer": answer, "reason": sub.get("reason", ""),
+           "steps": len(sub_history), "files": _files_of(sub_history), "evidence": sub_history}
+    bad = unverified(answer, sub_history, str(spec["task"])) if answer else []
+    if bad:
+        obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
+    return obs
+
+
+def _delegate(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: GoalConfig, context: str,
+              history: list[dict]) -> list[dict]:
+    """Runs one or several sub-agents (in parallel when several) and returns an observation for each. Only a sub-agent's
+    report returns to the parent; its working stays in its own history."""
+    if cfg.depth > 0:
+        return [{"kind": "delegate", "error": "a sub-agent cannot start another sub-agent; do the step yourself"}]
+    specs = [sp for sp in _specs(plan) if str(sp.get("task") or "").strip()]
+    if not specs:
+        return [{"kind": "delegate", "error": "a delegated task needs a task description"}]
+    started = sum(1 for h in history if h.get("kind") == "subagent")
+    if started + len(specs) > agents.MAX_AGENTS:
+        return [{"kind": "delegate", "error": f"this mission already started {started} sub-agents; the limit is "
+                 f"{agents.MAX_AGENTS}. Do the step yourself."}]
+    unknown = [sp.get("agent_type") for sp in specs if sp.get("agent_type") and agents.get(sp["agent_type"]) is None]
+    if unknown:
+        return [{"kind": "delegate", "error": f"unknown agent_type {unknown}; types: {', '.join(agents.TYPES)}"}]
+    if len(specs) == 1:
+        return [_one_agent(ctx, brain, specs[0], started + 1, tools, cfg, context, history)]
+
+    from concurrent.futures import ThreadPoolExecutor
+    base = (ctx.step_idx + 2) * BRANCH_BLOCK
+    results: list[Any] = [None] * len(specs)
+    failures: list[BaseException | None] = [None] * len(specs)
+
+    def work(k: int) -> None:
+        try:
+            branch = ctx.branch(base + k * BRANCH_STRIDE)
+            results[k] = _one_agent(branch, brain, specs[k], started + 1 + k, tools, cfg, context, history)
+        except BaseException as exc:      # re-raised below, on the calling thread, once the others have settled
+            failures[k] = exc
+
+    with ThreadPoolExecutor(max_workers=len(specs)) as pool:
+        list(pool.map(work, range(len(specs))))
+    # A question for the person, a cancel or a spent budget in any branch stops the whole step, the way it would inline.
+    for kind in (Paused, Cancelled, OutcomeUnknown, BudgetExceeded):
+        for exc in failures:
+            if isinstance(exc, kind):
+                raise exc
+    for exc in failures:
+        if exc is not None:
+            raise exc
+    return results
 
 
 def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfig, context: str,
@@ -513,6 +637,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     """The loop itself. Used for the goal and, recursively with depth 1, for a delegated sub-agent."""
     memo = Memo()
     if cfg.depth == 0:
+        tools = {**tools, "notes": _notes_for(ctx, "main")}
         # Which instructions this mission ran under, recorded once so a resumed run reads it back unchanged.
         # The brief is stored with them: the goal, what counts as done, what must not change, and the budget. It is data a
         # resumed run and a reader can see, so a summary of the work can never drop it.
@@ -523,7 +648,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                  "budget": {"steps_per_part": cfg.max_iterations, "tool_calls": cfg.tool_budget}}
             return recorded
         ctx.step("contracts", record)
-    tag = f"d{cfg.depth}"
+    tag = cfg.tag or f"d{cfg.depth}"
     seg_len = cfg.max_iterations
     started = time.time()
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
@@ -569,7 +694,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 if repeated:
                     obs["not_asked_again"] = repeated
         elif plan["action"] == "delegate":
-            obs = _delegate(ctx, brain, plan, tools, cfg, context)
+            delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
+            history.extend(delegated[:-1])
+            obs = delegated[-1]
         else:
             name = plan.get("tool", "")
             args = _repair_source(plan.get("args", {}), history)

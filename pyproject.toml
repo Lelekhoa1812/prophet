@@ -19,6 +19,10 @@ dependencies = [
   "reportlab",
   "jsonschema",
   "httpx",
+  "ddgs",           # self-hosted web search (DuckDuckGo, Bing, Google, Yahoo backends) for the research tools; MIT
+  "trafilatura",    # main-text extraction from fetched pages; Apache-2.0
+  "beautifulsoup4", # fallback text extraction; MIT
+  "ruptures",       # changepoint search in the analysis sandbox; BSD
   "fastapi",
   "uvicorn",
 ]

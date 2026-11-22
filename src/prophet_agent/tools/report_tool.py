@@ -62,7 +62,7 @@ def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
         if spans:
             out.append({"name": str(name), "spans": spans})
     return out
-ALLOWED_ARGS = {"values", "source", "horizon", "title"} | CONTROL_ARGS
+ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate"} | CONTROL_ARGS
 
 
 def _method_note(config: dict) -> str:
@@ -101,6 +101,29 @@ def _health_note(health: dict | None) -> str:
     return ""
 
 
+def _calibrated(fc: dict, values: list[float], args: dict) -> dict:
+    """The forecast with its band replaced by the calibrated one when the held-out test says that is closer to 80 percent.
+    The point forecast is never changed. When calibration cannot run (too short a series) the raw band stays and says so."""
+    from prophet_agent.forecast.calibrate import calibrate
+    from prophet_agent.forecast.control import build_control
+    from prophet_agent.forecast.timesfm import TimesFMEngine
+    from prophet_agent.tools.series_io import source_covariates
+    horizon = len(fc["point"])
+    try:
+        control = build_control(args, len(values), horizon, source_covariates(args))
+        if control.future or control.past:
+            raise ValueError("calibration with covariates is not supported")
+        res = calibrate(values, horizon, engine=TimesFMEngine.get(), control=control)
+    except ValueError as exc:
+        return {**fc, "interval_calibration": {"applied": False, "reason": str(exc)[:200]}}
+    info = {"applied": res["recommend"] == "use_calibrated", "raw_heldout_coverage": res["heldout_coverage_raw"],
+            "calibrated_heldout_coverage": res["heldout_coverage_calibrated"], "scales": res["scales_by_horizon_third"],
+            "reason": res["reason"]}
+    if not info["applied"]:
+        return {**fc, "interval_calibration": info}
+    return {**fc, "quantiles": res["calibrated"]["quantiles"], "interval_calibration": info}
+
+
 def _run(args: dict, key: str) -> dict[str, Any]:
     extra = sorted(set(args) - ALLOWED_ARGS)
     if extra:
@@ -110,10 +133,12 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     if len(named) != 1:
         raise ValueError(f"the pack is for one series; choose one with source.name from {[n for n, _ in named][:20]}")
     title = str(args.get("title", "Forecast"))[:MAX_TITLE] or "Forecast"
-    fc = timesfm_run({k: v for k, v in args.items() if k != "title"}, key)
+    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate")}, key)
     if "series" in fc:
         fc = next(iter(fc["series"].values()))
     values = [float(v) for v in named[0][1]]
+    if args.get("calibrate") is True:
+        fc = _calibrated(fc, values, args)
     hist_dates = run_dates(args, named[0][0])
     if hist_dates is not None and len(hist_dates) != len(values):
         hist_dates = None
@@ -156,5 +181,6 @@ FORECAST_REPORT_SPEC = {
                    "timesfm_forecast: pass exactly the configuration that won your backtest, or the pack will show the default forecast. "
                    "Backtest-only settings (season, n_origins) belong to backtest_series and are refused here.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
+             "calibrate": "optional true: replace the 10-90 percent band by the calibrated one when a held-out test on past windows shows it covers closer to 80 percent (the point forecast never changes)",
              **CONTROL_HELP},
 }

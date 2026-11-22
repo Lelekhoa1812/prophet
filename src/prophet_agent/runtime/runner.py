@@ -63,6 +63,14 @@ class Ctx:
         self.step_idx = -1
         self.deadline = runtime.deadline
 
+    def branch(self, base: int) -> "Ctx":
+        """A context for work that runs beside this one (a parallel sub-agent). It shares the mission, store and runtime but
+        numbers its steps from ``base``, a block of numbers no other branch or the parent uses, so concurrent work keeps a
+        replay-stable order: the same program asks for the same step numbers on every run."""
+        child = Ctx(self.rt, self.mission_id)
+        child.step_idx = base - 1
+        return child
+
     def _guard_time(self) -> None:
         if self.deadline is not None and time.time() > self.deadline:
             raise BudgetExceeded("max_seconds")

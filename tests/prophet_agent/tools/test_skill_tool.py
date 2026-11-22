@@ -17,6 +17,7 @@ EXPECTED = {
     "drivers-and-covariates", "intervals-and-trust-statement", "deliverables-and-handover",
     "knn-and-analogue-imputation", "kalman-and-gradient-features", "bayesian-shrinkage-hierarchies",
     "forecast-combination-and-conformal", "changepoints-and-regimes",
+    "web-research-playbook", "market-and-macro-research",
 }
 PS_NAMES = {"hampel", "stl_outliers", "impute", "smooth", "changepoints", "derivative_features", "censoring_check",
             "seasonal_strength", "stationarity", "backtest_treatment", "isolation_outliers", "Ledger",

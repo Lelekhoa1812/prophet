@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS questions (
   created REAL NOT NULL,
   answered REAL
 );
+CREATE TABLE IF NOT EXISTS agent_notes (
+  mission_id TEXT NOT NULL REFERENCES missions(id),
+  scope TEXT NOT NULL,
+  name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  updated REAL NOT NULL,
+  PRIMARY KEY (mission_id, scope, name)
+);
 """
 
 
@@ -422,7 +430,7 @@ class Store:
     def wipe_ledger(self) -> dict[str, int]:
         """Delete every row of the ledger, children before parents, in one transaction. Returns the rows removed per table.
         The caller must have checked that no mission is running; the schema itself is kept."""
-        order = ("events", "steps", "tool_calls", "questions", "sources", "derived_versions", "derived_tables",
+        order = ("events", "steps", "tool_calls", "questions", "agent_notes", "sources", "derived_versions", "derived_tables",
                  "missions", "notebooks")
         with self._tx() as c:
             present = {r["name"] for r in c.execute(
@@ -432,6 +440,36 @@ class Store:
             for name in tables:
                 removed[name] = c.execute(f"DELETE FROM {name}").rowcount
         return removed
+
+    # -- agent notes: working memory that survives compaction, one scope per agent --------------------------------
+
+    def note_put(self, mission_id: str, scope: str, name: str, text: str, append: bool = False) -> int:
+        """Write a note (or append to it). Returns the note's length in characters."""
+        with self._tx() as c:
+            row = c.execute("SELECT text FROM agent_notes WHERE mission_id=? AND scope=? AND name=?",
+                            (mission_id, scope, name)).fetchone()
+            body = (row["text"] + "\n" + text) if (append and row) else text
+            c.execute("INSERT INTO agent_notes (mission_id, scope, name, text, updated) VALUES (?,?,?,?,?) "
+                      "ON CONFLICT(mission_id, scope, name) DO UPDATE SET text=excluded.text, updated=excluded.updated",
+                      (mission_id, scope, name, body, time.time()))
+        return len(body)
+
+    def note_get(self, mission_id: str, scope: str, name: str) -> str | None:
+        with self.lock:
+            row = self.conn.execute("SELECT text FROM agent_notes WHERE mission_id=? AND scope=? AND name=?",
+                                    (mission_id, scope, name)).fetchone()
+        return None if row is None else row["text"]
+
+    def note_list(self, mission_id: str, scope: str | None = None) -> list[dict]:
+        """Notes as {scope, name, chars}, newest first. All scopes when ``scope`` is None."""
+        q = "SELECT scope, name, LENGTH(text) AS chars FROM agent_notes WHERE mission_id=?"
+        args: list = [mission_id]
+        if scope is not None:
+            q += " AND scope=?"
+            args.append(scope)
+        with self.lock:
+            rows = self.conn.execute(q + " ORDER BY updated DESC", args).fetchall()
+        return [{"scope": r["scope"], "name": r["name"], "chars": r["chars"]} for r in rows]
 
     def count_tool_calls(self, mission_id: str) -> int:
         with self.lock:
