@@ -1371,7 +1371,8 @@ def scan(df: Any, time_col: str, value_col: str, entity_cols: Any = None, freq: 
     ``max_entities`` are sampled with a fixed seed for the statistical checks, and the summary says so.
 
     Returns {"findings": [...], "summary": {...}}. Each finding has id, severity, scope, evidence, decision_needed and
-    next_step. Record a ledger decision for every blocker and major finding before any forecast.
+    next_step. Record a ledger decision for every blocker and major finding before any forecast, and put each finding id
+    (for example time.duplicate_timestamps) in that ledger entry's finding or decision text: the forecast is checked for it.
     """
     try:
         return _run(df, time_col, value_col, entity_cols, freq, max_entities)

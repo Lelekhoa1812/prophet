@@ -865,15 +865,33 @@ def _r(x: Any) -> float:
 _ENTITY_MAX_LEVELS = 100      # more distinct labels than this is not a short list of entities
 
 
+_MEASURE_NAME = re.compile(r"qty|quant|unit|sales|amount|price|value|count|cost|revenue|total|weight|volume|demand|rate|temp|"
+                           r"score|hours?|minutes?|seconds?", re.IGNORECASE)
+
+
+def _whole_number_label(s: pd.Series, col: str) -> bool:
+    """An integer-valued column that is not named as a measure: a numeric ID such as store_id = 12. Audit item 13: the
+    guard skipped every numeric column, so entities labelled 1, 2, 3 summed silently."""
+    if pd.api.types.is_bool_dtype(s) or _MEASURE_NAME.search(str(col)):
+        return False
+    vals = pd.to_numeric(s, errors="coerce").dropna()
+    return len(vals) > 0 and bool(np.all(np.mod(vals.to_numpy(dtype=float), 1) == 0))
+
+
 def _entity_columns(df: pd.DataFrame, time: str, value: str, ts: pd.Series) -> list[str]:
-    """Text columns that look like entities: 2 to 100 distinct labels, and at least one date that has several of them."""
+    """Columns that look like entities: 2 to 100 distinct labels, and at least one date that has several of them. Text
+    columns qualify; numeric columns qualify when they are whole numbers that are not named as a measure (numeric IDs)."""
     dates = pd.Series(np.asarray(ts), index=df.index, name="_date")
     found: list[str] = []
     for col in df.columns:
         if col in (time, value):
             continue
         s = df[col]
-        if pd.api.types.is_numeric_dtype(s) or pd.api.types.is_datetime64_any_dtype(s) or pd.api.types.is_bool_dtype(s):
+        if pd.api.types.is_datetime64_any_dtype(s):
+            continue
+        if pd.api.types.is_numeric_dtype(s) and not _whole_number_label(s, col):
+            continue
+        if pd.api.types.is_bool_dtype(s):
             continue
         if not 2 <= s.nunique(dropna=True) <= _ENTITY_MAX_LEVELS:
             continue
@@ -1290,9 +1308,12 @@ def event_covariate(index: Any, events: list[tuple[Any, Any]], horizon: int = 0,
 
 
 def list_holidays(country: str, subdiv: str | None = None, start: Any = None, end: Any = None) -> list[dict]:
-    """Public holidays (date and name) for a country code such as 'AU' or 'US', optionally a state, between two dates."""
+    """Public holidays (date and name) for a country code such as 'AU' or 'US', optionally a state, between two dates.
+    With no start or end, the default is the whole current calendar year (audit item 23: the old default raised)."""
     import holidays as hol
-    lo, hi = pd.Timestamp(start), pd.Timestamp(end)
+    today = pd.Timestamp.today()
+    lo = pd.Timestamp(start) if start is not None else pd.Timestamp(year=today.year, month=1, day=1)
+    hi = pd.Timestamp(end) if end is not None else pd.Timestamp(year=today.year, month=12, day=31)
     cal = hol.country_holidays(country, subdiv=subdiv, years=range(lo.year, hi.year + 1))
     return [{"date": d.isoformat(), "name": nm} for d, nm in sorted(cal.items()) if lo.date() <= d <= hi.date()]
 

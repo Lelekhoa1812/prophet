@@ -51,7 +51,7 @@ def observe(result: dict) -> dict:
     keep = ("horizon", "target_coverage", "origins", "tested_on", "scales_by_horizon_third", "heldout_coverage_raw",
             "heldout_coverage_calibrated", "raw_gap", "calibrated_gap", "scale_level", "second_pass", "width_ratio",
             "recommend", "reason", "caveats", "centre_note", "method", "heldout_coverage_adaptive", "heldout_raw_wilson90",
-            "heldout_calibrated_wilson90")
+            "heldout_calibrated_wilson90", "heldout_windows", "selection")
     out = {k: result[k] for k in keep if k in result}
     out["calibrated"] = {k: v[:30] for k, v in result["calibrated"].items() if k in ("q10", "q90")}
     out["raw"] = {k: v[:30] for k, v in result["raw"].items()}

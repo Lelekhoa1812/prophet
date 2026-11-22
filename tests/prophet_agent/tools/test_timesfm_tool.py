@@ -124,3 +124,22 @@ def test_a_48_hour_forecast_reaches_the_planner_in_full_not_thinned_to_30():
     shown = observe(result)
     assert shown["point"] == [round(x, 3) for x in point] and "note" not in shown
     assert len(shown["q10"]) == 48 and len(shown["q90"]) == 48
+
+
+def test_the_lumpy_band_brackets_the_expected_demand_point(monkeypatch):
+    """Audit item 14: TimesFM's band sat on its median (near zero for lumpy demand), so the point shown fell outside it.
+    For intermittent demand the band now comes from the TSB model, whose sample mean is the point."""
+    from prophet_agent.tools.timesfm_tool import _run
+
+    class _NearZeroBand(_StubEngine):      # TimesFM's band on lumpy demand: centred on a median of zero
+        def forecast_batch(self, series_list, horizon):
+            n = len(series_list)
+            return Forecast(np.zeros((n, horizon)), np.zeros((n, horizon, 9)))
+
+    monkeypatch.setattr(timesfm_mod.TimesFMEngine, "get", classmethod(lambda cls: _NearZeroBand()))
+    x = [0.0] * 20 + [4.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0]
+    out = _run({"values": x, "horizon": 4}, "k")
+    assert all(v > 0 for v in out["point"]), "the expected demand is above zero, so a zero-centred band misses it"
+    q10, q90 = out["quantiles"]["0.1"], out["quantiles"]["0.9"]
+    assert all(lo <= p <= hi for lo, p, hi in zip(q10, out["point"], q90)), (q10, out["point"], q90)
+    assert all(v >= 0 for v in q10 + q90), "demand cannot be negative"

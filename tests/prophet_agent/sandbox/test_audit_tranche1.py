@@ -63,3 +63,43 @@ def test_epoch_seconds_are_read_as_seconds_not_nanoseconds():
     df = pd.DataFrame({"t": [1704067200 + 86400 * i for i in range(40)], "v": np.arange(40, dtype=float)})
     res = sc.scan(df, "t", "v", freq="D")
     assert res.summary["time_range"] == ["2024-01-01 00:00:00", "2024-02-09 00:00:00"]
+
+
+def test_list_holidays_with_no_dates_returns_the_current_year_instead_of_raising():
+    # Audit item 23: pd.Timestamp(None) is NaT, so the old default raised on .year.
+    from prophet_agent.sandbox import prophet_lib as pl
+    days = pl.list_holidays("AU")
+    assert len(days) >= 5
+    assert {d["date"][:4] for d in days} == {str(pd.Timestamp.today().year)}
+
+
+def test_the_catalogue_lists_the_cleaning_helpers_the_planner_needs():
+    # Audit item 23: to_number, to_datetime and tidy_text were in the code but not in the planner's catalogue.
+    from prophet_agent.sandbox import catalogue
+    names = {f"{alias}.{name}" for alias, _, name in catalogue.catalogue_entries()}
+    assert {"pl.to_number", "pl.to_datetime", "pl.tidy_text"} <= names
+    assert "pl.tidy_text(" in catalogue.build_catalogue()
+
+
+def _two_numbered_stores():
+    days = pd.date_range("2024-01-01", periods=5, freq="D").strftime("%Y-%m-%d").tolist()
+    rows = [{"date": d, "store_id": sid, "sales_units": 10.0 + i + sid} for d in days for i, sid in enumerate((1, 2))]
+    return pd.DataFrame(rows)
+
+
+def test_numeric_store_ids_sharing_dates_are_refused_not_summed():
+    # Audit item 13: the guard skipped numeric columns, so store_id 1 and 2 were added together without a word.
+    import pytest
+    from prophet_agent.sandbox import prophet_lib as pl
+    with pytest.raises(ValueError, match="store_id"):
+        pl.prepare_series(_two_numbered_stores(), value="sales_units", time="date", freq="D")
+    s, _ = pl.prepare_series(_two_numbered_stores(), value="sales_units", time="date", freq="D", entity="store_id", key=1)
+    assert len(s) == 5
+
+
+def test_a_numeric_measure_that_varies_within_a_date_is_not_mistaken_for_entities():
+    from prophet_agent.sandbox import prophet_lib as pl
+    days = pd.date_range("2024-01-01", periods=5, freq="D").strftime("%Y-%m-%d").tolist()
+    rows = [{"date": d, "sales_units": 3.0, "quantity": float(q)} for d in days for q in (1.0, 2.0)]
+    s, _ = pl.prepare_series(pd.DataFrame(rows), value="sales_units", time="date", freq="D")   # no refusal
+    assert len(s) == 5

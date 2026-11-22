@@ -75,6 +75,9 @@ CATALOGUE_EXAMPLES: dict[str, str] = {
     "pl.dominant_period": "period, strength = pl.dominant_period(x)\nassert strength >= 0",
     "pl.find_season": "res = pl.find_season(x)\nassert 'strongest_lag' in res",
     "pl.read_table": "t, info = pl.read_table('in/sales.csv')\nassert len(t) > 0",
+    "pl.to_number": "n, info = pl.to_number(pd.Series(['1,200', '3.5', 'n/a']))\nassert n.iloc[0] == 1200 and isinstance(info, dict)",
+    "pl.to_datetime": "t, info = pl.to_datetime(pd.Series(['01/02/2024']), dayfirst=True)\nassert t.iloc[0].month == 2",
+    "pl.tidy_text": "t = pl.tidy_text(pd.Series(['  Acme  Ltd ', 'Acme Ltd']))\nassert t.nunique() == 1",
     "pl.build_series": "b = pl.build_series(df, 'units', 'date', freq='D')\nassert len(b) > 0",
     "pl.chart": ("pl.chart('line', data=s, title='Daily units held steady through the fixture period', "
                  "subtitle='synthetic fixture, daily', unit='units', path='out/c.png')"),

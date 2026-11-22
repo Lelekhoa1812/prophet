@@ -41,7 +41,11 @@ def test_a_simple_rule_can_be_the_centre_line_with_timesfms_band_recentred():
     assert out["point"] == [12.0, 12.0] and out["timesfm_point"] == [10.0, 11.0]
     assert out["quantiles"]["0.1"] == [11.0, 10.5] and out["quantiles"]["0.9"] == [13.0, 13.5]   # widths kept
     assert _centre(fc, [5.0, 8.0, 12.0], "drift")["point"] == [15.5, 19.0]
-    assert "more accurate than TimesFM" in _method_note({}, out["centre"])
+    note = _method_note({}, out["centre"])
+    assert "set for this pack by the caller" in note
+    # Audit item 21: the pack never sees the backtest, so it must not claim one chose the rule.
+    assert "more accurate" not in note and "found" not in note
+    assert "more accurate" not in out["centre"]["reason"]
 
 
 def test_the_pack_states_how_far_the_band_reaches_from_the_centre():

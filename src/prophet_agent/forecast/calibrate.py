@@ -202,9 +202,17 @@ def wilson(hits: int, n: int, conf: float = 0.9) -> list[float]:
     """Wilson score interval for a coverage share; with few windows a coverage of 0.7 is not proof the band is too narrow."""
     if n <= 0:
         return [0.0, 1.0]
+    return _wilson_share(hits / n, n, conf)
+
+
+def _wilson_share(p: float, n: int, conf: float = 0.9) -> list[float]:
+    """Wilson interval for a share p observed over n independent trials. ``calibrate`` passes the number of held-out WINDOWS
+    as n, not the number of points: the points inside one window share a forecast and a series, so they are not independent
+    (audit item 16)."""
+    if n <= 0:
+        return [0.0, 1.0]
     from statistics import NormalDist
     zq = NormalDist().inv_cdf(0.5 + conf / 2)
-    p = hits / n
     den = 1 + zq * zq / n
     c = (p + zq * zq / (2 * n)) / den
     h = zq * math.sqrt(p * (1 - p) / n + zq * zq / (4 * n * n)) / den
@@ -302,10 +310,13 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
     width_ratio = _width(cal_q) / max(_width(raw_q), 1e-12)
     use = (use_calibrated(raw_gap, cal_gap, max(scales), width_ratio) if method == "quantile_scaling"
            else bool(raw_gap > GAP_STEP and cal_gap < raw_gap))
-    n_held = int(held_actual.size)
+    n_held, n_win = int(held_actual.size), k - split
     caveats = ["Past windows share one series, so they are not independent; the coverage figures carry that uncertainty.",
                "Conformal coverage assumes future errors resemble the past ones. A regime change breaks it.",
-               f"Held-out test: {k - split} windows of {horizon} periods ({held_actual.size} points)."]
+               f"Check windows: {n_win} windows of {horizon} periods ({n_held} points). The Wilson intervals use the windows as "
+               "the sample size, because the points inside a window are not independent.",
+               "The method, the scale level and the use decision were chosen by comparing coverage on these same windows, so the "
+               "held-out coverage figures are optimistic. They are a diagnostic, not an unbiased test of the chosen band."]
     if method == "ewma_volatility" and width_ratio > MAX_SCALE:
         caveats.append(f"TimesFM's own band was far too narrow here (held-out coverage {raw_cov:.0%}); the range shown follows the "
                        f"series' recent volatility and is {width_ratio:.1f} times wider.")
@@ -320,9 +331,11 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
         "width_ratio": round(width_ratio, 3),
         "method": method, "ewma_volatility": vol,
         "heldout_coverage_adaptive": None if adaptive_cov is None else round(adaptive_cov, 3),
-        "heldout_points": n_held,
-        "heldout_raw_wilson90": wilson(int(round(raw_cov * n_held)), n_held),
-        "heldout_calibrated_wilson90": wilson(int(round(cal_cov * n_held)), n_held),
+        "heldout_points": n_held, "heldout_windows": n_win,
+        "heldout_raw_wilson90": _wilson_share(raw_cov, n_win),
+        "heldout_calibrated_wilson90": _wilson_share(cal_cov, n_win),
+        # Audit item 15: the held-out windows chose the method and the level, so their coverage is reported as selected.
+        "selection": {"held_out_used_for_choice": True, "optimistic": True},
         "recommend": "use_calibrated" if use else "keep_raw",
         "reason": ("the raw band is more than five points from target on held-out windows, and the calibrated band is closer" if use else
                    "the raw band is within five points of target, or calibration does not bring it closer on held-out windows"),

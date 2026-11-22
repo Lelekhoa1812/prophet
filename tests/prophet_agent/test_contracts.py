@@ -450,8 +450,67 @@ def test_a_hand_tuned_forecast_needs_a_control_lab_result_first():
     assert check_controls([], {"values": HISTORY, "znorm": False}) is None
     missing = check_controls([], tuned)
     assert missing["name"] == "controls_tested" and not missing["ok"] and missing["severity"] == "block"
-    ran = check_controls([_lab_obs("control_lab", {"recommended": {"candidate": "znorm"}})], tuned)
-    assert ran["ok"]
-    default = check_controls([_lab_obs("control_lab", {"recommended": "keep the default"})], tuned)
+    # Audit item 18: a lab counts only when it measured this forecast: same horizon and length, and the treatment in its table.
+    lab = {"horizon": 10, "points": 120, "table": [{"name": "default"}, {"name": "znorm"}],
+           "recommended": {"candidate": "znorm"}}
+    record = {"config": {"horizon": 10, "history_points": 120}}
+    ran = check_controls([_lab_obs("control_lab", lab, {"horizon": 10})], tuned, record)
+    assert ran["ok"], ran
+    default_lab = {"horizon": 10, "points": 120, "table": [{"name": "default"}, {"name": "znorm"}],
+                   "recommended": "keep the default"}
+    default = check_controls([_lab_obs("control_lab", default_lab)], tuned, record)
     assert not default["ok"] and default["severity"] == "warn"
     assert check_controls([], {"future_covariates": ["holidays"]}) is None, "drivers are inputs, not tuning"
+
+
+def test_a_control_lab_that_measured_another_series_or_horizon_does_not_vouch_for_this_forecast():
+    from prophet_agent.runtime.contracts import check_controls
+    tuned = {"values": HISTORY, "znorm": True}
+    table = [{"name": "default"}, {"name": "znorm"}]
+    record = {"config": {"horizon": 10, "history_points": 120}}
+    other_horizon = {"horizon": 30, "points": 120, "table": table, "recommended": {"candidate": "znorm"}}
+    check = check_controls([_lab_obs("control_lab", other_horizon)], tuned, record)
+    assert not check["ok"] and check["severity"] == "block" and "did not test this forecast" in check["detail"]
+    other_series = {"horizon": 10, "points": 400, "table": table, "recommended": {"candidate": "znorm"}}
+    assert not check_controls([_lab_obs("control_lab", other_series)], tuned, record)["ok"]
+
+
+def test_the_treatment_must_appear_in_the_labs_own_table():
+    from prophet_agent.runtime.contracts import check_controls
+    tuned = {"values": HISTORY, "znorm": True}
+    record = {"config": {"horizon": 10, "history_points": 120}}
+    skipped = {"horizon": 10, "points": 120, "table": [{"name": "default"}, {"name": "ctx_4h"}],
+               "recommended": "keep the default"}
+    check = check_controls([_lab_obs("control_lab", skipped)], tuned, record)
+    assert not check["ok"] and check["severity"] == "block" and "did not measure znorm" in check["detail"]
+
+
+def test_a_lab_that_recommends_a_different_treatment_warns():
+    from prophet_agent.runtime.contracts import check_controls
+    tuned = {"values": HISTORY, "znorm": True}
+    record = {"config": {"horizon": 10, "history_points": 120}}
+    lab = {"horizon": 10, "points": 120, "table": [{"name": "znorm"}, {"name": "symmetric_averaging"}],
+           "recommended": {"candidate": "symmetric_averaging"}}
+    check = check_controls([_lab_obs("control_lab", lab)], tuned, record)
+    assert not check["ok"] and check["severity"] == "warn" and "symmetric_averaging" in check["detail"]
+
+
+
+def test_the_treatment_gate_accepts_a_lab_that_went_through_the_planners_observation():
+    # Audit item 18: the stored control_lab result is the planner's observation (lab_tool.observe), not the raw lab dict.
+    # The gate must still see the series length, the horizon and every measured candidate, or it blocks every hand-tuned forecast.
+    from prophet_agent.runtime.contracts import check_controls
+    from prophet_agent.tools.lab_tool import observe
+    tuned = {"values": HISTORY, "znorm": True}
+    record = {"config": {"horizon": 10, "history_points": 120}}
+    row = lambda name, kind: {"name": name, "kind": kind, "gain_pct": 1.5, "pinball_gain_pct": 0.5, "wins": 5,
+                              "interval_pct": [-1.0, 2.0], "decision": "adopt" if name == "znorm" else "reject"}
+    raw = {"horizon": 10, "period": None, "points": 120, "fold_count": 8, "calls_spent": 20,
+           "recommended": {"candidate": "znorm"}, "baseline_beats_default": None,
+           "table": [row("default", "reference"), row("znorm", "treatment"), row("symmetric_averaging", "treatment")],
+           "skipped": [], "failed": [], "caveats": []}
+    stored = observe(raw)
+    assert stored["points"] == 120 and stored["horizon"] == 10
+    assert {"default", "znorm", "symmetric_averaging"} <= set(stored["measured"])
+    check = check_controls([_lab_obs("control_lab", stored, {"horizon": 10})], tuned, record)
+    assert check["ok"], check

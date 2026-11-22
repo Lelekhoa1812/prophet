@@ -927,7 +927,9 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
         if prior is None:
             return {"kind": "delegate", "error": f"no earlier sub-agent {spec['resume']!r} to resume; known: "
                     + (", ".join(sorted({h['agent_id'] for h in history if h.get('kind') == 'subagent' and h.get('agent_id')})) or "none")}
-    sub_cfg = GoalConfig(max_iterations=cfg.sub_steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps,
+    # The step budget is the type's own (AgentType.steps). It was declared but never read (audit item 24), so every sub-agent
+    # got cfg.sub_steps whatever its type said.
+    sub_cfg = GoalConfig(max_iterations=agent.steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps,
                          tag=f"d1.{agent_id}")
     sub_history: list[dict] = list(prior["evidence"]) if prior else []
     goal = _brief(spec, agent, agent_id, prior is not None)

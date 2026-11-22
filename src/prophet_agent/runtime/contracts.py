@@ -288,14 +288,11 @@ def with_delegated(history) -> list:
     return out
 
 
-def ledger_stages(history, run_root) -> int | None:
-    """The most distinct stages (with a finding and a decision each) any saved ledger in this mission records. None when
-    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look"."""
-    if run_root is None:
-        return None
-    best = 0
+def _saved_ledgers(history, run_root) -> list[list]:
+    """The entries of every saved ledger in this mission (newest first). A step that saved the ledger and then failed later in
+    the cell still saved it: the file is the evidence. Unreadable or unsafe paths are skipped."""
+    out: list[list] = []
     for h in reversed(with_delegated(history)):
-        # A step that saved the ledger and then failed later in the cell (a print, a chart) still saved it: the file is the evidence.
         res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
         if not isinstance(res, dict) or not isinstance(res.get("run_id"), str) or "/" in res["run_id"] or ".." in res["run_id"]:
             continue
@@ -307,10 +304,69 @@ def ledger_stages(history, run_root) -> int | None:
         except (OSError, ValueError):
             continue
         if isinstance(entries, list):
-            stages = {str(e.get("stage", "")).strip().lower() for e in entries
-                      if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
-            best = max(best, len(stages - {""}))
+            out.append(entries)
+    return out
+
+
+def ledger_stages(history, run_root) -> int | None:
+    """The most distinct stages (with a finding and a decision each) any saved ledger in this mission records. None when
+    ``run_root`` is unknown, so a caller can tell "zero" from "cannot look"."""
+    if run_root is None:
+        return None
+    best = 0
+    for entries in _saved_ledgers(history, run_root):
+        stages = {str(e.get("stage", "")).strip().lower() for e in entries
+                  if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
+        best = max(best, len(stages - {""}))
     return best
+
+
+def _saved_scan_findings(history, run_root) -> list[dict] | None:
+    """The findings of every scan the mission saved (out/scan*.json in each run that listed it). None when no scan was saved
+    or the files cannot be read."""
+    if run_root is None:
+        return None
+    found: list[dict] = []
+    seen = False
+    for h in with_delegated(history):
+        res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
+        if not isinstance(res, dict) or not isinstance(res.get("run_id"), str) or "/" in res["run_id"] or ".." in res["run_id"]:
+            continue
+        for o in res.get("outputs") or []:
+            path = _output_path(o)
+            if not SCAN_FILE.fullmatch(path):
+                continue
+            seen = True
+            try:
+                doc = json.loads((Path(run_root) / res["run_id"] / path).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, dict) and isinstance(doc.get("findings"), list):
+                found.extend(f for f in doc["findings"] if isinstance(f, dict))
+    return found if seen else None
+
+
+def check_scan_decisions(history, run_root) -> dict | None:
+    """Every blocker and major finding in the saved scan has a ledger decision that names its id (audit item 17: the scan's
+    blockers were not enforced; a forecast could be built on a table the scan said was broken). A finding is recorded when a
+    ledger entry's stage, finding or decision text contains its id, such as ``time.duplicate_timestamps``. None when no scan
+    was saved or the sandbox folder cannot be read; the scan check reports the missing scan."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    required = sorted({f["id"] for f in findings if f.get("severity") in ("blocker", "major") and isinstance(f.get("id"), str)})
+    if not required:
+        return _check("scan_decisions_recorded", True, "the scan raised no blocker or major finding to decide on")
+    texts = [" ".join(str(e.get(k, "")) for k in ("stage", "finding", "decision")) for entries in _saved_ledgers(history, run_root)
+             for e in entries if isinstance(e, dict)]
+    missing = [i for i in required if not any(i in t for t in texts)]
+    if not missing:
+        return _check("scan_decisions_recorded", True,
+                      f"the ledger records a decision for each of the {len(required)} blocker and major findings in the scan")
+    return _check("scan_decisions_recorded", False,
+                  f"the scan has blocker or major findings with no ledger decision: {', '.join(missing[:8])}"
+                  + (f" and {len(missing) - 8} more" if len(missing) > 8 else "")
+                  + "; record each one with ps.Ledger().add(stage, finding, decision) and put the finding id in the text")
 
 
 def scan_ran(history) -> bool:
@@ -352,10 +408,25 @@ def used_controls(args: dict) -> list[str]:
     return [k for k in CONTROL_OPTIONS if args.get(k)]
 
 
-def check_controls(history, args: dict) -> dict | None:
+# The lab candidates that measure each hand-set treatment. The lab's own candidates are close to the planner's options, not
+# identical: ctx_* are context windows (not an exact point count), ignore/replace_outliers are automatic (not the planner's
+# ranges). The check accepts the closest measured candidate and says so in its detail.
+TREATMENT_CANDIDATES = {
+    "context_points": ("ctx_2h", "ctx_4h", "ctx_8h", "ctx_season"),
+    "ignore_ranges": ("ignore_outliers", "replace_outliers"),
+    "znorm": ("znorm",),
+    "symmetric_averaging": ("symmetric_averaging",),
+    "past_covariates": ("with_covariates",),
+    "future_covariates": ("with_covariates",),
+}
+
+
+def check_controls(history, args: dict, record: dict | None = None) -> dict | None:
     """A forecast that tunes TimesFM by hand (shorter context, ignored points, znorm, symmetric averaging) needs a
     ``control_lab`` result on the history: measured evidence that the treatment helps, because measured evidence so far says
-    most do not. Blocking when the lab never ran; a warning when it ran and recommended the default."""
+    most do not. Blocking when no lab measured it. Audit item 18: a lab counts only when it measured THIS forecast, so it must
+    have run on the same horizon and series length (``record`` is the forecast's own record), and its table must hold a
+    candidate for each treatment the forecast uses. A warning when the lab recommended the default or another treatment."""
     used = used_controls(args)
     if not used:
         return None
@@ -375,10 +446,35 @@ def check_controls(history, args: dict) -> dict | None:
         return _check("controls_tested", False,
                       f"the forecast uses {', '.join(used)} but control_lab never ran; test the treatment on a leak-free "
                       "walk-forward comparison, or forecast with the default")
-    if labs[-1].get("recommended") == "keep the default":
+    cfg = record.get("config") if isinstance(record, dict) and isinstance(record.get("config"), dict) else {}
+    want_h = cfg.get("horizon", args.get("horizon"))
+    want_n = cfg.get("history_points")
+    matching = [r for r in labs if (not _is_int(want_h) or r.get("horizon") == want_h)
+                and (not _is_int(want_n) or r.get("points") == want_n)]
+    if not matching:
+        return _check("controls_tested", False,
+                      f"control_lab ran on {labs[-1].get('points')} points at horizon {labs[-1].get('horizon')}, but the forecast "
+                      f"is {want_n} points at horizon {want_h}: the lab did not test this forecast. Run control_lab on the same "
+                      "series and horizon")
+    lab = matching[-1]
+    # The planner sees the lab through its compact observation, which lists every measured candidate in ``measured``.
+    measured = {str(n) for n in (lab.get("measured") or [])} | {str(row.get("name")) for row in (lab.get("table") or [])
+                                                             if isinstance(row, dict)}
+    untested = [t for t in used if not set(TREATMENT_CANDIDATES.get(t, ())) & measured]
+    if untested:
+        return _check("controls_tested", False,
+                      f"control_lab did not measure {', '.join(untested)} on this series (its table has {sorted(measured)[:12]}); "
+                      "name the matching candidate in control_lab's candidates and run it again")
+    rec = lab.get("recommended")
+    if rec == "keep the default":
         return _check("controls_tested", False,
                       f"control_lab recommended keeping the default, yet the forecast uses {', '.join(used)}", "warn")
-    return _check("controls_tested", True, "control_lab ran and the treatment was measured")
+    chosen = rec.get("candidate") if isinstance(rec, dict) else None
+    tested_treatments = {t for t in used if set(TREATMENT_CANDIDATES.get(t, ())) & {chosen}}
+    if chosen is not None and not tested_treatments:
+        return _check("controls_tested", False,
+                      f"control_lab recommended {chosen}, not the treatment the forecast uses ({', '.join(used)})", "warn")
+    return _check("controls_tested", True, "control_lab measured the forecast's own series and horizon and the treatment was tested")
 
 
 def delivered_health(rec: dict) -> str | None:
@@ -571,7 +667,7 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
                                          horizon=horizon, history=hist_vals if _numbers(hist_vals) is not None else None))
 
     if forecasts:
-        controls = check_controls(obs, forecasts[-1][2])
+        controls = check_controls(obs, forecasts[-1][2], forecasts[-1][1])
         if controls is not None:
             checks.append(controls)
         scan = check_scan(obs, run_root)
@@ -580,6 +676,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         ledger = check_ledger(obs, run_root)
         if ledger is not None:
             checks.append(ledger)
+        decisions = check_scan_decisions(obs, run_root)
+        if decisions is not None:
+            checks.append(decisions)
 
     if backtests and isinstance(backtests[-1].get("models"), dict):
         checks.extend(check_backtest(backtests[-1]))

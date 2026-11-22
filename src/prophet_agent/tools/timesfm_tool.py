@@ -16,7 +16,7 @@ import numpy as np
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
 from prophet_agent.forecast.health import assess
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
-from prophet_agent.forecast.tsb import expected_volume
+from prophet_agent.forecast.tsb import TSB, expected_volume
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
@@ -42,6 +42,11 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
     # For intermittent demand the median is zero or near it, so the point is the expected demand (mean under TSB).
     # The TimesFM median stays visible as median_point.
     shown = [round(float(v), 4) for v in expected_volume(series, horizon)] if lumpy else median
+    if lumpy:
+        # The band must bracket the point shown. TimesFM's band sits on its median, near zero for lumpy demand, so the
+        # point (the mean under TSB) fell outside it (audit item 14). The TSB model's own quantiles share the point's
+        # distribution: the mean of its samples is the expected volume.
+        q = TSB().predict([np.asarray(series, dtype=float)], horizon).q[0]
     ctx_used = min(len(series), (control.context_points if control is not None and control.context_points else engine.global_context))
     if lumpy:
         health = {"verdict": "flat_expected", "reason": "intermittent demand: the point is the expected demand, a level by design; "

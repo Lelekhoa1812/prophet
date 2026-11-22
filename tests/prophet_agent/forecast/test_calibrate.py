@@ -214,3 +214,17 @@ def test_the_adaptive_scales_are_fitted_on_fit_windows_only_so_held_out_values_c
     assert fit_a.shape == (out_a["fitted_on"], 8)
     assert np.array_equal(fit_a, fit_b), "held-out values reached the fit of the adaptive scales"
     assert out_a["heldout_coverage_adaptive"] != out_b["heldout_coverage_adaptive"], "the held-out windows did change"
+
+
+def test_the_wilson_interval_counts_windows_not_points_and_the_selection_is_flagged():
+    """Audit items 15 and 16: points inside one window are correlated, so the Wilson sample size is the number of windows;
+    and the held-out coverage was used to choose the method, so the output labels it optimistic."""
+    rng = np.random.default_rng(11)
+    x = 100 + np.cumsum(rng.normal(0, 1.0, 300))
+    out = cal.calibrate(x, 10, engine=Engine(sd=1.0), n_origins=12)
+    assert out["heldout_windows"] == out["tested_on"]
+    lo_pts, hi_pts = cal.wilson(int(round(out["heldout_coverage_raw"] * out["heldout_points"])), out["heldout_points"])
+    lo, hi = out["heldout_raw_wilson90"]
+    assert (hi - lo) > (hi_pts - lo_pts), "fewer windows than points means a wider interval, not a narrower one"
+    assert out["selection"] == {"held_out_used_for_choice": True, "optimistic": True}
+    assert any("optimistic" in c for c in out["caveats"])

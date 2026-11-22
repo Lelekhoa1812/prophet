@@ -78,6 +78,8 @@ def observe(result: dict) -> dict:
         lines.append(f"{r['name']} ({r['kind']}): MASE gain {gain}, pinball {pin}{wins}{interval}, {r['decision']}")
     return {
         "horizon": result["horizon"],
+        "points": result["points"],                       # the series length tested: the treatment gate matches it (audit 18)
+        "measured": [r["name"] for r in result["table"]],  # every candidate measured, not only the rows shown
         "period": result["period"],
         "folds": result["fold_count"],
         "calls_spent": result["calls_spent"],

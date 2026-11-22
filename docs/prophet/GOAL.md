@@ -277,8 +277,18 @@ blocks a TimesFM loss on its own centre), 7 (call count includes sub-agents), 8 
 9 (research trigger covers retail, prices, electricity, weather), 11 (truncated free text is continued), 19, 20, 22
 (wording).
 
-Open: items 10, 13, 14, 15, 16, 17, 18, 21, 23, 24, and the build items (MinT reconciliation, the equal-weight blend as a
-centre rule, and a live `panel_backtest` on a real panel).
+Fixed in the second audit tranche (2026-11-22), each with a regression test: items 13 (numeric store IDs are entity keys),
+14 (lumpy band brackets the TSB expected-demand point), 15 and 16 (calibration labelled optimistic; Wilson on windows), 17
+(scan blockers and majors need a ledger decision), 18 (the treatment gate needs a lab on this horizon and length that tested
+the treatment), 21 (centre provenance wording), 23 (catalogue and holiday defaults), 24 (sub-agent step budget from the type).
+
+Behaviour changes to check in live runs: sub-agent step budgets fall (general 14 to 12, verifier 14 to 10); hand-tuned
+forecasts now need a `control_lab` on the same horizon and length; blocker and major scan findings need a ledger decision.
+None of items 14, 17, 18 or 24 has been measured in a live run. A live run needs a restarted API and real NIM and TimesFM calls.
+
+Open: item 10 (the plan horizon is not compared with the requested horizon; needs the series step recorded in the forecast
+record), and the build items (MinT reconciliation, the equal-weight blend as a centre rule, and a live `panel_backtest` on a
+real panel).
 
 Known limit: a space at the exact point where a free-text reply is cut is lost on continuation, because the cleaning step
 trims it. A mid-word cut joins correctly.

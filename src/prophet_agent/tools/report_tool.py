@@ -87,8 +87,9 @@ def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
     if centre:
         rule = RULE_TEXT[centre["rule"]] + (f" (season {centre['season']})" if centre.get("season") else "")
-        return (f"Centre line: {rule}, because the backtest found it more accurate than TimesFM; the range is TimesFM 3's "
-                "band, recentred on it.")
+        # The pack cannot see the backtest, so it says only what it was asked to do (audit item 21).
+        return (f"Centre line: {rule}, set for this pack by the caller (the pack does not re-check the backtest that chose it); "
+                "the range is TimesFM 3's band, recentred on it.")
     c = config.get("control")
     if not c:
         return "TimesFM 3, default settings, no external drivers."
@@ -169,8 +170,7 @@ def _centre(fc: dict, values: list[float], which: str, season: int | None = None
     q = {k: [round(float(v) + float(d), 4) for v, d in zip(vals, shift)] for k, vals in fc["quantiles"].items()}
     return {**fc, "point": [round(float(v), 4) for v in new], "quantiles": q, "timesfm_point": fc["point"],
             "centre": {"rule": which, **({"season": int(m)} if m else {}),
-                       "reason": "the backtest found this simple rule more accurate than TimesFM's centre line; "
-                       "the band is TimesFM's, recentred on the rule"}}
+                       "reason": "the caller set this simple rule as the centre line; the band is TimesFM's, recentred on the rule"}}
 
 
 def _season_arg(args: dict) -> int | None:

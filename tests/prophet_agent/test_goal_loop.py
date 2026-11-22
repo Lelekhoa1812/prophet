@@ -837,3 +837,29 @@ def test_the_outside_context_heading_is_found_at_any_level_with_or_without_colon
     start = OUTSIDE_HEAD.search(body).end()
     section = body[start:start + SECTION_END.search(body[start:]).start()]
     assert "IMF cut rates." in section and "Caveats" not in section      # the section stops at the next bold heading
+
+
+def test_a_sub_agent_gets_the_step_budget_its_type_declares(store, monkeypatch):
+    """Audit item 24: AgentType.steps was never read; every sub-agent ran on the default budget instead."""
+    from prophet_agent.runtime import agents
+    from prophet_agent.runtime import goal as goal_mod
+    budgets: list[int] = []
+    real = goal_mod._run
+
+    def spy(ctx, brain, goal, tools, cfg, context, history):
+        budgets.append(cfg.max_iterations)
+        return real(ctx, brain, goal, tools, cfg, context, history)
+
+    monkeypatch.setattr(goal_mod, "_run", spy)
+    brain = ScriptedBrain(
+        plans=[
+            {"action": "delegate", "task": "check", "tools": ["a"], "agent_type": "general", "rationale": "check"},
+            call("a"),
+            finish(),
+            finish(),
+        ],
+        evals=[met("checked"), met("final")],
+    )
+    _, out = run(store, goal_program("g", {"a": _tool("a")}, brain))
+    assert out["result"]["status"] == "met"
+    assert agents.TYPES["general"].steps in budgets, budgets
