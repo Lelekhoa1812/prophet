@@ -93,7 +93,8 @@ def ledger_line() -> str:
     cls = getattr(module, cls_name)
     methods = ", ".join(f"{m}({_signature_text(getattr(cls, m))})" for m in _LEDGER_METHODS)
     props = ", ".join(_LEDGER_PROPERTIES)
-    return f"{alias}.{cls_name}() -> methods {methods}; read-only property {props} (list of dicts)"
+    return (f"{alias}.{cls_name}() or {alias}.{cls_name}.open(carried path) -> methods {methods}; "
+            f"read-only property {props} (list of dicts)")
 
 
 def build_catalogue() -> str:

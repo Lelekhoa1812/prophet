@@ -41,6 +41,5 @@ def test_two_sided_imputation_leaks_a_future_edit_into_history():
     assert float(np.max(np.abs(a.iloc[:52].to_numpy() - b.iloc[:52].to_numpy()))) > 1.0
 
 
-@pytest.mark.xfail(strict=True, reason="A2-03 default flip pending: see module docstring")
 def test_default_imputation_is_causal():
     assert inspect.signature(ps.impute).parameters["causal"].default is True

@@ -80,7 +80,7 @@ def test_stl_outliers_needs_two_full_periods():
 def test_impute_linear_fills_short_gap_and_reports_it():
     x = np.arange(20.0)
     x[8:10] = np.nan
-    s, report = ps.impute(x)
+    s, report = ps.impute(x, causal=False)
     assert np.allclose(s.iloc[8:10], [8.0, 9.0])
     assert report["filled_count"] == 2 and report["filled_positions"] == [8, 9]
     assert report["method_by_gap"][0]["method"] == "linear"
@@ -138,7 +138,7 @@ def test_impute_spline_knn_and_kalman_fill_interior_gap():
     x = np.sin(np.arange(80) / 6.0)
     x[40:43] = np.nan
     for method in ("spline", "knn", "kalman"):
-        s, report = ps.impute(x, method=method)
+        s, report = ps.impute(x, method=method, causal=False)
         assert s.iloc[40:43].notna().all(), method
         assert report["filled_count"] == 3, method
         assert report["method_by_gap"][0]["method"] == method
@@ -455,7 +455,7 @@ def test_module_loads_and_core_functions_work_without_sklearn(monkeypatch):
     try:
         flags, _ = reloaded.hampel(np.arange(30.0))
         assert flags.shape == (30,)
-        s, _ = reloaded.impute(np.array([1.0, np.nan, 3.0, 4.0]))
+        s, _ = reloaded.impute(np.array([1.0, np.nan, 3.0, 4.0]), causal=False)
         assert s.iloc[1] == 2.0
         assert reloaded.censoring_check(np.arange(10.0))["observed"] == 10
     finally:

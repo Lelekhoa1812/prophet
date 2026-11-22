@@ -337,7 +337,7 @@ def impute(
     method: str = "auto",
     period: int | None = None,
     max_gap: int | None = None,
-    causal: bool = False,
+    causal: bool = True,
 ) -> tuple[pd.Series, dict]:
     """Fill interior gaps, reporting every fill. Leading and trailing missing values are never filled.
 
@@ -351,8 +351,10 @@ def impute(
                  Any longer gap is left unfilled, because imputed values in a long gap are mostly the imputer's own
                  assumptions.
 
-    ``max_gap`` leaves any gap longer than it unfilled, whatever the method. ``causal=True`` forbids the two-sided
-    methods (spline, knn, kalman), so no future value reaches a past position.
+    ``max_gap`` leaves any gap longer than it unfilled, whatever the method. ``causal=True`` (the default) forbids the
+    two-sided methods (spline, knn, kalman), so no future value reaches a past position. Motivation (A2-03, measured): a
+    two-sided linear fill moved history before a backtest origin by 7 to 11 units when one later value was edited, so a
+    backtest on filled data saw the future. Pass ``causal=False`` only to describe the history, never for model input.
 
     Failure modes: gaps a method cannot fill (for example, no same-phase value for seasonal) are left unfilled and listed
     with a reason. Fewer than two points raises ValueError. The report lists each filled gap with its method, each
