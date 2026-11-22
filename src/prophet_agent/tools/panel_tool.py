@@ -64,7 +64,7 @@ def _run(args: dict, _key: str, engine_factory=None) -> dict[str, Any]:
         raise ValueError("a panel needs at least 2 named series; one series belongs in backtest_series or calibrate_intervals")
     # validate everything before the model is loaded, since loading TimesFM is the slow step
     engine = engine_factory() if engine_factory else TimesFMEngine.get()
-    result = global_gbm.panel_backtest(panel, horizon, n_origins=n_origins, season=season, engine=engine)
+    result = global_gbm.panel_backtest(panel, horizon, n_origins=n_origins, season=season, engine=engine, extended=True)
     result["reading"] = reading(result)
     result["basis"] = "measured: rolling-origin backtest on the saved history; not a forecast of the future"
     return result
@@ -80,15 +80,24 @@ def reading(res: dict[str, Any]) -> str:
         text += "; neither model beat the simple rule, so the extra modelling is not earning its place on this panel"
     elif "timesfm" in overall and "global_gbm" in overall:
         text += f"; the global model scored {overall['global_gbm']:.2f} and TimesFM {overall['timesfm']:.2f}"
+    test = res.get("best_overall_test")
+    if test and test.get("verdict") == "no clear winner":
+        weakest = max(test["against"].items(), key=lambda kv: kv[1]["p_value"])
+        text += (f"; the lead is not significant (paired sign-flip test against {PLAIN.get(weakest[0], weakest[0])}: "
+                 f"p = {weakest[1]['p_value']:.2f}), so there is no clear winner on this panel")
     cov = res["coverage_80"]
     if cov:
         parts = ", ".join(f"{PLAIN.get(m, m)} {v * 100:.0f} percent" for m, v in cov.items())
         text += f". Inside the 10 to 90 percent band, the share of actual values was {parts} (target 80 percent)"
+        raw = res.get("coverage_80_raw")
+        if raw:
+            text += (f"; before calibration on earlier windows it was {raw['global_gbm'] * 100:.0f} percent for the global model")
     return text + "."
 
 
 def observe(result: dict) -> dict:
-    keep = ("horizon", "origins", "season", "overall", "wins", "best_overall", "coverage_80", "notes", "reading", "basis")
+    keep = ("horizon", "origins", "season", "overall", "wins", "best_overall", "coverage_80", "coverage_80_raw",
+            "calibration", "best_overall_test", "notes", "reading", "basis")
     out = {k: result[k] for k in keep if k in result}
     rows = list(result["per_entity"].items())
     out["entities"] = len(rows)
@@ -128,8 +137,9 @@ PANEL_BACKTEST_SPEC = {
     "description": "For several related series on one calendar (a panel), test whether one global gradient-boosted model "
                    "across all of them forecasts better than each series' own naive rules and than TimesFM. It refits at "
                    "the last few origins using only earlier history and returns mean MASE per entity and overall, how often "
-                   "each model wins, and 80 percent band coverage. Use it when the person has many entities that share dates "
-                   "and wants to know whether pooling helps. Reads a series.json with named series written by pl.save_panel.",
+                   "each model wins, and 80 percent band coverage (raw and calibrated). Use it when the person has many entities that share dates "
+                   "and wants to know whether pooling helps. A best model is named only when a paired test supports it, "
+                   "otherwise the verdict is no clear winner. Reads a series.json with named series written by pl.save_panel.",
     "args": {"source": "object {run_id: id of the analysis run that wrote the file, file: 'out/series.json'} with several "
                        "named series (required)",
              "horizon": "integer, 1 to 512, steps ahead to score",
