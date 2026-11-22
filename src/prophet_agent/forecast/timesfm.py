@@ -21,6 +21,25 @@ N_QUANTILES = 9  # quantiles 0.1 .. 0.9; the median is index 4
 # (measured): two refund days (-1,683 and -1,566) in about 1,000 days switched the floor off, and Saturdays came out at
 # -3,125 and -3,606. Up to this share of points below zero, the series is treated as non-negative and floored.
 NEG_SHARE_MAX = 0.02
+# The model decodes in output patches of this length (timesfm3/mlx/configs.py, output patch 64; code-read). The package pads
+# a future covariate to a multiple of it when padding_mode is "edge" (timesfm3_forecaster.py, lines 318-327).
+OUTPUT_PATCH = 64
+
+
+def edge_pad_future(pf, horizon: int) -> np.ndarray:
+    """Extend each future covariate by repeating its last value up to the patch-rounded horizon, as the package's
+    padding_mode "edge" does. Input (k, context + horizon); output (k, context + ceil(horizon / 64) * 64). The output is
+    trimmed back to the horizon by the caller, so only the covariate the model reads for the extra steps changes.
+
+    Motivation vs Logic
+    Motivation: the model decodes a whole output patch, so the steps past the horizon need a covariate value too (A6-10).
+    Logic: the same rule the package uses, applied before the decode (the engine calls the model's decode directly).
+    """
+    a = np.asarray(pf, dtype=np.float32)
+    pad = int(np.ceil(horizon / OUTPUT_PATCH) * OUTPUT_PATCH - horizon)
+    if pad <= 0:
+        return a
+    return np.pad(a, [(0, 0), (0, pad)], mode="edge")
 
 
 def quantile_crossings(q) -> np.ndarray:
@@ -165,6 +184,8 @@ class TimesFMEngine:
             pf = z(pf)[0] if pf is not None else None
         if tmask is not None:
             tgt = np.where(tmask, 0.0, tgt).astype(np.float32)
+        if pf is not None and control.padding_mode == "edge":
+            pf = edge_pad_future(pf, horizon)      # A6-10: a covariate value for every decoded step, as the package does
         with self._infer_lock:
             out = self._decode(tgt, po, pf, tmask, horizon)
             self._record_crossings(quantile_crossings(out[0]))    # the target row, raw, before any sort (A6-12)

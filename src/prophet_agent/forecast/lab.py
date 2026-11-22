@@ -69,7 +69,7 @@ N_QUANTILES = 9
 TSB_MIN_SHARE = 0.5         # the TSB baseline is run when at least this share of fold histories are intermittent
 SIMPLE_BASELINES = ("naive", "mean_last_8", "seasonal_naive")
 CANDIDATE_NAMES = ("default", "ctx_2h", "ctx_4h", "ctx_8h", "ctx_season", "ignore_outliers", "replace_outliers",
-                   "znorm", "symmetric_averaging", "with_covariates")
+                   "znorm", "symmetric_averaging", "with_covariates", "covariates_edge_pad")
 
 
 @dataclass(frozen=True)
@@ -300,6 +300,12 @@ def _covariates(ctx: FoldContext) -> Prepared:
     return Prepared(ctx.hist, Control(past=dict(ctx.past), future=dict(ctx.future)))
 
 
+def _covariates_edge(ctx: FoldContext) -> Prepared:
+    # A6-10: the same drivers with the package's edge padding past the horizon, measured as its own treatment.
+    return Prepared(ctx.hist, Control(past=dict(ctx.past), future=dict(ctx.future), padding_mode="edge"),
+                    "covariates with edge padding past the horizon")
+
+
 def _grid(period: int | None, has_covariates: bool) -> list[Candidate]:
     """The treatments in priority order. The default comes first: it is the reference every other treatment is paired
     with, and when the budget runs out the treatments at the end are the ones skipped."""
@@ -316,12 +322,15 @@ def _grid(period: int | None, has_covariates: bool) -> list[Candidate]:
     ]
     if has_covariates:
         grid.append(Candidate("with_covariates", "the past and future covariates as supplied", _covariates))
+        grid.append(Candidate("covariates_edge_pad", "the covariates as supplied, last future value repeated past the horizon "
+                                                     "as the package's edge padding does", _covariates_edge))
     return grid
 
 
 _ABSENT_REASON = {
     "ctx_season": "it needs period (periods per cycle, above 1)",
     "with_covariates": "it needs past_covariates or future_covariates",
+    "covariates_edge_pad": "it needs past_covariates or future_covariates",
 }
 
 
