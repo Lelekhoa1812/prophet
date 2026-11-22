@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .data_tools import BACKTEST_SPEC, INSPECT_DATA_SPEC, backtest_tool, inspect_data_tool
 from .calibrate_tool import CALIBRATE_SPEC, calibrate_tool
+from .panel_tool import PANEL_BACKTEST_SPEC, panel_backtest_tool
 from .lab_tool import LAB_TOOL_SPEC
 from .lab_tool import lab_tool as make_lab_tool
 from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_drivers_tool, detect_anomalies_tool)
@@ -35,6 +36,7 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         "analyst_skill": (skill_tool(), ANALYST_SKILL_SPEC),
         "control_lab": (make_lab_tool(), LAB_TOOL_SPEC),
         "calibrate_intervals": (calibrate_tool(), CALIBRATE_SPEC),
+        "panel_backtest": (panel_backtest_tool(), PANEL_BACKTEST_SPEC),
     }
     for tool, spec in research_tool_pairs():
         specs[tool.name] = (tool, spec)
