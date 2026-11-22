@@ -69,7 +69,7 @@ N_QUANTILES = 9
 TSB_MIN_SHARE = 0.5         # the TSB baseline is run when at least this share of fold histories are intermittent
 SIMPLE_BASELINES = ("naive", "mean_last_8", "seasonal_naive")
 CANDIDATE_NAMES = ("default", "ctx_2h", "ctx_4h", "ctx_8h", "ctx_season", "ignore_outliers", "replace_outliers",
-                   "znorm", "symmetric_averaging", "with_covariates", "covariates_edge_pad")
+                   "znorm", "symmetric_averaging", "with_covariates", "covariates_edge_pad", "ignore_ranges")
 
 
 @dataclass(frozen=True)
@@ -306,7 +306,17 @@ def _covariates_edge(ctx: FoldContext) -> Prepared:
                     "covariates with edge padding past the horizon")
 
 
-def _grid(period: int | None, has_covariates: bool) -> list[Candidate]:
+def _given_ranges(ranges: tuple[tuple[int, int], ...]) -> Callable[[FoldContext], Prepared]:
+    """The caller's ignore ranges, cut at each fold's origin so a fold reads only the ranges inside its own history (A6-08c)."""
+    def prepare(ctx: FoldContext) -> Prepared:
+        cut = tuple((s, min(e, ctx.origin)) for s, e in ranges if s < ctx.origin)
+        if not cut:
+            return Prepared(ctx.hist, Control(), "no given range inside this history")
+        return Prepared(ctx.hist, Control(ignore=cut), f"ignored {sum(e - s for s, e in cut)} points of the given ranges")
+    return prepare
+
+
+def _grid(period: int | None, has_covariates: bool, ranges: tuple[tuple[int, int], ...] | None = None) -> list[Candidate]:
     """The treatments in priority order. The default comes first: it is the reference every other treatment is paired
     with, and when the budget runs out the treatments at the end are the ones skipped."""
     grid = [Candidate("default", "the model as it is, no treatment", _default)]
@@ -324,6 +334,8 @@ def _grid(period: int | None, has_covariates: bool) -> list[Candidate]:
         grid.append(Candidate("with_covariates", "the past and future covariates as supplied", _covariates))
         grid.append(Candidate("covariates_edge_pad", "the covariates as supplied, last future value repeated past the horizon "
                                                      "as the package's edge padding does", _covariates_edge))
+    if ranges:
+        grid.append(Candidate("ignore_ranges", "the caller's ignore ranges, cut at each origin", _given_ranges(tuple(ranges))))
     return grid
 
 
@@ -331,6 +343,7 @@ _ABSENT_REASON = {
     "ctx_season": "it needs period (periods per cycle, above 1)",
     "with_covariates": "it needs past_covariates or future_covariates",
     "covariates_edge_pad": "it needs past_covariates or future_covariates",
+    "ignore_ranges": "it needs ignore_ranges",
 }
 
 
@@ -503,7 +516,7 @@ def _row(name: str, kind: str, sc: dict[str, np.ndarray], d_sc: dict[str, np.nda
 def run_lab(series: Any, horizon: int, engine: Any, candidates: Sequence[str] | None = None, *,
             folds: int = DEFAULT_FOLDS, seed: int = 0, period: int | None = None,
             past_covariates: Mapping[str, Any] | None = None, future_covariates: Mapping[str, Any] | None = None,
-            max_calls: int = MAX_CALLS) -> dict[str, Any]:
+            ranges: Sequence[Sequence[int]] | None = None, max_calls: int = MAX_CALLS) -> dict[str, Any]:
     """Run the control lab on one series and return a compact decision table.
 
     ``engine`` needs ``forecast_controlled(series, horizon, control)`` returning a Forecast, as TimesFMEngine has.
@@ -520,7 +533,8 @@ def run_lab(series: Any, horizon: int, engine: Any, candidates: Sequence[str] | 
         raise ValueError("seed must be a whole number")
     cov = build_control({"past_covariates": dict(past_covariates or {}),
                          "future_covariates": dict(future_covariates or {})}, n, h)
-    chosen = _choose(_grid(m, bool(cov.past or cov.future)), candidates)
+    given = build_control({"ignore_ranges": [list(r) for r in ranges]} if ranges else {}, n, h).ignore   # validated, merged
+    chosen = _choose(_grid(m, bool(cov.past or cov.future), given or None), candidates)
     by_name = {c.name: c for c in chosen}
 
     origins, min_hist, fit = plan_folds(n, h, n_folds, m)
