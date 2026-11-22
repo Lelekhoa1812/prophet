@@ -472,7 +472,7 @@ def test_a_stalled_run_gives_a_partial_answer_from_what_was_found(store):
 def test_grounding_ignores_ordinal_labels_but_not_suffixed_figures():
     from prophet_agent.runtime.grounding import figures
     assert figures("10th–90th percentile, 1st and 3rd place") == []
-    assert figures("sold 1.2M units, 5k orders") == ["1.2", "5"]
+    assert figures("sold 1.2M units, 5k orders") == ["1.2M", "5k"]          # the scale stays on the token; matching reads it
 
 
 def test_grounding_reads_a_counting_first_column_as_row_labels_only():

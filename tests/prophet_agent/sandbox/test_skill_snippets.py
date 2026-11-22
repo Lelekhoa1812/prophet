@@ -78,6 +78,7 @@ CATALOGUE_EXAMPLES: dict[str, str] = {
     "pl.build_series": "b = pl.build_series(df, 'units', 'date', freq='D')\nassert len(b) > 0",
     "pl.chart": ("pl.chart('line', data=s, title='Daily units held steady through the fixture period', "
                  "subtitle='synthetic fixture, daily', unit='units', path='out/c.png')"),
+    "pl.result": "assert pl.result('total', 12.5, 'GBP') == 12.5",
     "pl.list_holidays": "h = pl.list_holidays('AU', start='2024-01-01', end='2024-12-31')\nassert isinstance(h, list)",
     "ps.Ledger": "led = ps.Ledger()\nled.add('impute', 'two gaps', 'linear')\nassert len(led.entries) == 1\nled.save('out/ledger.json')",
 }

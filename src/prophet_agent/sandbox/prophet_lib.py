@@ -1860,6 +1860,28 @@ def query(sql: str, max_rows: int = 20_000, **files: str | Path) -> pd.DataFrame
     return df.iloc[:max_rows]
 
 
+# ------------------------------------------------------------------------------------------- figures the answer quotes --
+def result(name: Any, value: Any = None, unit: str = "") -> Any:
+    """Print a figure the final answer will quote, as ``RESULT name: value [unit]``, and return it.
+
+    Live retail ended partial because the answer quoted a 14-day total, a share, a ratio and rounded weekday means that no cell
+    had printed: the model worked them out in its head, and the grounding check (rightly) refused them. Compute the figure
+    here, print it with this helper, and quote it as printed. ``pl.result({"total_14d": t, "share": s})`` prints one line each.
+    The value is printed to 4 decimals, so a figure written to fewer decimals (or in thousands, "27.9k") still matches it.
+    """
+    if isinstance(name, dict):
+        return {k: result(k, v, unit) for k, v in name.items()}
+    v = value
+    if hasattr(v, "item") and getattr(v, "ndim", 1) == 0:
+        v = v.item()
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        print(f"RESULT {name}: {v}" + (f" {unit}" if unit else ""))
+        return value
+    shown = int(v) if float(v).is_integer() else round(float(v), 4)
+    print(f"RESULT {name}: {shown}" + (f" {unit}" if unit else ""))
+    return value
+
+
 # ----------------------------------------------------------------------------- polars names on pandas objects --
 # The alias ``pl`` makes models write polars code. Four polars names are added to pandas objects, only where pandas has no
 # method of that name, so pandas behaviour is never replaced:

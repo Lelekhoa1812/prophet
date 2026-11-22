@@ -80,3 +80,23 @@ def test_a_flag_array_is_true_when_any_flag_is_set():
     assert bool(flags) and bool(rep["outliers"]) and int(flags.sum()) == rep["count"]
     calm, rep2 = ps.hampel(np.ones(30) + np.arange(30) * 0.01)
     assert not calm and not rep2["outliers"]
+
+
+def test_result_prints_the_figure_an_answer_will_quote(capsys):
+    import numpy as np
+    from prophet_agent.sandbox import prophet_lib as pl
+    assert pl.result("total_14d", np.float64(575419.3712), "GBP") == 575419.3712
+    pl.result({"share": 0.18333333, "n": np.int64(135)})
+    out = capsys.readouterr().out.splitlines()
+    assert out == ["RESULT total_14d: 575419.3712 GBP", "RESULT share: 0.1833", "RESULT n: 135"]
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"stdout": "\n".join(out)}}]
+    assert unverified("The fortnight total is £575,419 (18% share, 135 days, about £575.4k).", history, "") == []
+
+
+def test_the_prompts_tell_the_planner_to_print_and_the_composer_to_quote_as_printed():
+    from prophet_agent import prompts
+    planner, composer = prompts.current("planner"), prompts.current("composer")
+    assert planner.version == "planner.v19" and composer.version == "composer.v5"
+    assert "pl.result" in planner.text and "per-day edges" in planner.text
+    assert "written as the evidence prints it" in composer.text and "per-day" in composer.text

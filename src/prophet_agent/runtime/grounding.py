@@ -14,8 +14,11 @@ from __future__ import annotations
 import json
 import re
 
-# A number as people write it: optional sign, digits with thousands separators, optional decimals, optional per cent.
-_NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?(?:[  ]?%)?(?!\d|(?:st|nd|rd|th)\b)")
+# A number as people write it: optional sign, digits with thousands separators, optional decimals, then an optional
+# per cent or a scale word attached to it ("27.9k", "1.2m", "3.4bn"). The scale must touch the digits and end the word, so
+# "5 min" and "12 km" are not read as five million and twelve thousand.
+_NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?(?:[  ]?%|(?:[kKmM]|bn|BN|Bn)(?![A-Za-z]))?(?!\d|(?:st|nd|rd|th)\b)")
+_SCALES = {"k": 1e3, "m": 1e6, "bn": 1e9}
 # A date is a label, not a figure: "2026-01-19", "Jan 2026" and "3 June 2027" are dropped whole.
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 _DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_MONTH}\s+\d{{4}}\b|\b(\d{{4}})-\d{{1,2}}(?:-\d{{1,2}})?\b|\b\d{{1,2}}/\d{{1,2}}/(\d{{2,4}})\b|\b\d{{1,2}}:\d{{2}}(?::\d{{2}})?\b")
@@ -33,9 +36,14 @@ _YEAR = re.compile(r"(?:19|20)\d\d")
 _DASHES = {ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2212"}
 
 
+def _scale_of(token: str) -> float:
+    """1 for a plain number; 1,000 for "27.9k", 1,000,000 for "1.2m", 1,000,000,000 for "3.4bn"."""
+    return _SCALES.get(re.sub(r"[\d.,\-%\s ]", "", token).lower(), 1.0)
+
+
 def _parse(token: str) -> tuple[float, int, bool]:
     pct = token.endswith("%")
-    raw = token.rstrip("%").strip().replace(",", "").rstrip(",")
+    raw = re.sub(r"[kKmM%]$|bn$|BN$|Bn$", "", token.strip()).strip().replace(",", "").rstrip(",")
     decimals = len(raw.split(".")[1]) if "." in raw else 0
     return float(raw), decimals, pct
 
@@ -134,8 +142,8 @@ def _figures_in_context(text: str) -> list[tuple[str, bool]]:
             for m in _NUM.finditer(cleaned)]
 
 
-def _near(value: float, target: float, decimals: int) -> bool:
-    return abs(value - target) <= 0.5 * 10 ** -decimals + 1e-12
+def _near(value: float, target: float, decimals: int, scale: float = 1.0) -> bool:
+    return abs(value - target) <= 0.5 * 10 ** -decimals * scale + 1e-12
 
 
 def _as_text(obj) -> str:
@@ -169,18 +177,25 @@ def evidence_text(history: list, goal: str) -> str:
 def unverified(answer: str, history: list, goal: str) -> list[str]:
     """Figures in the answer that no number in the evidence or the goal supports. Empty means grounded."""
     # Magnitudes: "a loss of 1,683.5" or "-\u00a31,683.5" is the printed -1683.5, whose sign the prose carries in its words.
-    pool = [abs(_parse(t)[0]) for t in figures(evidence_text(history, goal))]
+    pool = []
+    for t in figures(evidence_text(history, goal)):
+        v, _, _ = _parse(t)
+        pool.append(abs(v) * _scale_of(t))
     missing: list[str] = []
     for token, approximate in _figures_in_context(answer):
         if _YEAR.fullmatch(token):
             continue                  # a bare year such as 2026 names a period; a forecast period is not in the evidence
         value, decimals, pct = _parse(token)
         value = abs(value)
+        scale = _scale_of(token)
         candidates = [value / 100.0] if pct else []
-        if any(_near(v, value, decimals) for v in pool) or any(_near(v, c, decimals + 2) for v in pool for c in candidates):
+        # "27.9k" is a rounding of a printed 27,912: it claims 27,850 to 27,950, half a unit of its last digit at its own scale.
+        if any(_near(v, value * scale, decimals, scale) for v in pool) or any(_near(v, c, decimals + 2) for v in pool for c in candidates):
             continue
+        if scale != 1.0 and any(_near(v, value, decimals) for v in pool):
+            continue                  # "5m" that is metres, not millions, and 5 is printed
         if approximate and any(abs(v - t) <= APPROX_TOLERANCE * max(abs(t), 1e-9) for v in pool
-                               for t in ([value] + candidates)):
+                               for t in ([value * scale] + candidates)):
             continue
         if token not in missing:
             missing.append(token)

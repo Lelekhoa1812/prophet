@@ -36,6 +36,7 @@ CATALOGUE: tuple[tuple[str, Any, str], ...] = (
     ("pl", prophet_lib, "read_table"),
     ("pl", prophet_lib, "build_series"),
     ("pl", prophet_lib, "chart"),
+    ("pl", prophet_lib, "result"),
     ("pl", prophet_lib, "list_holidays"),
 )
 # The class the planner uses most (ps.Ledger, 192 cells in the ledger) gets its own line.

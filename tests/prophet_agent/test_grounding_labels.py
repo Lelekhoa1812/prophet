@@ -54,3 +54,13 @@ def test_a_loss_written_with_a_currency_sign_matches_the_printed_negative_number
     assert unverified("The run lost £1,683.5 in total.", history, "") == []
     assert unverified("The run lost −£1,683.5 in total.", history, "") == []
     assert unverified("The run lost £1,700.5 in total.", history, "") == ["1,700.5"]
+
+
+def test_a_scaled_figure_is_a_rounding_of_a_printed_one():
+    """Live retail: 27.9k, 35.1k and 28.9k were refused, because the tool printed 27912.4, 35108.0 and 28901.2."""
+    history = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"stdout": "mean 27912.4 high 35108.0 wkend 28901.2 total 1250000"}}]
+    assert unverified("Weekday means run £27.9k to £35.1k and weekends £28.9k.", history, "") == []
+    assert unverified("Total about 1.25m.", history, "") == []
+    assert unverified("Weekday means run £27.8k.", history, "") == ["27.8k"]          # 27,800 is not a rounding of 27,912
+    assert unverified("The cell is 5m wide.", [{"kind": "tool", "tool": "t", "args": {}, "result": {"stdout": "5"}}], "") == []
+    assert unverified("It ran 5 min.", [{"kind": "tool", "tool": "t", "args": {}, "result": {"stdout": "5"}}], "") == []
