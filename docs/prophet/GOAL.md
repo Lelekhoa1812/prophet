@@ -165,6 +165,23 @@ always an answer figure that no tool printed, which is the grounding check worki
 pack was one series per call (a panel pack is being added), and the retail run showed that a rule-centred pack was held
 by the health of TimesFM's own line, which the pack did not deliver (fixed: health is judged on the delivered line).
 
+### Evidence, live rounds 9 to 13 (real public series through the real API, TimesFM 3, 2026-11-22)
+
+| Round | WTI | EUR/JPY | Beijing (12 stations) | Retail | Quakes | Mauna Loa CO2 |
+|---|---|---|---|---|---|---|
+| 9 | completed, verified (16 calls) | not run | completed, verified: one panel pack, 12 stations (58 calls) | checkpoint: carried a forecast.json the pack did not write | not run | not run |
+| 10 | not run | partial: evaluator asked for paid consensus data | not run | partial: quoted a 14-day total no tool printed | completed, verified (20 calls) | not run |
+| 11 | not run | completed, verified (34 calls) | not run | partial: stopped by the first stall at 11 calls | not run | completed, verified (12 calls) |
+| 12 | partial: one figure (0.9999) | not run | completed, verified (56 calls) | failed: replay diverged on resume | not run | not run |
+| 13 | completed, verified (21 calls) | partial: two outside figures no page held | not run | partial: pack delivered after two resumes, ten derived figures unprinted | not run | not run |
+
+Every scenario except retail has completed with every figure verified at least once; WTI four times. Each "partial"
+since round 9 is the grounding check refusing a figure that no tool or fetched page printed, which is the check doing
+its job, except round 12's retail failure: a resumed run took a different path than the stored one because the harness's
+choice depended on the call allowance. That is fixed (the loop follows the step the ledger holds at each position) and
+round 13's retail resumed twice without diverging. Sandbox cells failed: 13 of 107 in round 7, 31 of 82 in round 13 (27
+of them in retail, 12 on `if report['outliers']:`, which now reads as "any outlier").
+
 ### Pre-existing helpers that are not causal (found with `ps.causal_canary`, 2026-11-22)
 
 `ps.changepoints` and `ps.isolation_outliers` are fitted on every row passed, so a flag at time t depends on later rows. Their

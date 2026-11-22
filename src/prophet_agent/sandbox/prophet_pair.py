@@ -79,6 +79,14 @@ class ExplainedArray(np.ndarray):
         self._explain(f".get({key!r})")
 
 
+class FlagArray(ExplainedArray):
+    """A boolean flag array whose truth value is "any flag set", so ``if report['outliers']:`` reads as intended instead of
+    numpy's "truth value of an array is ambiguous" (live retail: 12 failed cells on that line)."""
+
+    def __bool__(self) -> bool:
+        return bool(np.asarray(self).any())
+
+
 class Pair(tuple):
     """``(value, report)``: read it with ``value, report = f(...)``; ``pair["key"]`` reads the report as a convenience."""
 
@@ -168,7 +176,7 @@ def wrap_pairs(namespace: dict) -> None:
                 if not (isinstance(out, tuple) and type(out) is tuple):
                     return out
                 if out and isinstance(out[0], np.ndarray) and out[0].ndim >= 1 and not isinstance(out[0], ExplainedArray):
-                    arr = out[0].view(ExplainedArray)
+                    arr = out[0].view(FlagArray if out[0].dtype == bool else ExplainedArray)
                     arr._who = f"{label}()"
                     arr._keys = sorted(out[1]) if len(out) > 1 and isinstance(out[1], dict) else []
                     out = (arr, *out[1:])

@@ -71,3 +71,12 @@ def test_calling_an_agent_tool_from_the_sandbox_says_how_to_call_it():
     import pytest
     with pytest.raises(AttributeError, match="call backtest_series as its own step"):
         pl.backtest_series
+
+
+def test_a_flag_array_is_true_when_any_flag_is_set():
+    import numpy as np
+    import prophet_stats as ps
+    flags, rep = ps.hampel(np.r_[np.ones(20), [9.0], np.ones(20)])
+    assert bool(flags) and bool(rep["outliers"]) and int(flags.sum()) == rep["count"]
+    calm, rep2 = ps.hampel(np.ones(30) + np.arange(30) * 0.01)
+    assert not calm and not rep2["outliers"]
