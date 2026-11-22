@@ -512,6 +512,7 @@ def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
 
 IDLE_CALLS = 8     # calls without a newly ticked checklist item before the planner is told which item to do next
 STUCK_CALLS = 16   # ... and before the harness hands that item to a fresh analyst
+DONE_IDLE_CALLS = 4  # calls after the last item was ticked before the planner is told to finish
 
 
 def _idle_note(idle: int, items: list[dict]) -> str:
@@ -519,6 +520,10 @@ def _idle_note(idle: int, items: list[dict]) -> str:
     in a row, each re-checking the last, and the ledger and backtest never ran."""
     nxt = next((it["item"] for it in items if it.get("next")), None) or \
         next((it["item"] for it in items if it.get("status") != "done"), None)
+    if not nxt and items and idle >= DONE_IDLE_CALLS:
+        # Every item ticked and the run goes on (live retail round 9: 7 of 7, then calls until the budget ran out).
+        return (f"Every checklist item is ticked and {idle} calls have passed since. Finish now with what is established; "
+                "only a figure the answer needs that no tool has printed justifies one more cell (print it as RESULT).")
     if idle < IDLE_CALLS or not nxt:
         return ""
     return (f"No checklist item has been ticked in the last {idle} calls. What is established is enough to move on: do this "

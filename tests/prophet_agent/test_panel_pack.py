@@ -138,7 +138,7 @@ def test_mismatched_lengths_and_duplicate_names_are_refused():
 def test_panel_call_forecasts_every_series_and_builds_one_pack(sandbox):
     out = rt._run(_args(), "k")
     assert out["n_series"] == 3 and set(out["forecast"]["series"]) == set(sandbox)
-    assert len(out["files"]) == 5 and out["manifest"].endswith("manifest.json")
+    assert len(out["files"]) == 6 and out["manifest"].endswith("manifest.json")
     assert verify_manifest(out["manifest"]) == []
 
 
@@ -192,7 +192,7 @@ def test_observe_gives_a_line_per_series_with_range_and_files(sandbox):
     assert line["centre"] == "naive" and line["health"] and "point_last_step" in line and "q10_last_step" in line
     assert set(line["range_vs_centre_pct"]) == {"first_step", "last_step"}
     assert view["series"]["Station A"]["centre"] == "timesfm"
-    assert view["run_id"] == out["run_id"] and view["manifest"] == out["manifest"] and len(view["files"]) == 5
+    assert view["run_id"] == out["run_id"] and view["manifest"] == out["manifest"] and len(view["files"]) == 6
 
 
 def test_observe_shows_at_most_thirty_series_and_counts_the_rest():
@@ -200,3 +200,17 @@ def test_observe_shows_at_most_thirty_series_and_counts_the_rest():
     result = {"forecast": {"series": {f"s{i}": fc for i in range(35)}}, "n_series": 35, "run_id": "r", "manifest": "m", "files": []}
     view = rt.observe(result)
     assert len(view["series"]) == 30 and view["not_shown"] == 5 and view["n_series"] == 35
+
+
+def test_both_packs_also_write_the_numbers_as_json():
+    import json
+    from prophet_agent.artifacts.build import build_forecast_pack, build_panel_pack
+    one = build_forecast_pack(history=[1.0, 2.0, 3.0], point=[4.0, 5.0], q10=[3.0, 4.0], q90=[5.0, 6.0], title="t")
+    assert one.ok, one.stderr
+    from pathlib import Path
+    got = json.loads((Path(one.workdir) / "out" / "forecast.json").read_text())
+    assert got["point"] == [4.0, 5.0] and got["q90"] == [5.0, 6.0]
+    s = lambda n: {"name": n, "history": [1.0, 2.0, 3.0], "point": [4.0, 5.0], "q10": [3.0, 4.0], "q90": [5.0, 6.0]}
+    panel = build_panel_pack(series=[s("A"), s("B")], title="t")
+    assert panel.ok, panel.stderr
+    assert sorted(json.loads((Path(panel.workdir) / "out" / "forecast.json").read_text())["series"]) == ["A", "B"]

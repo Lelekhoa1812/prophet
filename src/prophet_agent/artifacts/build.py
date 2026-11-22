@@ -101,6 +101,9 @@ for i, (p, a, b) in enumerate(zip(fc, lo, hi)):
     ws.append(([d["future_dates"][i][:10]] if dates else []) + [i + 1, p, a, b] + [flag(ev, i) for ev in events])
 ws.freeze_panes = "A2"
 wb.save("out/forecast.xlsx")
+# The same numbers as JSON, for a later analysis cell (live retail: cells carried out/forecast.json from the pack run and
+# failed five times because only the workbook existed).
+json.dump({"dates": d.get("future_dates"), "point": fc, "q10": lo, "q90": hi, "title": title}, open("out/forecast.json", "w"))
 
 from docx import Document
 from docx.shared import Inches
@@ -233,6 +236,8 @@ for ws, width in ((summary, 24), (long, 18)):
     for col in range(1, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 wb.save("out/forecast.xlsx")
+json.dump({"series": {s["name"]: {"dates": s.get("future_dates"), "point": s["point"], "q10": s["q10"], "q90": s["q90"]}
+                      for s in series}, "title": title}, open("out/forecast.json", "w"))
 
 from docx import Document
 from docx.shared import Inches

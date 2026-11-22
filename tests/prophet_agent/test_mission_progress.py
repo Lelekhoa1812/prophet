@@ -303,7 +303,7 @@ def test_idle_calls_name_the_next_item_and_clipped_output_keeps_its_tail():
     from prophet_agent.tools.sandbox_tool import SEEN_STDOUT, observe
     items = [{"item": "scan", "status": "done"}, {"item": "analysis ledger", "status": "open", "next": True}]
     assert _idle_note(7, items) == "" and "analysis ledger" in _idle_note(8, items)
-    assert _idle_note(20, [{"item": "scan", "status": "done"}]) == ""
+    assert "Finish now" in _idle_note(20, [{"item": "scan", "status": "done"}])     # all ticked: the note says finish
     text = "HEAD\n" + "x" * 9000 + "\nSUMMARY TABLE"
     seen = observe({"ok": True, "run_id": "a" * 32, "stdout": text, "outputs": [], "stderr": "", "timed_out": False})
     assert seen["stdout"].startswith("HEAD") and seen["stdout"].endswith("SUMMARY TABLE") and len(seen["stdout"]) < SEEN_STDOUT + 100
@@ -328,3 +328,10 @@ def test_a_panel_pack_counts_as_the_forecast_and_is_held_only_by_a_timesfm_line_
     item = lambda h: next(i for i in progress([h]) if i["item"].startswith("forecast health"))
     assert item(ok)["status"] == "done" and item(bad)["status"] == "todo"
     assert all(c["ok"] for c in check_evidence([ok]) if c["name"] == "health_repaired")
+
+
+def test_a_complete_checklist_with_calls_still_going_says_finish():
+    from prophet_agent.runtime.goal import _idle_note
+    done = [{"item": "scan", "status": "done"}, {"item": "pack", "status": "done"}]
+    assert _idle_note(3, done) == "" and "Finish now" in _idle_note(4, done)
+    assert _idle_note(10, []) == ""
