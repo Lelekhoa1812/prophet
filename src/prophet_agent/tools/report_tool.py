@@ -168,7 +168,10 @@ def _calibrated(fc: dict, values: list[float], args: dict) -> dict:
             "reason": res["reason"]}
     if not info["applied"]:
         return {**fc, "interval_calibration": info}
-    return {**fc, "quantiles": res["calibrated"]["quantiles"], "interval_calibration": info}
+    # The chart caption says the band is calibrated only when the config says so (A7-13, web Results.tsx bandSource).
+    config = {**(fc.get("config") or {}), "band_source": "calibrated",
+              "band_coverage": info["calibrated_heldout_coverage"]}
+    return {**fc, "quantiles": res["calibrated"]["quantiles"], "interval_calibration": info, "config": config}
 
 
 def _rule_line(values: list[float], h: int, which: str, season: int | None) -> tuple[Any, int | None]:
