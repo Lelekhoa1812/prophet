@@ -99,7 +99,8 @@ def test_the_ledger_and_configuration_record_the_tool_arguments_and_prompt_versi
     tfm = next(row for row in ledger if row["tool"] == "timesfm_forecast")
     assert tfm["args"] == {"values": [1, 2, 3], "horizon": 2}
     cfg = json.loads(zf.read("configuration.json"))
-    assert cfg["prompts"]["planner"]["version"] == "planner.v22"
+    from prophet_agent.prompts import CURRENT
+    assert cfg["prompts"]["planner"]["version"] == CURRENT["planner"]
     assert len(cfg["prompts"]["planner"]["sha256"]) == 12
     assert cfg["budget"]["model"] == "nim-default"
     assert "packages" in cfg
