@@ -36,6 +36,7 @@ packages = ["src/prophet_agent"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pillow"]
+datasets = ["pyarrow"]   # scripts/fetch_datasets.py writes Parquet
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
