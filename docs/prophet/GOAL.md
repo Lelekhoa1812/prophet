@@ -375,3 +375,39 @@ Root causes found in these runs and fixed (round 5, each with a regression test)
   ratio R of the horizon total's standardised error (leave-one-out for its own check), and the computed accuracy
   paragraph gives one 80 % range from it. Synthetic check: a random walk gives R of 5.4 to 5.8 at horizon 8; independent
   noise gives 1.1 to 1.3.
+
+### Live round on the round-5 build, and the first business-user missions (measured, 2026-11-23)
+
+| Mission | Status | Stop reason | Seconds | Tool calls | Questions |
+|---|---|---|---|---|---|
+| Beijing panel rep 5 | partial | could not close a gap | 811 | 83 | 0 |
+| electricity panel rep 5 | partial | stalled | 1,352 | 100 | 0 |
+| retail, business user | partial | figures unmatched | 435 | 29 | 0 |
+| WTI, business user | partial | could not close a gap | 698 | 35 | 1 card (2 questions) |
+
+Beijing forecast all 12 stations (rep 4: 3) and electricity answered (rep 4: failed). The business-user goals were written as
+a person would ask, with no method words: "Sales feel like they've been slipping lately. Is that real, or just the usual
+ups and downs? And what should I expect for next month?" and "I need a number for next month's fuel budget. What will
+crude cost on average next month, and how sure are you? Keep it short, I'm not a data person."
+
+Root causes and fixes (each with a regression test):
+
+- Beijing: `scan_decisions_recorded` named three undecided level shifts; the planner read the scan six times, read the
+  ledger expecting a dict (it is a list), and finished three more times. The check now gives the cell to run.
+- Electricity: a list in `source.name` crashed ("unhashable type: 'list'"); one client's pack (MT_001, 1,390) was
+  answered as the 60-client total; the stall rescue gave a backtest item to an analyst with no backtest tool;
+  `panel_backtest` did not tick the baseline item. Each is fixed (subset by list, single-entity coverage note, modeler
+  rescue with `panel_backtest`, panel backtest counts).
+- Retail business user: the answer was a forecast report and never said whether the slip was real. The questions in the
+  goal now reach the evaluator (met only when each is answered from the evidence), the composer and the planner. It also
+  named "seasonal naïve" as best (the accent hid it from the benchmark check), and the code-appended measured total range
+  was flagged as unverified; both fixed.
+- WTI business user: asked one card (which month, how many barrels; the second is not needed for an average price). The
+  person answered "All of December 2026"; the pack ran 21 trading days to 16 December. A calendar month named in the goal
+  or an answer, or "next month", is now a span the pack must reach (block). The answer averaged the daily bounds by hand
+  ($78.90 to $103.42, unmatched); the pack and the measured range now carry the per-step mean and its range.
+- The measured range of the total held the actual total in 7 of 12 windows on retail (target about 10 of 12): it is
+  reported as measured, and its own check says so in the answer.
+
+The live driver no longer calls answer-now on an open question (the API answers it with 409, by design: answer-now is a
+checkpoint action). It answers the card as the person would.
