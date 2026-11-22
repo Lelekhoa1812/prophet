@@ -243,3 +243,30 @@ def test_a_series_given_a_health_verdict_the_pack_did_not_give_it_blocks():
                  "Huairou is ok, while Nongzhanguan is flat_expected.",
                  "| Huairou | 44 | flat_expected |"):
         assert _named(contracts.check_answer(fine, [pack]), "answer_series_health_matches") == [], fine
+
+
+# ---------------------------------------------------------------- a level is not summed (live WTI rep9, Beijing reps 8 and 9)
+
+def _level(name):
+    return {"kind": "tool", "tool": "inspect_data", "args": {"file": "x.csv"},
+            "result": {"columns": ["date: time, unique=100", f"{name}: number, max=1, unique=90"]}}
+
+
+def test_level_and_flow_measures_are_told_apart_from_their_names():
+    for name in ("wti_cushing_spot_price_usd_per_barrel", "pm25_daily_mean", "usd_jpy_rate", "temperature_c"):
+        assert contracts.measure_is_level([_level(name)]), name
+    for name in ("net_sales_gbp", "kwh_daily_sum", "units_sold", "orders"):
+        assert not contracts.measure_is_level([_level(name)]), name
+
+
+def test_a_total_of_a_level_blocks_and_the_accuracy_facts_give_the_average():
+    hist = [_level("wti_cushing_spot_price_usd_per_barrel")] + _single_pack()
+    c = _named(contracts.check_answer("The 6-day total is 60 with an 80% range of 48 to 72.", hist), "answer_level_not_summed")
+    assert len(c) == 1 and not c[0]["ok"] and "average over the horizon" in c[0]["detail"]
+    assert _named(contracts.check_answer("The average price is 10 a day.", hist), "answer_level_not_summed") == []
+    ts = contracts.trust_statement(hist)
+    assert "is a level, so it is not summed" in ts and "80% range of its average over the 6 steps" in ts
+    assert "-step total" not in ts
+    flow = [_level("net_sales_gbp")] + _single_pack()
+    assert "80% range of the 6-step total" in contracts.trust_statement(flow)
+    assert _named(contracts.check_answer("The 6-day total is 60.", flow), "answer_level_not_summed") == []

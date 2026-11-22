@@ -1334,6 +1334,36 @@ def _panel_rules(h: dict, res: dict) -> list[str]:
              else ln.get("centre") or "timesfm") for ln in lines.values() if isinstance(ln, dict)]
 
 
+# A level (a price, a rate, a concentration, a daily mean) has no meaningful sum over days or series; a flow (sales, units,
+# kWh in a day) does. Read from the measure's own names: the forecast pack's title and the uploaded data's numeric columns.
+LEVEL_MEASURE = re.compile(r"price|spot|\brate\b|_rate|pm2|pm10|pm_|concentration|temperature|\btemp|index|\blevel|yield|"
+                           r"ratio|percent|pct|%|\u00b5g|ug_?m3|humidity|pressure|_mean\b|\bmean\b|_avg|\bavg\b|average|"
+                           r"per_barrel|per barrel|/bbl|usd_per|exchange|fx\b", re.I)
+FLOW_MEASURE = re.compile(r"_sum\b|\bsum\b|total|sales|revenue|units|count|volume|kwh|orders|demand|quantity|qty", re.I)
+
+
+def measure_is_level(history) -> bool:
+    """True when the forecast measure is a level whose total over the horizon means nothing (live WTI rep9: "80% range for the
+    20-day total is $1,644-$1,987" of an oil price; Beijing: a 14-day panel total of PM2.5 concentrations, 12,222 ug/m3). A
+    name that reads as a flow (sales, kWh, a daily sum) wins over one that reads as a level."""
+    names: list[str] = []
+    for h in history:
+        if not isinstance(h, dict) or h.get("kind") != "tool":
+            continue
+        if h.get("tool") == "forecast_report" and isinstance((h.get("args") or {}).get("title"), str):
+            names.append(h["args"]["title"])
+        if _ok_result(h, "inspect_data") is not None:
+            r = h["full"] if isinstance(h.get("full"), dict) else h["result"]
+            prof = r.get("profile") if isinstance(r.get("profile"), dict) else r
+            for col in prof.get("columns") or []:
+                if isinstance(col, dict) and col.get("kind") == "number":
+                    names.append(str(col.get("name")))
+                elif isinstance(col, str) and ": number" in col:
+                    names.append(col.split(":", 1)[0])
+    text = " ".join(names)
+    return bool(LEVEL_MEASURE.search(text)) and not FLOW_MEASURE.search(text)
+
+
 PANEL_VERDICTS_LISTED = 20     # up to this many series get one line each; beyond it, counts and the exceptions
 
 
@@ -1445,6 +1475,10 @@ def panel_sentence(history) -> str:
         else:
             text = ""
         pt = res.get("panel_total")
+        if isinstance(pt, dict) and measure_is_level(history):
+            text += (" No panel total is given: the measure is a level (a price, rate or concentration), so a sum over series "
+                     "or days means nothing; read each series' own line and range.")
+            pt = None
         if isinstance(pt, dict) and isinstance(pt.get("centre"), (int, float)):
             ind, tog = pt.get("if_entities_miss_independently") or {}, pt.get("if_entities_miss_together") or {}
             if all(isinstance(d.get(k), (int, float)) for d in (ind, tog) for k in ("q10", "q90")):
@@ -1465,8 +1499,12 @@ def trust_statement(history) -> str:
     found = _measured_total(history)
     if found is not None:
         mr, h = found
-        extra = (f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f} (per step on average: "
-                 f"{mr['mean']:,.2f}, range {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f}), using the day-to-day error correlation "
+        head_range = (f" This measure is a level, so it is not summed over the horizon. 80% range of its average over the {h} "
+                      f"steps: {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f} (centre {mr['mean']:,.2f})"
+                      if measure_is_level(history) else
+                      f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f} (per step on average: "
+                      f"{mr['mean']:,.2f}, range {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f})")
+        extra = (head_range + f", using the day-to-day error correlation "
                  f"measured over {mr['origins']} past windows of {mr['measured_horizon']} steps"
                  + (f", extended to {h} steps at the same average correlation between days"
                     if mr["measured_horizon"] != h else "")
@@ -1559,6 +1597,36 @@ def check_ledger_answer(answer, history, run_root) -> dict | None:
     if set(ledger) & set(said):
         return _check("ledger_answer_consistent", True,
                       "the answer's treatments of " + ", ".join(sorted(set(ledger) & set(said))) + " agree with the ledger", "warn")
+    return None
+
+
+def _level_summed(text: str, obs: list) -> dict | None:
+    """An answer that states the pack's total over days or series for a level measure (a price, rate or concentration). Blocks.
+
+    Live WTI rep9 (2026-11-23) gave "the 80% range for the 20-day total is $1,644-$1,987" of an oil price; Beijing reps 8 and 9
+    gave a 14-day panel total of PM2.5 concentrations, 12,222 ug/m3. The figures are the pack's own, so the figure check passed."""
+    if not measure_is_level(obs):
+        return None
+    res = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict)), None)
+    if not isinstance(res, dict):
+        return None
+    tr = res.get("panel_total") if res.get("n_series") else res.get("total_range_80")
+    if not isinstance(tr, dict):
+        return None
+    figs = [tr.get("centre")] + [b.get(k) for b in tr.values() if isinstance(b, dict) for k in ("q10", "q90")]
+    mr = measured_total_range(obs) if not res.get("n_series") else None
+    if mr:
+        figs += [mr.get(k) for k in ("q10", "q90", "centre")]
+    figs = [f for f in figs if isinstance(f, (int, float)) and f]
+    for s in grounding.sentences(text):
+        if not re.search(r"\btotal\b|\bsum\b|\bsummed\b|\bcumulative\b", s, re.I):
+            continue                     # a year or an outside figure near the total is not a claim of one
+        vals = grounding._sentence_values(s)
+        if any(abs(v - f) <= 0.01 * abs(f) for v in vals for f in figs):
+            return _check("answer_level_not_summed", False,
+                          f"the measure is a level (a price, rate or concentration), so its sum over days or series means "
+                          f"nothing, but the answer states one ({s[:160]}); give the average over the horizon and each "
+                          "series' or day's own values instead")
     return None
 
 
@@ -1759,6 +1827,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(metric)
     if (health := _series_health_named(text, obs)) is not None:
         checks.append(health)
+    if (summed := _level_summed(text, obs)) is not None:
+        checks.append(summed)
 
     withheld = _withheld_totals(obs)
     if withheld:

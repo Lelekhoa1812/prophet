@@ -910,7 +910,8 @@ def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, 
         outside = ("Accuracy facts (computed; an accuracy paragraph with exactly these figures is appended after your answer, so "
                    "do not restate coverage or MASE figures that differ from it, and never call the forecast better than a simple rule "
                    "unless these facts say so. When they give the total's 80% range, that is the range to quote; any other "
-                   "bound is named for what it assumes):\n" + trust + ("\n\n" + outside if outside else ""))
+                   "bound is named for what it assumes. When they say the measure is a level, give no total over days or "
+                   "series, only averages and each day's or series' own values):\n" + trust + ("\n\n" + outside if outside else ""))
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
             f"\n\n{outside + chr(10) + chr(10) if outside else ''}Draft (the content to keep; its formatting was lost):\n{draft}"
             + _asked_block(goal, "composer"))
