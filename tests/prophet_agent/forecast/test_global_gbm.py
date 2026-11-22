@@ -133,9 +133,17 @@ def test_bad_inputs_are_refused_with_the_reason():
         gg.global_forecast(panel, 3, season=1)
 
 
-def test_eight_entities_by_400_points_run_in_under_ten_seconds():
+def test_eight_entities_by_400_points_stay_within_a_cpu_budget():
+    """A cost guard against a blow-up (a quadratic loop, a refit per entity), not a speed benchmark.
+
+    Gate decision (2026-11-23): this was a 10 s wall-clock bound. Wall time depends on what else the machine runs, and it
+    failed under concurrent load at 11.7, 18.6, 22.1, 40, 102 and 275 s while passing alone at 4.4 to 7.4 s, so it gated on
+    machine load, not on the code. CPU time on one thread does not count time spent waiting for other processes. Measured
+    at load 15.8 after split-conformal calibration (A2-02): 15.1 s CPU. The bound leaves room for about 2.5 times that."""
+    from threadpoolctl import threadpool_limits
     panel = make_panel(entities=8, n=400)
-    start = time.perf_counter()
-    gg.panel_backtest(panel, 12, n_origins=3, season=7, engine=Engine(sd=1.0))
-    elapsed = time.perf_counter() - start
-    assert elapsed < 10.0, f"took {elapsed:.1f} s"
+    with threadpool_limits(limits=1):
+        start = time.process_time()
+        gg.panel_backtest(panel, 12, n_origins=3, season=7, engine=Engine(sd=1.0))
+        used = time.process_time() - start
+    assert used < 40.0, f"used {used:.1f} s of CPU"
