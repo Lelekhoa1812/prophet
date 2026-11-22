@@ -108,3 +108,21 @@ def test_newest_data_outputs_are_carried_into_every_sandbox_run():
     mine = _auto_carry({"code": "x", "carry": [{"run_id": "a" * 32, "file": "out/scan.json"}]}, h)
     assert mine["carry"][0]["run_id"] == "a" * 32 and len(mine["carry"]) == 2      # the planner's choice wins
     assert _auto_carry({"code": "x"}, []) == {"code": "x"}
+
+
+def test_a_stuck_checklist_item_goes_to_a_fresh_analyst_once_and_its_ledger_counts(tmp_path):
+    import json
+    from prophet_agent.runtime import contracts
+    plan = _harness_plan("Forecast daily sales", [FLAT], TOOLS, stuck=("analysis ledger: at least 4 stages", 16))
+    assert plan["auto"] == "stuck:analysis ledger: at least 4 stages" and "Do exactly this step" in plan["task"]
+    assert _harness_plan("Forecast daily sales", [FLAT], TOOLS, stuck=("analysis ledger: at least 4 stages", 15)) is None
+    done = [FLAT, {"kind": "subagent", "agent_type": "analyst", "auto": plan["auto"]}]
+    assert _harness_plan("Forecast daily sales", done, TOOLS, stuck=("analysis ledger: at least 4 stages", 30)) is None
+    run = "c" * 32
+    (tmp_path / run / "out").mkdir(parents=True)
+    (tmp_path / run / "out" / "ledger.json").write_text(json.dumps(
+        [{"stage": s, "finding": "f", "decision": "d"} for s in ("time index", "coverage", "zeros", "outliers")]))
+    sub = {"kind": "subagent", "agent_type": "analyst", "evidence": [{"kind": "tool", "tool": "sandbox_python",
+           "result": {"ok": True, "run_id": run, "outputs": ["out/ledger.json (200 bytes)", "out/scan_A.json (9 bytes)"]}}]}
+    assert contracts.ledger_stages([sub], tmp_path) == 4 and contracts.scan_ran([sub])
+    assert contracts.ledger_stages([], tmp_path) == 0

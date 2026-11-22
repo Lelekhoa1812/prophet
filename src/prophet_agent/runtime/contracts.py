@@ -270,18 +270,29 @@ def _quantile(rec: dict, level: str, key: str) -> Any:
 MIN_LEDGER_STAGES = 4   # distinct analysis stages a forecast's ledger must record (proposed default, to calibrate on live runs)
 
 
+def with_delegated(history) -> list:
+    """The observations plus the tool calls inside each sub-agent's report, so work a sub-agent did (a ledger, a scan) counts
+    for the mission. Only for checks on saved files, which say nothing about who wrote them."""
+    out = []
+    for h in history if isinstance(history, list) else []:
+        out.append(h)
+        if isinstance(h, dict) and h.get("kind") == "subagent" and isinstance(h.get("evidence"), list):
+            out.extend(e for e in h["evidence"] if isinstance(e, dict) and e.get("kind") == "tool")
+    return out
+
+
 def ledger_stages(history, run_root) -> int | None:
     """The most distinct stages (with a finding and a decision each) any saved ledger in this mission records. None when
     ``run_root`` is unknown, so a caller can tell "zero" from "cannot look"."""
     if run_root is None:
         return None
     best = 0
-    for h in reversed(history):
+    for h in reversed(with_delegated(history)):
         # A step that saved the ledger and then failed later in the cell (a print, a chart) still saved it: the file is the evidence.
         res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
         if not isinstance(res, dict) or not isinstance(res.get("run_id"), str) or "/" in res["run_id"] or ".." in res["run_id"]:
             continue
-        outputs = [o.split(" (")[0] for o in (res.get("outputs") or []) if isinstance(o, str)]
+        outputs = [_output_path(o) for o in (res.get("outputs") or [])]
         if "out/ledger.json" not in outputs:
             continue
         try:
@@ -298,7 +309,7 @@ def ledger_stages(history, run_root) -> int | None:
 def scan_ran(history) -> bool:
     """True when an analysis step saved the dataset scan (``prophet_scan.write_scan`` writes ``out/scan.json``). A step that
     saved it and failed later in the cell still saved it: the listed output is the evidence."""
-    for h in history:
+    for h in with_delegated(history):
         res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
         # out/scan.json, or one scan per entity (out/scan_<name>.json): live, a 12-station panel saved per-station scans and
         # re-ran its profiling 9 times because this item never ticked.

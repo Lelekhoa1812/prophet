@@ -218,6 +218,14 @@ def _result(findings: list[dict], summary: dict) -> dict:
     out_summary = dict(summary)
     out_summary["severity_counts"] = counts
     out_summary["blocked"] = counts["blocker"] > 0
+    # Coverage totals over the analysed entities: analysts read summary['observed_steps'] and ['periods'] (live EUR/JPY: 7
+    # failed cells), which until now lived only in each profile.
+    profs = summary.get("profiles")
+    profs = list(profs.values()) if isinstance(profs, dict) else (profs if isinstance(profs, list) else [])
+    profs = [p for p in profs if isinstance(p, dict) and isinstance(p.get("periods"), int)]
+    if profs:
+        obs, per = sum(int(p.get("observed_steps") or 0) for p in profs), sum(p["periods"] for p in profs)
+        out_summary.update(observed_steps=obs, periods=per, observed_share=round(obs / per, 4) if per else None)
     # ReportDict: a guessed key ('blockers', 'missing_steps') is answered by its alias or named with the real keys.
     return ScanResult({"findings": ordered, "summary": ReportDict(_jsonable(out_summary))})
 
@@ -711,6 +719,8 @@ class _Battery:
         obs = ~np.isnan(arr)
         n_obs = int(obs.sum())
         prof["observed_steps"] = n_obs
+        prof["periods"] = int(n_grid)
+        prof["observed_share"] = round(n_obs / n_grid, 4) if n_grid else None
         if n_obs < 2:
             prof.setdefault("skipped", {})["statistics"] = "fewer than two observed steps on the grid"
             return

@@ -353,16 +353,27 @@ def _last_failure(history: list[dict]) -> tuple[str, str]:
 
 
 def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
-                  full: Callable[[str], list] | None = None) -> dict | None:
+                  full: Callable[[str], list] | None = None, stuck: tuple[str, int] | None = None) -> dict | None:
     """Delegations the harness starts itself instead of hoping the planner will. Live, the planner delegated once in 1,983
     decisions although its rules ask for it, so three situations are routed deterministically:
     1. a market or macro series with no outside research yet, once the data has been looked at: a researcher;
     2. a long panel (several entities sharing dates), once inspected and before any forecast: analysts on slices in parallel;
-    3. the same failure five times in a row: a fresh-context analyst gets the failing cell and the error.
-    Each fires at most once per mission (or once per failure signature), and the decision is stored as a step."""
+    3. the same failure five times in a row: a fresh-context analyst gets the failing cell and the error;
+    4. ``stuck`` = (checklist item, idle calls): no item ticked for STUCK_CALLS calls, so a fresh analyst does that item.
+    Each fires at most once per mission (or once per failure signature or item), and the decision is stored as a step."""
     inspected = any(h.get("kind") == "tool" and h.get("tool") in contracts.INSPECTION_TOOLS and not h.get("error") for h in history)
     auto = [h for h in history if h.get("kind") == "subagent" and h.get("auto")]
     kinds = {h.get("auto") for h in auto}
+    if stuck and stuck[1] >= STUCK_CALLS and "sandbox_python" in tools and ("stuck:" + stuck[0]) not in kinds:
+        card = _state_card(history)
+        return {"action": "delegate", "auto": "stuck:" + stuck[0], "agent_type": "analyst",
+                "rationale": f"no checklist item was ticked in {stuck[1]} calls; a fresh context does the next one",
+                "task": "A lead agent working on this goal has gone " + str(stuck[1]) + " calls without finishing one step: "
+                        + goal + "\n\nThe step to do now: " + stuck[0] + "\n\nWhat already exists (pass files in carry and "
+                        "open them at in/carried/<file name>; do not redo this work):\n" + (card or "nothing saved yet")
+                        + "\n\nDo exactly this step and nothing else, in as few cells as possible, from the saved files.",
+                "deliverable": "The run id and files the step wrote, and in a few lines what each holds.",
+                "constraints": "Do not forecast unless the step is a forecast. Do not re-profile what the files already hold."}
     if max(_error_run(history), _error_recurrence(history)) >= AUTO_REPEAT:
         code, err = _last_failure(history)
         key = "repeat:" + err
@@ -500,6 +511,7 @@ def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
 
 
 IDLE_CALLS = 8     # calls without a newly ticked checklist item before the planner is told which item to do next
+STUCK_CALLS = 16   # ... and before the harness hands that item to a fresh analyst
 
 
 def _idle_note(idle: int, items: list[dict]) -> str:
@@ -999,6 +1011,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     started = time.time()
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
     best_done, calls_at_best = -1, 0   # most checklist items ticked so far, and the call count when that was reached
+    stuck = None                       # (next checklist item, calls since the last newly ticked item)
     contract_blocks = 0       # times a deterministic check sent a "met" answer back for more work
     for i in range(cfg.end):
         if i and i % seg_len == 0:
@@ -1028,8 +1041,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 best_done, calls_at_best = done_now, calls_now
             if (idle := _idle_note(calls_now - calls_at_best, items)):
                 note += "\n\n" + idle
+            nxt = next((it["item"] for it in items if it.get("next")), None)
+            stuck = (nxt, calls_now - calls_at_best) if nxt else None
             _status(ctx, i, history, items, started)
-        auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t))
+        auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t), stuck)
                 if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
         if auto is not None:
             plan = ctx.step(f"auto:{tag}:{i}", lambda c: auto)
