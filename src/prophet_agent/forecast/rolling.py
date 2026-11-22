@@ -9,7 +9,7 @@ each window using only data before it, and score against what happened. Baseline
 value one season back, extend the average slope, and the mean of the last season. Scores are MASE (error scaled by how
 hard the series is to predict naively), WAPE, and for TimesFM the coverage of its 10 to 90 percent range. The MASE scale
 is named in the result, and the season comes from the shared choose_season. Against the best baseline the result gives
-the wins per origin and a seeded paired bootstrap interval (90 percent) of the relative MASE gain, and a verdict:
+the wins per origin and a seeded paired sign-flip test (exact up to 16 windows) with a bootstrap interval (90 percent) of the relative MASE gain, and a verdict:
 timesfm_better, baseline_better, or no_clear_difference. With combine on, a blend of TimesFM and the baseline that was
 best on earlier origins is scored too, with weights fitted on earlier origins only. The result applies no pass or fail
 bar beyond that verdict.
@@ -24,9 +24,10 @@ from typing import Any
 import numpy as np
 
 from prophet_agent.forecast.combine import adopt_equal_blend, combine, equal_blend
+from prophet_agent.forecast.metrics import paired_signflip, wis
 from prophet_agent.forecast.paired import bootstrap_gain
 from prophet_agent.forecast.season import choose_season, mase_scale_text
-from prophet_agent.forecast.tsb import expected_volume
+from prophet_agent.forecast.tsb import expected_volume, is_intermittent, tsb_band
 
 MIN_HISTORY = 8
 DEFAULT_ORIGINS = 12        # windows tested when the caller does not say; the minimum-length rule still applies
@@ -54,33 +55,88 @@ def _drift(x: np.ndarray, h: int) -> np.ndarray:
     return x[-1] + slope * np.arange(1, h + 1)
 
 
+MEAN_LAST_FLOOR = 4         # the shortest window the mean_last_season rule averages (stability, audit A6-06)
+
+
+def _mean_last_window(m: int) -> int:
+    """How many trailing points mean_last_season averages: the season, and at least MEAN_LAST_FLOOR.
+
+    Motivation vs Logic
+    Motivation: with no season (m = 1) the rule averaged 4 points while its name and the reports said "the last season"
+    (audit A6-06, WTI rep4: best baseline MASE 6.66 was a 4-point mean).
+    Logic: the window is explicit. The backtest reports its length, and the note says when it is a floor rather than a season.
+    """
+    return max(int(m), MEAN_LAST_FLOOR)
+
+
 def _mean_last(x: np.ndarray, h: int, m: int) -> np.ndarray:
-    return np.full(h, x[-max(m, 4):].mean())
+    return np.full(h, x[-_mean_last_window(m):].mean())
 
 
 def pick_season(x: np.ndarray, given: int | None) -> int:
-    """The season the backtest uses: the caller's, or the one choose_season measures from the data."""
+    """The season the delivered forecast uses: the caller's, or the one choose_season measures from the whole history.
+    Backtests and calibration use backtest_season instead, because the whole history includes their test windows."""
     if given is not None:
         return max(1, int(given))
     return int(choose_season(x)["season"])
 
 
+def season_cut(n: int, horizon: int, n_origins: int) -> int:
+    """The number of leading points that no backtest window can touch: every window starts at or after n - horizon *
+    n_origins, because the backtest tests at most n_origins windows that end at the last point.
+
+    Motivation vs Logic
+    Motivation: a season measured on the full series reads the windows it is scored on (audit A2-01: a random walk with a
+    weekly pattern in its last 56 points gave season 1 on its history and 7 on the whole series).
+    Logic: the prefix before this cut is shared by every origin the backtest can use, so a season measured on it is known
+    before any test window is forecast. Calibration uses the same cut.
+    """
+    return max(0, int(n) - int(horizon) * int(n_origins))
+
+
+def backtest_season(x: np.ndarray, horizon: int, n_origins: int, given: int | None, freq_hint: str | None = None,
+                    dates: Any = None) -> tuple[int, str]:
+    """The season a backtest or calibration uses, and the reason, measured on history before the first test window.
+
+    Motivation vs Logic
+    Motivation: the MASE denominator and the seasonal baseline both depend on the season, so a season read from the test
+    windows makes the verdict depend on the answer it is scored against (audit A2-01).
+    Logic: a caller's season is used as given. Otherwise choose_season reads only x[:season_cut(...)] (and the matching dates),
+    and the reason says that it was measured on that prefix. Changing any value in a test window leaves the result unchanged.
+    """
+    if given is not None:
+        return max(1, int(given)), "given by the caller"
+    cut = season_cut(len(x), horizon, n_origins)
+    dates_h = None if dates is None else list(dates)[:cut]
+    res = choose_season(np.asarray(x, dtype=float)[:cut], freq_hint, dates_h)
+    return int(res["season"]), f"{res['reason']} (measured on the first {cut} points, before any test window)"
+
+
 def _verdict(base_err: np.ndarray, tsb_err: np.ndarray) -> tuple[dict[str, Any], int, int]:
-    """Paired comparison of TimesFM with the best baseline over origins where both errors are finite."""
+    """Paired comparison of TimesFM with the best baseline over origins where both errors are finite.
+
+    The verdict uses a one-sided sign-flip test at the level implied by CONFIDENCE (5 percent each way for 90 percent): the
+    percentile bootstrap undercovered at these origin counts (audit A2-06). The bootstrap interval is still reported as a
+    description of the gain.
+    """
     keep = np.isfinite(base_err) & np.isfinite(tsb_err)
     n_valid = int(keep.sum())
     wins = int((tsb_err[keep] < base_err[keep]).sum())
     g = bootstrap_gain(base_err, tsb_err, SEED, CONFIDENCE, RESAMPLES)
     if not np.isfinite(g["lo"]):
         return {"verdict": None, "gain_pct": None, "interval_pct": None, "confidence": CONFIDENCE}, wins, n_valid
-    if g["lo"] > 0 and n_valid and wins >= WIN_SHARE * n_valid:
+    st = paired_signflip(base_err, tsb_err, seed=SEED)
+    alpha = (1 - CONFIDENCE) / 2
+    if st["p_cand_better"] <= alpha and n_valid and wins >= WIN_SHARE * n_valid:
         verdict = "timesfm_better"
-    elif g["hi"] < 0:
+    elif st["p_base_better"] <= alpha:
         verdict = "baseline_better"
     else:
         verdict = "no_clear_difference"
     return {"verdict": verdict, "gain_pct": round(g["gain"] * 100, 2),
-            "interval_pct": [round(g["lo"] * 100, 2), round(g["hi"] * 100, 2)], "confidence": CONFIDENCE}, wins, n_valid
+            "interval_pct": [round(g["lo"] * 100, 2), round(g["hi"] * 100, 2)], "confidence": CONFIDENCE,
+            "test": st["method"], "p_timesfm_better": round(st["p_cand_better"], 4),
+            "p_baseline_better": round(st["p_base_better"], 4)}, wins, n_valid
 
 
 def _mase_scale(hist: np.ndarray, m: int) -> float:
@@ -90,7 +146,7 @@ def _mase_scale(hist: np.ndarray, m: int) -> float:
 
 
 def _combined_forecasts(x: np.ndarray, origins: list[int], m: int, preds: list[dict[str, np.ndarray]],
-                        actuals: list[np.ndarray]) -> tuple[list[np.ndarray], list[str], list[list[float]]]:
+                        actuals: list[np.ndarray], simple: tuple = SIMPLE) -> tuple[list[np.ndarray], list[str], list[list[float]]]:
     """Blend TimesFM with the simple baseline that had the lowest mean MASE on earlier origins only. Origin 0 has no
     earlier origin, so it uses the naive baseline and equal weights."""
     combined, chosen, weights = [], [], []
@@ -100,8 +156,8 @@ def _combined_forecasts(x: np.ndarray, origins: list[int], m: int, preds: list[d
             name = "naive"
         else:
             mase_so_far = {nm: float(np.mean([np.abs(actuals[i] - preds[i][nm]).mean() / scales[i] for i in range(j)
-                                              if np.isfinite(scales[i])])) for nm in SIMPLE}
-            name = min(mase_so_far, key=lambda nm: (np.nan_to_num(mase_so_far[nm], nan=np.inf), SIMPLE.index(nm)))
+                                              if np.isfinite(scales[i])])) for nm in simple}
+            name = min(mase_so_far, key=lambda nm: (np.nan_to_num(mase_so_far[nm], nan=np.inf), simple.index(nm)))
         err_a = np.stack([actuals[i] - preds[i]["timesfm"] for i in range(j)]) if j else None
         err_b = np.stack([actuals[i] - preds[i][name] for i in range(j)]) if j else None
         blend = combine(preds[j]["timesfm"], preds[j][name], err_a, err_b)
@@ -163,8 +219,7 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
     n = len(x)
     if not np.isfinite(x).all():
         raise ValueError("series contains NaN or infinite values; fill or drop them first")
-    m = pick_season(x, season)
-    season_reason = "given by the caller" if season is not None else choose_season(x, freq_hint, dates)["reason"]
+    m, season_reason = backtest_season(x, horizon, n_origins, season, freq_hint, dates)
     min_hist = max(MIN_HISTORY, 2 * m if m > 1 else MIN_HISTORY)
     k = min(int(n_origins), (n - min_hist) // horizon)
     if k < 2:
@@ -189,20 +244,32 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
         cfc = fc
 
     # Forecasts and actuals per origin; the blend (if asked for) is built from these, so it can only see earlier origins.
+    # Intermittent demand (Syntetos-Boylan): the delivered point is TSB's expected volume and the delivered band is TSB's
+    # quantiles (tools/timesfm_tool.py). The backtest scores that object, and TimesFM's median is kept as its own model
+    # (audit A6-01). The classification uses the whole history, as the delivery tool does.
+    lumpy = is_intermittent(x)
+    simple = tuple(nm for nm in SIMPLE if not (lumpy and nm == "tsb_expected"))   # equal to the delivered point when lumpy
     preds: list[dict[str, np.ndarray]] = []
     actuals: list[np.ndarray] = []
+    bands: list[np.ndarray] = []
     for j, o in enumerate(origins):
         hist = x[:o]
         p = {"timesfm": cfc.point[j], "naive": np.full(horizon, hist[-1]), "seasonal_naive": _snaive(hist, horizon, m),
              "drift": _drift(hist, horizon), "mean_last_season": _mean_last(hist, horizon, m),
              "tsb_expected": expected_volume(hist, horizon)}
+        if lumpy:
+            p["timesfm_median"] = cfc.point[j]
+            p["timesfm"] = expected_volume(hist, horizon)
+            bands.append(tsb_band(hist, horizon))
+        else:
+            bands.append(cfc.q[j])
         if configured:
             p["timesfm_default"] = fc.point[j]
         preds.append(p)
         actuals.append(x[o:o + horizon])
     combination: dict[str, Any] | None = None
     if combine_forecasts:
-        blends, chosen, weights = _combined_forecasts(x, origins, m, preds, actuals)
+        blends, chosen, weights = _combined_forecasts(x, origins, m, preds, actuals, simple)
         for p, b in zip(preds, blends):
             p["timesfm_combined"] = b
         combination = {"method": "inverse-MSE weights per horizon third, from earlier origins only; the baseline is the one "
@@ -216,13 +283,15 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             for p in preds:
                 p["timesfm_equal_blend"] = equal_blend(p["timesfm"], p[blend_rule])     # plain mean: nothing is fitted
 
-    names = ["timesfm", "naive", "seasonal_naive", "drift", "mean_last_season", "tsb_expected"] + (
+    names = ["timesfm"] + (["timesfm_median"] if lumpy else []) + ["naive", "seasonal_naive", "drift", "mean_last_season",
+                                                                  "tsb_expected"] + (
         ["timesfm_default"] if configured else []) + (["timesfm_combined"] if combine_forecasts else []) + (
         ["timesfm_equal_blend"] if blend_rule is not None else [])
+    sq_scaled: dict[str, list[float]] = {nm: [] for nm in names}    # MSE in MASE-scale units, reported beside MASE (A2-08)
     errs: dict[str, list[float]] = {nm: [] for nm in names}
     act_sum, abs_err = 0.0, {nm: 0.0 for nm in names}
     signed = {nm: 0.0 for nm in names}          # sum of (forecast - actual): the volume bias, not the error
-    covered, pin = [], []
+    covered, pin, wis_scaled = [], [], []
     qs = np.arange(1, 10) / 10
     for j, o in enumerate(origins):
         hist, actual = x[:o], actuals[j]
@@ -231,37 +300,61 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             p = preds[j][nm]
             e = np.abs(actual - p)
             errs[nm].append(float(e.mean() / scale) if scale == scale else float("nan"))
+            sq_scaled[nm].append(float(np.mean(e ** 2)) / scale ** 2 if scale == scale else float("nan"))
             abs_err[nm] += float(e.sum())
             signed[nm] += float((p - actual).sum())
         act_sum += float(np.abs(actual).sum())
-        q = cfc.q[j]
+        q = bands[j]
         covered.append(float(((actual >= q[:, 0]) & (actual <= q[:, 8])).mean()))
         d = actual[:, None] - q
         pin.append(float(np.mean(np.maximum(qs * d, (qs - 1) * d)) / scale) if scale == scale else float("nan"))
+        wis_scaled.append(float(np.mean(wis(actual, q))) / scale if scale == scale else float("nan"))
 
-    base = {nm: float(np.nanmean(errs[nm])) for nm in SIMPLE if nm in errs and not np.all(np.isnan(errs[nm]))}
+    base = {nm: float(np.nanmean(errs[nm])) for nm in simple if nm in errs and not np.all(np.isnan(errs[nm]))}
     best = min(base, key=base.get) if base else None
     models: dict[str, Any] = {}
     for nm, v in errs.items():
         entry: dict[str, Any] = {"mase": round(float(np.nanmean(v)), 4) if len(v) and not np.all(np.isnan(v)) else None,
                                  "wape": round(abs_err[nm] / act_sum, 4) if act_sum > 0 else None,
                                  "volume_bias_pct": round(signed[nm] / act_sum * 100, 1) if act_sum > 0 else None}
+        entry["mse_scaled"] = round(float(np.nanmean(sq_scaled[nm])), 4) if not np.all(np.isnan(sq_scaled[nm])) else None
         if best is not None and nm != best:
             entry["wins_vs_best_baseline"] = int(sum(1 for a, b in zip(v, errs[best])
                                                      if np.isfinite(a) and np.isfinite(b) and a < b))
+        if nm == "mean_last_season":
+            entry["window_points"] = _mean_last_window(m)
         models[nm] = entry
+    # Weighted interval score of TimesFM's stored quantiles, in MASE units so it reads beside the MASE (A2-09). Selection
+    # still uses MASE; WIS is reported next to it.
+    wis_mean = round(float(np.nanmean(wis_scaled)), 4) if not np.all(np.isnan(wis_scaled)) else None
+    models["timesfm"]["wis_scaled"] = wis_mean
     out: dict[str, Any] = {"points": n, "horizon": horizon, "origins": k, "n_origins": k, "season_used": m,
                            "season_reason": season_reason, "mase_scale": mase_scale_text(m),
                            "models": models,
                            "timesfm_range_coverage_80": round(float(np.mean(covered)), 3),
-                           "timesfm_pinball_scaled": round(float(np.nanmean(pin)), 4) if not np.all(np.isnan(pin)) else None}
+                           "timesfm_pinball_scaled": round(float(np.nanmean(pin)), 4) if not np.all(np.isnan(pin)) else None,
+                           "timesfm_wis_scaled": wis_mean,
+                           "point_basis": ("expected demand (mean under TSB); band: TSB quantiles" if lumpy
+                                           else "median; band: TimesFM quantiles"),
+                           "intermittent": bool(lumpy)}
+    win = _mean_last_window(m)
+    out["mean_last_season_window"] = {
+        "points": win, "season": m,
+        "note": (f"mean of the last {win} points; no season was found, so this is a {win}-point mean, not a season mean"
+                 if m <= 1 else (f"mean of the last {win} points, the season" if win == m else
+                                 f"mean of the last {win} points: the season is {m}, but the rule keeps at least {MEAN_LAST_FLOOR}")),
+    }
     if k < n_origins:
         out["origins_note"] = (f"only {k} of the {n_origins} requested windows of {horizon} fit in {n} points; "
                                "the evidence rests on these few windows")
-    tb = models["timesfm"]["volume_bias_pct"]
+    # For lumpy demand the note is about TimesFM's median, which is the point that understates volume; the delivered point
+    # is the expected volume, whose bias is reported on its own entry (audit A6-01).
+    tb_key = "timesfm_median" if lumpy else "timesfm"
+    tb_name = "TimesFM's median" if lumpy else "TimesFM's point forecast"
+    tb = models[tb_key]["volume_bias_pct"]
     if tb is not None and abs(tb) >= VOLUME_BIAS_NOTE:
         out["timesfm_volume_note"] = (
-            f"Over these windows TimesFM's point forecast totals {tb:+.1f}% against what happened. A point forecast is a "
+            f"Over these windows {tb_name} totals {tb:+.1f}% against what happened. A point forecast is a "
             "median, and for lumpy or skewed demand a median understates volume. Compare with tsb_expected (the mean under TSB) "
             "before presenting the point as expected demand, and say which measure the answer uses.")
     if configured:
@@ -288,10 +381,11 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             "when there is no season, otherwise the seasonal change at lag m), so 1.0 means the average error equals the "
             "average change at that lag. "
             f"Range coverage should sit near 0.8. Measured over {k} windows of {horizon} periods. The verdict uses a paired "
-            f"{CONFIDENCE:.0%} bootstrap of the per-window MASE gain over {best} and the number of windows TimesFM won; "
-            "timesfm_better needs the whole interval above zero and at least "
-            f"{WIN_SHARE:.0%} of windows won, baseline_better needs the whole interval below zero, anything else is "
-            "no_clear_difference."
+            f"one-sided sign-flip test ({ev.get('test')}) of the per-window MASE gain over {best}, at "
+            f"{(1 - CONFIDENCE) / 2:.0%} each way, and the number of windows TimesFM won; timesfm_better needs the test to "
+            f"reject equal error in TimesFM's favour and at least {WIN_SHARE:.0%} of windows won, baseline_better needs it to "
+            "reject in the baseline's favour, anything else is no_clear_difference. interval_pct is the bootstrap interval, "
+            "a description only."
             + (" 'timesfm' is the configured run (see control); 'timesfm_default' is the same model with no control. "
                "configured_vs_default_pct above 0 means the configuration helped on these windows." if configured else ""))
     from prophet_agent.forecast.randomwalk import random_walk_test

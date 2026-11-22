@@ -35,7 +35,8 @@ from typing import Any
 
 import numpy as np
 
-from prophet_agent.forecast.rolling import MIN_HISTORY, pick_season
+from prophet_agent.forecast.rolling import MIN_HISTORY, backtest_season
+from prophet_agent.forecast.tsb import expected_volume, is_intermittent, tsb_band
 
 TARGET = 0.8                # coverage of the 10 to 90 percent band
 GAP_STEP = 0.05             # a raw band this far from target is worth fixing; the same gap is the second-pass trigger
@@ -227,14 +228,49 @@ def _width(q: np.ndarray) -> float:
     return float((q[..., Q_HI] - q[..., Q_LO]).mean())
 
 
+def _intermittent_result(x: np.ndarray, horizon: int, target: float) -> dict:
+    """The delivered object for intermittent demand, reported as it is: TSB's expected volume and TSB's band.
+
+    Motivation vs Logic
+    Motivation: for lumpy demand the delivered band is TSB's. Calibrating it as if it were TimesFM's, around a near-zero
+    median, put a TimesFM band back over the point (audit A6-02).
+    Logic: no TimesFM forecast is made and nothing is refitted; the point and band are the ones the tool delivers, so the
+    band brackets the point at every step and the recommendation is keep_raw.
+    """
+    point = expected_volume(x, horizon)
+    band = tsb_band(x, horizon)
+    return {
+        "horizon": horizon, "target_coverage": target, "origins": 0, "fitted_on": 0, "tested_on": 0,
+        "scales_by_horizon_third": [], "heldout_coverage_raw": None, "heldout_coverage_calibrated": None,
+        "raw_gap": None, "calibrated_gap": None, "target": target, "scale_level": None, "second_pass": None,
+        "width_ratio": 1.0, "method": "tsb_delivered_band", "ewma_volatility": None, "heldout_coverage_adaptive": None,
+        "heldout_points": 0, "heldout_windows": 0, "heldout_raw_wilson90": None, "heldout_calibrated_wilson90": None,
+        "selection": {"held_out_used_for_choice": False, "optimistic": False},
+        "recommend": "keep_raw",
+        "reason": ("intermittent demand: the delivered band is TSB's, not TimesFM's, and calibration of TimesFM's band is not "
+                   "defined for it, so the band is kept as delivered"),
+        "point": [round(float(v), 4) for v in point],
+        "raw": {"q10": [round(float(v), 4) for v in band[:, 0]], "q90": [round(float(v), 4) for v in band[:, 8]]},
+        "calibrated": {"q10": [round(float(v), 4) for v in band[:, 0]], "q90": [round(float(v), 4) for v in band[:, 8]],
+                       "quantiles": {f"{lvl:.1f}": [round(float(v), 4) for v in band[:, i]]
+                                     for i, lvl in enumerate([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])}},
+        "caveats": ["Intermittent demand: the point is the expected volume (TSB) and the band is TSB's; neither is TimesFM's, "
+                    "so no TimesFM calibration was run.",
+                    "The band is widened, where needed, to contain the expected volume; its coverage is therefore not the nominal 80 percent."],
+    }
+
+
 def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_origins: int = 12,
               target: float = TARGET) -> dict:
-    """Calibrate the band of a TimesFM forecast of ``values``. Raises ValueError with the fix when the series is too short."""
+    """Calibrate the band of a TimesFM forecast of ``values``. Raises ValueError with the fix when the series is too short.
+    For intermittent demand the delivered TSB object is returned unchanged (see _intermittent_result)."""
     x = np.asarray(values, dtype=float)
     if not np.isfinite(x).all():
         raise ValueError("series contains NaN or infinite values; fill or drop them first")
+    if is_intermittent(x):
+        return _intermittent_result(x, horizon, target)
     n = len(x)
-    m = pick_season(x, None)
+    m, _ = backtest_season(x, horizon, n_origins, None)     # measured before the first window (audit A2-01)
     min_hist = max(MIN_HISTORY, 2 * m if m > 1 else MIN_HISTORY, 3 * horizon)
     k = min(int(n_origins), (n - min_hist) // horizon)
     if k < MIN_ORIGINS:

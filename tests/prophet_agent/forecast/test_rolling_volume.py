@@ -30,9 +30,12 @@ def _intermittent(n=400, seed=11):
 
 
 def test_a_median_of_zero_on_lumpy_demand_is_reported_as_understating_volume():
+    # Updated for audit A6-01: on lumpy demand the delivered point is TSB's expected volume, so the zero median is reported
+    # as its own model (timesfm_median) and the note is about it; "timesfm" is the delivered expected volume.
     x = _intermittent()
     out = rolling_backtest(x, 30, n_origins=8, season=1, engine=ConstantEngine(0.0))
-    assert out["models"]["timesfm"]["volume_bias_pct"] == pytest.approx(-100.0)
+    assert out["models"]["timesfm_median"]["volume_bias_pct"] == pytest.approx(-100.0)
+    assert out["models"]["timesfm"]["volume_bias_pct"] > -50
     assert "understates volume" in out["timesfm_volume_note"]
 
 
