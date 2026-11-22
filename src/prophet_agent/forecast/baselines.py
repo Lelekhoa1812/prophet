@@ -4,9 +4,55 @@ The `run` name dispatcher from the legacy file is not ported. Callers use the th
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
+from .tsb import is_intermittent
+
 Z = np.array([-1.2816, -0.8416, -0.5244, -0.2533, 0.0, 0.2533, 0.5244, 0.8416, 1.2816])
+MEAN_LAST_FLOOR = 4         # the shortest window mean_last_season averages; equal to rolling.MEAN_LAST_FLOOR (a test checks it)
+TSB_SIZE_WINDOW = 52        # the non-zero order sizes TSB averages; tsb.expected_volume uses the last 52
+# Rules that only apply to one demand class. Everything else applies to every series.
+DEMAND_CLASS = {"tsb_expected": "intermittent"}
+
+
+def candidate_rules(rules: Sequence[str], series: np.ndarray) -> tuple[str, ...]:
+    """The rules that may be backtested as a baseline for this series' demand class, in the order given.
+
+    Motivation vs Logic
+    Motivation: TSB is a model for intermittent demand. A rule backtested on a continuous series can win on noise and be
+    named the best baseline (audit A4-12: a random walk of 160 points picked tsb_expected, MASE 1.08 against 1.35 for naive,
+    measured, synthetic).
+    Logic: a rule tagged with a class is kept only when the series is in that class. intermittent uses tsb.is_intermittent,
+    which is ADI above 1.32 and is false for any series that goes below zero. The caller drops tsb_expected when the
+    delivered point already is TSB's expected volume (a lumpy series), because the two would be the same forecast.
+    """
+    lumpy = None
+    kept = []
+    for r in rules:
+        cls = DEMAND_CLASS.get(r)
+        if cls == "intermittent":
+            if lumpy is None:
+                lumpy = is_intermittent(series)
+            if not lumpy:
+                continue
+        kept.append(r)
+    return tuple(kept)
+
+
+def rule_windows(season: int, n_points: int) -> dict[str, int]:
+    """How many trailing points each simple rule uses, so a backtest can print it beside the rule's score.
+
+    Motivation vs Logic
+    Motivation: the rule named mean_last_season averaged a 4-point window with no season (audit A4-12, WTI). A reader
+    could not see the window from the result.
+    Logic: each rule's window is a function of the season and the length of the history, and is returned rather than
+    left as an internal parameter. drift uses every point; tsb_expected uses the last 52 non-zero sizes.
+    """
+    m = max(1, int(season))
+    return {"naive": 1, "seasonal_naive": m, "drift": int(n_points),
+            "mean_last_season": max(m, MEAN_LAST_FLOOR), "tsb_expected": TSB_SIZE_WINDOW}
 
 
 def _nonneg(series: np.ndarray) -> bool:
