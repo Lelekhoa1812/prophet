@@ -25,6 +25,8 @@ change the outcome, so the loop stops with the best answer it has.
 """
 from __future__ import annotations
 
+import contextlib
+
 import json
 import re
 import time
@@ -497,6 +499,22 @@ def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
     return streak, last, kind
 
 
+SHORT_CALLS_SLACK = 3    # calls beyond one per open checklist item before the run is told to stop exploring
+
+
+def _short_calls_note(cfg: "GoalConfig", history: list[dict], items: list[dict]) -> str:
+    """When the calls left barely cover the open checklist items, say which items to spend them on, in order. Live (WTI): 26
+    calls went on analysis cells, the backtest never ran, and the answer had no forecast."""
+    if cfg.tool_budget is None:
+        return ""
+    left = cfg.tool_budget - _calls_used(history)
+    open_items = [it["item"] for it in items if it.get("status") != "done"]
+    if not open_items or left > len(open_items) + SHORT_CALLS_SLACK:
+        return ""
+    return (f"Calls are short: {max(left, 0)} left in this part and {len(open_items)} checklist item(s) open. Spend them on "
+            "these, in order, one call each, with no further exploratory cells: " + "; ".join(open_items[:6]) + ".")
+
+
 def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
     left = cfg.end - i
     if cfg.tool_budget is not None:
@@ -882,6 +900,26 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     return obs
 
 
+@contextlib.contextmanager
+def _harness_allowance(ctx: Ctx, extra: int):
+    """Sub-agents the harness starts itself are not charged to the lead agent's tool allowance: the limit is raised for
+    them while they run and afterwards stays raised by exactly what they spent. Live (Beijing, 12 stations): four panel
+    analysts used the whole part's allowance, the lead never reached a backtest, and the run stopped at a checkpoint."""
+    from prophet_agent.runtime.runner import READ_ONLY
+    budget = getattr(getattr(ctx, "rt", None), "budget", None)
+    limit = budget.get("max_tool_calls") if isinstance(budget, dict) else None
+    if limit is None:
+        yield
+        return
+    before = ctx.store.count_tool_calls(ctx.mission_id, exclude=READ_ONLY)
+    budget["max_tool_calls"] = int(limit) + int(extra)
+    try:
+        yield
+    finally:
+        spent = ctx.store.count_tool_calls(ctx.mission_id, exclude=READ_ONLY) - before
+        budget["max_tool_calls"] = int(limit) + max(0, spent)
+
+
 def _delegate(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: GoalConfig, context: str,
               history: list[dict]) -> list[dict]:
     """Runs one or several sub-agents (in parallel when several) and returns an observation for each. Only a sub-agent's
@@ -968,6 +1006,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
                                        external=bool(EXTERNAL_GOAL.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
+            if (short := _short_calls_note(cfg, history, items)):
+                note += "\n\n" + short
             _status(ctx, i, history, items, started)
         auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t))
                 if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
@@ -1000,7 +1040,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 if repeated:
                     obs["not_asked_again"] = repeated
         elif plan["action"] == "delegate":
-            delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
+            if plan.get("auto"):
+                with _harness_allowance(ctx, len(_specs(plan)) * cfg.sub_steps):
+                    delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
+            else:
+                delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
             if plan.get("auto"):
                 for d in delegated:
                     if d.get("kind") == "subagent":

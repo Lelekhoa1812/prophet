@@ -255,3 +255,14 @@ def test_a_baseline_that_won_the_backtest_asks_for_its_centre_line_in_the_pack(t
     assert item([bt])["status"] == "todo"
     assert item([bt, pack("timesfm")])["status"] == "todo"
     assert item([bt, pack("naive")])["status"] == "done"
+
+
+def test_short_calls_name_the_open_checklist_items():
+    from prophet_agent.runtime.goal import GoalConfig, _short_calls_note
+    items = [{"item": "inspect the data", "status": "done"}, {"item": "compare with baselines (backtest_series)", "status": "open"},
+             {"item": "build the pack (forecast_report)", "status": "open"}]
+    calls = [{"kind": "tool", "tool": "sandbox_python"}] * 17
+    note = _short_calls_note(GoalConfig(tool_budget=20), calls, items)
+    assert "3 left" in note and note.index("backtest_series") < note.index("forecast_report")
+    assert _short_calls_note(GoalConfig(tool_budget=40), calls, items) == ""
+    assert _short_calls_note(GoalConfig(tool_budget=None), calls, items) == ""

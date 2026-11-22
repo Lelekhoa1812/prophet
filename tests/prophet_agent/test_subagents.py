@@ -185,3 +185,21 @@ def test_the_harness_starts_a_researcher_for_a_market_goal_and_a_replay_asks_the
     out2 = Runtime(store).run(mid, goal_program(goal, tools, replay))
     assert replay.calls == 0 and out2["status"] == out["status"], "the stored steps replay; nothing is asked again"
     assert calls > 0
+
+
+def test_harness_sub_agents_do_not_spend_the_lead_agents_allowance(store):
+    inspect = {"file": "wti.csv", "profile": {"columns": [{"kind": "time", "name": "date", "duplicate_timestamps": 0},
+                                                          {"kind": "number", "name": "price"}]}}
+    tools = {"inspect_data": _tool("inspect_data", lambda a, k: inspect), "web_research": _tool("web_research"),
+             "backtest_series": _tool("backtest_series")}
+    goal = "Forecast the WTI spot price for 20 trading days"
+    brain = KeyedBrain([{"action": "call_tool", "tool": "inspect_data", "args": {"file": "wti.csv"}, "rationale": "look"},
+                        {"action": "call_tool", "tool": "backtest_series", "args": {"horizon": 20}, "rationale": "score"},
+                        {"action": "finish", "rationale": "done"}],
+                       {"sub-agent a1": [{"action": "call_tool", "tool": "web_research", "args": {"queries": [q]}, "rationale": "r"}
+                                         for q in ("opec", "eia", "fed")] + [{"action": "finish", "rationale": "done"}]})
+    mid = store.create_mission(goal, {"max_tool_calls": 2})
+    out = Runtime(store).run(mid, goal_program(goal, tools, brain))
+    tools_used = [h.get("tool") for h in out["result"]["evidence"] if h.get("kind") == "tool"]
+    assert "backtest_series" in tools_used, out        # the lead's second call still fits its own allowance of 2
+    assert store.count_tool_calls(mid) == 5            # 2 by the lead, 3 by the harness's researcher
