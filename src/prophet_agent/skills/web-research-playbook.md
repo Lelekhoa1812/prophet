@@ -5,19 +5,21 @@ summary: Plan angles, fan out searches, read passages, cross-check, and report s
 
 Outside evidence is context with a source and a date, not data. Research in rounds, and stop when a round adds nothing.
 
-1. Write the question as a sentence the report must answer, then split it into 4 to 6 angles that would each change the forecast: current level and regime, scheduled events inside the horizon, policy and central-bank stance, supply or demand shocks, consensus forecasts, and what could go wrong. One search per angle, worded differently, never five paraphrases of one query.
-2. Round 1: call `web_research` with those queries together (`kind` news for recent events, text for background; `recency` week or month for anything that moves). Read the passages it returns. Note each source's id, tier and date.
-3. Prefer tier 1 sources (central banks, statistics offices, IMF, EIA, FRED, OECD, regulators) for facts, tier 2 outlets for events. Treat a tier 3 or 4 page as a lead to confirm, never as the answer. A claim with one weak source is reported as unconfirmed.
-4. Round 2: list what is missing or conflicting, and search only for that. Use `web_fetch` with `queries` to pull the best passages from a page worth reading closely. Stop after round 3 or when a round brings no new claim.
-5. Check dates. A page with no date, or older than the question's regime, is background. Say "as of DATE" for every level, rate or price. A figure from a search snippet is not a fact until a fetched passage shows it.
-6. Cross-check: a number or event that matters needs two independent sources (not two copies of one wire story). Where sources disagree, report both and the gap.
-7. Report as a list of findings, each with: the claim in one line, source id and URL, date, tier, and a short quote that appears in the fetched text. Then: open questions, conflicts, and what you could not find. Put the scenario implication last (what each finding does to level, trend or risk of the series), marked as your inference.
-8. Never put a number in the report that a tool did not print. Never write a forecast; your job is evidence.
+1. Write the question as a sentence the report must answer, then split it into 4 to 6 angles that would each change the forecast: current level and regime, scheduled events inside the horizon, policy and central-bank stance, supply or demand shocks, consensus forecasts, and what could go wrong.
+2. Round 0, no search: call `web_research` with `family` set, or let it detect the family from the queries. It reads the primary registry pages for that series first (statistics offices, central banks, EIA, OPEC, IEA). Note each source's id, tier, date and date_source.
+3. Round 1, in parallel: one `web_research` call with one query per angle. For each angle send two wordings: a `site:` query for the primary domain, and a news query (`kind` news, `recency` week or month) for anything that moves. Pass `exclude_urls` with every URL already read.
+4. Round 2, gaps only: list the conflicts and the missing dated facts from rounds 0 and 1, and search only for those, at most two fetches per gap. Use `web_fetch` with `queries` to read one page closely.
+5. Stop after round 2, which is three rounds at most, or earlier when a round adds no new primary domain and no new dated claim. Read `metrics` in each result: `tier1_sources`, `dated_sources`, `newest_date`, `new_sources`.
+6. Prefer tier 1 sources (central banks, statistics offices, IMF, EIA, FRED, OECD, regulators) for facts, and tier 2 outlets for events. Treat a tier 3 or 4 page as a lead to confirm, never as the answer. A claim with one weak source is reported as unconfirmed.
+7. Check dates. A source with date_source "none" is background, not dated evidence. Say "as of DATE" for every level, rate or price. A figure from a search snippet is not a fact until a fetched passage shows it.
+8. Cross-check: a number or event that matters needs two independent sources, not two copies of one wire story. Where sources disagree, report both and the gap.
+9. Report as a list of findings, each with: the claim in one line, source id and URL, date, tier, and a short quote from that source's passage. Every number you report from the web needs a source id and must appear in that source's passage; drop or mark unconfirmed any that do not. Then give open questions, conflicts, and what you could not find. Put the scenario implication last, marked as your inference.
+10. Never put a number in the report that a tool did not print. Never write a forecast; your job is evidence.
 
 ```python
-# one round: several different angles at once (call the web_research tool with these arguments)
-{"queries": ["WTI crude inventories EIA weekly report", "OPEC+ production decision November", "oil demand outlook IEA monthly report"],
- "kind": "news", "recency": "week", "fetch_top": 5}
+# round 1 for one angle: a primary-site query and a news query (call the web_research tool with these arguments)
+{"queries": ["site:eia.gov weekly crude inventories", "WTI crude inventories this week"],
+ "kind": "news", "recency": "week", "fetch_top": 4, "exclude_urls": ["https://www.eia.gov/outlook"]}
 ```
 
 Decision rules:

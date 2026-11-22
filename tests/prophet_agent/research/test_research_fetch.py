@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from prophet_agent.research import fetch as fetch_mod
-from prophet_agent.research.fetch import MAX_REDIRECTS, fetch_page
+from prophet_agent.research.fetch import MAX_REDIRECTS, fetch_page, is_index_page, publication_date
 from prophet_agent.research.netguard import HostThrottle
 
 PUBLIC = "93.184.216.34"
@@ -164,3 +164,69 @@ def test_empty_url_and_no_text_page_are_not_ok():
     empty = {"/empty": (200, {"content-type": "text/html"}, b"<html><body></body></html>")}
     page = fetch("https://example.com/empty", client_for(empty), use_cache=False)
     assert page.ok is False and "no readable text" in page.note
+
+
+def story(head="", body=""):
+    """A small article page with a text body, plus extra head and body markup."""
+    return ("<!doctype html><html><head><title>Oil story</title>" + head + "</head><body><article>"
+            "<p>Brent crude rose 3.2 per cent on Monday after the agency report.</p>"
+            "<p>Traders said the inventory data was the main driver of the move.</p>" + body + "</article></body></html>")
+
+
+def dated_page(path, html):
+    return fetch("https://example.com" + path, client_for({path: (200, {"content-type": "text/html"},
+                                                                  html.encode())}), use_cache=False)
+
+
+def test_article_metadata_gives_the_publication_date():
+    head = '<meta property="article:published_time" content="2026-11-18T08:00:00Z">'
+    page = dated_page("/news/oil-outlook", story(head))
+    assert page.date == "2026-11-18" and page.date_source == "meta"
+
+
+def test_json_ld_date_published_gives_the_publication_date():
+    head = ('<script type="application/ld+json">{"@context": "https://schema.org", "@type": "NewsArticle", '
+            '"datePublished": "2026-11-19T07:00:00+00:00"}</script>')
+    page = dated_page("/news/oil-outlook", story(head))
+    assert page.date == "2026-11-19" and page.date_source == "meta"
+
+
+def test_time_element_in_the_article_gives_the_publication_date():
+    page = dated_page("/news/oil-outlook", story(body='<time datetime="2026-11-17">17 Nov 2026</time>'))
+    assert page.date == "2026-11-17" and page.date_source == "meta"
+
+
+def test_date_in_the_url_is_used_only_as_a_marked_fallback():
+    page = dated_page("/2026/11/20/oil-story", story())
+    assert page.date == "2026-11-20" and page.date_source == "url"
+
+
+def test_index_page_time_stamps_and_url_dates_are_not_publication_dates():
+    page = dated_page("/press/calendar/index.html", story(body='<time datetime="2026-01-01">1 Jan 2026</time>'))
+    assert page.date is None and page.date_source == "none"
+
+
+def test_index_page_with_its_own_metadata_keeps_that_date():
+    head = '<meta property="article:published_time" content="2026-10-29T12:00:00Z">'
+    page = dated_page("/press/calendar/index.html", story(head))
+    assert page.date == "2026-10-29" and page.date_source == "meta"
+
+
+def test_page_with_no_date_anywhere_is_undated():
+    page = dated_page("/news/no-date", story())
+    assert page.date is None and page.date_source == "none"
+
+
+def test_index_pages_are_recognised_by_their_address():
+    assert is_index_page("https://www.rba.gov.au/")
+    assert is_index_page("https://www.rba.gov.au/index.html")
+    assert is_index_page("https://ec.europa.eu/eurostat/web/release-calendar")
+    assert not is_index_page("https://www.bis.org/review/r260101a.htm")
+
+
+def test_publication_date_rules_on_their_own():
+    assert publication_date("<html></html>", "https://www.rba.gov.au/index.html", "2023-01-01", "text/html") \
+        == (None, "none")
+    assert publication_date("<html></html>", "https://www.bis.org/review/r260101a.htm", "2026-01-01", "text/html") \
+        == ("2026-01-01", "meta")
+    assert publication_date("", "https://example.com/2026/03/04/x", None, "text/plain") == ("2026-03-04", "url")

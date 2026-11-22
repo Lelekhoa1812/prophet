@@ -2,7 +2,7 @@
 import pytest
 
 from prophet_agent.research.fetch import Page
-from prophet_agent.research.passages import (Passage, best_passages, quote_in_page, score_passages,
+from prophet_agent.research.passages import (Passage, verify_figures, best_passages, quote_in_page, score_passages,
                                              split_passages)
 
 PAGE = (
@@ -93,3 +93,27 @@ def test_quote_check_catches_a_changed_figure():
 
 def test_empty_quote_is_never_verified():
     assert quote_in_page("   ", "anything") is False
+
+
+def test_imf_example_flags_the_figure_that_is_not_in_the_evidence():
+    sources = [{"id": "S1", "passages": [{"text": "JPY 159.47 per USD"}]}]
+    assert verify_figures("IMF reports EUR/JPY 162.34", sources) == ["162.34"]
+
+
+def test_a_figure_found_in_a_passage_is_not_flagged_whatever_the_separators():
+    sources = [{"passages": [{"text": "It was 1234.5 dollars, or 78.50 a barrel."}]}]
+    assert verify_figures("1,234.50 dollars and 78.5 a barrel", sources) == []
+
+
+def test_years_and_small_whole_numbers_are_not_checked():
+    assert verify_figures("In 2026 there were 3 meetings and 9 cuts", []) == []
+
+
+def test_each_unverified_figure_is_listed_once_in_order():
+    sources = [{"text": "the level was 4.25 per cent"}]
+    assert verify_figures("Rates 5.10, then 4.25, then 5.10 and 6.75", sources) == ["5.10", "6.75"]
+
+
+def test_sources_without_passages_or_text_verify_nothing():
+    assert verify_figures("it is 12.5", [{"url": "https://x.gov", "passages": []}, None]) == ["12.5"]
+    assert verify_figures("", []) == []

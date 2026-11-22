@@ -8,13 +8,15 @@ Logic: passages are whole paragraphs packed up to a size, with a short paragraph
 paragraph is cut into windows. Scoring is a small BM25 variant with the document set being the passages of this page,
 stop words removed, and numbers given a bonus because a figure is usually what the question is after. Quote checking
 compares text after collapsing whitespace and typographic quotes, and is otherwise exact, so a quotation is only
-accepted when it is really in the page.
+accepted when it is really in the page. Figure checking uses the same normalisation: every number in a
+draft must appear in some fetched passage, or it is returned as unverified.
 """
 from __future__ import annotations
 
 import math
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 
 STOP_WORDS = frozenset("""
@@ -172,3 +174,53 @@ def quote_in_page(quote: str, page_text: str) -> bool:
     if not needle:
         return False
     return needle in _normalise_for_quote(page_text or "")
+
+
+NUMBER = re.compile(r"(?<![\w/])\d+(?:[.,]\d+)*(?!\w)")
+THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+
+
+def _number_key(token: str) -> str:
+    """A number token in one form: '1,234' and '1234' match, '78.50' and '78.5' match, '2,5' is read as 2.5."""
+    if THOUSANDS.fullmatch(token):
+        token = token.replace(",", "")
+    else:
+        token = token.replace(",", ".")  # a lone comma is a decimal mark
+    try:
+        return f"{Decimal(token).normalize():f}"
+    except InvalidOperation:
+        return token
+
+
+def _checkable(token: str) -> bool:
+    """Years 1900 to 2100 and whole numbers under 10 are left out: they are dates and counts, not claims to check."""
+    if "." in token or "," in token:
+        return True
+    value = int(token)
+    return not (1900 <= value <= 2100 or value < 10)
+
+
+def verify_figures(text: str, sources: list[dict]) -> list[str]:
+    """Numbers in ``text`` that appear in none of the sources' passages or text, in order of appearance, once each.
+    Years 1900 to 2100 and whole numbers under 10 are ignored. Sources are dicts with ``passages`` ([{text}]) and/or
+    ``text``; the same normalisation as quote_in_page is applied to both sides. An empty list means every figure
+    was found in the evidence (it does not check that the figure is attached to the right claim)."""
+    known: set[str] = set()
+    for source in sources or []:
+        if isinstance(source, str):
+            chunks = [source]
+        elif isinstance(source, dict):
+            chunks = [source["text"]] if isinstance(source.get("text"), str) else []
+            chunks += [p["text"] for p in source.get("passages") or []
+                       if isinstance(p, dict) and isinstance(p.get("text"), str)]
+        else:
+            continue
+        for chunk in chunks:
+            known.update(_number_key(t) for t in NUMBER.findall(_normalise_for_quote(chunk)))
+    missing: list[str] = []
+    for token in NUMBER.findall(_normalise_for_quote(text or "")):
+        if not _checkable(token):
+            continue
+        if _number_key(token) not in known and token not in missing:
+            missing.append(token)
+    return missing

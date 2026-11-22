@@ -8,6 +8,10 @@ Logic: a plain GET with httpx, never JavaScript, never a form, never a file:// U
 netguard and paced per host; robots.txt is honoured; only text, HTML and JSON are read (a PDF is refused with a note).
 The body is read up to a byte cap. Text is extracted with trafilatura, and BeautifulSoup takes over when trafilatura
 returns nothing. The stored text is clipped and fingerprinted with SHA-256, so the citation can be verified against it.
+Dates need care: an index or calendar page carries template dates (a year start, a "last updated" stamp), so its date is
+trusted only when the page's own metadata gives it. Elsewhere a date comes from the metadata first (article:published_time,
+JSON-LD datePublished, a time element, or trafilatura's date), and a date in the URL path is a weaker fallback. Each date
+carries ``date_source``: "meta", "url" or "none".
 Every failure becomes a Page with ``ok`` False and a plain note; the function does not raise.
 """
 from __future__ import annotations
@@ -17,7 +21,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 import trafilatura
@@ -25,16 +29,22 @@ from bs4 import BeautifulSoup
 
 from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, Resolver,
                                              Robots, UnsafeURL, check_url)
+from prophet_agent.research.rank import parse_date
 from prophet_agent.research.search import cache_key, cache_root, read_cache, write_cache
 
 MAX_REDIRECTS = 4
 MAX_TEXT_CHARS = 60_000
 CACHE_TTL_S = 24 * 3600
 ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "application/json")
+HTML_MEDIA = ("text/html", "application/xhtml+xml")
 REDIRECT_CODES = (301, 302, 303, 307, 308)
 HEADERS = {"User-Agent": USER_AGENT,
            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8"}
 _CHARSET = re.compile(r"charset=([\w.:-]+)", re.I)
+INDEX_PATH = re.compile(r"calendar|schedule|archive", re.I)
+INDEX_FILE = re.compile(r"^(index|default)\.[a-z]{3,4}$", re.I)
+URL_DATE = re.compile(r"(?<!\d)((?:19|20)\d{2})[/-](0[1-9]|1[0-2])[/-](0[1-9]|[12]\d|3[01])(?!\d)")
+META_DATE_KEYS = {"article:published_time", "datepublished"}
 
 
 @dataclass
@@ -43,6 +53,7 @@ class Page:
     final_url: str
     title: str = ""
     date: str | None = None
+    date_source: str = "none"
     text: str = ""
     sha256: str = ""
     fetched_at: str = ""
@@ -90,6 +101,78 @@ def _bs4_text(html: str) -> tuple[str, str]:
     root = soup.find("article") or soup.find("main") or soup.body or soup
     lines = [" ".join(line.split()) for line in root.get_text("\n").splitlines()]
     return "\n".join(line for line in lines if line), title
+
+
+def is_index_page(url: str) -> bool:
+    """True for a home, index, calendar or schedule page, whose dates are template or listing dates."""
+    path = urlsplit(url).path
+    last = path.rsplit("/", 1)[-1]
+    return path in ("", "/") or path.endswith("/") or bool(INDEX_FILE.match(last)) or bool(INDEX_PATH.search(path))
+
+
+def _iso(value) -> str | None:
+    parsed = parse_date(str(value)) if value else None
+    return parsed.date().isoformat() if parsed else None
+
+
+def _walk_json_dates(node) -> list[str]:
+    found = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "datePublished" and isinstance(value, str):
+                found.append(value)
+            else:
+                found.extend(_walk_json_dates(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_walk_json_dates(item))
+    return found
+
+
+def explicit_date(html: str, *, allow_time: bool) -> str | None:
+    """A publication date the page states about itself: article:published_time, a datePublished meta or JSON-LD
+    value, or (when allow_time) the first time element with a datetime attribute in the article or main part."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all("meta"):
+        key = (tag.get("property") or tag.get("name") or tag.get("itemprop") or "").lower()
+        if key in META_DATE_KEYS and _iso(tag.get("content")):
+            return _iso(tag.get("content"))
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            values = _walk_json_dates(json.loads(script.string or ""))
+        except ValueError:
+            continue
+        for value in values:
+            if _iso(value):
+                return _iso(value)
+    if allow_time:
+        root = soup.find("article") or soup.find("main") or soup
+        for tag in root.find_all("time", attrs={"datetime": True}):
+            if _iso(tag.get("datetime")):
+                return _iso(tag.get("datetime"))
+    return None
+
+
+def url_date(url: str) -> str | None:
+    match = URL_DATE.search(urlsplit(url).path)
+    return f"{match.group(1)}-{match.group(2)}-{match.group(3)}" if match else None
+
+
+def publication_date(html: str, url: str, extracted: str | None, media: str) -> tuple[str | None, str]:
+    """(date, date_source). Explicit page metadata wins. On an index or calendar page nothing else is trusted, since
+    its date is a template or listing date. Elsewhere trafilatura's date counts as metadata, and a date in the URL path
+    is the last resort, marked "url"."""
+    index = is_index_page(url)
+    if media in HTML_MEDIA:
+        found = explicit_date(html, allow_time=not index)
+        if found:
+            return found, "meta"
+    if index:
+        return None, "none"
+    if _iso(extracted):
+        return _iso(extracted), "meta"
+    found = url_date(url)
+    return (found, "url") if found else (None, "none")
 
 
 def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
@@ -200,7 +283,7 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
         body.extend(chunk)
     notes = [f"response cut at {max_bytes} bytes"] if truncated else []
     decoded = _decode(bytes(body), charset)
-    text, title, date, method = extract(decoded, media or "text/html")
+    text, title, extracted, method = extract(decoded, media or "text/html")
     if method == "bs4":
         notes.append("main text taken by fallback extraction")
     text = text.strip()
@@ -209,7 +292,9 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
     if len(text) > MAX_TEXT_CHARS:
         text = text[:MAX_TEXT_CHARS]
         notes.append(f"text clipped to {MAX_TEXT_CHARS} characters")
-    page = Page(url=url, final_url=final_url, title=" ".join(title.split())[:300], date=date, text=text,
+    date, date_source = publication_date(decoded, final_url, extracted, media or "text/html")
+    page = Page(url=url, final_url=final_url, title=" ".join(title.split())[:300], date=date,
+                date_source=date_source, text=text,
                 sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), fetched_at=_now(), status=status,
                 note="; ".join(notes), ok=True)
     if use_cache:
