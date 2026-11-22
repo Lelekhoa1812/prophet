@@ -541,3 +541,24 @@ the pack and its backtest scores in panel_backtest, and the planner could not jo
 side by side, to the panel pack's observation, and the pack reports its horizon, context and model. Rep 9 finished
 verified with them. It also wrote that Huairou had a `flat_expected` verdict while the pack gave it `ok`;
 `answer_series_health_matches` now blocks that (one hit in 150 stored answers, this one).
+
+### Levels are not summed (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| retail rep 9 | 25fa8df | **completed** | **done_verified** | 225 | 13 |
+| WTI rep 9 | 25fa8df | partial | figures unmatched | 541 | 33 |
+| WTI rep 10 | 56916c8 | partial | could not close a gap | 436 | 32 |
+| Beijing panel rep 10 | 56916c8 | **completed** | **done_verified** | 871 | 77 |
+
+WTI rep 9 gave "the 80% range for the 20-day total is $1,644 to $1,987" of an oil price, and Beijing reps 8 and 9 a 14-day
+panel total of PM2.5 concentrations (12,222 ug/m3). A price or a concentration is a level: its sum over days or stations
+means nothing. The computed accuracy paragraph produced those totals itself, so the figure check passed them, and Beijing
+rep 9 and older WTI runs were marked verified with them. `measure_is_level` reads the data's column names and the pack
+title (a flow name such as sales, kWh or a daily sum wins). For a level the paragraph now gives the 80% range of the average
+over the horizon and no panel total, and `answer_level_not_summed` blocks a stated total (7 hits in 150 stored answers, all
+WTI or Beijing; none on a flow goal). WTI rep 10 gave the average's range (82.18 to 99.34) and Beijing rep 10 no total.
+
+WTI rep 10 still ended partial: the evaluator's reason named the unsupported figures, the "Not settled" section copied it,
+and the answer failed the figure check on the figures it was describing. The gap is now written without figures. The
+slips themselves were real (drift MASE 7.29 written as 7.12; an outlier share of 2.0 % written as 2.1 %).
