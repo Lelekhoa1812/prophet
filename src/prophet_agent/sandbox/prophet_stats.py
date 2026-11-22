@@ -1105,6 +1105,67 @@ def isolation_outliers(
 _LEDGER_OUTCOMES = ("confirmed", "refuted", "not tested")
 
 
+def change_test(x: Any, recent: int = 28, lag: int | None = None, alpha: float = 0.1, dates: Any = None) -> tuple[str, dict]:
+    """Is the latest change real, or within the series' usual ups and downs? Returns (verdict, report).
+
+    Motivation vs Logic
+    Motivation (live retail_biz, 2026-11-23): asked "sales feel like they've been slipping; is that real?", the answer said
+    "the slip is real: the model captures a downward drift". A forecast's shape is not evidence of a change. A principal
+    analyst compares like with like and asks whether the change is larger than the changes the series usually shows.
+    Logic: the effect is the percent change of the mean of the last ``recent`` points against the mean of the ``recent``
+    points ``lag`` steps earlier (lag defaults to one year at a daily step, 364, when the history is long enough, so the
+    same weekdays and season are compared; else the window just before). The null is the same statistic for every earlier
+    window pair at the same lag, which carries the series' own seasonality, trend and noise. The two-sided p is the share
+    of null changes at least as large in size as the one observed. Verdict: "rise" or "decline" when p < alpha, else
+    "within usual variation". Needs at least 20 null pairs; fewer gives "not enough history".
+    Pass ``dates`` for a series with closed days (trading days): the values are placed on a calendar-day grid, ``recent``
+    and ``lag`` are then in days, and each window's mean skips the closed days. Without dates a step is one point, so 364
+    steps of a six-day trading week reach back about 14 months (live retail: "+113%" at 364 steps, +3% a year back by date).
+    """
+    raw = _values(x).astype(float)
+    if dates is not None:
+        idx = pd.to_datetime(pd.Index(dates))
+        if len(idx) != len(raw):
+            raise ValueError("dates must have one entry per value")
+        cal = pd.Series(raw, index=idx).groupby(level=0).mean().asfreq("D")
+        arr = cal.to_numpy(dtype=float)
+    else:
+        arr = raw[np.isfinite(raw)]
+    n = len(arr)
+    recent = int(recent)
+    if lag is None:
+        lag = 364 if n >= 364 + 2 * recent + 20 else recent
+    lag = int(lag)
+    if recent < 2 or lag < recent or n < lag + recent + 20:
+        return "not enough history", {"points": n, "recent": recent, "lag": lag,
+                                      "note": "need at least lag + recent + 20 points to compare the change with usual ones"}
+
+    def pct(end: int) -> float | None:
+        a_now, a_before = arr[end - recent:end], arr[end - lag - recent:end - lag]
+        if np.isfinite(a_now).sum() < 2 or np.isfinite(a_before).sum() < 2:
+            return None
+        now, before = np.nanmean(a_now), np.nanmean(a_before)
+        return None if before == 0 else float((now - before) / abs(before) * 100)
+
+    observed = pct(n)
+    null = [v for end in range(lag + recent, n - recent + 1) if (v := pct(end)) is not None]
+    if observed is None or len(null) < 20:
+        return "not enough history", {"points": n, "recent": recent, "lag": lag, "null_pairs": len(null)}
+    nul = np.asarray(null)
+    p = float((np.sum(np.abs(nul) >= abs(observed)) + 1) / (len(nul) + 1))
+    verdict = ("decline" if observed < 0 else "rise") if p < alpha else "within usual variation"
+    unit = "days" if dates is not None else "points"
+    against = ("the same weeks one year earlier" if lag == 364 else
+               ("the window just before" if lag == recent else f"the {recent} {unit} {lag} {unit} earlier"))
+    q10, q50, q90 = (float(v) for v in np.percentile(nul, [10, 50, 90]))
+    return verdict, {"change_pct": round(observed, 1), "p_value": round(p, 3), "alpha": alpha, "recent": recent, "lag": lag,
+                     "compared_with": against, "unit": unit,
+                     "usual_change_pct_10_50_90": [round(q10, 1), round(q50, 1), round(q90, 1)], "null_pairs": len(nul),
+                     "reading": (f"the last {recent} {unit} are {observed:+.1f}% against {against}; "
+                                 f"{100 * p:.0f}% of earlier changes at this lag were as large (p = {p:.3f}), so this is "
+                                 + ("a real " + verdict if verdict in ("rise", "decline") else "within usual variation"))}
+
+
 class Ledger:
     """The data-quality and decision ledger: what was found, what was decided, and the evidence for it.
 
