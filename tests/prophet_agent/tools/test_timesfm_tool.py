@@ -153,3 +153,36 @@ def test_season_and_centre_are_accepted_and_do_not_change_the_forecast(stub_engi
     assert passed["point"] == plain["point"] and passed["config"] == plain["config"]
     with pytest.raises(ValueError, match="unknown arguments"):
         _run({"values": list(range(40)), "horizon": 3, "period_days": 7}, "k")
+
+
+def test_the_record_states_the_series_step_when_its_dates_are_known(stub_engine, monkeypatch):
+    # Live (2026-11-22, Motivation vs Logic of horizon_checks): a calendar request could only warn, because the forecast record
+    # never stated the series step. A dated series now records its own step; a values-only series keeps no step.
+    import sys
+    from datetime import date, timedelta
+    from prophet_agent.tools.timesfm_tool import _run
+    timesfm_tool = sys.modules["prophet_agent.tools.timesfm_tool"]     # the package re-exports a function of the same name
+    daily = [(date(2024, 1, 1) + timedelta(days=i)).isoformat() for i in range(40)]
+    weekly = [(date(2024, 1, 1) + timedelta(days=7 * i)).isoformat() for i in range(40)]
+    monthly = [date(2020 + (m // 12), m % 12 + 1, 1).isoformat() for m in range(40)]
+    values = list(range(40))
+    plain = _run({"values": values, "horizon": 3}, "k")
+    assert "series_step" not in plain["config"]
+    monkeypatch.setattr(timesfm_tool, "resolve_series", lambda args: [("series", np.arange(40, dtype=float))])
+    for dates, step in ((daily, 1.0), (weekly, 7.0)):
+        monkeypatch.setattr(timesfm_tool, "run_dates", lambda args, name, d=dates: d)
+        out = _run({"source": {"run_id": "ab" * 16}, "horizon": 3}, "k")
+        assert out["config"]["series_step"] == step
+    monkeypatch.setattr(timesfm_tool, "run_dates", lambda args, name: monthly)
+    out = _run({"source": {"run_id": "ab" * 16}, "horizon": 3}, "k")
+    assert 30.0 <= out["config"]["series_step"] <= 31.0, "a monthly series steps 28 to 31 days; the median sits near 30.4"
+
+
+def test_typical_step_ignores_one_missing_date_and_refuses_what_does_not_parse():
+    from prophet_agent.tools.timesfm_tool import _typical_step
+    days = ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-05", "2024-01-06"]     # one gap of two days
+    assert _typical_step(days) == 1.0
+    assert _typical_step(["2024-01-01 00:00:00", "2024-01-02 00:00:00", "2024-01-03 00:00:00"]) == 1.0
+    assert _typical_step(["2024-01-01", "2024-01-01", "2024-01-01"]) is None, "duplicates give no positive gap"
+    assert _typical_step(["2024-01-01", "not a date", "2024-01-03"]) is None
+    assert _typical_step(["2024-01-01", "2024-01-02"]) is None, "two dates are too few to call a step"

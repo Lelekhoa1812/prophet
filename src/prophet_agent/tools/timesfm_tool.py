@@ -18,7 +18,7 @@ from prophet_agent.forecast.health import assess
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
 from prophet_agent.forecast.tsb import TSB, expected_volume
 from prophet_agent.runtime.runner import Tool
-from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
+from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, run_dates, source_covariates
 
 QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 MAX_HORIZON = 512
@@ -103,9 +103,35 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
             f = engine.forecast_controlled(s, horizon, c)
             pairs.append((f.point, f.q))
     results = {name: _one(s, pairs[i][0], pairs[i][1], horizon, engine, controls[i]) for i, (name, s) in enumerate(named)}
+    for name, r in results.items():
+        step = _typical_step(run_dates(args, name))
+        if step is not None:
+            r["config"]["series_step"] = step      # the series' own step, so a request in weeks or months can be converted
     if len(results) == 1 and ("values" in args or "series" in results):
         return next(iter(results.values()))        # one unnamed series keeps the flat shape
     return {"series": results}
+
+
+def _typical_step(dates: list[str] | None) -> float | None:
+    """The median gap between consecutive dates, in days. None when there are fewer than three dates or they do not parse.
+
+    Motivation vs Logic
+    Motivation: "next 6 weeks" means 6 periods of a weekly series and 42 of a daily one. The forecast record has to say which
+    series it forecast, or the horizon check cannot convert the request, and it can only warn.
+    Logic: the median of the positive gaps, so one missing date or a duplicate does not move the step. Dates come from the
+    run that holds the series; a values-only series has none and the record keeps no step.
+    """
+    if not dates or len(dates) < 3:
+        return None
+    try:
+        t = np.array([np.datetime64(str(d).strip().replace(" ", "T")[:19]) for d in dates], dtype="datetime64[s]")
+    except (ValueError, TypeError):
+        return None
+    gaps = np.diff(t).astype("timedelta64[s]").astype(float) / 86400.0
+    gaps = gaps[gaps > 0]
+    if gaps.size == 0:
+        return None
+    return round(float(np.median(gaps)), 4)
 
 
 def _thin(v: list[float]) -> list[float]:
