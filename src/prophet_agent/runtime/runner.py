@@ -34,6 +34,9 @@ class Paused(Exception):
         self.question_id = question_id
 
 
+READ_ONLY = ("analyst_skill", "notes")   # reads of playbooks and notes are not charged to a call budget
+
+
 class Cancelled(Exception):
     """The person asked this mission to stop."""
 
@@ -81,7 +84,7 @@ class Ctx:
 
     def _guard_budget(self) -> None:
         limit = self.rt.budget.get("max_tool_calls")
-        if limit is not None and self.store.count_tool_calls(self.mission_id) >= int(limit):
+        if limit is not None and self.store.count_tool_calls(self.mission_id, exclude=READ_ONLY) >= int(limit):
             raise BudgetExceeded("max_tool_calls")
 
     def step(self, name: str, fn: Callable[["Ctx"], Any]) -> Any:

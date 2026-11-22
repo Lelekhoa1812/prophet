@@ -471,9 +471,24 @@ class Store:
             rows = self.conn.execute(q + " ORDER BY updated DESC", args).fetchall()
         return [{"scope": r["scope"], "name": r["name"], "chars": r["chars"]} for r in rows]
 
-    def count_tool_calls(self, mission_id: str) -> int:
+    def tool_args(self, mission_id: str, tool: str) -> list[dict]:
+        """The arguments of every call of ``tool`` in this mission, in step order (the ledger is the complete record)."""
         with self.lock:
-            row = self.conn.execute("SELECT COUNT(*) AS n FROM tool_calls WHERE mission_id=?", (mission_id,)).fetchone()
+            rows = self.conn.execute("SELECT args_json FROM tool_calls WHERE mission_id=? AND tool=? ORDER BY step_idx",
+                                     (mission_id, tool)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                out.append(json.loads(r["args_json"]))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def count_tool_calls(self, mission_id: str, exclude: tuple[str, ...] = ()) -> int:
+        marks = ",".join("?" for _ in exclude)
+        sql = "SELECT COUNT(*) AS n FROM tool_calls WHERE mission_id=?" + (f" AND tool NOT IN ({marks})" if exclude else "")
+        with self.lock:
+            row = self.conn.execute(sql, (mission_id, *exclude)).fetchone()
         return int(row["n"])
 
     def tool_keys_waiting(self, mission_id: str) -> list[str]:

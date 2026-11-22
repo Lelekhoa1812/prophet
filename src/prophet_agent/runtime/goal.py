@@ -258,9 +258,27 @@ def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dic
     return open_qs, [str(q.get("question", ""))[:160] for q in repeated]
 
 
+READ_ONLY_TOOLS = ("analyst_skill", "notes")      # reading a playbook or a note does no work, so it is not charged to the budget
+
+
 def _calls_used(history: list[dict]) -> int:
-    """Tool calls made so far: unknown-tool slips never reached the runtime, so they are not counted."""
-    return sum(1 for h in history if h.get("kind") == "tool" and not str(h.get("error", "")).startswith("unknown tool"))
+    """Tool calls made so far: unknown-tool slips never reached the runtime, and reads of playbooks and notes are not work."""
+    return sum(1 for h in history if h.get("kind") == "tool" and h.get("tool") not in READ_ONLY_TOOLS
+               and not str(h.get("error", "")).startswith("unknown tool"))
+
+
+def _skills_read_note(ctx: Ctx) -> str:
+    """The playbooks already read in this mission, from the ledger (compaction drops their text from the view, and a planner that
+    cannot see them reads them again: ten of twenty calls in one live run). Replay-safe: it only feeds a planner step."""
+    seen: list[str] = []
+    for a in ctx.store.tool_args(ctx.mission_id, "analyst_skill"):
+        n = a.get("name") if isinstance(a, dict) else None
+        if isinstance(n, str) and n not in seen:
+            seen.append(n)
+    if not seen:
+        return ""
+    return ("Playbooks already read in this mission: " + ", ".join(seen) + ". Their rules are applied in the work above and recorded in "
+            "FOUND and notes; read one again only for an exact threshold you need now, never to refresh your memory.")
 
 
 def _corrections(history: list[dict]) -> int:
@@ -666,6 +684,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         _compact(ctx, brain, goal, history, memo, f"{tag}:{i}", view_chars=cfg.view_chars,
                  keep_recent=cfg.keep_recent, memory_chars=cfg.memory_chars)
         note = _budget_note(i, cfg, history)
+        if (read_note := _skills_read_note(ctx)):
+            note += "\n\n" + read_note
         if cfg.depth == 0 and FORECAST_GOAL.search(goal):
             # The checklist is derived from the evidence on every step, so it cannot drift and a resumed run sees the same one.
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),

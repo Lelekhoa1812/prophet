@@ -192,3 +192,19 @@ def test_external_series_checklist_asks_for_outside_context_until_a_researcher_o
 def test_calibrate_accepts_the_season_argument_the_backtest_takes():
     from prophet_agent.tools.calibrate_tool import ALLOWED
     assert "season" in ALLOWED
+
+
+def test_playbook_and_note_reads_are_not_charged_to_the_call_budget(tmp_path):
+    from prophet_agent.runtime.goal import _calls_used
+    from prophet_agent.runtime.store import Store
+    hist = [{"kind": "tool", "tool": "analyst_skill", "args": {}, "result": {}},
+            {"kind": "tool", "tool": "notes", "args": {}, "result": {}},
+            {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {}}]
+    assert _calls_used(hist) == 1
+    store = Store(tmp_path / "s.sqlite")
+    m1 = store.create_mission("goal", {})
+    for i, (tool, args) in enumerate([("analyst_skill", {"name": "a"}), ("analyst_skill", {"name": "b"}), ("sandbox_python", {"code": "x"})]):
+        store.tool_start(m1, i, tool, args, f"k{i}")
+    assert store.count_tool_calls(m1) == 3
+    assert store.count_tool_calls(m1, exclude=("analyst_skill",)) == 1
+    assert [a["name"] for a in store.tool_args(m1, "analyst_skill")] == ["a", "b"]
