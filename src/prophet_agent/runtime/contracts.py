@@ -440,9 +440,48 @@ def check_scan(history, run_root) -> dict | None:
 CONTROL_OPTIONS = ("context_points", "ignore_ranges", "znorm", "symmetric_averaging")   # drivers (covariates) are inputs, not tuning
 
 
-def used_controls(args: dict) -> list[str]:
-    """The TimesFM tuning options a forecast call switched on (a false or empty value is the default)."""
-    return [k for k in CONTROL_OPTIONS if args.get(k)]
+SELECTION_LIMIT = 3       # configurations a planner may try on one series before the choice is reported as an optimistic selection
+
+
+def used_controls(args: dict, n_points: int | None = None) -> list[str]:
+    """The TimesFM tuning options a forecast call switched on (a false or empty value is the default). A context window that
+    covers the whole history is a no-op, not a treatment: the default already uses every point (A6-08; live retail rep4 used
+    context_points=504 on 504 points, measured configured_vs_default_pct 0.0, and counted it as tested). The history length is
+    ``n_points`` when known, else the length of the call's ``values``."""
+    if n_points is None and isinstance(args.get("values"), list):
+        n_points = len(args["values"])
+    out: list[str] = []
+    for k in CONTROL_OPTIONS:
+        v = args.get(k)
+        if not v:
+            continue
+        if k == "context_points" and _is_int(v) and _is_int(n_points) and v >= n_points:
+            continue
+        out.append(k)
+    return out
+
+
+def check_selection(history) -> dict | None:
+    """Warns when more than SELECTION_LIMIT distinct treatment configurations were backtested on the mission's series. Each
+    configured backtest is scored on the windows it was chosen on, with no multiplicity control, so the best of many is
+    optimistic (A6-08). A warning. None when no configured backtest ran."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    configs = set()
+    for h in obs:
+        if not isinstance(h.get("args"), dict) or _ok_result(h, "backtest_series") is None:
+            continue
+        used = used_controls(h["args"])
+        if used:
+            configs.add(tuple((k, str(h["args"].get(k))) for k in used))
+    if not configs:
+        return None
+    if len(configs) > SELECTION_LIMIT:
+        return _check("controls_selection", False,
+                      f"{len(configs)} treatment configurations were backtested on the same series; the best of them is optimistic "
+                      f"(more than {SELECTION_LIMIT} tried). Report the number tried, or confirm the choice with control_lab",
+                      "warn")
+    return _check("controls_selection", True,
+                  f"{len(configs)} treatment configuration(s) backtested, within the {SELECTION_LIMIT} allowed", "warn")
 
 
 # The lab candidates that measure each hand-set treatment. The lab's own candidates are close to the planner's options, not
@@ -464,7 +503,8 @@ def check_controls(history, args: dict, record: dict | None = None) -> dict | No
     most do not. Blocking when no lab measured it. Audit item 18: a lab counts only when it measured THIS forecast, so it must
     have run on the same horizon and series length (``record`` is the forecast's own record), and its table must hold a
     candidate for each treatment the forecast uses. A warning when the lab recommended the default or another treatment."""
-    used = used_controls(args)
+    rec_cfg = record.get("config") if isinstance(record, dict) and isinstance(record.get("config"), dict) else {}
+    used = used_controls(args, rec_cfg.get("history_points"))
     if not used:
         return None
     labs = [r for h in history if isinstance(r := _ok_result(h, "control_lab"), dict)]
@@ -850,6 +890,10 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         outliers = check_outlier_share(obs, run_root)
         if outliers is not None:
             checks.append(outliers)
+
+    selection = check_selection(obs)
+    if selection is not None:
+        checks.append(selection)
 
     if backtests and isinstance(backtests[-1].get("models"), dict):
         checks.extend(check_backtest(backtests[-1]))
