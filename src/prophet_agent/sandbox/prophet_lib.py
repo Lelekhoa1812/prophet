@@ -857,15 +857,72 @@ def _r(x: Any) -> float:
 
 # ----------------------------------------------------------------------------------------- building a series --
 
+# ------------------------------------------------------------------------------------------ panels of entities --
+# A long table often holds several entities (stations, products) that share dates. Adding them up silently gives a total
+# that no one asked for. So a table whose dates repeat across a text column that names entities must say which entity
+# it means: pass entity= and key=, pass agg= explicitly, or use pl.panel for all of them.
+
+_ENTITY_MAX_LEVELS = 100      # more distinct labels than this is not a short list of entities
+
+
+def _entity_columns(df: pd.DataFrame, time: str, value: str, ts: pd.Series) -> list[str]:
+    """Text columns that look like entities: 2 to 100 distinct labels, and at least one date that has several of them."""
+    dates = pd.Series(np.asarray(ts), index=df.index, name="_date")
+    found: list[str] = []
+    for col in df.columns:
+        if col in (time, value):
+            continue
+        s = df[col]
+        if pd.api.types.is_numeric_dtype(s) or pd.api.types.is_datetime64_any_dtype(s) or pd.api.types.is_bool_dtype(s):
+            continue
+        if not 2 <= s.nunique(dropna=True) <= _ENTITY_MAX_LEVELS:
+            continue
+        per_date = pd.DataFrame({"_date": dates, "_label": s}).dropna().groupby("_date")["_label"].nunique()
+        if (per_date > 1).any():
+            found.append(str(col))
+    return found
+
+
+def _panel_guard(df: pd.DataFrame, time: str | None, value: str, agg: str | None, entity: str | None,
+                 key: Any) -> tuple[pd.DataFrame, str]:
+    """Pick the rows to use and the aggregation. Returns (frame, agg); agg is "sum" when the caller gave none and no
+    entity column was found. Raises ValueError when entities share dates and the caller did not say which one it means."""
+    if entity is not None:
+        if entity not in df.columns:
+            raise ValueError(f"no column {entity!r}; the columns are {list(df.columns)[:30]}")
+        if key is None:
+            raise ValueError(f"entity={entity!r} needs key= (one value of that column). For every entity at once use "
+                             f"pl.panel(df, {entity!r}, time, value)")
+        rows = df[df[entity].astype(str).str.strip() == str(key).strip()]
+        if rows.empty:
+            labels = sorted(df[entity].dropna().astype(str).unique())[:20]
+            raise ValueError(f"no rows with {entity} == {key!r}; the values are {labels}")
+        return rows, agg or "sum"
+    if agg is None and time is not None:
+        ts, _ = to_datetime(df[time])
+        if pd.Series(np.asarray(ts)).dropna().duplicated().any():
+            found = _entity_columns(df, time, value, ts)
+            if found:
+                col = found[0]
+                raise ValueError(f"the column {col!r} names several entities that share dates, and adding them would mix them "
+                                 f"together. Pass entity={col!r} and key=<one value>, or pl.panel(df, {col!r}, {time!r}, "
+                                 f"{value!r}) for all of them. Pass agg='sum' only if the rows are parts of one total.")
+    return df, agg or "sum"
+
+
 def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq: str | None = None,
-                 agg: str = "sum", fill: str = "keep", sentinel: list[float] | None = None) -> pd.Series:
+                 agg: str | None = None, fill: str = "keep", sentinel: list[float] | None = None,
+                 entity: str | None = None, key: Any = None) -> pd.Series:
     """One numeric series, oldest first, from a frame of strings.
 
     ``freq`` is a pandas offset alias (for example "D", "W", "MS"); when given, rows are aggregated with ``agg`` and the
     calendar is made complete. ``fill`` says what to do with the gaps this creates: "keep" (leave NaN), "zero", or
-    "interpolate". ``sentinel`` lists codes to treat as missing. Choosing these is the caller's decision, and it should
-    be reported in the answer.
+    "interpolate". ``sentinel`` lists codes to treat as missing. ``entity`` and ``key`` select one entity (for example
+    entity="station", key="Beijing"). When entities share dates and neither is given, this raises ValueError, because a
+    sum would add them together; ``agg`` given explicitly also lifts that check. Choosing these is the caller's decision,
+    and it should be reported in the answer.
     """
+    df, agg = _panel_guard(df, time, value, agg, entity, key)
     num, _ = to_number(df[value])
     if sentinel:
         num = num.mask(num.isin(sentinel))
@@ -886,14 +943,18 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
 
 
 def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None,
-                covariates: dict[str, Any] | None = None) -> str:
+                covariates: dict[str, Any] | None = None, name: str | None = None) -> str:
     """Write series for the forecast tools: a list, a Series (its dates are kept for charts) or a dict of named ones.
 
-    ``covariates`` maps a name to a list of numbers kept beside the series. A driver known only up to now (price paid)
-    must be as long as the history; one known ahead (a planned promotion, holidays) must be as long as the history plus the
-    horizon you will forecast. The forecast tools then take them by name: future_covariates=['promo'].
+    ``name`` labels one series (a list or a Series); load_series returns it with that name. It cannot be combined with a
+    dict, whose keys are the names. ``covariates`` maps a name to a list of numbers kept beside the series. A driver known
+    only up to now (price paid) must be as long as the history; one known ahead (a planned promotion, holidays) must be as
+    long as the history plus the horizon you will forecast. The forecast tools then take them by name:
+    future_covariates=['promo'].
     """
-    items = series if isinstance(series, dict) else {"series": series}
+    if name is not None and isinstance(series, dict):
+        raise ValueError("name= labels one series; for a dict of series, the dict keys are the names")
+    items = series if isinstance(series, dict) else {(str(name) if name is not None else "series"): series}
     out: dict[str, Any] = {"series": {}, "dates": {}}
     if covariates:
         clean: dict[str, list[float]] = {}
@@ -916,9 +977,12 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
             raise ValueError(f"series {name!r} still has {sum(v != v for v in vals)} missing values; fill or drop them before saving "
                              "(the choice affects the forecast, so make it explicitly)")
         out["series"][name] = vals
-    if len(out["series"]) == 1 and "series" in out["series"]:
-        out["series"] = out["series"]["series"]
-        out["dates"] = out["dates"].get("series", [])
+    only = next(iter(items)) if len(items) == 1 else None
+    if only is not None and (only == "series" or name is not None):
+        out["series"] = out["series"][only]
+        out["dates"] = out["dates"].get(only, [])
+        if name is not None:
+            out["name"] = str(name)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(out), encoding="utf-8")
     return path
@@ -937,12 +1001,28 @@ def load_series(path: str | Path = "in/carried/series.json", name: str | None = 
         d = (dates or {}).get(k) or []
         idx = pd.DatetimeIndex(pd.to_datetime(d)) if len(d) == len(series[k]) else None
         return pd.Series(series[k], index=idx, name=k, dtype=float)
+    single = list(series) == ["series"]
+    if single and "name" in obj:                 # a file saved with save_series(..., name=...)
+        label = str(obj["name"])
+        if name is not None and name not in (label, "series"):
+            raise KeyError(f"no series {name!r}; the file holds {[label]}")
+        return build("series").rename(label)
     if name is not None:
         if name not in series:
             raise KeyError(f"no series {name!r}; the file holds {sorted(series)}")
         return build(name)
     built = {k: build(k) for k in series}
-    return built["series"] if list(built) == ["series"] else built
+    return built["series"] if single else built
+
+
+def save_panel(panel: Any, path: str = "out/series.json", *, freq: str | None = None) -> str:
+    """Write every entity of a ``pl.panel`` result in the multi-series format the forecast tools read (one file, one entry
+    per entity, with dates). Returns the path written. Read it back with pl.load_series(path, name=<entity>)."""
+    if isinstance(panel, tuple):                 # the (series dict, report table) pair, as returned
+        panel = panel[0]
+    if not isinstance(panel, dict) or not panel:
+        raise ValueError("pass the first item of pl.panel(...), the dict of entity series")
+    return save_series({str(k): v for k, v in panel.items()}, path, freq=freq)
 
 
 # ------------------------------------------------------------------------------------ repeating cycles --
@@ -1034,10 +1114,13 @@ def _infer_freq(idx: pd.DatetimeIndex) -> str | None:
     return None
 
 
-def prepare_series(data: Any, value: str | None = None, time: str | None = None, *, freq: str | None = None, agg: str = "sum",
-                   max_short_gap: int | None = None, trim_tail: bool = True) -> tuple[pd.Series, dict]:
+def prepare_series(data: Any, value: str | None = None, time: str | None = None, *, freq: str | None = None,
+                   agg: str | None = None, max_short_gap: int | None = None, trim_tail: bool = True,
+                   entity: str | None = None, key: Any = None) -> tuple[pd.Series, dict]:
     """A forecast-ready series and a report of every choice made. ``data`` is a frame of strings (give ``value`` and
-    ``time``) or a Series with a date index.
+    ``time``) or a Series with a date index. ``entity`` and ``key`` pick one entity from a long table (for example
+    entity="station", key="Beijing"). For several entities at once use pl.panel. When entities share dates and neither
+    is given, this raises ValueError, because a sum would mix them.
 
     The step is inferred from the dates unless ``freq`` is given; rows that share a period are combined with ``agg``.
     Missing periods stay missing until the end: a gap is never turned into zero. Leading and trailing gaps are cut off
@@ -1049,11 +1132,13 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     """
     notes: list[str] = []
     if isinstance(data, pd.Series):
+        agg = agg or "sum"                      # a Series has no entity column, so the sum default applies
         raw = data.astype(float)
         raw = raw[raw.index.notna()].sort_index()
     else:
         if value is None or time is None:
             raise ValueError("give value= and time= column names when passing a table")
+        data, agg = _panel_guard(data, time, value, agg, entity, key)
         num, _ = to_number(data[value])
         ts, _ = to_datetime(data[time])
         raw = pd.Series(num.values, index=ts)       # rows with no value stay: an empty edge is a fact the report states
@@ -1134,6 +1219,36 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
     return s, report
 
 
+def panel(df: pd.DataFrame, entity: str, time: str, value: str, freq: str | None = None) -> tuple[dict, pd.DataFrame]:
+    """Split a long table by ``entity`` and prepare one series per entity with prepare_series.
+
+    Returns (series, report). ``series`` maps each entity label (as text) to its forecast-ready series. ``report`` has one
+    row per entity: rows read, first and last date, periods, gaps filled, zero share, missing share, and the step used.
+    Rows with no entity label are left out and the report table says so in ``attrs['dropped_rows']``. Save the whole
+    panel for the forecast tools with pl.save_panel(series, 'out/series.json').
+    """
+    for col in (entity, time, value):
+        if col not in df.columns:
+            raise ValueError(f"no column {col!r}; the columns are {list(df.columns)[:30]}")
+    labelled = df[df[entity].notna()]
+    series: dict[str, pd.Series] = {}
+    rows: list[dict] = []
+    for label, sub in labelled.groupby(entity, sort=True):
+        s, rep = prepare_series(sub, value, time, freq=freq)
+        series[str(label)] = s
+        periods = rep["periods"]
+        rows.append({
+            "entity": str(label), "rows": rep["rows_read"], "first": rep["first"], "last": rep["last"],
+            "periods": periods, "gaps_filled": rep["filled_periods"],
+            "zero_share": round(rep["zero_periods"] / periods, 4) if periods else 0.0,
+            "missing_share": round(1 - rep["observed_share"], 4), "freq": rep["freq"],
+        })
+    report = pd.DataFrame(rows, columns=["entity", "rows", "first", "last", "periods", "gaps_filled", "zero_share",
+                                         "missing_share", "freq"])
+    report.attrs["dropped_rows"] = int(len(df) - len(labelled))
+    return series, report
+
+
 # -------------------------------------------------------------------------- events, holidays, anomalies --
 # Known-ahead drivers and suspicious points, built here so the agent states each choice in code and can chart it. These
 # report facts and build arrays; whether a spike is an error to ignore or an event to explain is the caller's decision.
@@ -1186,15 +1301,23 @@ def holiday_covariate(index: Any, country: str, subdiv: str | None = None, horiz
     return event_covariate(index, [(d["date"], d["date"]) for d in days], horizon, freq)
 
 
-def detect_anomalies(values: list[float] | np.ndarray, season: int | None = None, threshold: float = 6.0) -> dict:
+def detect_anomalies(values: list[float] | np.ndarray, season: int | None = None, threshold: float = 6.0,
+                     dates: Any = None) -> dict:
     """Points far from what their neighbours or the previous cycle imply, scored with a robust spread (median absolute
     deviation) so the outliers themselves do not hide each other. Returns index ranges in the form the forecast tools take
     as ignore_ranges. A promotion or a holiday also looks like a spike: compare these against known events before ignoring
-    anything, and ignore only what has no explanation."""
+    anything, and ignore only what has no explanation.
+
+    Every path returns the same keys. ``candidates`` is a list of {index, date, value, score, rule}; ``date`` is filled
+    when ``dates`` (one per value) is given, else None. ``values`` and ``scores`` run alongside ``indices``."""
     x = np.asarray(values, dtype=float)
     n = len(x)
+    date_text = None
+    if dates is not None and len(dates) == n:
+        date_text = [str(d) for d in dates]
     if n < 12:
-        return {"note": "too short to judge", "points": n, "indices": [], "ignore_ranges": []}
+        return {"method": "too short to judge", "note": "too short to judge", "threshold": threshold, "robust_spread": None,
+                "points": n, "indices": [], "scores": [], "values": [], "candidates": [], "ignore_ranges": []}
     m = int(season) if season and season > 1 and season * 2 <= n else 0
     if m:
         # Full windows only: a truncated window at the edge does not span a whole cycle and would bias the level there.
@@ -1204,11 +1327,13 @@ def detect_anomalies(values: list[float] | np.ndarray, season: int | None = None
         profile = np.array([np.nanmedian(detrended[phase == r]) for r in range(m)])
         resid = detrended - profile[phase]
         method = f"distance from the level and the usual shape of a cycle (cycle of {m})"
+        rule = "robust_z_cycle"
     else:
         k = 7 if n >= 28 else 3
         med = pd.Series(x).rolling(k, center=True, min_periods=1).median().to_numpy()
         resid = x - med
         method = f"distance from the rolling median (window {k})"
+        rule = "robust_z_rolling_median"
     ok = np.isfinite(resid)
     centre = np.median(resid[ok])
     mad = np.median(np.abs(resid[ok] - centre))
@@ -1221,29 +1346,62 @@ def detect_anomalies(values: list[float] | np.ndarray, season: int | None = None
             ranges[-1][1] = i + 1
         else:
             ranges.append([i, i + 1])
-    return {"method": method, "threshold": threshold, "robust_spread": round(float(scale), 6),
+    candidates = [{"index": int(i), "date": date_text[i] if date_text else None, "value": round(float(x[i]), 6),
+                   "score": round(float(score[i]), 2), "rule": rule} for i in idx.tolist()]
+    return {"method": method, "threshold": threshold, "robust_spread": round(float(scale), 6), "points": n,
             "indices": [int(i) for i in idx], "scores": [round(float(score[i]), 2) for i in idx],
-            "values": [round(float(x[i]), 6) for i in idx], "ignore_ranges": ranges}
+            "values": [round(float(x[i]), 6) for i in idx], "candidates": candidates, "ignore_ranges": ranges}
+
+
+# A lag counts as a repeating cycle when its autocorrelation is at least this high (the same bar as dominant_period).
+SEASON_PEAK_MIN = 0.3
+# A shorter lag is preferred over the best peak when it is within this much autocorrelation of it: a multiple of a true
+# period has nearly the same autocorrelation, so the shortest such lag is the period.
+SEASON_TOLERANCE = 0.1
 
 
 def find_season(values: list[float] | np.ndarray, candidates: tuple[int, ...] | None = None) -> dict:
-    """Autocorrelation at likely seasonal lags, after removing a linear trend. Facts for the caller to weigh."""
-    x = np.asarray(values, dtype=float)
-    x = x[np.isfinite(x)]
+    """Autocorrelation at likely seasonal lags, after removing a linear trend. Facts for the caller to weigh.
+
+    Missing values stay in place: each lag uses only the pairs where both points are observed, so the time axis is never
+    shifted. The strongest lag is the shortest candidate whose autocorrelation is within SEASON_TOLERANCE of the best
+    peak, so a multiple of the true period (14 for 7) is not reported. ``strongest_lag`` is None when no lag reaches
+    SEASON_PEAK_MIN."""
+    x = np.asarray(values, dtype=float).reshape(-1)
+    observed = np.isfinite(x)
     n = len(x)
-    if n < 12:
-        return {"note": "too short to test for seasonality", "points": n}
-    t = np.arange(n)
-    x = x - np.polyval(np.polyfit(t, x, 1), t)
-    sd = x.std()
-    if sd == 0:
+    if int(observed.sum()) < 12:
+        return {"note": "too short to test for seasonality", "points": int(observed.sum())}
+    t = np.arange(n, dtype=float)
+    x = x - np.polyval(np.polyfit(t[observed], x[observed], 1), t)
+    x[~observed] = np.nan
+    sd = float(np.nanstd(x))
+    if not sd > 1e-12:
         return {"note": "series is constant after removing trend"}
-    x = (x - x.mean()) / sd
+    x = (x - np.nanmean(x)) / sd
     cands = candidates or tuple(l for l in (2, 3, 4, 5, 6, 7, 12, 24, 26, 48, 52, 96, 168, 365) if l < n // 2)
-    acf = {int(l): round(float(np.mean(x[l:] * x[:-l])), 3) for l in cands}
-    best = max(acf, key=acf.get) if acf else None
-    return {"autocorrelation_by_lag": acf, "strongest_lag": best, "strength": acf.get(best) if best else None,
-            "reading": "above about 0.3 suggests a repeating pattern at that lag; near 0 suggests none"}
+    acf: dict[int, float] = {}
+    for lag in sorted({int(l) for l in cands if 1 <= int(l) < n}):
+        a, b = x[lag:], x[:-lag]
+        both = np.isfinite(a) & np.isfinite(b)
+        if both.sum() < max(10, n // 4):      # too few pairs at this lag to judge it
+            continue
+        acf[lag] = round(float(np.mean(a[both] * b[both])), 3)
+    if not acf:
+        return {"note": "too few paired points at every candidate lag", "points": int(observed.sum())}
+    best_lag = max(acf, key=acf.get)
+    best = acf[best_lag]
+    chosen = best_lag
+    if best >= SEASON_PEAK_MIN:
+        for lag in sorted(acf):
+            if lag < best_lag and acf[lag] >= best - SEASON_TOLERANCE:
+                chosen = lag
+                break
+    found = best >= SEASON_PEAK_MIN
+    return {"autocorrelation_by_lag": acf, "strongest_lag": chosen if found else None,
+            "strength": acf[chosen] if found else None, "best_peak_lag": best_lag,
+            "reading": f"a lag at or above {SEASON_PEAK_MIN} suggests a repeating pattern; none reached it here means no "
+                       "usable season"}
 
 
 # ------------------------------------------------------------------------------------------------- charts --
@@ -1699,6 +1857,46 @@ def query(sql: str, max_rows: int = 20_000, **files: str | Path) -> pd.DataFrame
     df = con.sql(stmt).limit(max_rows + 1).df()
     df.attrs["truncated"] = len(df) > max_rows
     return df.iloc[:max_rows]
+
+
+# ----------------------------------------------------------------------------- polars names on pandas objects --
+# The alias ``pl`` makes models write polars code. Four polars names are added to pandas objects, only where pandas has no
+# method of that name, so pandas behaviour is never replaced:
+#   DataFrame.null_count() -> one-row frame of missing counts per column; Series.null_count() -> int
+#   Series/DataFrame.is_null() and is_not_null() -> isna() and notna()
+#   Series/DataFrame.sort(by, descending=False) -> sort_values(by, ascending=not descending)
+# Anything else polars-only still raises AttributeError, as pandas does.
+
+def _install_polars_names() -> None:
+    def df_null_count(self: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame([self.isna().sum().to_dict()])
+
+    def series_null_count(self: pd.Series) -> int:
+        return int(self.isna().sum())
+
+    def df_sort(self: pd.DataFrame, by: Any = None, descending: bool = False, **kw: Any) -> pd.DataFrame:
+        if by is None:
+            raise ValueError("sort needs by=<column name or list of names>")
+        return self.sort_values(by=by, ascending=not descending, **kw)
+
+    def series_sort(self: pd.Series, descending: bool = False, **kw: Any) -> pd.Series:
+        return self.sort_values(ascending=not descending, **kw)
+
+    additions = {
+        pd.DataFrame: {"null_count": df_null_count, "is_null": lambda self: self.isna(),
+                       "is_not_null": lambda self: self.notna(), "sort": df_sort},
+        pd.Series: {"null_count": series_null_count, "is_null": lambda self: self.isna(),
+                    "is_not_null": lambda self: self.notna(), "sort": series_sort},
+    }
+    for cls, methods in additions.items():
+        for name, fn in methods.items():
+            if not hasattr(cls, name):
+                fn.__name__ = name
+                fn.__doc__ = f"polars name {name!r} on a pandas object (see prophet_lib, polars names)"
+                setattr(cls, name, fn)
+
+
+_install_polars_names()
 
 
 try:                                       # inside the sandbox the helpers sit side by side; in tests they are a package

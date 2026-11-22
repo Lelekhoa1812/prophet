@@ -549,9 +549,9 @@ def test_scan_reads_a_near_miss_entity_keyword_and_the_result_reads_as_attribute
     df = pd.DataFrame({"d": pd.date_range("2024-01-01", periods=60), "v": range(60), "sku": ["a"] * 60})
     r = sc.scan(df, "d", "v", entity_col="sku")
     assert r.summary["entity_cols"] == ["sku"] and r.findings is r["findings"]
-    bad = sc.scan(df, "d", "v", nonsense=1)
-    assert bad["findings"][0]["id"] == "schema.bad_argument"
     import pytest
+    with pytest.raises(TypeError, match="unexpected keyword argument.*nonsense.*scan\\(df, time_col"):
+        sc.scan(df, "d", "v", nonsense=1)
     with pytest.raises(AttributeError, match="findings"):
         r.results
     with pytest.raises(KeyError, match="keys are"):

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from prophet_agent.runtime.runner import Tool
+from prophet_agent.sandbox.catalogue import build_catalogue
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
 from prophet_agent.tools.series_io import RUN_ID
 
@@ -82,23 +83,30 @@ def sandbox_python_tool(datasets: dict[str, Path] | None = None) -> Tool:
     return Tool("sandbox_python", make_run(datasets), idempotent=True, observe=observe)
 
 
+_SPEC_TEXT = (
+    "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guardrailed sandbox: no network, no secrets, one "
+    "minute. pandas only: `pl` is prophet_lib, not polars (df.null_count(), is_null() and sort() work, as do the helpers "
+    "below). The person's uploaded files are in in/ (read-only). Import: `import prophet_lib as pl`, `import prophet_stats "
+    "as ps`, `import prophet_scan as sc`. A helper that returns (value, report) is unpacked: `value, report = ...`. "
+    "Entities that share dates are never summed silently: pass entity= and key=, or use pl.panel for all of them. "
+    "pl.chart(kind, data, x=, y=, title=<the finding>, subtitle=<measure, unit, period>, unit=, source=, path='out/name.png') "
+    "returns the problems it finds: read them. pl.size_report(path) and pl.query(sql, t=path) read files too big to load. "
+    "Also: pl.profile(path), pl.as_number(s), pl.as_dates(s), pl.tidy_text(s), pl.to_number(s) and pl.to_datetime(s) "
+    "(pairs: unpack them), pl.holiday_covariate(index, country, subdiv, horizon) and pl.event_covariate(index, "
+    "[(first, last), ...], horizon) for known-ahead drivers, pl.detect_anomalies(values, season) (its candidates are "
+    "measured facts to explain, not verdicts). "
+    "Write files to out/. Every run starts with an EMPTY out/; to read an earlier run's file, pass "
+    "carry=[{run_id, file: 'out/scan.json'}] and open it at in/carried/<file name>. "
+    "Print only what you need: output you do not print, you do not see. A series written with pl.save_series or "
+    "pl.save_panel can be forecast by passing source {run_id, file}. "
+    "Signatures (generated from the code; a keyword not listed is refused with the real signature):\n"
+)
+
 SANDBOX_PYTHON_SPEC = {
     "name": "sandbox_python",
     "title": "Analysis",
     "activity": "Running an analysis",
-    "description": "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guardrailed sandbox: no network, no "
-                   "secrets, one minute. The person's uploaded files are in in/ (read-only). `import prophet_lib as pl` "
-                   "gives pl.load(path, sheet) (one typed DataFrame: numbers and dates converted, blanks missing; the "
-                   "report is df.attrs['report']), pl.profile(path), pl.as_number(s), pl.as_dates(s, dayfirst=None), pl.tidy_text(s) (merge spellings that differ only in case or spacing), "
-                   "pl.prepare_series(df, value, time) (returns the series and a report: step, gaps, empty edges, carried-forward tail, repeating period, cycles in the history), pl.build_series(...), pl.find_season(values), pl.dominant_period(values) and pl.save_series(series, 'out/series.json', covariates={name: values}) and pl.load_series('in/carried/series.json') to read one back (carry it first). "
-                   "For events and spikes: pl.detect_anomalies(values, season) (candidates and ignore_ranges, to be explained before use), "
-                   "pl.list_holidays(country, subdiv, start, end), pl.holiday_covariate(index, country, subdiv, horizon) and "
-                   "pl.event_covariate(index, [(first_day, last_day), ...], horizon) (0 to 1 drivers as long as the history plus horizon). "
-                   "pl.read_table, pl.to_number and pl.to_datetime return (value, info) pairs: unpack both. Draw charts with pl.chart(kind, data, [x=<column>, y=<column or list>,] title=<the finding>, subtitle=<measure, unit, period>, unit=..., source=..., path=\"out/name.png\") and read the problems it returns. pl.size_report(path) and pl.query(sql, t=path) work on CSV or Parquet files too big to read whole (the query sees only the named files). Write files to out/. "
-                   "Every run starts with an EMPTY out/: a file written by an earlier run is not there. To read it, pass "
-                   "carry=[{run_id, file: 'out/scan.json'}] and open it at in/carried/<file name>. "
-                   "Print only what you need: output you do not print, you do not see. A series written with "
-                   "pl.save_series can be forecast by passing source {run_id, file}.",
+    "description": _SPEC_TEXT + build_catalogue(),
     "args": {"code": "Python source, at most 20000 characters",
              "carry": "optional list of {run_id, file} outputs of earlier runs, mounted read-only at in/carried/<file name>"},
 }

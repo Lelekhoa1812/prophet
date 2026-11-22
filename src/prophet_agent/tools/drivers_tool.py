@@ -138,12 +138,10 @@ if key not in named:
 dates = doc.get("dates") if isinstance(doc, dict) else None
 dates = dates.get(key) if isinstance(dates, dict) else (dates if len(named) == 1 else None)
 values = [float(v) for v in named[key]]
-res = pl.detect_anomalies(values, season={season!r}, threshold={threshold!r})
+dated = bool(dates) and len(dates) == len(values)
+res = pl.detect_anomalies(values, season={season!r}, threshold={threshold!r}, dates=dates if dated else None)
 res["series"] = key
-res["points"] = len(values)
-res["dated"] = bool(dates) and len(dates) == len(values)
-res["candidates"] = [{{"index": i, "value": v, "score": s, "date": (dates[i] if res["dated"] else None)}}
-                     for i, v, s in zip(res["indices"], res["values"], res["scores"])]
+res["dated"] = dated
 json.dump(res, open({out!r}, "w"))
 print(json.dumps({{"points": len(values), "candidates": len(res["indices"]), "ranges": len(res["ignore_ranges"])}}))
 '''

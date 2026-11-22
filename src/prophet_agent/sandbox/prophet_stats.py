@@ -32,6 +32,11 @@ from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.structural import UnobservedComponents
 from statsmodels.tsa.stattools import adfuller, kpss
 
+try:                                       # inside the sandbox the helpers sit side by side; in tests they are a package
+    from prophet_pair import accepts_aliases
+except ImportError:                        # pragma: no cover
+    from prophet_agent.sandbox.prophet_pair import accepts_aliases
+
 _MAD_SCALE = 1.4826  # makes the median absolute deviation comparable to a standard deviation for normal data
 _IQR_TO_SD = 1.349  # for normal data, the interquartile range is about 1.349 standard deviations
 _IMPUTE_METHODS = ("auto", "linear", "spline", "seasonal", "knn", "kalman")
@@ -140,11 +145,13 @@ def _ffill(arr: np.ndarray) -> np.ndarray:
 # Outliers
 # ---------------------------------------------------------------------------------------------------------------------
 
+@accepts_aliases({"n_sigma": "n_sigmas", "threshold": "n_sigmas"})
 def hampel(x: Any, window: int = 7, n_sigmas: float = 3.0, causal: bool = True) -> tuple[np.ndarray, dict]:
     """Flag spikes against a rolling median and a rolling MAD (median absolute deviation, scaled by 1.4826).
 
     Use it to find single-point spikes that are far from their neighbours. A point is flagged when it lies more than
-    ``n_sigmas`` robust standard deviations from the local median. With ``causal=True`` the window is the points up to
+    ``n_sigmas`` robust standard deviations from the local median (the names ``n_sigma`` and ``threshold`` are accepted
+    as aliases). With ``causal=True`` the window is the points up to
     and including the current one, so no future value can change an earlier flag. That is the only setting to use for a
     model input or a backtest. ``causal=False`` centres the window, which is fine for description only.
 
@@ -182,10 +189,12 @@ def hampel(x: Any, window: int = 7, n_sigmas: float = 3.0, causal: bool = True) 
     return flags, _py(report)
 
 
+@accepts_aliases({"robust": None})
 def stl_outliers(x: Any, period: int, k: float = 3.0) -> tuple[np.ndarray, dict]:
     """Flag points whose robust STL remainder is unusually large (two-sided, for description and diagnosis).
 
-    The series is decomposed with robust STL. The remainder is flagged where it lies more than ``k`` IQR-based standard
+    The series is decomposed with robust STL, which is always on (``robust=`` is accepted and has no effect). The
+    remainder is flagged where it lies more than ``k`` IQR-based standard
     deviations (IQR / 1.349) from the median remainder. Use it to see which points the seasonal pattern cannot explain.
     It reads the whole series, so it is not causal: do not feed its flags into a model that is backtested as causal.
 
@@ -523,6 +532,7 @@ def smooth(x: Any, method: str = "ewm", window: int = 7, causal: bool = True, **
 # Changepoints
 # ---------------------------------------------------------------------------------------------------------------------
 
+@accepts_aliases({"min_segment": "min_size", "max_cps": "max_changes", "method": None})
 def changepoints(
     x: Any,
     min_size: int = 20,
@@ -530,6 +540,9 @@ def changepoints(
     max_changes: int = 5,
 ) -> tuple[list[dict], dict]:
     """Find shifts in the mean by binary segmentation with a BIC-style penalty (numpy only).
+
+    Aliases: ``min_segment`` is ``min_size``, ``max_cps`` is ``max_changes``. ``method`` is accepted and ignored, because
+    binary segmentation is the only method here.
 
     The best split of each current segment is found by least squares. The split with the largest drop in residual sum
     of squares is accepted while that drop exceeds ``penalty``, up to ``max_changes`` splits. The default penalty is
@@ -1067,6 +1080,11 @@ class Ledger:
 
     def __init__(self) -> None:
         self._entries: list[dict[str, Any]] = []
+
+    @property
+    def entries(self) -> list[dict[str, Any]]:
+        """All entries in order, each with its running index. Read-only: a copy, so changing it changes nothing."""
+        return self.to_dict()
 
     def add(self, stage: str, finding: str, decision: str, evidence: Any = None) -> None:
         """Record one finding and the decision taken about it. stage, finding and decision must be non-empty text."""

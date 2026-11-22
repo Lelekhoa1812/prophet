@@ -34,6 +34,11 @@ from pandas.tseries.frequencies import to_offset
 from scipy import stats as _stats
 from statsmodels.tsa.stattools import acf as _acf
 
+try:                                       # inside the sandbox the helpers sit side by side; in tests they are a package
+    from prophet_pair import ReportDict, accepts_aliases
+except ImportError:                        # pragma: no cover
+    from prophet_agent.sandbox.prophet_pair import ReportDict, accepts_aliases
+
 try:  # inside the sandbox, prophet_stats is copied next to this file
     import prophet_stats as ps
 except ImportError:  # in the repository it is imported as part of the package
@@ -200,7 +205,8 @@ def _result(findings: list[dict], summary: dict) -> dict:
     out_summary = dict(summary)
     out_summary["severity_counts"] = counts
     out_summary["blocked"] = counts["blocker"] > 0
-    return ScanResult({"findings": ordered, "summary": _jsonable(out_summary)})
+    # ReportDict: a guessed key ('blockers', 'missing_steps') is answered by its alias or named with the real keys.
+    return ScanResult({"findings": ordered, "summary": ReportDict(_jsonable(out_summary))})
 
 
 def _ts(ns: Any) -> str:
@@ -1285,28 +1291,24 @@ def _run(df: Any, time_col: Any, value_col: Any, entity_cols: Any, freq: Any, ma
     return _result(findings + battery.findings, summary)
 
 
-_ENTITY_ALIASES = ("entity_col", "entity", "entities", "group_col", "group_cols", "id_col", "id_cols", "key_cols")
+_ENTITY_ALIASES = {name: "entity_cols" for name in
+                   ("entity_col", "entity", "entities", "group_col", "group_cols", "id_col", "id_cols", "key_cols")}
 
 
+@accepts_aliases({**_ENTITY_ALIASES, "time": "time_col", "value": "value_col"})
 def scan(df: Any, time_col: str, value_col: str, entity_cols: Any = None, freq: str | None = None,
-         max_entities: int = 200, **aliases: Any) -> dict:
-    """Run the principal-analyst battery on a long table and return typed findings. Never raises, never mutates ``df``.
+         max_entities: int = 200) -> dict:
+    """Run the principal-analyst battery on a long table and return typed findings. Never mutates ``df``.
 
-    ``entity_cols`` is a column name, a list of names, or None for one series. ``freq`` is a pandas alias such as "D",
-    "h" or "MS"; when it is None the grain is inferred. Entities beyond ``max_entities`` are sampled with a fixed seed for
-    the statistical checks, and the summary says so.
+    ``entity_cols`` is a column name, a list of names, or None for one series. Aliases: ``entity_col``, ``entity`` and
+    similar names are ``entity_cols``; ``time`` is ``time_col``; ``value`` is ``value_col``. An unknown keyword raises a
+    TypeError that shows this signature. Data problems never raise: they come back as blocker findings.
+    ``freq`` is a pandas alias such as "D", "h" or "MS"; when it is None the grain is inferred. Entities beyond
+    ``max_entities`` are sampled with a fixed seed for the statistical checks, and the summary says so.
 
     Returns {"findings": [...], "summary": {...}}. Each finding has id, severity, scope, evidence, decision_needed and
     next_step. Record a ledger decision for every blocker and major finding before any forecast.
     """
-    for name in list(aliases):                      # a near-miss keyword for the entity columns is read, not refused
-        if name in _ENTITY_ALIASES and entity_cols is None:
-            entity_cols = aliases.pop(name)
-    if aliases:
-        return _result([_finding(
-            "schema.bad_argument", "blocker", "all", {"unknown_arguments": sorted(aliases)},
-            "scan() takes df, time_col, value_col, entity_cols, freq and max_entities.",
-            "Call sc.scan(df, 'date', 'value', entity_cols=['sku']).")], {"rows_in": None})
     try:
         return _run(df, time_col, value_col, entity_cols, freq, max_entities)
     except Exception as exc:  # the caller gets a blocker with the reason, never a traceback

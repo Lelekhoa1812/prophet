@@ -20,7 +20,7 @@ import prophet_stats as ps
 led = ps.Ledger()
 led.add("impute", "2.1 percent of rows interpolated, 0 dropped", "linear, gaps up to 3", evidence="out/impute.json")
 led.save(path="out/ledger.json")
-pl.chart("line", data=fc, title="Weekly demand forecast", subtitle="Backtest measured; research use only", unit="units", path="out/forecast.png")
+pl.chart("line", data=fc, title="Weekly demand forecast holds near its recent level", subtitle="Backtest measured; research use only", unit="units", path="out/forecast.png")
 ```
 
 Decision rules:
