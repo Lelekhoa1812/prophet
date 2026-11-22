@@ -22,17 +22,61 @@ export type AnsweredQuestion = {
 // A file the person attached to a quick forecast.
 export type DatasetRef = { id: string; name: string; bytes: number };
 
+export type OutcomeReason = {
+  code: string;
+  user_reason: string;
+  next_step: string;
+  checks?: { name: string; plain: string }[];
+  figures?: string[];
+  which?: string | null;
+};
+export type MissionOutcome = {
+  status: string;
+  reasons: OutcomeReason[];
+  developer: { status?: string; stop_reason?: string | null; reason?: string | null; contract_failures?: string[] };
+};
+
 export type Mission = {
   id: string;
   goal: string;
   status: string;
   budget: Record<string, unknown>;
   answer: any;
+  // Named reasons the mission stopped short, in plain words. developer holds the planner's own text for debugging only.
+  outcome?: MissionOutcome;
+  // The latest status line from the runtime: checklist counts, the next item and elapsed seconds.
+  progress?: { step: number; tool_calls: number; elapsed_s: number; checklist_done: number; checklist_total: number; next: string | null } | null;
   events: EventRow[];
   steps: StepRow[];
   questions: OpenQuestion[];
   answered_questions: AnsweredQuestion[];
   datasets: DatasetRef[];
+};
+
+// A panel backtest's summary, and one page of its entities (best model and MASE per model). Measured on saved history.
+export type PanelSummary = {
+  step: number;
+  entities: number;
+  models: string[];
+  horizon: number | null;
+  origins: number | null;
+  season: number | null;
+  overall: Record<string, number>;
+  wins: Record<string, number>;
+  best_overall: string | null;
+  coverage_80: Record<string, number>;
+  reading: string | null;
+  basis: string | null;
+};
+export type PanelEntityPage = {
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  sort: string;
+  order: "asc" | "desc";
+  models: string[];
+  rows: { entity: string; best_model: string | null; mase: Record<string, number | null> }[];
 };
 
 export type MissionRow = { id: string; goal: string; title: string; status: string; created: number; updated: number; pinned: boolean };
@@ -126,6 +170,10 @@ export type Notebook = {
   turns: TurnRow[];
 };
 
+// What a notebook may share (A7-12). providers: null means every configured provider may receive its data.
+export type ProviderState = { name: string; label: string; enabled: boolean; ready: boolean };
+export type NotebookSharing = { web_research: boolean; providers: string[] | null; available: ProviderState[] };
+
 export type NotebookRow = {
   id: string;
   title: string;
@@ -166,6 +214,11 @@ export const api = {
   archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
   unarchiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: false }) }),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
+  panels: (id: string) => req<PanelSummary[]>(`/api/missions/${id}/panels`),
+  panelEntities: (id: string, step: number, q: { page: number; pageSize: number; sort: string; order: "asc" | "desc" }) =>
+    req<PanelEntityPage>(
+      `/api/missions/${id}/panels/${step}/entities?page=${q.page}&page_size=${q.pageSize}&sort=${encodeURIComponent(q.sort)}&order=${q.order}`,
+    ),
   // The model id is sent only when one is selected, so the server default applies otherwise.
   createMission: (goal: string, datasetIds: string[] = [], model?: string) =>
     req<{ id: string }>("/api/missions", {
@@ -228,6 +281,9 @@ export const api = {
   patchNotebook: (nid: string, body: { title?: string; pinned?: boolean; archived?: boolean }) =>
     req<NotebookRow>(`/api/notebooks/${nid}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteNotebook: (nid: string) => req<{ id: string }>(`/api/notebooks/${nid}`, { method: "DELETE" }),
+  notebookSharing: (nid: string) => req<NotebookSharing>(`/api/notebooks/${nid}/sharing`),
+  setNotebookSharing: (nid: string, body: { web_research?: boolean; providers?: string[] | null }) =>
+    req<NotebookSharing>(`/api/notebooks/${nid}/sharing`, { method: "PUT", body: JSON.stringify(body) }),
   patchSource: (notebookId: string, sourceId: string, body: { included?: boolean; removed?: boolean }) =>
     req<Source>(`/api/notebooks/${notebookId}/sources/${sourceId}`, { method: "PATCH", body: JSON.stringify(body) }),
   // The model id is sent only when one is selected, so the server default applies otherwise (as for quick forecasts).
@@ -380,4 +436,8 @@ export function artifactUrl(runId: string, path: string): string {
 export function tableDownloadUrl(notebookId: string, name: string, version?: number): string {
   const q = version ? `?version=${version}` : "";
   return `/api/notebooks/${notebookId}/tables/${encodeURIComponent(name)}/download${q}`;
+}
+
+export function reproBundleUrl(missionId: string): string {
+  return `/api/missions/${missionId}/repro`;
 }

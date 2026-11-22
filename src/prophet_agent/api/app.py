@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -30,7 +30,10 @@ from prophet_agent.settings import view as settings_view
 from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
 from prophet_agent.usage import ledger_for
 
+from .bundle import build_bundle
+from .panels import entity_page, panel_summary
 from .service import MissionService
+from .sharing import PolicyRefused, normalise_patch
 
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
 LOOPBACK_NAMES = {"127.0.0.1", "localhost"}
@@ -285,6 +288,45 @@ def create_app(service: MissionService) -> FastAPI:
                                      "q10": q.get("0.1"), "q50": q.get("0.5"), "q90": q.get("0.9")}})
         return out
 
+    def _panel_runs(mission_id: str) -> list[tuple[int, dict]]:
+        try:
+            service.store.mission(mission_id)
+        except KeyError:
+            raise HTTPException(404, "no such mission")
+        with service.store.lock:
+            rows = service.store.conn.execute(
+                "SELECT step_idx, result_json FROM tool_calls WHERE mission_id=? AND tool='panel_backtest' AND status='done' "
+                "ORDER BY step_idx", (mission_id,)).fetchall()
+        return [(int(r["step_idx"]), json.loads(r["result_json"] or "null") or {}) for r in rows]
+
+    @app.get("/api/missions/{mission_id}/panels")
+    def list_panels(mission_id: str) -> list[dict]:
+        """The panel backtests a mission ran: size, models and overall scores. The entities are paged separately."""
+        return [panel_summary(step, res) for step, res in _panel_runs(mission_id)]
+
+    @app.get("/api/missions/{mission_id}/panels/{step}/entities")
+    def panel_entities(mission_id: str, step: int, page: int = 1, page_size: int = 25, sort: str = "entity",
+                       order: str = "asc") -> dict:
+        """One page of a panel's entities: best model and MASE per model. Sort by entity, best, or mase:<model>."""
+        match = [res for s_idx, res in _panel_runs(mission_id) if s_idx == step]
+        if not match:
+            raise HTTPException(404, "no such panel run in this mission")
+        try:
+            return entity_page(match[0], page=page, page_size=page_size, sort=sort, order=order)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+
+    @app.get("/api/missions/{mission_id}/repro")
+    def reproducibility_bundle(mission_id: str) -> Response:
+        """A zip a person can keep and check: code cells, inputs and outputs (sha256), ledger, configuration and answer.
+        Read-only. Never includes .env or key-shaped text."""
+        try:
+            data = build_bundle(service.store, mission_id, SANDBOX_ROOT)
+        except KeyError:
+            raise HTTPException(404, "no such mission")
+        return Response(data, media_type="application/zip",
+                        headers={"content-disposition": f'attachment; filename="prophet-{mission_id[:12]}-repro.zip"'})
+
     @app.get("/api/artifacts/{run_id}/{name:path}")
     def get_artifact(run_id: str, name: str) -> FileResponse:
         if not RUN_ID.match(run_id):
@@ -371,6 +413,33 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(404, "no such table or version")
         return FileResponse(path, media_type="text/csv", filename=f"{name}{'' if version is None else f'_v{version}'}.csv")
 
+    def _provider_states() -> list[dict]:
+        return [{"name": name, "label": p.label, "enabled": service.settings.provider_enabled(name),
+                 "ready": service.settings.provider_ready(name)} for name, p in PROVIDERS.items()]
+
+    @app.get("/api/notebooks/{nid}/sharing")
+    def get_sharing(nid: str) -> dict:
+        """What this notebook may share: web research on or off, and the providers that may receive its data (null: all).
+        ``available`` lists every provider with whether it is turned on and ready. Defaults keep everything on."""
+        try:
+            sharing = service.get_sharing(nid)
+        except KeyError:
+            raise HTTPException(404, "no such notebook")
+        return {**sharing, "available": _provider_states()}
+
+    @app.put("/api/notebooks/{nid}/sharing")
+    def put_sharing(nid: str, body: dict = Body(...)) -> dict:
+        """A partial update of the notebook's sharing. Only the fields sent change; ``providers: null`` allows every provider."""
+        try:
+            patch = normalise_patch(body)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        try:
+            sharing = service.set_sharing(nid, patch)
+        except KeyError:
+            raise HTTPException(404, "no such notebook")
+        return {**sharing, "available": _provider_states()}
+
     @app.post("/api/notebooks/{nid}/turns", status_code=201)
     def create_turn(nid: str, body: TurnIn) -> dict:
         _model_gate(body.model)
@@ -380,6 +449,8 @@ def create_app(service: MissionService) -> FastAPI:
         except KeyError:
             raise HTTPException(404, "no such notebook")
         except NotebookBusy as exc:
+            raise HTTPException(409, str(exc))
+        except PolicyRefused as exc:
             raise HTTPException(409, str(exc))
         try:
             service.start(mission_id)
@@ -414,6 +485,8 @@ def create_app(service: MissionService) -> FastAPI:
             service.start(mission_id)
         except LeaseHeld:
             raise HTTPException(409, "this mission is already running")
+        except PolicyRefused as exc:
+            raise HTTPException(409, str(exc))
         except NotConfigured:
             raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"id": mission_id, "status": "running"}

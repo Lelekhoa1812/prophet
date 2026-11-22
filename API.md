@@ -118,14 +118,29 @@ A turn is a mission. Fields:
 | field | meaning |
 |---|---|
 | `status` | see below |
-| `answer` | when finished: `{"status":"met","answer":"<markdown>"}`, or a reason object when it could not finish |
+| `answer` | when finished: `{"status":"met","answer":"<markdown>"}`, or the stored answer object when it could not finish. Its `reason` is for developers; show `outcome` instead |
+| `outcome` | `{"status", "reasons": [...], "developer": {...}}`. Each reason has `code`, `user_reason` (plain words), `next_step`, and where relevant `checks` (`[{name, plain}]`), `figures` (untraced numbers) or `which` (the allowance that ran out). `developer` holds the planner's own text and the failed check names |
+| `progress` | the latest status line: `checklist_done`, `checklist_total`, `next` and `elapsed_s`; `null` before the first one |
 | `events` | ordered records; pass `after=<last seq>` to read only new ones |
 | `steps` | the ledger of plan, act, ask and evaluate steps with their outputs |
 | `questions` | open questions awaiting you |
 
+Reason codes: `blocked_by_check` (a required check did not pass), `unverified_figures` (figures not traced to a tool result), `stalled` (the same step kept repeating), `answered_now` (you asked for the answer now), `budget_spent` (a checkpoint), `not_settled`, `impossible`, `failed`, `outcome_unknown`, `cancelled`. A `met` or `completed` turn has no reasons.
+
 Statuses: `created`, `running`, `waiting_user`, `completed`, `met`, `failed`, `stalled`, `impossible`, `iteration_budget`, `budget_exhausted`, `outcome_unknown`, `cancelled`. Working states are `created` and `running`. `waiting_user` needs an answer. Everything else is final.
 
-A good poll loop waits 2 seconds between calls and stops on any final status. Typical turns take 20 seconds to a few minutes.
+A good poll loop waits 2 seconds between calls and stops on any final status. Latency is measured, not promised: across 58 stored missions on one machine, the median run took about 9 minutes (557 s) and the longest about 29 minutes (1,756 s, a run that continued into a second part). Short questions can finish in well under that. Use `progress` to show how far a run has got.
+
+### Continue or answer now at a checkpoint
+
+A part of the work ends at a checkpoint when its time or tool-call allowance is spent. Nothing is lost: every step is kept.
+
+```bash
+curl -s -X POST localhost:8010/api/missions/$TURN/continue       # 202: next part with a fresh allowance
+curl -s -X POST localhost:8010/api/missions/$TURN/answer-now    # 202: write the answer now, labelled partial
+```
+
+Both return `409` unless the turn is at a checkpoint (`checkpoint`, or the older `budget_exhausted` and `iteration_budget`). Poll the turn again afterwards.
 
 ### Answer a question
 
@@ -181,6 +196,48 @@ curl -OJ "localhost:8010/api/notebooks/$NID/tables/$NAME/download?version=2"   #
 ```
 
 Kept tables are available to later turns as `derived/<name>.csv`.
+
+### Panel backtests (one score per entity and model)
+
+A panel backtest scores every entity against each model. The summary lists the panels a mission ran, and the entities are paged so a large panel stays readable:
+
+```bash
+curl -s localhost:8010/api/missions/$TURN/panels                       # [{"step","entities","models","overall","wins","best_overall","coverage_80",...}]
+curl -s "localhost:8010/api/missions/$TURN/panels/$STEP/entities?page=1&page_size=25&sort=mase:timesfm&order=desc"
+```
+
+Each entity row gives `best_model` (lowest finite MASE, so lower is better) and `mase` for every model. `sort` is `entity`, `best`, or `mase:<model>`. `order` is `asc` or `desc`. `page_size` runs from 1 to 200. Bad paging or sort returns 422. An unknown mission or step returns 404.
+
+### Reproducibility bundle (download)
+
+A zip a person can keep and check, built from what the mission stored:
+
+```bash
+curl -OJ localhost:8010/api/missions/$TURN/repro        # prophet-<id>-repro.zip
+```
+
+It holds the code cells, the inputs and outputs with their sha256 (`hashes.json`), the ledger, the configuration (prompts, budget, packages), the events, the mission record, the answer and a `README.txt`. It is read-only and never includes `.env` or key-shaped text. Inputs over 200 MB are listed by hash and not copied. The README says that rerunning the same code on the same input should give the same figures. The bundle does not rerun anything, so checking the figures needs a fresh run.
+
+### Data sharing per notebook
+
+Each notebook may switch web research off and limit which configured model providers receive its data. Defaults keep everything on.
+
+```bash
+curl -s localhost:8010/api/notebooks/$NID/sharing     # {"web_research": true, "providers": null, "available": [{"name","label","enabled","ready"}]}
+curl -s -X PUT localhost:8010/api/notebooks/$NID/sharing -H 'content-type: application/json' \
+     -d '{"web_research": false, "providers": ["claude"]}'
+```
+
+Only the fields sent change. `providers: null` allows every configured provider. An empty list allows none. An unknown provider or a non-boolean `web_research` returns 422, and an unknown notebook returns 404.
+
+The rules apply where the work runs, not only in the UI:
+
+- With web research off, the web search, fetch and research tools are left out of every mission in the notebook, including sub-agents and the automatic research step.
+- A new question naming a model from a provider the notebook does not allow returns 409 and writes no turn. Without a named model, the first allowed provider that is turned on and ready is used; if none is, the turn returns 409.
+- Continue, answer-now and resume check the same rule and return 409 before anything changes. An automatic part that would break the rule is not started; the mission waits at its checkpoint.
+- While a provider list is restricted, the notebook's title is not improved by a model call; the fallback title stays.
+
+Changes apply to questions asked after the change and to parts that start after it. Quick forecasts (no notebook) are not covered by these settings.
 
 ## One-off quick forecasts (no notebook)
 
@@ -247,11 +304,13 @@ Claude Code: `claude mcp add prophet -e PYTHONPATH=/absolute/path/to/prophet/src
 | `prophet_status` | Keep waiting on a turn that was still working |
 | `prophet_answer` | Answer questions Prophet asked |
 | `prophet_cancel` | Stop a turn |
+| `prophet_continue` | Continue a turn paused at a checkpoint (`POST .../continue`) and wait for the next stop |
+| `prophet_answer_now` | Write the answer for a turn paused at a checkpoint (`POST .../answer-now`) |
 | `prophet_files` | Charts, workbooks and reports a turn produced, with URLs and sha256 |
 | `prophet_quick_forecast` | One-off forecast, no notebook |
 | `prophet_list_notebooks` | List notebooks |
 
-`prophet_ask` waits up to `wait_seconds` (default 240) and returns either the answer, a `waiting_user` payload with the questions, or a note to call `prophet_status` to keep waiting. Transport is stdio (newline-delimited JSON-RPC, protocol 2024-11-05, standard library only).
+`prophet_ask` waits up to `wait_seconds` (default 240) and returns either the answer, a `waiting_user` payload with the questions, or a note to call `prophet_status` to keep waiting. A partial answer comes back with `reasons` (plain words, a `next` step each) and the figures that could not be traced; the planner's own text is not returned. At a checkpoint it says to call `prophet_continue` or `prophet_answer_now`. Transport is stdio (newline-delimited JSON-RPC, protocol 2024-11-05, standard library only).
 
 ## Limits and guarantees
 
