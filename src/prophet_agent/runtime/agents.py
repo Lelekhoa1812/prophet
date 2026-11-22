@@ -58,7 +58,8 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
     AgentType(
         "modeler",
         "Runs forecasts and backtests and measures what helps TimesFM: baselines, control options, combinations.",
-        tools=("sandbox_python", "timesfm_forecast", "backtest_series", "control_lab", "forecast_report", *_COMMON),
+        tools=("sandbox_python", "timesfm_forecast", "backtest_series", "panel_backtest", "control_lab", "forecast_report",
+               *_COMMON),
         skills=("choose-model-by-backtest", "timesfm-control-and-flat-forecasts"), steps=14,
         role="You are a modelling sub-agent. Compare against baselines on the same origins, adopt a treatment only when "
              "the lab or backtest says it helped, and report scores with the baseline each was measured against."),

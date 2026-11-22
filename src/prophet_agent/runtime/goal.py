@@ -508,6 +508,15 @@ def _stored_step_name(ctx: Ctx) -> str | None:
     return rec["name"] if rec is not None and rec.get("status") == "done" else None
 
 
+MODEL_WORK = re.compile(r"backtest|forecast|timesfm|control_lab|baseline", re.I)
+
+
+def _agent_for(item: str) -> str:
+    """The sub-agent type for a stuck checklist item. Live electricity rep5: "compare with the simple baselines
+    (backtest_series)" went to an analyst, whose tools have no backtest, and it reported the tools were not available."""
+    return "modeler" if MODEL_WORK.search(item) else "analyst"
+
+
 def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                   full: Callable[[str], list] | None = None, stuck: tuple[str, int] | None = None) -> dict | None:
     """Delegations the harness starts itself instead of hoping the planner will. Live, the planner delegated once in 1,983
@@ -522,7 +531,7 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
     kinds = {h.get("auto") for h in auto}
     if stuck and stuck[1] >= STUCK_CALLS and "sandbox_python" in tools and ("stuck:" + stuck[0]) not in kinds:
         card = _state_card(history)
-        return {"action": "delegate", "auto": "stuck:" + stuck[0], "agent_type": "analyst",
+        return {"action": "delegate", "auto": "stuck:" + stuck[0], "agent_type": _agent_for(stuck[0]),
                 "rationale": f"no checklist item was ticked in {stuck[1]} calls; a fresh context does the next one",
                 "task": "A lead agent working on this goal has gone " + str(stuck[1]) + " calls without finishing one step: "
                         + goal + "\n\nThe step to do now: " + stuck[0] + "\n\nWhat already exists (pass files in carry and "
@@ -1059,6 +1068,9 @@ def _coverage_note(obs: dict, history: list[dict]) -> str | None:
     if obs.get("tool") not in COVERAGE_TOOLS or obs.get("error"):
         return None
     k = contracts.result_entities(obs.get("result"))
+    src = (obs.get("args") or {}).get("source")
+    if k is None and isinstance(src, dict) and isinstance(src.get("name"), str):
+        k = 1     # one entity picked from a panel file (live electricity rep5: MT_001's total was answered as the panel's)
     data = contracts.data_entity_count(history)
     if k is None or data is None or k >= data[0]:
         return None

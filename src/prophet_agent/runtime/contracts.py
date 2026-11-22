@@ -403,7 +403,32 @@ def check_scan_decisions(history, run_root) -> dict | None:
     return _check("scan_decisions_recorded", False,
                   f"the scan has blocker or major findings with no ledger decision: {', '.join(missing[:8])}"
                   + (f" and {len(missing) - 8} more" if len(missing) > 8 else "")
-                  + "; record each one with ps.Ledger().add(stage, finding, decision) and put the finding id in the text")
+                  + "; record each one with ps.Ledger().add(stage, finding, decision) and put the finding id in the text"
+                  + _decision_recipe(findings, missing, history, run_root))
+
+
+STAGE_OF = {"time": "time index", "coverage": "coverage", "values": "values", "zeros": "zeros and censoring",
+            "censoring": "zeros and censoring", "changepoints": "outliers and level shifts",
+            "outliers": "outliers and level shifts", "season": "seasonality"}
+
+
+def _decision_recipe(findings: list[dict], missing: list[str], history, run_root) -> str:
+    """The cell that closes the check, in this mission's own names: the ledger to carry, and one add per undecided major
+    finding with its scope. The decision text is left for the planner to write.
+
+    Live Beijing rep5 (2026-11-23): the check named changepoints.level_shift; the planner read the scan six times, read the
+    ledger with code that expected {'entries': ...} (the file is a list), saw nothing, and finished three more times."""
+    rows = [(f["id"], f.get("scope")) for f in findings
+            if f.get("id") in missing and f.get("severity") in ("blocker", "major")][:6]
+    newest = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
+                   if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
+                   and "out/ledger.json" in [_output_path(o) for o in (h["result"].get("outputs") or [])]), None)
+    carry = (f"carry=[{{run_id: '{newest}', file: 'out/ledger.json'}}], then led = ps.Ledger.open('in/carried/ledger.json')"
+             if newest else "led = ps.Ledger()")
+    adds = "; ".join(f"led.add('{STAGE_OF.get(i.split('.')[0], i.split('.')[0])}', '{i} ({scope}): <what the scan measured>', "
+                     "'<your decision and why>')" for i, scope in rows)
+    return (f". One cell does it: {carry}; {adds}; led.save(). The ledger file is a list of entries "
+            "{stage, finding, decision}; each add must name the finding id")
 
 
 def scan_ran(history) -> bool:
@@ -696,7 +721,9 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
     forecasts = [(i, r) for i, h in enumerate(obs) if (r := _forecast_record(h)) is not None]
     inspected = any(_ok_result(h, t) is not None for h in obs for t in INSPECTION_TOOLS)
-    backtested = any(isinstance(_ok_result(h, "backtest_series"), dict) for h in obs)
+    # A panel backtest compares each entity with its own simple rules too (live electricity rep5: with only panel_backtest
+    # run, this item stayed todo and the same panel_backtest was sent twice more until the run stalled).
+    backtested = any(isinstance(_ok_result(h, t), dict) for h in obs for t in ("backtest_series", "panel_backtest"))
     stages = ledger_stages(obs, run_root)
     items: list[dict] = [{"item": "inspect the data (sandbox_python or inspect_data)", "status": "done" if inspected else "todo"}]
     if run_root is not None:
@@ -993,6 +1020,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
 
     if not forecasts:
         checks.append(_check("baseline_compared", True, "no forecast yet; nothing to compare"))
+    elif not backtests and forecasts[-1][1].get("panel") and any(isinstance(_ok_result(h, "panel_backtest"), dict) for h in obs):
+        checks.append(_check("baseline_compared", True,
+                             "the panel forecast was compared with each entity's simple rules in panel_backtest"))
     elif not backtests:
         checks.append(_check("baseline_compared", False,
                              "the forecast was never compared with the simple baselines (no successful backtest)"))

@@ -100,6 +100,14 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     else:
         raise ValueError(f"{rel} must hold a list of numbers or a dict of named lists")
     want = source.get("name")
+    if isinstance(want, list):
+        # A subset of a panel (live electricity rep5: a list of ten names failed with "unhashable type: 'list'", three times).
+        if not want or not all(isinstance(n, str) for n in want):
+            raise ValueError("source.name is one series name, or a list of series names")
+        absent = [n for n in want if n not in named]
+        if absent:
+            raise ValueError(f"series {absent[:10]} not in the file; available: {sorted(named)[:20]}")
+        named, want = {n: named[n] for n in dict.fromkeys(want)}, None
     if want is not None:
         if want not in named and len(named) == 1:
             want = next(iter(named))          # one series in the file: no ambiguity, so a wrong name is not an error
