@@ -103,3 +103,14 @@ def test_the_tool_is_idempotent_and_registered_with_its_title_and_spec():
     assert PANEL_BACKTEST_SPEC["activity"] == "Comparing a global model with TimesFM across entities"
     registered = default_tools()["panel_backtest"]
     assert registered.title == "Panel backtest" and "source" in registered.doc and "horizon" in registered.doc
+
+
+def test_observe_says_how_to_see_the_entities_it_leaves_out_and_summarises_all_of_them(sandbox):
+    # Live (electricity panel, 60 clients, 2026-11-22): the planner saw the first 30 rows, said the rest were clipped, and
+    # re-ran the same call six times (the stall rescue then ended the step). The view must say that the rest are summarised
+    # and how to see named ones, and it must give a per-model median over every entity, not only the rows shown.
+    (sandbox / RUN / "out" / "series.json").write_text(json.dumps({"series": _panel(entities=40, n=60), "dates": {}}))
+    view = pt.observe(_run(_args(horizon=2, n_origins=3)))
+    assert "entities" in view["per_entity_note"] and "same result" in view["per_entity_note"]
+    assert set(view["median_mase_all_entities"]) >= {"naive", "timesfm"}
+    assert all(isinstance(v, float) for v in view["median_mase_all_entities"].values())

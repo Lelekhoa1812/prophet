@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from prophet_agent.forecast import global_gbm
 from prophet_agent.forecast.timesfm import TimesFMEngine
 from prophet_agent.runtime.runner import Tool
@@ -93,8 +94,27 @@ def observe(result: dict) -> dict:
     out["entities"] = len(rows)
     out["per_entity"] = [{"entity": name, **models} for name, models in rows[:OBSERVE_ROWS]]
     if len(rows) > OBSERVE_ROWS:
-        out["per_entity_note"] = f"first {OBSERVE_ROWS} of {len(rows)} entities shown"
+        # Live (electricity panel, 2026-11-22): the planner re-ran the identical call six times to see the rows left out. Say
+        # how to see named entities, that a repeat changes nothing, and give a median over every entity.
+        out["per_entity_note"] = (f"first {OBSERVE_ROWS} of {len(rows)} entities shown; overall, wins and the medians below cover "
+                                  "all of them. To see named entities, call again with entities set to their names (up to "
+                                  f"{MAX_PICK}); the same call again returns the same result")
+        out["median_mase_all_entities"] = {m: round(float(np.median(vals)), 4) for m in _model_names(rows)
+                                           if (vals := [float(r[1][m]) for r in rows if _finite_num(r[1].get(m))])}
     return out
+
+
+def _model_names(rows) -> list[str]:
+    names: list[str] = []
+    for _, models in rows:
+        for m in models:
+            if m not in names:
+                names.append(m)
+    return names
+
+
+def _finite_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v)
 
 
 def panel_backtest_tool(engine_factory=None) -> Tool:
