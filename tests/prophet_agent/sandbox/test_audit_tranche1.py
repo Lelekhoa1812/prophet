@@ -35,16 +35,18 @@ def test_a_seasonal_year_forecast_longer_than_the_season_repeats_the_last_season
     assert np.allclose(p[52:60], p[0:8])                  # step 53 is step 1 one season later
 
 
-def test_two_carried_files_with_one_name_are_refused(tmp_path, monkeypatch):
-    import pytest
+def test_two_carried_files_with_one_name_are_both_mounted_and_neither_overwrites(tmp_path, monkeypatch):
+    # Was a refusal (no silent overwrite). Round 5 (live Beijing rep6, five failed calls): the second file is mounted under
+    # its run's prefix instead, so both are readable and neither replaces the other.
     from prophet_agent.tools import sandbox_tool as st
     run_a, run_b = "a" * 32, "b" * 32
     for run in (run_a, run_b):
         (tmp_path / run / "out").mkdir(parents=True)
         (tmp_path / run / "out" / "series.json").write_text("{}")
     monkeypatch.setattr(st, "SANDBOX_ROOT", tmp_path)
-    with pytest.raises(ValueError, match="named 'series.json'"):
-        st.carried_inputs([{"run_id": run_a, "file": "out/series.json"}, {"run_id": run_b, "file": "out/series.json"}])
+    both = st.carried_inputs([{"run_id": run_a, "file": "out/series.json"}, {"run_id": run_b, "file": "out/series.json"}])
+    assert both == {"carried/series.json": tmp_path / run_a / "out" / "series.json",
+                    "carried/bbbbbbbb_series.json": tmp_path / run_b / "out" / "series.json"}
     assert list(st.carried_inputs([{"run_id": run_a, "file": "out/series.json"}])) == ["carried/series.json"]
 
 

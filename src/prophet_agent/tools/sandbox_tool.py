@@ -46,8 +46,10 @@ def carried_inputs(carry) -> dict[str, Path]:
             raise ValueError(missing_output(item["run_id"], rel))
         key = f"carried/{target.name}"
         if key in mounted and mounted[key] != target:
-            raise ValueError(f"two carried files are named {target.name!r}; each file name can be carried once. Carry one, or "
-                             "save the other under a different name in its run")
+            # Two runs wrote the same name (each analyst saves out/scan.json). The later one is mounted under its run's first
+            # eight characters, and the result lists where each file went. Live Beijing rep6: five calls failed on the old
+            # "carry one" refusal while the lead tried to read the four analysts' scans together.
+            key = f"carried/{item['run_id'][:8]}_{target.name}"
         mounted[key] = target
     return mounted
 
@@ -66,11 +68,16 @@ def make_run(datasets: dict[str, Path] | None = None):
             raise ValueError(f"code is longer than {MAX_CODE_CHARS} characters")
         # Round 4, A5-10: the idempotency key seeds the run id, so a re-run after a crash returns the finished run.
         run_id = _key[:32] if isinstance(_key, str) and len(_key) >= 32 else None
-        res = run_python(code, timeout_s=60, mem_mb=1536, inputs={**inputs, **carried_inputs(args.get("carry"))}, run_id=run_id)
+        carried = carried_inputs(args.get("carry"))
+        res = run_python(code, timeout_s=60, mem_mb=1536, inputs={**inputs, **carried}, run_id=run_id)
         d = res.to_dict()
-        return {"ok": d["ok"], "returncode": d["returncode"], "timed_out": d["timed_out"],
-                "stdout": d["stdout"], "stderr": d["stderr"], "run_id": d["run_id"],
-                "outputs": d["outputs"], "memory_limit_enforced": d["memory_limit_enforced"]}
+        out = {"ok": d["ok"], "returncode": d["returncode"], "timed_out": d["timed_out"],
+               "stdout": d["stdout"], "stderr": d["stderr"], "run_id": d["run_id"],
+               "outputs": d["outputs"], "memory_limit_enforced": d["memory_limit_enforced"]}
+        renamed = {f"in/{k}": f"{v.parent.parent.name}/out/{v.name}" for k, v in carried.items() if k != f"carried/{v.name}"}
+        if renamed:
+            out["carried_as"] = renamed
+        return out
     return _run
 
 
@@ -87,6 +94,8 @@ def observe(result: dict) -> dict:
         out["stdout_note"] = (f"{len(result['stdout'])} characters printed; the middle is cut. Do not re-run this cell to see "
                               "it: save the figures to a file under out/ (csv or json) and print only the lines the next "
                               "decision needs, one per entity")
+    if result.get("carried_as"):
+        out["carried_as"] = result["carried_as"]      # where a file with a repeated name was mounted
     if result["stderr"]:
         out["stderr_tail"] = result["stderr"][-SEEN_STDERR:]
     if result["timed_out"]:

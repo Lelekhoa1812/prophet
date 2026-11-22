@@ -647,17 +647,24 @@ def data_entity_count(history) -> tuple[int, str] | None:
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
     best: tuple[int, str] | None = None
     for h in obs:
-        r = _ok_result(h, "inspect_data")
-        prof = r.get("profile") if isinstance(r, dict) else None
-        if not isinstance(prof, dict):
+        if _ok_result(h, "inspect_data") is None:
             continue
+        # The full result when it was kept (round 4), else the planner's compact view, whose columns are lines such as
+        # "entity: text, unique=60; e.g. [...]" and whose layout hints sit at the top (live rep6: only that view was read).
+        r = h["full"] if isinstance(h.get("full"), dict) else h["result"]
+        prof = r.get("profile") if isinstance(r.get("profile"), dict) else r
         groups = [g for hint in prof.get("layout_hints") or [] if isinstance(hint, str)
                   for g in re.findall(r"grouping column\(s\) \[([^\]]*)\]", hint)]
         names = [n.strip().strip("'\"") for g in groups for n in g.split(",") if n.strip()]
         if len(names) != 1:
             continue
-        col = next((c for c in prof.get("columns") or [] if isinstance(c, dict) and c.get("name") == names[0]), None)
-        k = col.get("unique") if isinstance(col, dict) else None
+        k = None
+        for col in prof.get("columns") or []:
+            if isinstance(col, dict) and col.get("name") == names[0]:
+                k = col.get("unique")
+            elif isinstance(col, str) and col.split(":", 1)[0].strip() == names[0]:
+                m = re.search(r"\bunique=(\d+)", col)
+                k = int(m.group(1)) if m else None
         if _is_int(k) and k >= 2 and (best is None or k > best[0]):
             best = (k, names[0])
     return best
