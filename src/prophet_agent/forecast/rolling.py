@@ -19,6 +19,7 @@ The rule and that choice are both selected on these windows, so the result label
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import numpy as np
@@ -111,6 +112,25 @@ def backtest_season(x: np.ndarray, horizon: int, n_origins: int, given: int | No
     dates_h = None if dates is None else list(dates)[:cut]
     res = choose_season(np.asarray(x, dtype=float)[:cut], freq_hint, dates_h)
     return int(res["season"]), f"{res['reason']} (measured on the first {cut} points, before any test window)"
+
+
+def _without_noop_context(control: Any, n: int, horizon: int) -> tuple[Any, dict[str, Any] | None]:
+    """Drop a context_points that covers every origin, and say so. Returns the control to use and the note (None if nothing
+    was dropped).
+
+    Motivation vs Logic
+    Motivation: a context of at least the last origin (n - horizon) gives every window its whole history, so it changes no
+    forecast, yet it was reported as a tested configuration (audit A6-08, retail rep4: configured_vs_default_pct 0.0).
+    Logic: the longest origin in rolling_backtest is n - horizon, so a context at or above it truncates nothing. Only that
+    option is removed; a real option in the same control (znorm, covariates) is kept and still tested.
+    """
+    cp = getattr(control, "context_points", None)
+    if control is None or not cp or cp < n - horizon:
+        return control, None
+    note = {"context_points": int(cp),
+            "reason": (f"context_points={int(cp)} covers every backtest origin (the longest origin is {n - horizon} points), "
+                       "so the default already reads all of it; it was dropped from the configuration and is not a treatment")}
+    return dataclasses.replace(control, context_points=None), note
 
 
 def _verdict(base_err: np.ndarray, tsb_err: np.ndarray) -> tuple[dict[str, Any], int, int]:
@@ -235,6 +255,7 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
     if engine is None:
         from prophet_agent.forecast.timesfm import TimesFMEngine
         engine = TimesFMEngine.get()
+    control, noop_note = _without_noop_context(control, n, horizon)      # A6-08: a no-op context is not a treatment
     fc = engine.forecast_batch([x[:o] for o in origins], horizon)
     configured = control is not None and not control.is_default
     if configured:
@@ -365,8 +386,16 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             f"Over these windows {tb_name} totals {tb:+.1f}% against what happened. A point forecast is a "
             "median, and for lumpy or skewed demand a median understates volume. Compare with tsb_expected (the mean under TSB) "
             "before presenting the point as expected demand, and say which measure the answer uses.")
+    if noop_note is not None:
+        out["control_noop"] = noop_note
     if configured:
         out["control"] = control.describe()
+        # A6-08: the configuration was chosen before this call, but its windows are the ones scored here, so the verdict on
+        # it is optimistic. Multiplicity across configurations is controlled only by control_lab (Holm).
+        out["selection"] = {"selected_on_these_windows": True, "optimistic": True,
+                            "note": "the configuration and these windows were both chosen by the caller; this backtest does not "
+                                    "correct for the number of configurations tried. Use control_lab for a corrected choice, "
+                                    "and confirm on later windows."}
         d, c = models["timesfm_default"]["mase"], models["timesfm"]["mase"]
         if d and c is not None:
             out["configured_vs_default_pct"] = round((d - c) / d * 100, 1)
