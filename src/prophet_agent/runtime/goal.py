@@ -1224,18 +1224,21 @@ def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
                     sources.append({"text": res["text"]})
     nxt = re.search(r"^#{1,4}\s+\S", answer[m.end():], re.M)
     end = m.end() + nxt.start() if nxt else len(answer)
-    kept, removed = [], []
+    kept, removed, dropped = [], [], 0
     for line in answer[m.end():end].splitlines():
         bad = verify_figures(DATE_TEXT.sub(" ", line), sources) if line.strip() else []
         if bad:
             removed.extend(b for b in bad if b not in removed)
+            dropped += 1
         else:
             kept.append(line)
     if not removed:
         return answer, []
     body = "\n".join(kept).rstrip()
-    body += ("\n\n_Some outside claims were left out because their figures (" + ", ".join(removed[:6])
-             + ") were not found in the pages that were read._\n")
+    # The note gives the count, not the figures: listing them put unsourced numbers back into the answer, and the grounding
+    # check then flagged its own note (live EUR/JPY round 6). The figures stay in the result's outside_removed.
+    body += (f"\n\n_{dropped} outside claim(s) were left out because their figures were not found in the pages "
+             "that were read._\n")
     return answer[:m.end()] + body + ("\n" + answer[end:] if end < len(answer) else ""), removed
 
 

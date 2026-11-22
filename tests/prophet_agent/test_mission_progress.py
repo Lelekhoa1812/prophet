@@ -289,3 +289,10 @@ def test_skill_names_in_the_tools_own_words_resolve():
     import pytest
     with pytest.raises(ValueError):
         _run({"name": "astrology"}, "k")
+
+
+def test_calibration_accepts_the_pack_centre_and_says_it_has_no_effect():
+    from prophet_agent.tools.calibrate_tool import _run
+    import pytest
+    with pytest.raises(ValueError, match="horizon"):          # accepted, so the next check is reached
+        _run({"centre": "naive", "values": [1.0] * 50}, "k")

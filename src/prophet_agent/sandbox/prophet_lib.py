@@ -1908,3 +1908,14 @@ try:                                       # inside the sandbox the helpers sit 
 except ImportError:                        # pragma: no cover
     from prophet_agent.sandbox.prophet_pair import wrap_pairs as _wrap_pairs
 _wrap_pairs(globals())
+
+
+def __getattr__(name: str):
+    """``pl.<name>`` for a statistics helper that lives in prophet_stats (``pl.hampel``, ``pl.changepoints``): models mix the
+    two prefixes (live: two cells failed on pl.hampel). Anything else raises the usual AttributeError, naming both modules."""
+    if name.startswith("__"):
+        raise AttributeError(name)
+    import prophet_stats
+    if hasattr(prophet_stats, name) and not name.startswith("_"):
+        return getattr(prophet_stats, name)
+    raise AttributeError(f"module 'prophet_lib' has no attribute {name!r} (and neither has prophet_stats)")

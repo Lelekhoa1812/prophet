@@ -641,6 +641,7 @@ def changepoints(
             "after_mean": after,
             "shift": shift,
             "shift_in_sd": (shift / sd) if sd > 0 else None,
+            "ratio": (after / before) if before != 0 else None,     # after over before (live: 4 cells read c['ratio'])
         })
     report["n_changes"] = len(changes)
     report.update({"diagnostic_only": True, "leak_warning": "fitted on every row you pass, including later ones: use it to look at the history, not to build model input or a backtest arm"})

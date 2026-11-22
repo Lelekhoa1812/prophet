@@ -52,3 +52,15 @@ def test_flag_positions_and_finding_field_names_are_answered():
     assert list(rep["outlier_indices"]) == list(np.flatnonzero(flags)) and 30 in rep["indices"]
     f = Finding(id="F1", message="level shift in 2024", decision_needed="cut or keep", severity="major")
     assert f["title"] == "level shift in 2024" and f["decision"] == "cut or keep" and f.get("nope") is None
+
+
+def test_pl_reaches_the_statistics_helpers_and_change_points_give_a_ratio():
+    import numpy as np
+    import prophet_lib as pl
+    import pytest
+    flags, rep = pl.hampel(np.r_[np.ones(20), [9.0], np.ones(20)])
+    assert rep["count"] >= 1
+    changes, _ = pl.changepoints(np.r_[np.full(60, 10.0), np.full(60, 20.0)] + np.random.default_rng(0).normal(0, 0.1, 120))
+    assert abs(changes[0]["ratio"] - 2.0) < 0.05
+    with pytest.raises(AttributeError, match="neither has prophet_stats"):
+        pl.no_such_helper

@@ -16,7 +16,10 @@ from prophet_agent.forecast.timesfm import TimesFMEngine
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
-ALLOWED = {"values", "source", "horizon", "n_origins", "season"} | CONTROL_ARGS   # season is accepted and ignored: the same arguments as backtest_series are passed on
+# season and centre are accepted and ignored: the planner passes on the arguments of backtest_series and forecast_report.
+# The band is calibrated around TimesFM's centre; forecast_report recentres it on a rule (live WTI: three refused calls
+# with centre, then a stall).
+ALLOWED = {"values", "source", "horizon", "n_origins", "season", "centre"} | CONTROL_ARGS
 
 
 def _run(args: dict, _key: str, engine_factory=None) -> dict[str, Any]:
@@ -37,13 +40,17 @@ def _run(args: dict, _key: str, engine_factory=None) -> dict[str, Any]:
     control = build_control(args, len(series), horizon, source_covariates(args))
     if control.future or control.past:
         raise ValueError("calibration with covariates is not supported: past windows would need the covariates at each origin")
-    return calibrate(series, horizon, engine=engine, control=control, n_origins=n_origins)
+    out = calibrate(series, horizon, engine=engine, control=control, n_origins=n_origins)
+    if args.get("centre") not in (None, "timesfm"):
+        out["centre_note"] = ("centre has no effect here: the band's width is calibrated around TimesFM's centre line, and "
+                              "forecast_report with the same centre and calibrate true recentres the calibrated band on the rule")
+    return out
 
 
 def observe(result: dict) -> dict:
     keep = ("horizon", "target_coverage", "origins", "tested_on", "scales_by_horizon_third", "heldout_coverage_raw",
             "heldout_coverage_calibrated", "raw_gap", "calibrated_gap", "scale_level", "second_pass", "width_ratio",
-            "recommend", "reason", "caveats", "method", "heldout_coverage_adaptive", "heldout_raw_wilson90",
+            "recommend", "reason", "caveats", "centre_note", "method", "heldout_coverage_adaptive", "heldout_raw_wilson90",
             "heldout_calibrated_wilson90")
     out = {k: result[k] for k in keep if k in result}
     out["calibrated"] = {k: v[:30] for k, v in result["calibrated"].items() if k in ("q10", "q90")}

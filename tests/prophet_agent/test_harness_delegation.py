@@ -85,7 +85,8 @@ def test_outside_claims_whose_figures_no_page_contains_are_removed(tmp_path):
               "- IMF (20 Nov 2026): EUR/JPY 162.34.\n\n## Files\n- out/forecast.png")
     out, removed = _check_outside(c, answer)
     assert removed == ["162.34"] and "159.47" in out and "162.34 ." not in out.split("_Some")[0]
-    assert "EUR/JPY 162.34" not in out and "## Files" in out and "left out" in out
+    assert "EUR/JPY 162.34" not in out and "## Files" in out and "1 outside claim(s) were left out" in out
+    assert "162.34" not in out          # the note gives a count, never the unsourced figure itself
     assert _check_outside(c, "No outside section.") == ("No outside section.", [])
 
 
