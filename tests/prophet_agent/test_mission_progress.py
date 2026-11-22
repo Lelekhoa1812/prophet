@@ -182,10 +182,16 @@ def test_external_series_checklist_asks_for_outside_context_until_a_researcher_o
     ctx = next(it for it in items if it["item"].startswith("outside context"))
     assert ctx["status"] == "todo"
     assert not any(it["item"].startswith("outside context") for it in contracts.progress([], run_root=tmp_path))
-    for done in ({"kind": "subagent", "agent_type": "researcher"},
-                 {"kind": "tool", "tool": "web_search", "args": {}, "error": "offline"}):   # an attempt counts
+    # Changed by round 3 (A3-02, live WTI rep4): an attempt no longer ticks the item. A researcher's briefing must be non-empty,
+    # and a web call must return content. A failed or empty attempt leaves it to do, so the planner researches again or says why.
+    for done in ({"kind": "subagent", "agent_type": "researcher", "answer": "OPEC+ meets on 29 November"},
+                 {"kind": "tool", "tool": "web_search", "args": {}, "result": {"ok": True, "results": [{"title": "EIA"}]}}):
         items = contracts.progress([done], run_root=tmp_path, external=True)
         assert next(it for it in items if it["item"].startswith("outside context"))["status"] == "done"
+    for attempt in ({"kind": "subagent", "agent_type": "researcher", "answer": ""},
+                    {"kind": "tool", "tool": "web_search", "args": {}, "error": "offline"}):
+        items = contracts.progress([attempt], run_root=tmp_path, external=True)
+        assert next(it for it in items if it["item"].startswith("outside context"))["status"] == "todo"
     assert contracts.researched([{"kind": "subagent", "agent_type": "analyst"}]) is False
 
 

@@ -540,16 +540,35 @@ def check_ledger(history, run_root) -> dict | None:
 RESEARCH_TOOLS = ("web_research", "web_search", "web_fetch")
 
 
+def _briefing(res: Any) -> bool:
+    """True when a tool result holds something a reader can use: a non-empty body, and not marked ok False."""
+    if isinstance(res, dict):
+        if res.get("ok") is False:
+            return False
+        return any(v not in (None, "", [], {}) for k, v in res.items() if k not in ("ok", "error", "status"))
+    if isinstance(res, (list, tuple)):
+        return len(res) > 0
+    return isinstance(res, str) and bool(res.strip())
+
+
 def researched(history) -> bool:
-    """True once outside context was sought: a web tool was called (even if it failed) or a researcher sub-agent ran. An attempt
-    counts, so a mission with no network is told to say so in its answer rather than being held on this item."""
+    """True once a usable outside-context briefing exists: a web call returned content, or a researcher sub-agent gave a
+    non-empty answer or its own web calls returned content. A failed or empty attempt does not tick the item, so the planner
+    must research again or say plainly why research was not possible (A3-02; live WTI rep4: the researcher returned answer ""
+    with "research briefing is incomplete", and the item ticked anyway)."""
     for h in history if isinstance(history, list) else []:
         if not isinstance(h, dict):
             continue
         if h.get("kind") == "tool" and h.get("tool") in RESEARCH_TOOLS:
-            return True
+            if not h.get("error") and _briefing(h.get("result")):
+                return True
         if h.get("kind") == "subagent" and h.get("agent_type") == "researcher":
-            return True
+            if isinstance(h.get("answer"), str) and h["answer"].strip():
+                return True
+            for e in h.get("evidence") if isinstance(h.get("evidence"), list) else []:
+                if (isinstance(e, dict) and e.get("kind") == "tool" and e.get("tool") in RESEARCH_TOOLS
+                        and not e.get("error") and _briefing(e.get("result"))):
+                    return True
     return False
 
 
