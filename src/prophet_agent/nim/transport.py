@@ -133,6 +133,7 @@ class _Outcome:
     invalid: bool = False
     shape: _Shape | None = None
     partial: str = ""                  # "cut" only: the raw text that was already released before the stream broke
+    raw: str = ""                      # "ok" only: the uncleaned text, so a continuation keeps its boundary whitespace
     status: int | None = None          # the HTTP status of the attempt, when one was received
     detail: str = ""                   # redacted, shortened response body for a failed attempt (model checks show it)
     hung: bool = False                 # the provider sent nothing within its silence limit (not a refusal)
@@ -158,6 +159,23 @@ def clean_text(raw: str) -> str:
     text = text.strip()
     m = _FENCE.fullmatch(text)
     return m.group(1).strip() if m else text
+
+
+def _join_continuation(carried: str, more: str) -> str:
+    """Joins a free-text reply cut by the token allowance to its continuation, then cleans the whole.
+
+    Motivation: a cut can fall on a word boundary, and the space there is real text. Cleaning each side on its own trims
+    that space, so "by " and "June." came out as "byJune.". The raw sides are joined first so the seam can be judged.
+    Logic: the whitespace at the seam becomes exactly one separator: a newline if the seam had a line break, otherwise a
+    space. A seam with no whitespace (a cut mid-word) joins directly. Only when both sides hold text is a separator
+    added. Then clean_text runs once on the joined text, so think blocks, the json fence unwrap and the leading and
+    trailing padding of the whole reply behave exactly as they do for a reply that was never cut.
+    """
+    head, tail = carried.rstrip(), more.lstrip()
+    seam = carried[len(head):] + more[:len(more) - len(tail)]
+    if head and tail and seam:
+        return clean_text(head + ("\n" if "\n" in seam else " ") + tail)
+    return clean_text(carried + more)
 
 
 def _content_text(content: Any) -> str:
@@ -545,7 +563,7 @@ class NimClient:
                              self.clock() - attempt_started, out.reason)
                     if out.kind == "ok":
                         self.overload.pop(model, None)
-                        reply = replace(out.reply, text=clean_text(carried) + out.reply.text) if carried else out.reply
+                        reply = replace(out.reply, text=_join_continuation(carried, out.raw)) if carried else out.reply
                         self._record(reply)
                         yield "done", reply
                         return
@@ -892,7 +910,8 @@ class NimClient:
         if elapsed >= SLOW_CALL_S:
             log.info("nim call: %s slot=%d thinking=%s HTTP %s %.1fs", model, slot,
                      "on" if opts.thinking else "off", status, elapsed)
-        text = clean_text("".join(parts))
+        raw = "".join(parts)
+        text = clean_text(raw)
         calls = _tool_calls(acc)
         if finish == "error" and not text and not calls:
             # Some gateways report a limit or an upstream fault inside a 200 stream as finish_reason "error", with no
@@ -919,10 +938,10 @@ class NimClient:
         if opts.schema is None and not opts.tools and finish == "length" and text.strip():
             # Free text cut by the token allowance: continue from it as a broken stream continues, instead of returning an
             # answer that stops mid-sentence (audit 2026-11-22, item 11). Bounded by MAX_CONTINUATIONS.
-            return _Outcome("cut", reason=f"{model}: free-text reply cut by the token allowance", partial=text, status=status)
+            return _Outcome("cut", reason=f"{model}: free-text reply cut by the token allowance", partial=raw, status=status)
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,
                       usage=_usage(usage), key_slot=slot, elapsed_s=round(elapsed, 2))
-        return _Outcome("ok", reply=reply, status=status)
+        return _Outcome("ok", reply=reply, status=status, raw=raw)
 
     def _stream_error(self, key: str, model: str, slot: int, error: Any, emitted: bool, parts: list[str],
                       opts: _Opts, shape: _Shape, started: float) -> _Outcome:
