@@ -881,6 +881,36 @@ def check_outlier_share(history, run_root) -> dict | None:
                   "warn")
 
 
+_HYPOTHESIS_STAGE = re.compile(r"hypothes", re.I)
+_HYPOTHESIS_OUTCOME = re.compile(r"\b(confirmed|refuted|supported|rejected)\b", re.I)
+
+
+def check_hypotheses(history, run_root) -> dict | None:
+    """The mission should state two or more falsifiable hypotheses and mark each confirmed or refuted (A4-10). An entry counts when it
+    carries an ``expected`` statement and an ``outcome`` of confirmed or refuted. Without those fields, an entry staged as a
+    hypothesis counts when its text states an outcome. A warning, not a block. None when no ledger was saved. Live evidence (measured,
+    audit round 3, A4): none of six ledgers held an expectation, although planner step 4 asks for one."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return None
+    entries = [e for e in ledgers[0] if isinstance(e, dict) and not e.get("superseded")]
+    tested = 0
+    for e in entries:
+        expected = str(e.get("expected") or "").strip()
+        outcome = str(e.get("outcome") or "").strip().lower()
+        if expected and outcome in ("confirmed", "refuted"):
+            tested += 1
+        elif not e.get("expected") and not e.get("outcome") and _HYPOTHESIS_STAGE.search(str(e.get("stage", ""))) \
+                and _HYPOTHESIS_OUTCOME.search(f"{e.get('finding', '')} {e.get('decision', '')}"):
+            tested += 1
+    if tested >= 2:
+        return _check("hypotheses_tested", True,
+                      f"{tested} falsifiable hypotheses were stated and marked confirmed or refuted", "warn")
+    return _check("hypotheses_tested", False,
+                  f"{tested} hypothesis test(s) recorded; the mission should state at least two falsifiable expectations and mark "
+                  "each confirmed or refuted", "warn")
+
+
 def check_evidence(history, *, run_root=None) -> list[dict]:
     """Checks on a mission's observations, in order. Never raises: a missing or malformed piece skips its check."""
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
@@ -975,6 +1005,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         shifts = check_shift_decisions(obs, run_root)
         if shifts is not None:
             checks.append(shifts)
+        hypotheses = check_hypotheses(obs, run_root)
+        if hypotheses is not None:
+            checks.append(hypotheses)
 
     selection = check_selection(obs)
     if selection is not None:
