@@ -64,8 +64,9 @@ def random_walk_test(values: Any, horizons: tuple[int, ...] = HORIZONS) -> dict[
     z_star = rows[q_star]["z"]
     if abs(z_star) < crit:
         verdict = "consistent_with_random_walk"
-        reading = ("Its changes behave like a random walk: no tested horizon shows reversal or persistence beyond chance, so "
-                   "the last value is the honest centre line and the range carries the forecast.")
+        reading = ("No evidence of predictability at this sample size: the changes look like a random walk, with no tested "
+                   "horizon showing reversal or persistence, so the last value is the honest centre line and the range "
+                   "carries the forecast.")
     elif rows[q_star]["variance_ratio"] < 1:
         verdict = "mean_reverting"
         reading = (f"Its changes tend to reverse (variance ratio {rows[q_star]['variance_ratio']} at {q_star} steps), so a "

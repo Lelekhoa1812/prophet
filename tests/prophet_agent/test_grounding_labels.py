@@ -80,3 +80,17 @@ def test_a_copying_slip_in_a_large_figure_is_corrected_to_the_printed_value():
     # two printed values near the figure: no guess
     twin = [{"kind": "tool", "tool": "t", "args": {}, "result": {"a": 5000.4, "b": 5001.3}}]
     assert snap("It is 5,001.", twin, "")[1] == []
+
+
+def test_a_sub_agent_written_answer_is_not_evidence_for_the_lead_answer():
+    """Audit 2026-11-22, item 1: a figure the sub-agent wrote is unsourced; it must not ground the lead's answer."""
+    from prophet_agent.runtime.grounding import unverified
+    history = [{"kind": "tool", "tool": "web_fetch", "args": {}, "result": {"ok": True, "text": "Revenue rose to 412 million."}},
+               {"kind": "subagent", "agent_type": "researcher", "status": "met", "answer": "Output hit 9,876 units last year.",
+                "evidence": []}]
+    assert unverified("Revenue rose to 412 million.", history, "") == []
+    assert unverified("Output hit 9,876 units last year.", history, "") == ["9,876"]
+    # a figure the sub-agent backed with its own tool evidence still counts
+    backed = [{"kind": "subagent", "agent_type": "researcher", "status": "met", "answer": "Output hit 9,876 units.",
+               "evidence": [{"kind": "tool", "tool": "web_fetch", "args": {}, "result": {"ok": True, "text": "9,876 units"}}]}]
+    assert unverified("Output hit 9,876 units.", backed, "") == []

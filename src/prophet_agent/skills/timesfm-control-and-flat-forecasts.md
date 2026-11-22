@@ -1,9 +1,7 @@
 name: timesfm-control-and-flat-forecasts
-summary: Control TimesFM 3 inputs and horizon, check for flat or repeated output, and keep every result research-only.
+summary: Control TimesFM 3 inputs and horizon, catch flat or repeated output, and keep claims inside the tested range.
 
 # TimesFM 3 control and flat forecasts
-
-Project rule first: TimesFM 3 weights are non-commercial. Outputs are for research use only, never for client deliverables or commercial decisions.
 
 1. Pass a regular grid. TimesFM 3 takes no frequency argument, so resample to the target frequency and mark missing periods explicitly.
 2. Context: the model keeps only the most recent 15,360 points. Test shorter windows (for example 128, 512 and 2,048) in the backtest, and report the one used.
@@ -29,4 +27,4 @@ Decision rules:
 - If the horizon is outside the tested range, report the forecast as untested at that horizon.
 - If the series is intermittent, use the route in the zeros skill, not the median.
 
-Do not present a flat repeated forecast as real. Do not present the median as the expected value for lumpy demand. Do not quote horizons beyond the tested range. Do not move TimesFM output into a commercial or client deliverable. Do not treat the 80 percent band as calibrated without a coverage check.
+Do not present a flat repeated forecast as real. Do not present the median as the expected value for lumpy demand. Do not quote horizons beyond the tested range. Do not treat the 80 percent band as calibrated without a coverage check.

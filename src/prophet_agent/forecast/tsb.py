@@ -1,6 +1,6 @@
 """Teunter-Syntetos-Babai (TSB) model for intermittent demand. Ported from the TSB class in src/lab/engine/models.py.
 
-The Router, fit_routing and the licence switch are not ported. This module holds only the model.
+The Router and fit_routing are not ported. This module holds only the model.
 
 Motivation vs Logic
 Motivation: lumpy series (long runs of zeros, then a large order) get a misleading smooth average from most models.

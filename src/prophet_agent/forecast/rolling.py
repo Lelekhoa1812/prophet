@@ -224,7 +224,9 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
         out["timesfm_vs_best_baseline_interval"] = ev
         out["verdict"] = ev["verdict"]
         out["reading"] = (
-            "Lower MASE is better; 1.0 means as accurate as repeating the value one season (or step) back. "
+            "Lower MASE is better. The error is scaled by the mean absolute change at the series' lag (the one-step change "
+            "when there is no season, otherwise the seasonal change at lag m), so 1.0 means the average error equals the "
+            "average change at that lag. "
             f"Range coverage should sit near 0.8. Measured over {k} windows of {horizon} periods. The verdict uses a paired "
             f"{CONFIDENCE:.0%} bootstrap of the per-window MASE gain over {best} and the number of windows TimesFM won; "
             "timesfm_better needs the whole interval above zero and at least "

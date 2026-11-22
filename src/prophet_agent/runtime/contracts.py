@@ -486,6 +486,33 @@ def render_progress(items: list[dict]) -> str:
     return "Mission checklist (derived from the evidence; finish only when every box is ticked, or say plainly why one cannot be):\n" + "\n".join(lines)
 
 
+def _baseline_gate(delivered: dict, backtests: list) -> dict:
+    """The baseline check for the forecast that stands (audit 2026-11-22, item 4). A backtest counts only if it ran at the
+    delivered horizon or longer, so a 14-day check does not vouch for a 60-day forecast. When the centre is TimesFM's own
+    line and a simple rule beat it in such a backtest, the gate blocks it; a centre switch (forecast_report centre=rule)
+    is the repair."""
+    fh = delivered.get("horizon") if isinstance(delivered, dict) else None
+    covering = [b for b in backtests if _is_int(b.get("horizon")) and (not _is_int(fh) or b["horizon"] >= fh)]
+    if not covering:
+        ran = sorted({b.get("horizon") for b in backtests if _is_int(b.get("horizon"))})
+        return _check("baseline_compared", False,
+                      f"the forecast runs {fh} periods ahead but no backtest covers that horizon (backtests ran at {ran})")
+    centre = delivered.get("centre") if isinstance(delivered, dict) else None
+    on_timesfm = not (isinstance(centre, dict) and centre.get("rule") not in (None, "timesfm"))
+    for b in covering:
+        models = b.get("models") if isinstance(b.get("models"), dict) else {}
+        best = b.get("best_baseline")
+        tmodel = models.get("timesfm")
+        bmodel = models.get(best) if isinstance(best, str) else None
+        tm = _finite(tmodel.get("mase")) if isinstance(tmodel, dict) else None
+        bm = _finite(bmodel.get("mase")) if isinstance(bmodel, dict) else None
+        if on_timesfm and tm is not None and bm is not None and tm > bm and not _flagged(b):
+            return _check("baseline_compared", False,
+                          f"the forecast keeps TimesFM's centre line, but the backtest found {best} more accurate "
+                          f"(MASE {bm:.3f} against {tm:.3f}); switch the centre to that rule")
+    return _check("baseline_compared", True, "the forecast was compared with the baselines in a backtest at its horizon")
+
+
 def check_evidence(history, *, run_root=None) -> list[dict]:
     """Checks on a mission's observations, in order. Never raises: a missing or malformed piece skips its check."""
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
@@ -514,11 +541,11 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
 
     if not forecasts:
         checks.append(_check("baseline_compared", True, "no forecast yet; nothing to compare"))
-    elif backtests:
-        checks.append(_check("baseline_compared", True, "the forecast was compared with the baselines in a backtest"))
-    else:
+    elif not backtests:
         checks.append(_check("baseline_compared", False,
                              "the forecast was never compared with the simple baselines (no successful backtest)"))
+    else:
+        checks.append(_baseline_gate(forecasts[-1][1], backtests))
 
     if not forecasts:
         checks.append(_check("health_repaired", True, "no forecast yet; nothing to check"))
@@ -647,8 +674,8 @@ def trust_statement(history) -> str:
     else:
         call = " The two are not distinguishable over this many windows, so the centre line is no better than the simple rule."
     if f.get("random_walk") == "consistent_with_random_walk":
-        call += (" A variance-ratio test finds the series' changes indistinguishable from a random walk, so no method is "
-                 "expected to call its direction; read the range, not the line.")
+        call += (" A variance-ratio test finds no evidence of predictability at this sample size: the changes look like a "
+                 "random walk, so no method is expected to call its direction; read the range, not the line.")
     rng = f" In that backtest the 10-90% range held {_pct(f.get('backtest_coverage'))} of outcomes (target 80%)."
     if f.get("heldout_raw") is not None:
         used = "the calibrated range is used" if f.get("calibration") == "use_calibrated" else "the raw range is kept"

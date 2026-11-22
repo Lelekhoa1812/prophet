@@ -14,6 +14,15 @@ Turn the legacy `timesfm-erp` lab into **Prophet**: a domain-independent forecas
 across crashes. Read-only against any ERP. The legacy lab was deleted in commit 9cf4c01 on the user's instruction of
 2026-11-20. The TimesFM 3 licence position is in ARCHITECTURE.md §5.
 
+## Locked decision: licence wording lives only in documents (2026-11-22)
+
+The owner decided, permanently, that licence and research-use wording (for example "research use only", "non-commercial")
+appears only in Markdown documents: README.md, NOTICE.md, CLAUDE.md and docs/. It must not appear in UI components,
+agent prompts, skills, contracts, API responses, tools or code strings. Anyone who clones the project reads the README
+themselves. Enforced by `tests/prophet_agent/test_licence_wording_guard.py`, which scans the app and fails on any hit.
+This settles the conflict recorded on 2026-11-22 (evaluator wording against CLAUDE.md): the evaluator prompt no longer
+mentions licence terms. The legal position itself is unchanged and stays in ARCHITECTURE.md §5.
+
 ## Completion criteria
 
 Each criterion is done only when its check passes and its evidence is recorded in this file.
@@ -237,3 +246,43 @@ smooth, impute, derivative_features and the new helpers only.
 - Push to `origin/main` after each green gate. The user's 2026-11-20 instruction to ship and push end to end is the
   authorisation.
 - Label every figure as synthetic replay, real staging, or measured. Never present synthetic numbers as observed results.
+
+## Evidence, repeat runs of retail and WTI (2026-11-22)
+
+Three repeats of each live scenario, run in sequence against the API (127.0.0.1:8010) with the same prompts and sandbox
+code. Each run wrote `data/live_<scenario>_None_rep<n>.json`. Labelled **measured** (real NIM and TimesFM calls, not
+synthetic). Three runs per scenario is a small sample, not a rate.
+
+| Run | Scenario | Status | Stop reason | Seconds | Tool calls | Unverified figures |
+|---|---|---|---|---|---|---|
+| rep 1 | retail | completed | done_verified | 390 | 14 | none |
+| rep 1 | WTI | partial | partial_unverified | 921 | 32 | `886,887`, `91.23` |
+| rep 2 | retail | completed | done_verified | 541 | 19 | none |
+| rep 2 | WTI | completed | done_verified | 340 | 14 | none |
+| rep 3 | retail | completed | done_verified | 1042 | 45 | none |
+| rep 3 | WTI | partial | partial_unverified | 721 | 23 | `0.001`, `12.5` |
+
+Read-out: retail completed 3 of 3; WTI completed 1 of 3, and both partial WTI runs stopped on figures that no tool result
+contained. Two runs (retail rep 3, WTI rep 1) also used one auto-continue.
+
+Code state during the repeats. Sandbox files (`prophet_*.py`) were read from disk at each run, so runs after the tranche 1
+commit (`14f8a9b`) used it. The API process held the code loaded at its start, so the tranche 2 and 3 fixes below are not
+in these numbers. Prompts and skills were read on each call; the licence scrub landed after the last run.
+
+## Tranche status after the six-dimension audit (2026-11-22)
+
+Fixed, each with a regression test (see [AUDIT_2026-11-22.md](AUDIT_2026-11-22.md) for the full table):
+items 1 (sub-agent answers are not evidence), 2, 3, 5, 6, 12 (tranche 1); 4 (baseline gate covers the delivered horizon and
+blocks a TimesFM loss on its own centre), 7 (call count includes sub-agents), 8 (outside-context heading at any level),
+9 (research trigger covers retail, prices, electricity, weather), 11 (truncated free text is continued), 19, 20, 22
+(wording).
+
+Open: items 10, 13, 14, 15, 16, 17, 18, 21, 23, 24, and the build items (MinT reconciliation, the equal-weight blend as a
+centre rule, and a live `panel_backtest` on a real panel).
+
+Known limit: a space at the exact point where a free-text reply is cut is lost on continuation, because the cleaning step
+trims it. A mid-word cut joins correctly.
+
+Licence wording: locked as a permanent rule (2026-11-22). Licence and research-use wording lives only in Markdown documents;
+`tests/prophet_agent/test_licence_wording_guard.py` enforces it. The prompt and skill scrub is done. `evaluator.v9` is the
+current evaluator prompt, and the older evaluator versions and two skills no longer carry the wording.

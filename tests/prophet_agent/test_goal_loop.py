@@ -805,3 +805,35 @@ def test_a_figure_marked_as_approximate_matches_a_printed_one_within_one_percent
     assert unverified("The band is 44,500 kW wide.", history, "g") == ["44,500"], "unmarked figures stay exact"
     assert unverified("The band is about 45,900 kW wide.", history, "g") == ["45,900"], "one percent, not any rounding"
     assert unverified("It ran from 6,600 to 27,400 units.", history, "g") == ["6,600", "27,400"], "a range is not an approximation"
+
+
+def test_the_call_count_includes_calls_a_sub_agent_made():
+    """Audit 2026-11-22, item 7: the planner's budget must see the work a delegated sub-agent did."""
+    from prophet_agent.runtime.goal import _calls_used
+    history = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True}},
+               {"kind": "subagent", "agent_type": "analyst", "status": "met", "answer": "done", "evidence": [
+                   {"kind": "tool", "tool": "web_fetch", "args": {}, "result": {"ok": True}},
+                   {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True}}]},
+               {"kind": "tool", "tool": "sandbox_python", "error": "unknown tool 'x'", "args": {}}]
+    assert _calls_used(history) == 3
+
+
+def test_the_research_trigger_covers_retail_demand_weather_and_power_goals():
+    """Audit 2026-11-22, item 9: these series are driven by outside things and must trigger the research step."""
+    from prophet_agent.runtime.goal import EXTERNAL_GOAL
+    for goal in ("Forecast weekly retail sales for the next 8 weeks", "Forecast electricity demand for Victoria",
+                 "Forecast rainfall for next month", "Forecast tourism arrivals next year"):
+        assert EXTERNAL_GOAL.search(goal), goal
+    assert not EXTERNAL_GOAL.search("Forecast the number of tickets in our help desk queue")
+
+
+def test_the_outside_context_heading_is_found_at_any_level_with_or_without_colon_or_bold():
+    """Audit 2026-11-22, item 8: a heading written with a colon or in bold is still the outside-context section."""
+    from prophet_agent.runtime.goal import OUTSIDE_HEAD, SECTION_END
+    for head in ("## Outside context", "### Outside context:", "**Outside context**", "Outside context", "#### outside context:"):
+        assert OUTSIDE_HEAD.search(head), head
+    assert not OUTSIDE_HEAD.search("The outside context was not checked")
+    body = "**Outside context**\nIMF cut rates.\n\n**Caveats**\nNone."
+    start = OUTSIDE_HEAD.search(body).end()
+    section = body[start:start + SECTION_END.search(body[start:]).start()]
+    assert "IMF cut rates." in section and "Caveats" not in section      # the section stops at the next bold heading

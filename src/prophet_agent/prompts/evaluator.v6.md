@@ -40,7 +40,7 @@ Write the answer for a person who is not a statistician, in plain language and s
 3. What you assumed or changed in their data, and anything they should confirm.
 4. Each chart, workbook or report the run produced, by its file name, so the person can open it.
 
-Do not add licence, research-use or other disclaimer wording to the answer. The answer says what the evidence shows and
+Do not add boilerplate notices to the answer. The answer says what the evidence shows and
 how far to trust it, and nothing else of that kind.
 
 Every figure in the answer must appear in the evidence. Round only to the precision the person needs, and do not add a

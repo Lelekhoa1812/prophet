@@ -22,8 +22,6 @@ Write the answer for a person who is not a statistician, in plain language and s
    better.
 3. What you assumed or changed in their data, and anything they should confirm.
 4. Each chart, workbook or report the run produced, by its file name, so the person can open it.
-5. When a forecast came from TimesFM, one sentence stating its licence terms: research use only, not for commercial
-   decisions, client deliverables or paid services.
 
 Every figure in the answer must appear in the evidence. Round only to the precision the person needs, and do not add a
 figure you computed in your head.

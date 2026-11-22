@@ -41,12 +41,12 @@ EXTRA: dict[str, str] = {
     "choose-model-by-backtest.md:19": "treatment = lambda h: h.rolling(3, min_periods=1).median()",
     "bayesian-shrinkage-hierarchies.md:11":"rates = np.array([0.10, 0.22, 0.05, 0.31])\nexposure = np.array([120, 80, 40, 200])",
     "changepoints-and-regimes.md:11": "history = s.to_numpy(dtype=float)",
-    "deliverables-and-handover.md:17": "fc = pd.DataFrame({'forecast': s.values}, index=s.index)",
+    "deliverables-and-handover.md:16": "fc = pd.DataFrame({'forecast': s.values}, index=s.index)",
     "forecast-combination-and-conformal.md:10": "f_model = x[-30:] * 1.02\nf_naive = np.repeat(x[-1], 30)",
     "forecast-combination-and-conformal.md:17": ("past_residuals = np.diff(x)[:120]\ncombined = np.repeat(float(x[-1]), 30)"),
     "intervals-and-trust-statement.md:20": ("y_true = x[-40:]\nq10 = y_true - 8.0\nq90 = y_true + 8.0"),
     "knn-and-analogue-imputation.md:12": ("df = pd.DataFrame({'demand': np.where(np.arange(len(x)) % 17 == 3, np.nan, x)})"),
-    "timesfm-control-and-flat-forecasts.md:18": "history = s.to_numpy(dtype=float)",
+    "timesfm-control-and-flat-forecasts.md:16": "history = s.to_numpy(dtype=float)",
 }
 
 # Snippets that cannot run in this fixture, with the reason.

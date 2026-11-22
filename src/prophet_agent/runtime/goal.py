@@ -98,15 +98,15 @@ MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and sa
 ASKS_KEEP_CHARS = 2000    # head of the memo (the ASKS section) that a cut to fit never removes
 EXTERNAL_GOAL = re.compile(r"\b(?:wti|brent|crude|oil|gas|gold|silver|copper|commodit\w*|fx|forex|exchange rate|usd|eur|gbp|jpy|aud|"
                            r"stock|equit\w*|share price|s&p|nasdaq|index|yield|bond|treasur\w*|bitcoin|btc|crypto\w*|spot price|"
-                           r"interest rate|inflation|cpi|unemployment|gdp)\b", re.I)
+                           r"interest rate|inflation|cpi|unemployment|gdp|retail|prices?|electricity|energy|weather|"
+                           r"rainfall|temperature|tariffs?|housing|tourism|passengers|traffic|footfall)\b", re.I)
 FORECAST_GOAL = re.compile(r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook", re.I)
 FILES_GOAL = re.compile(r"\b(?:chart|graph|plot|workbook|spreadsheet|xlsx|docx|pdf|png|svg|report|deliverable)s?\b", re.I)
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
 DONE_WHEN = ("the evaluator judges the goal met", "the deterministic checks pass on the evidence "
              "(data inspected, forecast compared with baselines, forecast health repaired, deliverables present)",
              "every figure in the answer traces to a tool result")
-MUST_NOT_CHANGE = ("synthetic or expected numbers are never presented as observed", "the 15 percent improvement bar is not moved",
-                   "TimesFM 3 outputs are research use only")
+MUST_NOT_CHANGE = ("synthetic or expected numbers are never presented as observed", "the 15 percent improvement bar is not moved")
 STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "impossible": "impossible", "stalled": "stalled",
                 "checkpoint": "budget_part_spent"}
 MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
@@ -265,9 +265,15 @@ READ_ONLY_TOOLS = ("analyst_skill", "notes")      # reading a playbook or a note
 
 
 def _calls_used(history: list[dict]) -> int:
-    """Tool calls made so far: unknown-tool slips never reached the runtime, and reads of playbooks and notes are not work."""
-    return sum(1 for h in history if h.get("kind") == "tool" and h.get("tool") not in READ_ONLY_TOOLS
-               and not str(h.get("error", "")).startswith("unknown tool"))
+    """Tool calls made so far, including those a delegated sub-agent made (audit 2026-11-22, item 7): unknown-tool slips
+    never reached the runtime, and reads of playbooks and notes are not work."""
+    total = 0
+    for h in history:
+        if h.get("kind") == "subagent":
+            total += _calls_used(h.get("evidence") or [])
+        elif h.get("kind") == "tool" and h.get("tool") not in READ_ONLY_TOOLS and not str(h.get("error", "")).startswith("unknown tool"):
+            total += 1
+    return total
 
 
 def _error_signature(h: dict) -> str | None:
@@ -1255,7 +1261,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
 
 DATE_TEXT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s+\d{4})?"
                        r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?", re.I)
-OUTSIDE_HEAD = re.compile(r"^#{1,4}\s*Outside context\s*$", re.I | re.M)
+# Any heading level, with or without a colon or bold (audit 2026-11-22, item 8): "### Outside context:", "**Outside context**".
+OUTSIDE_HEAD = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?[ \t]*outside context[ \t]*(?:\*\*)?[ \t]*:?[ \t]*$", re.I | re.M)
+SECTION_END = re.compile(r"^(?:#{1,6}[ \t]+\S|\*\*[^*\n]+\*\*[ \t]*:?[ \t]*$)", re.M)
 
 
 def _web_evidence(ctx: Ctx) -> list[dict]:
@@ -1289,7 +1297,7 @@ def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
                 sources.extend(res.get("sources") or res.get("hits") or [])
                 if isinstance(res.get("text"), str):
                     sources.append({"text": res["text"]})
-    nxt = re.search(r"^#{1,4}\s+\S", answer[m.end():], re.M)
+    nxt = SECTION_END.search(answer[m.end():])
     end = m.end() + nxt.start() if nxt else len(answer)
     kept, removed, dropped = [], [], 0
     for line in answer[m.end():end].splitlines():

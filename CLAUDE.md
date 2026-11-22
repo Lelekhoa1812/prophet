@@ -47,6 +47,9 @@ PYTHONPATH=src .venv/bin/python -m prophet_agent.nim.probe models   # live schem
   ask the model again for completed work.
 - Never present synthetic or expected numbers as observed results. Label every figure as synthetic replay, real
   staging, or measured.
+- Licence and research-use wording lives only in Markdown documents (README.md, NOTICE.md, CLAUDE.md, docs/). Never put it
+  in UI components, agent prompts, skills, contracts, API responses, tools or code strings. Locked by the owner on
+  2026-11-22; `tests/prophet_agent/test_licence_wording_guard.py` enforces it.
 - TimesFM 3 weights are non-commercial: research use only. Do not use outputs for commercial decisions, client
   deliverables or paid services. The licence gate is in `docs/prophet/ARCHITECTURE.md` section 5.
 - Keys: `nvapi-` values are never printed, logged, stored in the ledger or committed. `.env` is git-ignored.

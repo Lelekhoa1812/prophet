@@ -867,3 +867,19 @@ def test_keys_all_resting_past_the_attempt_budget_is_waited_out_not_reported():
     reply = client.complete([M1], MSGS, budget_s=30.0)
     assert reply.text == "ok"
     assert clock.t >= 1000.0 + 100.0, "the call waited out the 100 s cooldown"
+
+
+def test_a_free_text_reply_cut_by_the_allowance_is_continued_not_returned_mid_sentence():
+    """Audit 2026-11-22, item 11: a free-text answer that stops on the length limit is continued from its own partial text."""
+    seen: list[dict] = []
+    replies = iter([("The forecast rise", "length"), ("s to 412 by June.", "stop")])
+
+    def cut_then_finish(request, payload):
+        seen.append(payload)
+        text, finish = next(replies)
+        return sse([text], finish=finish)
+
+    client, _ = make(Script().on(cut_then_finish))
+    reply = client.complete([M1], MSGS)
+    assert reply.text == "The forecast rises to 412 by June."
+    assert len(seen) == 2 and seen[1]["messages"][-2] == {"role": "assistant", "content": "The forecast rise"}

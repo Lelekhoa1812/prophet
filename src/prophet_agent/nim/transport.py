@@ -916,6 +916,10 @@ class NimClient:
                             opts.max_tokens, shape.mode, redact(text[:160]), redact(text[-120:]))
                 return _Outcome("truncated" if truncated else "model", f"{model}: local schema check failed: {err}",
                                 invalid=True, status=status, text=text)
+        if opts.schema is None and not opts.tools and finish == "length" and text.strip():
+            # Free text cut by the token allowance: continue from it as a broken stream continues, instead of returning an
+            # answer that stops mid-sentence (audit 2026-11-22, item 11). Bounded by MAX_CONTINUATIONS.
+            return _Outcome("cut", reason=f"{model}: free-text reply cut by the token allowance", partial=text, status=status)
         reply = Reply(text=text, tool_calls=calls, model=model, finish_reason=finish,
                       usage=_usage(usage), key_slot=slot, elapsed_s=round(elapsed, 2))
         return _Outcome("ok", reply=reply, status=status)

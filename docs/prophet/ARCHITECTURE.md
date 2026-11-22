@@ -80,6 +80,12 @@ keep `prophet_agent`, or choose a new short name. The user decides.
 
 ## 5. TimesFM 3: licence gate
 
+**Permanent rule (locked by the owner, 2026-11-22).** Licence and research-use wording lives only in Markdown documents:
+README.md, NOTICE.md, CLAUDE.md and docs/. It never appears in UI components, agent prompts, skills, contracts, API
+responses, tools or code strings. Anyone who clones the project reads the README and NOTICE.md themselves; repeating the
+notice in the app creates noise and confusion for users. `tests/prophet_agent/test_licence_wording_guard.py` enforces
+this and fails if the wording returns outside the docs. The gate below is a documented rule, not app wording.
+
 **Blocking for any client data.** The TimesFM 3.0 weights are under the "TimesFM Non-Commercial License v1.0". Permitted
 use is research not tied to revenue or production. Results may not be used in commercial decision-making, client
 deliverables or paid services [V-docs, via a summarising fetch; the raw licence text needs a direct read]. Code is

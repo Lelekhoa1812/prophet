@@ -153,8 +153,10 @@ def _as_text(obj) -> str:
 
 
 def _observed(history: list):
-    """What the run observed: tool results, the person's answers, and a sub-agent's own evidence and report. Arguments,
-    rationale and the planner's words are never yielded."""
+    """What the run observed: tool results, the person's answers, and a sub-agent's own tool evidence. Arguments,
+    rationale, the planner's words and a sub-agent's written answer are never yielded: the written answer is a claim
+    made by the model, so a figure in it is checked against tool results, not accepted because the model wrote it
+    (audit 2026-11-22, item 1)."""
     for h in history:
         kind = h.get("kind")
         if kind == "tool" and "result" in h:
@@ -163,8 +165,6 @@ def _observed(history: list):
             yield _as_text(h["answers"])
         elif kind == "subagent":
             yield from _observed(h.get("evidence") or [])
-            if h.get("answer"):
-                yield str(h["answer"])
 
 
 def evidence_text(history: list, goal: str) -> str:
