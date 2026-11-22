@@ -62,3 +62,8 @@ def test_seasonal_centre_rules_deliver_the_backtests_own_lines():
     assert sn["quantiles"]["0.1"][0] == 5.0                       # band recentred: 30 - 35 + 10
     ml = _centre(fc, values, "mean_last_season", 5)
     assert ml["point"] == [30.0] * 7 and "average of the last season (season 5)" in _method_note({}, ml["centre"])
+
+
+def test_the_pack_states_the_total_of_its_centre_line():
+    from prophet_agent.tools.report_tool import _total
+    assert _total({"point": [1.5, 2.5, 3.0]}) == 7.0 and _total({}) is None

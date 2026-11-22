@@ -64,3 +64,10 @@ def test_pl_reaches_the_statistics_helpers_and_change_points_give_a_ratio():
     assert abs(changes[0]["ratio"] - 2.0) < 0.05
     with pytest.raises(AttributeError, match="neither has prophet_stats"):
         pl.no_such_helper
+
+
+def test_calling_an_agent_tool_from_the_sandbox_says_how_to_call_it():
+    import prophet_lib as pl
+    import pytest
+    with pytest.raises(AttributeError, match="call backtest_series as its own step"):
+        pl.backtest_series

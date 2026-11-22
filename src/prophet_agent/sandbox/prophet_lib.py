@@ -1918,4 +1918,12 @@ def __getattr__(name: str):
     import prophet_stats
     if hasattr(prophet_stats, name) and not name.startswith("_"):
         return getattr(prophet_stats, name)
+    if name in _AGENT_TOOLS:
+        # live retail: six cells called pl.backtest_series
+        raise AttributeError(f"{name} is one of the agent's tools, not a function in the analysis sandbox: save the series "
+                             f"with pl.save_series, then call {name} as its own step with source={{run_id, file}}")
     raise AttributeError(f"module 'prophet_lib' has no attribute {name!r} (and neither has prophet_stats)")
+
+
+_AGENT_TOOLS = {"backtest_series", "timesfm_forecast", "forecast_report", "calibrate_intervals", "control_lab", "panel_backtest",
+                "build_drivers", "detect_anomalies", "inspect_data", "web_research", "web_fetch"}

@@ -303,7 +303,7 @@ def _panel_observe(result: dict) -> dict:
         p, q, health = fc["point"], fc["quantiles"], fc.get("health") or {}
         line = {"point_step_1": p[0], "point_last_step": p[-1], "q10_last_step": q["0.1"][-1], "q90_last_step": q["0.9"][-1],
                 "centre": (fc.get("centre") or {}).get("rule", "timesfm"), "health": health.get("verdict"),
-                "range_vs_centre_pct": range_vs_centre(fc)}
+                "range_vs_centre_pct": range_vs_centre(fc), "centre_line_total": _total(fc)}
         if health.get("verdict") in ("check", "flat_unexpected") and health.get("causes"):
             line["causes"] = health["causes"][:2]
         lines[name] = line
@@ -323,7 +323,17 @@ def observe(result: dict) -> dict:
     return {"forecast": _compact(result["forecast"]), "run_id": result["run_id"],
             "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
             "range_vs_centre_pct": range_vs_centre(result["forecast"]),
+            "centre_line_total": _total(result["forecast"]),
             "deliverables": "built and listed in the manifest; no further build is needed"}
+
+
+def _total(fc: dict) -> float | None:
+    """The sum of the centre line over the horizon (live retail: an answer quoted the 14-day total, which no tool printed).
+    It is the total of the line, not a quantile of the total: the band's edges do not add up across days."""
+    try:
+        return round(float(sum(float(v) for v in fc["point"])), 2)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def range_vs_centre(fc: dict) -> dict | None:
