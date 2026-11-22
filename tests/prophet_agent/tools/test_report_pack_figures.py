@@ -24,11 +24,15 @@ class _Engine:
     checkpoint = "stub"
     global_context = 64
 
-    def __init__(self, level=100.0, dip=None):
-        self.level, self.dip = level, dip        # dip = (step index, value) to force one day below zero
+    def __init__(self, level=100.0, dip=None, follow=False):
+        self.level, self.dip, self.follow = level, dip, follow   # dip = (step index, value) to force one day below zero
+                                                                 # follow = repeat the last weekly cycle (a healthy shape)
 
     def forecast_batch(self, series_list, horizon):
-        point = np.full((len(series_list), horizon), float(self.level))
+        if self.follow:
+            point = np.array([[float(ctx[-7 + (j % 7)]) for j in range(horizon)] for ctx in series_list])
+        else:
+            point = np.full((len(series_list), horizon), float(self.level))
         if self.dip is not None:
             point[:, self.dip[0]] = self.dip[1]
         widen = (1.0 + np.arange(horizon))[None, :, None]
@@ -85,7 +89,7 @@ def test_the_table_band_differs_between_the_first_and_last_step(engine):
 
 
 def test_the_total_quoted_by_the_observation_is_the_sum_of_the_table_rows(engine):
-    engine()
+    engine(follow=True)              # a forecast that follows the weekly cycle, so its health verdict is ok and a total is quoted
     out = rt._run({"values": _values(), "horizon": H, "title": "Total"}, "k")
     view = rt.observe(out)
     assert view["centre_line_total"] == pytest.approx(round(sum(r["point"] for r in view["table"]["rows"]), 2))
@@ -98,3 +102,29 @@ def test_a_long_horizon_is_not_thinned_in_the_table(engine):
     table = rt.observe(out)["table"]
     assert len(table["rows"]) == 10 and table["rows_omitted"] == 140   # first five and last five, the rest named
     assert table["rows"][-1]["step"] == 150 and table["file"] == "out/forecast.json"
+# ---------------------------------------------------------------------------- A7-03: negative days and the headline total
+
+def test_a_non_negative_series_never_shows_a_negative_day_or_total_in_the_file(engine):
+    # Live retail rep3: day 9 at minus 3,606 was inside the headline total of a series that cannot be negative.
+    engine(level=100.0, dip=(8, -3606.0))
+    out = rt._run({"values": _values(), "horizon": H, "title": "Floor"}, "k")
+    file = _pack_json(out)
+    assert min(file["point"]) >= 0 and min(file["q10"]) >= 0
+    view = rt.observe(out)
+    assert min(r["point"] for r in view["table"]["rows"]) >= 0
+    assert view["headline"]["total"] is None and view["headline"]["withheld"]
+
+
+def test_a_flat_unexpected_health_verdict_withholds_the_headline_total_and_names_it():
+    fc = _fc([80.0, 81.0, 82.0], verdict="flat_unexpected")
+    view = rt.observe({"forecast": fc, "run_id": "r", "files": [], "manifest": "m"})
+    assert view["headline"]["verdict"] == "flat_unexpected"
+    assert view["headline"]["total"] is None and view["centre_line_total"] is None
+    assert "flat_unexpected" in view["headline"]["withheld"]
+
+
+def test_a_healthy_forecast_keeps_its_headline_total_and_the_verdict_beside_it():
+    fc = _fc([80.0, 81.0, 82.0], verdict="ok")
+    view = rt.observe({"forecast": fc, "run_id": "r", "files": [], "manifest": "m"})
+    assert view["headline"] == {"verdict": "ok", "total": 243.0, "withheld": None}
+    assert view["centre_line_total"] == 243.0
