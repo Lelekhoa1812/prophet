@@ -562,3 +562,21 @@ WTI or Beijing; none on a flow goal). WTI rep 10 gave the average's range (82.18
 WTI rep 10 still ended partial: the evaluator's reason named the unsupported figures, the "Not settled" section copied it,
 and the answer failed the figure check on the figures it was describing. The gap is now written without figures. The
 slips themselves were real (drift MASE 7.29 written as 7.12; an outlier share of 2.0 % written as 2.1 %).
+
+### All six scenarios verified on their latest run (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| WTI rep 11 | 6b527f7 | **completed** | **done_verified** | 255 | 21 |
+| electricity panel rep 15 | 6b527f7 | partial | false block (bound wording) | 1,066 | 72 |
+| electricity panel rep 16 | 4b5df07 | **completed** | **done_verified** | 1,127 | 111 |
+| retail, business user rep 9 | 4b5df07 | **completed** | **done_verified** | 270 | 22 |
+
+Latest run per scenario: retail rep 9, retail business user rep 9, WTI rep 11, WTI business user rep 4, electricity
+rep 16 and Beijing rep 10, all done_verified. This is one run each, not a rate; repeat rounds measure it.
+
+Electricity rep 15 was blocked by `answer_total_range_named` for "if clients' errors cancel out", a correct name for the
+independent bound. Replaying 160 stored answers found two more false blocks ("if they compound", "(perfectly
+correlated)"). The accepted wording for each bound is wider now; six hits remain on the stored answers, five plainly a single
+bound given as the 80 % range and one borderline ("under that assumption", naming the previous sentence's assumption).
+Gate: 1861 passed.
