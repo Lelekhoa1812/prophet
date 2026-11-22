@@ -21,6 +21,38 @@ N_QUANTILES = 9  # quantiles 0.1 .. 0.9; the median is index 4
 # (measured): two refund days (-1,683 and -1,566) in about 1,000 days switched the floor off, and Saturdays came out at
 # -3,125 and -3,606. Up to this share of points below zero, the series is treated as non-negative and floored.
 NEG_SHARE_MAX = 0.02
+# The model decodes in output patches of this length (timesfm3/mlx/configs.py, output patch 64; code-read). The package pads
+# a future covariate to a multiple of it when padding_mode is "edge" (timesfm3_forecaster.py, lines 318-327).
+OUTPUT_PATCH = 64
+
+
+def edge_pad_future(pf, horizon: int) -> np.ndarray:
+    """Extend each future covariate by repeating its last value up to the patch-rounded horizon, as the package's
+    padding_mode "edge" does. Input (k, context + horizon); output (k, context + ceil(horizon / 64) * 64). The output is
+    trimmed back to the horizon by the caller, so only the covariate the model reads for the extra steps changes.
+
+    Motivation vs Logic
+    Motivation: the model decodes a whole output patch, so the steps past the horizon need a covariate value too (A6-10).
+    Logic: the same rule the package uses, applied before the decode (the engine calls the model's decode directly).
+    """
+    a = np.asarray(pf, dtype=np.float32)
+    pad = int(np.ceil(horizon / OUTPUT_PATCH) * OUTPUT_PATCH - horizon)
+    if pad <= 0:
+        return a
+    return np.pad(a, [(0, 0), (0, pad)], mode="edge")
+
+
+def quantile_crossings(q) -> np.ndarray:
+    """Adjacent quantile descents per series: for each series, the number of (step, level) pairs where q[k+1] < q[k], counted
+    over the last axis. Input (n, horizon, 9) or (horizon, 9); output (n,) or a scalar.
+
+    Motivation vs Logic
+    Motivation: the engine sorts the nine quantiles, which hides how often TimesFM returns them out of order (audit A6-12).
+    Logic: count the descents on the raw output, before any clip or sort, so a reader can see the crossing rate.
+    """
+    a = np.asarray(q, dtype=float)
+    d = np.sum(np.diff(a, axis=-1) < 0, axis=(-2, -1))
+    return d
 
 
 def nonnegative_domain(x) -> bool:
@@ -86,6 +118,7 @@ class TimesFMEngine:
         q = np.stack([np.asarray(o.quantiles, dtype=np.float32) for o in outs])
         if q.shape != (len(batch), horizon, N_QUANTILES):
             raise RuntimeError(f"unexpected quantile shape {q.shape}, expected {(len(batch), horizon, N_QUANTILES)}")
+        self._record_crossings(quantile_crossings(q))      # A6-12: counted on the raw output, before the clip and the sort
         # A non-negative measure (counts, sales, a few refund days) cannot be forecast below zero. A signed series (returns,
         # temperatures, balances) is left alone: clipping it would bend a legitimate forecast. See NEG_SHARE_MAX.
         nonneg = np.array([nonnegative_domain(x) for x in batch])
@@ -93,6 +126,18 @@ class TimesFMEngine:
         q = np.where(nonneg[:, None, None], np.clip(q, 0, None), q)
         q = np.sort(q, axis=-1)  # guard against quantile crossing
         return Forecast(point, q)
+
+    def _crossing_store(self) -> threading.local:
+        # Thread-local, so a tool reads the count of its own call even when another thread is forecasting at the same time.
+        return self.__dict__.setdefault("_crossings", threading.local())
+
+    def _record_crossings(self, counts) -> None:
+        self._crossing_store().counts = [int(c) for c in np.atleast_1d(counts)]
+
+    def last_quantile_crossings(self) -> list[int] | None:
+        """Adjacent quantile descents in the raw output of this thread's last forecast call, one per series (None before
+        any call). The forecast itself is sorted, as before; this count only reports what the model returned (A6-12)."""
+        return getattr(self._crossing_store(), "counts", None)
 
 
     def _decode(self, tgt, po, pf, tmask, horizon: int) -> np.ndarray:
@@ -139,8 +184,11 @@ class TimesFMEngine:
             pf = z(pf)[0] if pf is not None else None
         if tmask is not None:
             tgt = np.where(tmask, 0.0, tgt).astype(np.float32)
+        if pf is not None and control.padding_mode == "edge":
+            pf = edge_pad_future(pf, horizon)      # A6-10: a covariate value for every decoded step, as the package does
         with self._infer_lock:
             out = self._decode(tgt, po, pf, tmask, horizon)
+            self._record_crossings(quantile_crossings(out[0]))    # the target row, raw, before any sort (A6-12)
             if control.symmetric:
                 neg = self._decode(-tgt, -po if po is not None else None, -pf if pf is not None else None, tmask, horizon)
                 out = (np.sort(out, axis=-1) - np.sort(neg, axis=-1)[..., ::-1]) / 2

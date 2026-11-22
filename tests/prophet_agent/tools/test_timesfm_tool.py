@@ -153,7 +153,10 @@ def test_season_and_centre_are_accepted_and_do_not_change_the_forecast(stub_engi
     from prophet_agent.tools.timesfm_tool import _run
     plain = _run({"values": list(range(40)), "horizon": 3}, "k")
     passed = _run({"values": list(range(40)), "horizon": 3, "season": 5, "centre": "mean_last_season"}, "k")
-    assert passed["point"] == plain["point"] and passed["config"] == plain["config"]
+    # A6-11: the forecast is unchanged, and the record now says which arguments were accepted but not applied
+    assert passed["point"] == plain["point"]
+    assert {k: v for k, v in passed["config"].items() if k != "ignored_arguments"} == plain["config"]
+    assert set(passed["config"]["ignored_arguments"]) == {"season", "centre"}
     with pytest.raises(ValueError, match="unknown arguments"):
         _run({"values": list(range(40)), "horizon": 3, "period_days": 7}, "k")
 

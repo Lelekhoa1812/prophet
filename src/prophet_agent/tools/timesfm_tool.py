@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
-from prophet_agent.forecast.health import assess
+from prophet_agent.forecast.health import assess, business_day_calendar, season_check
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
 from prophet_agent.forecast.tsb import INTERMITTENT_ADI, expected_volume, is_intermittent, tsb_band  # noqa: F401
 from prophet_agent.runtime.runner import Tool
@@ -31,7 +31,26 @@ FULL_SHOWN = 120   # a forecast up to this many periods is shown in full: thinni
 # the forecast this tool delivers (A6-01). That definition also refuses series that go below zero (a price, a balance).
 
 
-def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, engine: Any, control: Control | None = None) -> dict[str, Any]:
+IGNORED_REASON = {
+    "season": "ignored by timesfm_forecast: TimesFM reads the cycle from the history and takes no season here; "
+              "backtest_series and control_lab take one, and health.period gives the measured cycle",
+    "centre": "ignored by timesfm_forecast: this point is TimesFM's median; forecast_report applies a rule centre",
+}
+
+
+def ignored_arguments(args: dict) -> dict[str, str]:
+    """The arguments accepted for call compatibility but not applied, with the reason (A6-11). Empty when none was given.
+
+    Motivation vs Logic
+    Motivation: season and centre are accepted so a call is not refused (a refused season cost a live call), but nothing
+    said they had no effect, so the planner could believe a season had been applied.
+    Logic: name each one given, with its reason, in the recorded configuration and so in the observation.
+    """
+    return {k: v for k, v in IGNORED_REASON.items() if k in args}
+
+
+def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, engine: Any, control: Control | None = None,
+         crossings: int | None = None) -> dict[str, Any]:
     cfg_extra = {"control": control.describe()} if control is not None and not control.is_default else {}
     median = [round(float(v), 4) for v in point]
     lumpy = is_intermittent(series)
@@ -65,8 +84,16 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
             "history_points": len(series),
             "point_basis": "expected demand (mean under TSB)" if lumpy else "median",
             **cfg_extra,
+            # A6-12: how many adjacent quantile pairs TimesFM returned out of order (sorted afterwards); absent if not reported
+            **({"quantile_crossings": crossings} if crossings is not None else {}),
         },
     }
+
+
+def _engine_crossings(engine: Any) -> list[int] | None:
+    """The engine's crossing counts for its last call, one per series, or None when the engine does not report them."""
+    reader = getattr(engine, "last_quantile_crossings", None)
+    return reader() if callable(reader) else None
 
 
 def _run(args: dict, _key: str) -> dict[str, Any]:
@@ -88,19 +115,39 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
         if len(named) > 1 and (c.ignore or c.past or c.future):
             raise ValueError("ignore_ranges and covariates belong to one series; forecast one series (source.name) at a time")
         controls.append(c)
+    crossings: list[int | None] = [None] * len(named)
     if all(c.is_default for c in controls):
         fc = engine.forecast_batch([s for _, s in named], horizon)
         pairs = [(fc.point[i], fc.q[i]) for i in range(len(named))]
+        counts = _engine_crossings(engine)
+        if counts is not None and len(counts) == len(named):
+            crossings = list(counts)
     else:
         pairs = []
-        for (_, s), c in zip(named, controls):
+        for i, ((_, s), c) in enumerate(zip(named, controls)):
             f = engine.forecast_controlled(s, horizon, c)
             pairs.append((f.point, f.q))
-    results = {name: _one(s, pairs[i][0], pairs[i][1], horizon, engine, controls[i]) for i, (name, s) in enumerate(named)}
-    for name, r in results.items():
-        step = _typical_step(run_dates(args, name))
+            counts = _engine_crossings(engine)           # read straight after this call, before the next one
+            if counts:
+                crossings[i] = counts[0]
+    results = {name: _one(s, pairs[i][0], pairs[i][1], horizon, engine, controls[i], crossings[i])
+               for i, (name, s) in enumerate(named)}
+    ignored = ignored_arguments(args)
+    for name, s in named:
+        r = results[name]
+        if ignored:
+            r["config"]["ignored_arguments"] = ignored
+        dates = run_dates(args, name)
+        step = _typical_step(dates)
         if step is not None:
             r["config"]["series_step"] = step      # the series' own step, so a request in weeks or months can be converted
+        cal = business_day_calendar(dates)         # A6-04: a business-day series has a 5-step week, not 7
+        if cal is not None:
+            r["config"]["series_step_unit"] = "business day"
+            r["config"]["weekly_cycle_steps"] = cal["weekly_cycle_steps"]
+        chk = season_check(args.get("season"), s, dates)   # A6-04: the season given (accepted, not applied) against the cycle
+        if chk is not None:
+            r["config"]["season_check"] = chk
     if len(results) == 1 and ("values" in args or "series" in results):
         return next(iter(results.values()))        # one unnamed series keeps the flat shape
     return {"series": results}

@@ -21,7 +21,9 @@ import numpy as np
 
 MAX_COVARIATES = 8
 MAX_IGNORE_RANGES = 200
-CONTROL_ARGS = {"context_points", "ignore_ranges", "past_covariates", "future_covariates", "znorm", "symmetric_averaging"}
+PADDINGS = ("none", "edge")
+CONTROL_ARGS = {"context_points", "ignore_ranges", "past_covariates", "future_covariates", "znorm", "symmetric_averaging",
+                "covariate_padding"}
 
 CONTROL_HELP = {
     "context_points": "optional integer, use only the most recent N points of history (default: all, up to the model's cap)",
@@ -34,6 +36,9 @@ CONTROL_HELP = {
     "znorm": "optional boolean, standardise the series and covariates before the model sees them (default false)",
     "symmetric_averaging": "optional boolean, also forecast the negated series and average, which can reduce bias "
                            "(runs the model twice; default false)",
+    "covariate_padding": "optional, 'none' (default) or 'edge': with edge, the future covariates repeat their last value past "
+                         "the horizon up to the model's output patch, so the model sees a driver for every step it decodes. "
+                         "Needs past_covariates or future_covariates.",
 }
 
 
@@ -45,6 +50,7 @@ class Control:
     future: dict[str, np.ndarray] = field(default_factory=dict)
     znorm: bool = False
     symmetric: bool = False
+    padding_mode: str = "none"      # A6-10: "edge" extends future covariates past the horizon (see timesfm.edge_pad_future)
 
     @property
     def is_default(self) -> bool:
@@ -66,6 +72,8 @@ class Control:
             d["znorm"] = True
         if self.symmetric:
             d["symmetric_averaging"] = True
+        if self.padding_mode != "none":
+            d["covariate_padding"] = self.padding_mode
         return d
 
     def ignore_mask(self, n: int) -> np.ndarray:
@@ -81,7 +89,7 @@ class Control:
             ignore=tuple((s, min(e, origin)) for s, e in self.ignore if s < origin),
             past={k: v[:origin] for k, v in self.past.items()},
             future={k: v[:origin + horizon] for k, v in self.future.items()},
-            znorm=self.znorm, symmetric=self.symmetric)
+            znorm=self.znorm, symmetric=self.symmetric, padding_mode=self.padding_mode)
 
 
 def _bool(args: dict, key: str) -> bool:
@@ -153,8 +161,13 @@ def build_control(args: dict, n: int, horizon: int, pool: dict[str, Any] | None 
     left = n - sum(e - s for s, e in ignore)
     if ignore and left < 8:
         raise ValueError(f"ignoring those ranges leaves {left} usable points; at least 8 are needed")
+    padding = args.get("covariate_padding", "none")
+    if padding not in PADDINGS:
+        raise ValueError(f"covariate_padding must be one of {list(PADDINGS)}, got {padding!r}")
+    past = _covariates(args.get("past_covariates"), pool, n, "past")
+    future = _covariates(args.get("future_covariates"), pool, n + horizon, "future")
+    if padding != "none" and not (past or future):
+        raise ValueError("covariate_padding needs past_covariates or future_covariates; with none it has nothing to pad")
     return Control(
-        context_points=ctx, ignore=ignore,
-        past=_covariates(args.get("past_covariates"), pool, n, "past"),
-        future=_covariates(args.get("future_covariates"), pool, n + horizon, "future"),
-        znorm=_bool(args, "znorm"), symmetric=_bool(args, "symmetric_averaging"))
+        context_points=ctx, ignore=ignore, past=past, future=future,
+        znorm=_bool(args, "znorm"), symmetric=_bool(args, "symmetric_averaging"), padding_mode=padding)

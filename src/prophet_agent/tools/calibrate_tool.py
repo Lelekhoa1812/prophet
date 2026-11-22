@@ -44,7 +44,16 @@ def _run(args: dict, _key: str, engine_factory=None) -> dict[str, Any]:
     if args.get("centre") not in (None, "timesfm"):
         out["centre_note"] = ("centre has no effect here: the band's width is calibrated around TimesFM's centre line, and "
                               "forecast_report with the same centre and calibrate true recentres the calibrated band on the rule")
+    ignored = {k: v for k, v in CALIBRATE_IGNORED.items() if k in args}       # A6-11: say what was accepted and not applied
+    if ignored:
+        out["ignored_arguments"] = ignored
     return out
+
+
+CALIBRATE_IGNORED = {
+    "season": "ignored by calibrate_intervals: the calibration fits horizon-third scales and takes no season; "
+              "backtest_series takes one",
+}
 
 
 def observe(result: dict) -> dict:
@@ -52,7 +61,7 @@ def observe(result: dict) -> dict:
             "heldout_coverage_calibrated", "raw_gap", "calibrated_gap", "scale_level", "second_pass", "width_ratio",
             "recommend", "reason", "caveats", "centre_note", "method", "heldout_coverage_adaptive",
             "heldout_raw_interval90", "heldout_calibrated_interval90",
-            "interval_method", "heldout_windows", "selection")
+            "interval_method", "heldout_windows", "selection", "ignored_arguments")
     out = {k: result[k] for k in keep if k in result}
     out["calibrated"] = {k: v[:30] for k, v in result["calibrated"].items() if k in ("q10", "q90")}
     out["raw"] = {k: v[:30] for k, v in result["raw"].items()}
