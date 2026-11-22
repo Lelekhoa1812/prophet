@@ -514,3 +514,41 @@ def test_the_treatment_gate_accepts_a_lab_that_went_through_the_planners_observa
     assert {"default", "znorm", "symmetric_averaging"} <= set(stored["measured"])
     check = check_controls([_lab_obs("control_lab", stored, {"horizon": 10})], tuned, record)
     assert check["ok"], check
+
+
+def _bt(best="mean_last_season", **mase):
+    models = {k: {"mase": v} for k, v in mase.items()}
+    return {"horizon": 20, "best_baseline": best, "models": models}
+
+
+def test_a_rule_centre_that_is_not_the_best_rule_is_blocked():
+    # Live (WTI rep4, 2026-11-22): the backtest ranked mean_last_season best (MASE 6.66) and TimesFM 7.28, yet the pack was
+    # centred on naive (7.27). The gate only blocked a TimesFM centre, so any rule passed.
+    from prophet_agent.runtime.contracts import _baseline_gate
+    bt = _bt(timesfm=7.28, naive=7.27, mean_last_season=6.66)
+    out = _baseline_gate({"horizon": 20, "centre": {"rule": "naive"}}, [bt])
+    assert out["ok"] is False and "mean_last_season" in out["detail"] and "naive" in out["detail"]
+    assert _baseline_gate({"horizon": 20, "centre": {"rule": "mean_last_season"}}, [bt])["ok"] is True
+
+
+def test_a_rule_centre_within_two_percent_of_the_best_rule_passes():
+    from prophet_agent.runtime.contracts import _baseline_gate
+    bt = _bt(timesfm=7.28, naive=6.70, mean_last_season=6.66)
+    assert _baseline_gate({"horizon": 20, "centre": {"rule": "naive"}}, [bt])["ok"] is True
+
+
+def test_an_adopted_blend_centre_passes_the_rule_gate():
+    from prophet_agent.runtime.contracts import _baseline_gate
+    bt = _bt(timesfm=7.28, naive=7.27, mean_last_season=6.66)
+    assert _baseline_gate({"horizon": 20, "centre": {"rule": "blend", "with": "mean_last_season"}}, [bt])["ok"] is True
+
+
+def test_the_checklist_names_the_best_rule_not_naive_or_drift():
+    from prophet_agent.runtime import contracts
+    bt_obs = {"kind": "tool", "tool": "backtest_series", "args": {}, "result": {
+        "horizon": 20, "best_baseline": "mean_last_season", "verdict": "baseline_better",
+        "models": {"timesfm": {"mase": 7.28}, "naive": {"mase": 7.27}, "mean_last_season": {"mase": 6.66}}}}
+    fc_obs = {"kind": "tool", "tool": "timesfm_forecast", "args": {}, "result": {"config": {"horizon": 20}, "point": [1.0] * 20}}
+    items = contracts.progress([bt_obs, fc_obs], run_root=None)
+    gate = [it for it in items if "more accurate than TimesFM" in it["item"]]
+    assert gate and "'mean_last_season'" in gate[0]["item"] and "'naive' or 'drift'" not in gate[0]["item"]

@@ -560,9 +560,12 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
     if facts and facts.get("verdict") == "baseline_better" and (wants_files or forecasts):
         # The delivery gate: a simple rule that beat TimesFM in the backtest is the centre line the person should see.
         packs = [h for h in obs if _ok_result(h, "forecast_report") is not None]
-        recentred = any(str((h.get("args") or {}).get("centre", "timesfm")) != "timesfm" for h in packs)
-        items.append({"item": f"the backtest found {facts['best_baseline']} more accurate than TimesFM: build the pack with "
-                              "centre 'naive' or 'drift' (TimesFM's band around it), or say plainly why not",
+        # Recentred on the rule the backtest ranked best (or the checked blend). Live WTI rep4: this item named "naive or
+        # drift" whatever the backtest said, and the pack went out on naive while mean_last_season was best.
+        best = str(facts["best_baseline"])
+        recentred = any(str((h.get("args") or {}).get("centre", "timesfm")) in (best, "blend") for h in packs)
+        items.append({"item": f"the backtest found {best} more accurate than TimesFM: build the pack with centre '{best}' "
+                              "(TimesFM's band around it), or 'blend' for one series, or say plainly why not",
                       "status": "done" if recentred or not packs and not wants_files else "todo"})
     first = next((it for it in items if it["status"] == "todo"), None)
     if first is not None:
@@ -580,6 +583,9 @@ def render_progress(items: list[dict]) -> str:
         tail = f" ({it['detail']})" if it.get("detail") else ""
         lines.append(f"{mark} {it['item']}{tail}" + ("   <- next" if it.get("next") else ""))
     return "Mission checklist (derived from the evidence; finish only when every box is ticked, or say plainly why one cannot be):\n" + "\n".join(lines)
+
+
+RULE_TOLERANCE = 0.02   # a rule centre within 2 percent of the best rule's MASE counts as the best (2026-11-22)
 
 
 def _baseline_gate(delivered: dict, backtests: list) -> dict:
@@ -606,6 +612,16 @@ def _baseline_gate(delivered: dict, backtests: list) -> dict:
             return _check("baseline_compared", False,
                           f"the forecast keeps TimesFM's centre line, but the backtest found {best} more accurate "
                           f"(MASE {bm:.3f} against {tm:.3f}); switch the centre to that rule")
+        rule = centre.get("rule") if isinstance(centre, dict) else None
+        rmodel = models.get(rule) if isinstance(rule, str) else None
+        rm = _finite(rmodel.get("mase")) if isinstance(rmodel, dict) else None
+        if (not on_timesfm and rule != "blend" and isinstance(best, str) and rule != best and rm is not None
+                and bm is not None and rm > bm * (1 + RULE_TOLERANCE) and not _flagged(b)):
+            # A rule centre must be the rule the backtest ranked best, or close to it (live WTI rep4: naive 7.27 delivered
+            # while mean_last_season scored 6.66). The blend carries its own backtest, so it is judged there.
+            return _check("baseline_compared", False,
+                          f"the centre is the {rule} rule, but the backtest found {best} more accurate (MASE {bm:.3f} "
+                          f"against {rm:.3f}); switch the centre to {best}")
     return _check("baseline_compared", True, "the forecast was compared with the baselines in a backtest at its horizon")
 
 
