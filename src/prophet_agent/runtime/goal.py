@@ -114,7 +114,15 @@ EXTERNAL_GOAL = re.compile(r"\b(?:wti|brent|crude|oil|gas|gold|silver|copper|com
                            r"interest rate|inflation|cpi|unemployment|gdp|retail|prices?|electricity|energy|weather|"
                            r"rainfall|temperature|tariffs?|housing|tourism|passengers|traffic|footfall|"
                            r"pm2\.?5|pm10|particulates?|pollution|smog|air quality)\b", re.I)
-FORECAST_GOAL = re.compile(r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook", re.I)
+# Method words, and the plain ways a person asks about the future (round 5, live business users: "what should I expect for
+# next month?", "what will crude cost on average next month?" matched nothing, so those missions ran with no forecast
+# checklist, no horizon check and no baseline gate, and one finished "verified" without a backtest).
+FORECAST_GOAL = re.compile(
+    r"forecast|predict|projection|project(?:ed)? (?:the|next)|next \d+|demand|outlook"
+    r"|\bnext (?:few |couple of )?(?:days?|weeks?|months?|quarters?|years?|season|period)\b|\bnext month'?s\b"
+    r"|\b(?:coming|upcoming|following) (?:days?|weeks?|months?|quarters?|year)\b"
+    r"|\bwhat (?:will|would|should (?:i|we) expect|can (?:i|we) expect)\b|\bhow (?:much|many) will\b"
+    r"|\bexpect (?:for|in|over|by|during) (?:the )?(?:next|coming|this)\b|\bgoing forward\b|\bbudget for\b", re.I)
 FILES_GOAL = re.compile(r"\b(?:chart|graph|plot|workbook|spreadsheet|xlsx|docx|pdf|png|svg|report|deliverable)s?\b", re.I)
 MAX_CORRECTIONS = 2       # times an answer with unmatched figures goes back to gather before it is repaired
 DONE_WHEN = ("the evaluator judges the goal met", "the deterministic checks pass on the evidence "
@@ -808,6 +816,13 @@ def asked_questions(goal: str) -> list[str]:
     return [u.strip()[:200] for u in units if u.strip().endswith("?")][:MAX_ASKED]
 
 
+# A question about whether a movement is genuine. Live retail_biz rep4 (2026-11-23): "is that real?" was answered by comparing
+# the last 60 days with the 60 before, ignoring the weekly and yearly cycle; ps.change_test exists for exactly this.
+CHANGE_QUESTION = re.compile(r"\b(?:is|was|are) (?:that|this|it|the \w+) (?:real|genuine|significant|just noise)"
+                             r"|\breal or (?:noise|random)|\bslipping|\bdropp(?:ing|ed)|\bdeclin(?:ing|ed)|\bris(?:ing|en)\b"
+                             r"|\bgrow(?:ing|n)\b|\bsignificant", re.I)
+
+
 def _asked_block(goal: str, for_whom: str) -> str:
     qs = asked_questions(goal)
     if not qs:
@@ -819,7 +834,11 @@ def _asked_block(goal: str, for_whom: str) -> str:
     if for_whom == "composer":
         return ("\n\nThe person asked these questions. Open the answer by answering each one directly, in their order and in "
                 "plain words, from the evidence; say so when the evidence cannot answer one:\n" + listed)
-    return "Questions the person asked (the answer must address each one with evidence):\n" + listed
+    tests = [n for n, q in enumerate(qs, 1) if CHANGE_QUESTION.search(q)]
+    hint = ("\nQuestion " + " and ".join(map(str, tests)) + " asks whether a change is real: answer it with ps.change_test in "
+            "the sandbox (the latest weeks against the same weeks a cycle earlier, judged against the usual change), not by "
+            "comparing two raw windows. Quote its verdict and p-value.") if tests else ""
+    return "Questions the person asked (the answer must address each one with evidence):\n" + listed + hint
 
 
 def _eval_messages(goal: str, history: list[dict], memo: Memo, context: str = "") -> list[dict]:
@@ -863,6 +882,20 @@ def _outside_block(ctx: Ctx | None) -> str:
     if not seen:
         return ""
     return "Outside sources read by the research step (cite by site and date; context, never a forecast input):\n" + "\n".join(list(seen.values())[:OUTSIDE_SOURCES])
+
+
+def _gap_draft(verdict: dict) -> str:
+    """The composer's draft when the run stops short of "met". The evaluator's answer when it wrote one; otherwise an instruction
+    to write up what the evidence establishes, with the open gap last. Live electricity rep9 (2026-11-23): the draft was the
+    evaluator's reason alone, so the person got one paragraph about missing ledger entries and none of the panel backtest or the
+    forecast pack the run had built."""
+    answer, reason = verdict.get("answer", "") or "", verdict.get("reason", "") or ""
+    if answer.strip():
+        return answer
+    return ("(No draft was written.) Write the answer from the evidence above: every result the analysis established for the "
+            "goal (data checks, backtest scores against the simple rules, the forecast and its range, files), as fully as for a "
+            "finished answer. End with a short section headed 'Not settled' that says, in plain words: " + (reason or "the goal is "
+            "not fully met."))
 
 
 def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, draft: str,
@@ -1672,7 +1705,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # beats an empty "stalled".
             verdict = ctx.step(f"evalstall:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
                                                                           EVAL_SCHEMA, "eval"))
-            draft = verdict.get("answer", "") or verdict.get("reason", "")
+            draft = _gap_draft(verdict)
             written = _compose(ctx, brain, f"composestall:{tag}:{i}", goal, history, memo, context, draft)
             text = written if written is not None else verdict.get("answer", "")
             if text.strip() and verdict["verdict"] != "impossible":
@@ -1811,7 +1844,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if cfg.finish_now:
             # The person asked for the answer now. A best answer from the evidence, with what is missing, beats no answer,
             # and it is labelled partial, because the person chose to stop before the goal was met.
-            draft = verdict.get("answer", "") or verdict.get("reason", "")
+            draft = _gap_draft(verdict)
             written = _compose(ctx, brain, f"compose:{tag}:{i}", goal, history, memo, context, draft)
             text = written if written is not None and written.strip() else verdict.get("answer", "")
             return {"status": "partial", "iterations": i + 1, "answer": text or "", "reason": verdict["reason"],
@@ -1827,7 +1860,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             if rejected_finishes >= MAX_REJECTED_FINISHES:
                 # The planner keeps saying it is done and the evaluator keeps saying it is not: more passes will not settle
                 # it. Write up what is established, say what is not, and label it partial (seen live: 90 rejected finishes).
-                draft = verdict.get("answer", "") or verdict.get("reason", "")
+                draft = _gap_draft(verdict)
                 written = _compose(ctx, brain, f"composeloop:{tag}:{i}", goal, history, memo, context, draft)
                 text = written if written is not None and written.strip() else verdict.get("answer", "")
                 if text.strip():

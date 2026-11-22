@@ -86,3 +86,24 @@ def test_the_pack_and_the_measured_range_give_the_average_with_its_range():
     assert rng["mean"] == 100.0
     text = f"Average {rng['mean']:,.2f}, range {rng['mean_q10']:,.2f} to {rng['mean_q90']:,.2f}."
     assert grounding.unverified(text, hist, "goal") == []
+
+
+def test_plain_questions_about_the_future_are_forecast_goals():
+    from prophet_agent.runtime.goal import FORECAST_GOAL
+    for g in ("Sales feel like they've been slipping lately. Is that real? And what should I expect for next month?",
+              "I need a number for next month's fuel budget. What will crude cost on average next month?",
+              "How much will we sell next quarter?", "What can we expect over the coming weeks?",
+              "Forecast net sales for the next 14 days."):
+        assert FORECAST_GOAL.search(g), g
+    for g in ("Which product sold best last year?", "Total revenue by region in 2011, as a table.",
+              "Is the drop in March real or noise?"):
+        assert not FORECAST_GOAL.search(g), g
+
+
+def test_an_is_it_real_question_points_the_planner_to_the_change_test():
+    from prophet_agent.runtime.goal import _asked_block
+    goal = "Sales feel like they've been slipping lately. Is that real? And what should I expect for next month?"
+    note = _asked_block(goal, "planner")
+    assert "ps.change_test" in note and "Question 1" in note
+    assert "ps.change_test" not in _asked_block("How much will we sell next quarter?", "planner")
+    assert "ps.change_test" not in _asked_block(goal, "composer")

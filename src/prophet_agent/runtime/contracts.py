@@ -412,14 +412,29 @@ STAGE_OF = {"time": "time index", "coverage": "coverage", "values": "values", "z
             "outliers": "outliers and level shifts", "season": "seasonality"}
 
 
+def _scope_text(names: list[str], show: int = 3) -> str:
+    """"all", one name, or "14 series: MT_001, MT_004, MT_009 and 11 more"."""
+    if len(names) == 1:
+        return names[0]
+    head = ", ".join(names[:show])
+    return f"{len(names)} series: {head}" + (f" and {len(names) - show} more" if len(names) > show else "")
+
+
 def _decision_recipe(findings: list[dict], missing: list[str], history, run_root) -> str:
     """The cell that closes the check, in this mission's own names: the ledger to carry, and one add per undecided major
     finding with its scope. The decision text is left for the planner to write.
 
     Live Beijing rep5 (2026-11-23): the check named changepoints.level_shift; the planner read the scan six times, read the
     ledger with code that expected {'entries': ...} (the file is a list), saw nothing, and finished three more times."""
-    rows = [(f["id"], f.get("scope")) for f in findings
-            if f.get("id") in missing and f.get("severity") in ("blocker", "major")][:6]
+    # One add per finding id, its scopes folded into one list (live electricity rep9, 60 clients: the first six rows were all
+    # censoring.plateau for six clients, so the recipe covered one of the eight ids, and 480 adds were never going to be written).
+    scopes: dict[str, list[str]] = {}
+    for f in findings:
+        if f.get("id") in missing and f.get("severity") in ("blocker", "major"):
+            got = scopes.setdefault(f["id"], [])
+            if str(f.get("scope")) not in got:
+                got.append(str(f.get("scope")))
+    rows = [(i, _scope_text(scopes[i])) for i in missing if i in scopes]
     newest = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
                    if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
                    and "out/ledger.json" in [_output_path(o) for o in (h["result"].get("outputs") or [])]), None)
@@ -427,8 +442,8 @@ def _decision_recipe(findings: list[dict], missing: list[str], history, run_root
              if newest else "led = ps.Ledger()")
     adds = "; ".join(f"led.add('{STAGE_OF.get(i.split('.')[0], i.split('.')[0])}', '{i} ({scope}): <what the scan measured>', "
                      "'<your decision and why>')" for i, scope in rows)
-    return (f". One cell does it: {carry}; {adds}; led.save(). The ledger file is a list of entries "
-            "{stage, finding, decision}; each add must name the finding id")
+    return (f". One cell does it: {carry}; {adds}; led.save(). One entry per finding id covers every series it names. The "
+            "ledger file is a list of entries {stage, finding, decision}; each add must name the finding id")
 
 
 def scan_ran(history) -> bool:
