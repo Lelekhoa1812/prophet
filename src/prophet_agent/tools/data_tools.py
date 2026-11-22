@@ -80,6 +80,9 @@ INSPECT_DATA_SPEC = {
 }
 
 
+MAX_BACKTEST_SERIES = 50
+
+
 def _backtest(args: dict, _key: str) -> dict[str, Any]:
     extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season", "combine"} - CONTROL_ARGS)
     if extra:
@@ -88,8 +91,8 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
         raise ValueError("horizon must be a positive integer")
     named = resolve_series(args)
-    if len(named) != 1:
-        raise ValueError(f"backtest one series at a time; choose with source.name from {[n for n, _ in named][:20]}")
+    if len(named) > MAX_BACKTEST_SERIES:
+        raise ValueError(f"{len(named)} series in one call; at most {MAX_BACKTEST_SERIES}. Choose with source.name, or split the file")
     n_origins = args.get("n_origins", 12)
     if not isinstance(n_origins, int) or not 2 <= n_origins <= 30:
         raise ValueError("n_origins must be an integer from 2 to 30")
@@ -99,20 +102,47 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     season = args.get("season")
     if season is not None and (not isinstance(season, int) or not 1 <= season <= 1000):
         raise ValueError("season must be an integer from 1 to 1000 (1 means none)")
-    series = named[0][1]
-    control = build_control(args, len(series), horizon, source_covariates(args))
-    return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control, combine_forecasts=combine)
+    if len(named) == 1:
+        series = named[0][1]
+        control = build_control(args, len(series), horizon, source_covariates(args))
+        return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control, combine_forecasts=combine)
+    # Several named series (a panel saved with pl.save_panel): the same backtest on each, in one call, with a summary table.
+    # Live, a 12-station mission spent its whole budget on 23 one-series calls and forecast only 8 stations.
+    if any(k in args for k in CONTROL_ARGS if args.get(k) not in (None, [], False)):
+        raise ValueError("control options apply to one series; backtest a panel with the defaults, then tune one series at a time")
+    per: dict[str, Any] = {}
+    for name, series in named:
+        try:
+            per[name] = rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=None,
+                                         combine_forecasts=combine)
+        except ValueError as exc:
+            per[name] = {"error": str(exc)[:200]}
+    rows = {n: {"timesfm_mase": (r.get("models") or {}).get("timesfm", {}).get("mase"), "best_baseline": r.get("best_baseline"),
+                "baseline_mase": (r.get("models") or {}).get(r.get("best_baseline") or "", {}).get("mase"),
+                "verdict": r.get("verdict"), "coverage_80": r.get("timesfm_range_coverage_80")} if "error" not in r else r
+            for n, r in per.items()}
+    verdicts = [r.get("verdict") for r in rows.values() if r.get("verdict")]
+    return {"series": per, "summary": rows, "horizon": horizon, "n_series": len(named),
+            "verdict_counts": {v: verdicts.count(v) for v in sorted(set(verdicts))},
+            "reading": "One backtest per series on the same settings. Choose the centre line per series from its own verdict."}
+
+
+def observe_backtest(result: dict) -> dict:
+    """A panel backtest shows its summary table to the planner, not every series' full result (the ledger keeps those)."""
+    if "series" not in result:
+        return result
+    return {k: v for k, v in result.items() if k != "series"}
 
 
 def backtest_tool() -> Tool:
-    return Tool("backtest_series", _backtest, idempotent=True)
+    return Tool("backtest_series", _backtest, idempotent=True, observe=observe_backtest)
 
 
 BACKTEST_SPEC = {
     "name": "backtest_series",
     "title": "Accuracy check",
     "activity": "Checking how well it would have forecast the past",
-    "description": "Rolling-origin backtest on ONE series: hides the last windows, forecasts them with TimesFM and with "
+    "description": "Rolling-origin backtest on one series, or on every series of a panel file (pl.save_panel, up to 50) in one call with a summary table: hides the last windows, forecasts them with TimesFM and with "
                    "simple rules (repeat last value, same point last season, average slope, recent mean), and reports "
                    "MASE and WAPE per method plus how often the true values fell inside the 10 to 90 percent range. "
                    "Run it on the series you intend to forecast, with the horizon you intend to use. If TimesFM does "

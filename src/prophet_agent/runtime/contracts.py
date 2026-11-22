@@ -112,6 +112,13 @@ def check_backtest(result) -> list[dict]:
     """Checks on a backtest_series result: baselines present, metrics finite, TimesFM judged against the best baseline."""
     if not isinstance(result, dict):
         return [_check("has_baselines", False, "the backtest result is not a mapping of models")]
+    if isinstance(result.get("series"), dict):
+        # A panel backtest: the checks apply to each series that could be backtested.
+        out: list[dict] = []
+        for r in result["series"].values():
+            if isinstance(r, dict) and "error" not in r:
+                out.extend(check_backtest(r))
+        return out or [_check("has_baselines", False, "no series of the panel could be backtested")]
     models = result.get("models")
     checks: list[dict] = []
     if not isinstance(models, dict) or not models:
