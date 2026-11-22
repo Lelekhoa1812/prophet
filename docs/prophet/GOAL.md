@@ -411,3 +411,39 @@ Root causes and fixes (each with a regression test):
 
 The live driver no longer calls answer-now on an open question (the API answers it with 409, by design: answer-now is a
 checkpoint action). It answers the card as the person would.
+
+### Live reruns on the round-5 fixes (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| retail, business user rep 2 | 20738c5 | completed | done_verified | 667 | 45 |
+| WTI, business user rep 2 | 20738c5 | completed | done_verified | 425 | 25 |
+| Beijing panel rep 6 | 20738c5 | partial | stalled | 1,794 | 112 |
+| electricity panel rep 6 | 20738c5 | partial | stalled | 1,063 | 72 |
+| Beijing panel rep 7 | f4dae02 | **completed** | **done_verified** | 1,247 | 95 |
+| electricity panel rep 7 | f4dae02 | failed | NIM stream cut in a sub-agent | 685 | 64 |
+| retail, business user rep 3 | c5e5c66 | partial | figures unmatched | 688 | 42 |
+| electricity panel rep 8 | c5e5c66 | partial | could not close a gap | 2,330 | 138 |
+
+Beijing rep 7 is the first panel mission to finish verified: all 12 stations, each with a verdict (panel MASE 0.736 for
+TimesFM against 1.018 to 1.431 for the simple rules). Electricity rep 8 survived two time checkpoints by itself.
+
+Root causes and fixes in these runs:
+
+- Rep 6: the coverage note never fired. `data_entity_count` read the full `inspect_data` profile, but the history holds
+  the compact view; its tests had used the full shape. Fixed and replayed on the stored histories (fires at Beijing step
+  36, 3 of 12, and electricity step 10, 15 of 60; silent on Beijing rep 5, which covered all 12). Carrying several
+  analysts' `out/scan.json` failed five times on a name clash; the second file is now mounted under its run's prefix.
+- Electricity rep 7: "nim stream cut 4 times" inside one analyst failed the mission. Any NIM error other than missing keys
+  is now a `model_service` checkpoint; nothing after the failed call was stored, so continuing replays and retries it.
+- Retail business user rep 2 answered "The slip is real: the model captures a downward drift". A forecast's slope is not
+  evidence of a change. New `ps.change_test` ranks the latest change among every earlier change at the same lag, by date.
+  Measured on the real retail data: the last 28 days are +10.3 % against the same weeks a year earlier and 48 % of earlier
+  changes were as large (p = 0.48), so the live answer was wrong. Counted in rows instead of dates, 364 trading days reach
+  back 14 months and read "+113 %, real rise", which is why it takes dates. Rep 3, with the helper in the planner's hands,
+  answered "Is the slip real? No: +12 % year on year, p = 0.312".
+- Retail rep 3 stayed partial: the backtest ran 20 steps and the pack 43, so no measured range applied and the answer
+  mixed the two bounds. The measured ratio now carries to another horizon at the same average correlation between days.
+- Electricity rep 8: `forecast_report` refused 60 series (panel cap 50) and crashed on a per-series centre dict with
+  `seasonal_naive` (KeyError). The cap is 100 and the dict builds. Open, in build: delivering the pooled model's forecast
+  (`panel_backtest` can rank it best) and a total across the panel's entities with its range.
