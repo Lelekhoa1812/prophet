@@ -293,6 +293,8 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     if hist_dates is not None and len(hist_dates) != len(values):
         hist_dates = None
     ahead = _future_dates(hist_dates, len(fc["point"])) if hist_dates else None
+    if ahead:
+        fc = {**fc, "future_dates": ahead}     # the table's date column, read by observe from the same forecast
     q = fc["quantiles"]
     pack = build_forecast_pack(history=values, point=fc["point"], q10=q["0.1"], q90=q["0.9"], title=title,
                                note=_method_note(fc["config"], fc.get("centre")) + _health_note(fc.get("health")), dates=hist_dates if ahead else None, future_dates=ahead,
@@ -406,6 +408,35 @@ def _panel_observe(result: dict) -> dict:
                             "with Summary and Forecast sheets, a report and a PDF, all listed in the manifest; no further build is needed"}
 
 
+TABLE_FULL = 120     # a horizon up to this many periods is tabulated in full (timesfm_tool._compact thins beyond it)
+TABLE_EDGE = 5       # beyond TABLE_FULL, this many rows from each end are shown and the rest are named
+
+
+def _table(fc: dict) -> dict:
+    """The forecast's rows, read from the same arrays the pack writes to out/forecast.json (audit A7-02).
+
+    Motivation vs Logic
+    Motivation: the answer printed a table the planner wrote from memory: day 1 showed day 14's band and the totals did not
+    match the file. The planner needs each step's own numbers, exactly as they are in the file, so it can quote them.
+    Logic: one row per step, with the floats the pack was given (no rounding), so a quoted value equals the file's value.
+    A horizon above TABLE_FULL keeps its first and last TABLE_EDGE rows and names the file for the rest.
+    """
+    point, q = fc["point"], fc["quantiles"]
+    dates = fc.get("future_dates")
+    rows = []
+    for i, p in enumerate(point):
+        row = {"step": i + 1, "point": float(p), "q10": float(q["0.1"][i]), "q90": float(q["0.9"][i])}
+        if dates:
+            row["date"] = dates[i]
+        rows.append(row)
+    out = {"file": "out/forecast.json", "columns": ["step", "date", "point", "q10", "q90"] if dates else ["step", "point", "q10", "q90"]}
+    if len(rows) > TABLE_FULL:
+        out.update(rows=rows[:TABLE_EDGE] + rows[-TABLE_EDGE:], rows_omitted=len(rows) - 2 * TABLE_EDGE)
+    else:
+        out.update(rows=rows, rows_omitted=0)
+    return out
+
+
 def observe(result: dict) -> dict:
     from prophet_agent.tools.timesfm_tool import _compact
     if "n_series" in result:
@@ -417,6 +448,7 @@ def observe(result: dict) -> dict:
            "range_vs_centre_pct": range_vs_centre(result["forecast"]),
            "centre_line_total": _total(result["forecast"]),
            "total_range_80": total_range(result["forecast"]),
+           "table": _table(result["forecast"]),
            "deliverables": "built and listed in the manifest; no further build is needed"}
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
