@@ -479,3 +479,44 @@ def claimed_totals(answer: str) -> list[str]:
 def explains_withheld(answer: str) -> bool:
     """Whether the answer says anywhere why the total is not a headline."""
     return bool(_WITHHELD_WORD.search(answer or ""))
+
+
+# Words that name what a total's bound assumes. A sentence that gives a bound without them presents it as the range.
+_TOGETHER_WORDS = re.compile(r"together|same way|same direction|at once|cautious|widest|worst|all miss|in step", re.I)
+_INDEPENDENT_WORDS = re.compile(r"independen", re.I)
+_WORD_SCALE = re.compile(r"^\s*(million|mn|m\b|thousand|k\b|billion|bn)", re.I)
+_WORD_SCALES = {"million": 1e6, "mn": 1e6, "m": 1e6, "thousand": 1e3, "k": 1e3, "billion": 1e9, "bn": 1e9}
+
+
+def _sentence_values(sentence: str) -> list[float]:
+    """Every figure in a sentence as a value, with a written scale applied ("£1.26 million" is 1,260,000)."""
+    out = []
+    cleaned = _cleaned(sentence)
+    for m in _NUM.finditer(cleaned):
+        tok = m.group().rstrip(",")
+        try:
+            v, _, pct = _parse(tok)
+        except ValueError:
+            continue
+        if pct:
+            continue
+        scale = _scale_of(tok)
+        word = _WORD_SCALE.match(cleaned[m.end():m.end() + 12])
+        if scale == 1.0 and word:
+            scale = _WORD_SCALES[word.group(1).lower()]
+        out.append(v * scale)
+    return out
+
+
+def bound_misnamed(answer: str, lo: float, hi: float, together: bool) -> str | None:
+    """The first sentence that states both edges of a total's bound (within 1 percent) without naming what the bound assumes:
+    "all miss the same way at once" for the together bound, "independently" for the other. None when no sentence does."""
+    if not (lo and hi) or hi <= lo:
+        return None
+    need = _TOGETHER_WORDS if together else _INDEPENDENT_WORDS
+    for s in sentences(answer):
+        vals = _sentence_values(s)
+        hit = lambda t: any(abs(v - t) <= 0.01 * abs(t) for v in vals)
+        if hit(lo) and hit(hi) and not need.search(s):
+            return s
+    return None

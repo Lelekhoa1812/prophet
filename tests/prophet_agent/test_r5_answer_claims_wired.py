@@ -166,3 +166,40 @@ def test_a_quoted_tool_argument_is_not_a_cycle_claim():
     from prophet_agent.runtime.grounding import claimed_periods
     assert claimed_periods("Backtest (8 origins, horizon 30, season=252): TimesFM MASE 0.229.") == []
     assert claimed_periods("Seasonality: period: 7.") == [(7, "Seasonality: period: 7.")]
+
+
+# ---------------------------------------------------------------- a total's bound given as its range (live retail_biz rep7)
+
+def _single_pack():
+    rows = [{"step": i + 1, "point": 10.0, "q10": 8.0, "q90": 12.0} for i in range(6)]
+    tr = {"centre": 60.0, "if_days_miss_independently": {"q10": 55.83, "q90": 64.17},
+          "if_days_miss_together": {"q10": 48.0, "q90": 72.0}}
+    te = {"origins": 12, "variance_ratio": 2.0, "held_measured": 10, "held_independent": 9, "held_together": 12}
+    return [{"kind": "tool", "tool": "backtest_series", "result": {"horizon": 6, "total_error": te, "models": {}}},
+            {"kind": "tool", "tool": "forecast_report", "result": {"table": {"rows": rows, "rows_omitted": 0},
+                                                                  "total_range_80": tr}}]
+
+
+def test_the_together_bound_given_as_the_range_blocks_and_names_the_measured_range():
+    c = _named(contracts.check_answer("Expect 60 units, with an 80% range of 48 to 72.", _single_pack()),
+               "answer_total_range_named")
+    assert len(c) == 1 and not c[0]["ok"] and c[0]["severity"] == "block"
+    assert "misses the same way at once" in c[0]["detail"] and "the measured 80% range is" in c[0]["detail"]
+
+
+def test_a_bound_named_for_what_it_assumes_passes_and_scaled_words_are_read():
+    ok = "If every day misses the same way at once, the total could reach 48 to 72."
+    assert _named(contracts.check_answer(ok, _single_pack()), "answer_total_range_named") == []
+    from prophet_agent.runtime.grounding import bound_misnamed
+    assert bound_misnamed("The range is £1.26 million to £2.61 million.", 1_257_168, 2_610_558, True)
+    assert bound_misnamed("The 80% range is 1,358,450 to 2,142,805.", 1_257_168, 2_610_558, True) is None
+
+
+def test_a_panel_sum_of_bounds_called_the_likely_range_blocks():
+    # live electricity rep10: "The likely range, summing each client's 10-90% interval, is 3,871,341 - 5,089,679 kWh"
+    pt = {"centre": 4375772.9, "steps": 7, "if_entities_miss_independently": {"q10": 4320869.3, "q90": 4430676.6},
+          "if_entities_miss_together": {"q10": 3871340.6, "q90": 5089679.0}}
+    hist = [{"kind": "tool", "tool": "forecast_report", "result": {"n_series": 2, "series": {}, "panel_total": pt}}]
+    text = "The likely range, summing each client's 10–90% interval, is **3,871,341 – 5,089,679 kWh**."
+    c = _named(contracts.check_answer(text, hist), "answer_total_range_named")
+    assert c and not c[0]["ok"] and "give both bounds" in c[0]["detail"]

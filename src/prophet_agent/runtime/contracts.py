@@ -1474,6 +1474,37 @@ def check_ledger_answer(answer, history, run_root) -> dict | None:
     return None
 
 
+def _misnamed_bound(text: str, obs: list) -> dict | None:
+    """A bound of the horizon total (or the panel total) stated as the range without saying what it assumes. Blocks.
+
+    Live retail_biz rep7 (measured, 2026-11-23) opened with "an 80% range of £1,257,168 to £2,610,558", the bound if every day
+    misses the same way at once, while the measured range appended below it read 1,358,450 to 2,142,805; the run passed as
+    verified. Electricity rep10 called the sum of the clients' bounds "the likely range" and said it assumed independence."""
+    pack = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict)), None)
+    if pack is None:
+        return None
+    if pack.get("n_series"):
+        tr, keys, what = pack.get("panel_total"), ("if_entities_miss_together", "if_entities_miss_independently"), "series"
+    else:
+        tr, keys, what = pack.get("total_range_80"), ("if_days_miss_together", "if_days_miss_independently"), "days"
+    if not isinstance(tr, dict):
+        return None
+    measured = measured_total_range(obs) if not pack.get("n_series") else None
+    for key, together in zip(keys, (True, False)):
+        b = tr.get(key)
+        if not isinstance(b, dict) or not all(isinstance(b.get(k), (int, float)) for k in ("q10", "q90")):
+            continue
+        s = grounding.bound_misnamed(text, b["q10"], b["q90"], together)
+        if s:
+            assumes = f"every one of the {what} misses the same way at once" if together else f"the {what} miss independently"
+            fix = (f"; the measured 80% range is {measured['q10']:,.0f} to {measured['q90']:,.0f}: give that as the range"
+                   if measured else "; give both bounds, each with what it assumes")
+            return _check("answer_total_range_named", False,
+                          f"the answer gives {b['q10']:,.0f} to {b['q90']:,.0f} as the total's range ({s[:160]}), but that is the "
+                          f"bound if {assumes}{fix}")
+    return None
+
+
 def check_answer(answer, history, *, run_root=None) -> list[dict]:
     """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
     makes, so an answer with no such claim adds nothing.
@@ -1546,6 +1577,9 @@ def check_answer(answer, history, *, run_root=None) -> list[dict]:
     reconciled = check_ledger_answer(text, obs, run_root)
     if reconciled is not None:
         checks.append(reconciled)
+
+    if (bound := _misnamed_bound(text, obs)) is not None:
+        checks.append(bound)
 
     withheld = _withheld_totals(obs)
     if withheld:
