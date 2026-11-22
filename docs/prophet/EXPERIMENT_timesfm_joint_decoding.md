@@ -136,7 +136,7 @@ The smoke JSON is `/Users/liamle/Downloads/prophet/data/experiments/timesfm_join
 The wall times are not comparable across arms. The arms run in a fixed order and the first MLX call for each new
 input shape includes compilation, which is why `per_entity` shows the largest time.
 
-## Full measurement (not yet run)
+## Full measurement
 
 Run this only when no live mission is using the model. The coordinator runs it.
 
@@ -160,3 +160,34 @@ Defaults: 6 origins, H = 14 (Beijing) or 7 (electricity), all entities in one jo
 - The `_infer_lock` access is private to `TimesFMEngine`. The script uses it for the symmetric and joint calls.
 - Checkpoint weights are non-commercial: research use only. Use these outputs for research, not for commercial decisions,
   client deliverables or paid services.
+
+## Result (measured, 2026-11-23, real TimesFM 3 MLX, real public panels)
+
+Six non-overlapping rolling origins per panel, history strictly before each origin, MASE per entity averaged over origins,
+paired sign-flip test on per-entity means. JSON: `data/experiments/timesfm_joint_beijing_full_20261123T012301.json` and
+`data/experiments/timesfm_joint_electricity_full_20261123T012317.json` (git-ignored).
+
+| Panel | Arm | Mean MASE | Median MASE | 80% coverage |
+|---|---|---|---|---|
+| Beijing PM2.5, 12 stations, H = 14 | per entity (Prophet today) | 0.6473 | 0.6610 | 0.799 |
+| | joint (all stations as one multivariate context) | 0.6762 | 0.6871 | 0.814 |
+| | per entity, symmetric averaging | 0.6268 | 0.6334 | 0.827 |
+| | seasonal naive | 1.3027 | 1.3245 | 0.593 |
+| | naive | 1.8856 | 1.8989 | 0.801 |
+| Electricity, 60 clients, H = 7 | per entity | 1.7033 | 1.6109 | 0.757 |
+| | joint | 1.6907 | 1.6449 | 0.771 |
+| | per entity, symmetric averaging | 1.7061 | 1.6361 | 0.761 |
+| | seasonal naive | 2.0868 | 2.0794 | 0.678 |
+| | naive | 2.2069 | 1.9822 | 0.843 |
+
+Paired comparisons:
+
+- Joint minus per entity: Beijing +0.0289 (joint lower on 2 of 12 stations, exact p = 0.0034); electricity -0.0126 (23 of
+  60, Monte Carlo p = 0.81).
+- Symmetric averaging minus per entity: Beijing -0.0205 (lower on 12 of 12, exact p = 0.0005); electricity +0.0029 (19
+  of 60, p = 0.77).
+
+Decision: joint decoding is not offered. It was worse on one panel and indistinguishable on the other. Symmetric averaging
+stays a per-series candidate in control_lab, not a default: it helped on Beijing (about 3 percent) and did nothing on
+electricity. Caveats: six origins per panel; stations in one city are not independent, so the per-entity tests overstate
+the evidence; wall times include MLX compile and are not comparable across arms.
