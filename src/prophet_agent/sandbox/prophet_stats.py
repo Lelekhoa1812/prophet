@@ -540,11 +540,19 @@ def changepoints(
     min_size: int = 20,
     penalty: float | None = None,
     max_changes: int = 5,
+    period: int | None = None,
 ) -> tuple[list[dict], dict]:
     """Find shifts in the mean by binary segmentation with a BIC-style penalty (numpy only).
 
     Aliases: ``min_segment`` is ``min_size``, ``max_cps`` is ``max_changes``. ``method`` is accepted and ignored, because
     binary segmentation is the only method here.
+
+    Motivation: a repeating seasonal step (for example a winter rise every year) is not a regime change, but on the raw
+    series the search reported five changes on pure seasonality (A2-05, measured). Logic: with ``period`` given, the
+    phase median of each position in the cycle is removed first and the search runs on that residual; every segment must
+    then be at least one period long (``min_size`` is raised to ``period`` if it is smaller). The report then carries
+    ``deseasonalised_by``. Shifts and means are on the residual; the ``ratio`` is still on the raw values. Without
+    ``period`` the search runs on the raw series, as before.
 
     The best split of each current segment is found by least squares. The split with the largest drop in residual sum
     of squares is accepted while that drop exceeds ``penalty``, up to ``max_changes`` splits. The default penalty is
@@ -567,12 +575,27 @@ def changepoints(
         raise ValueError("min_size must be at least 2")
     if max_changes < 0:
         raise ValueError("max_changes must be zero or more")
+    if period is not None:
+        period = int(period)
+        if period < 2:
+            raise ValueError("period must be at least 2")
+        min_size = max(min_size, period)  # a segment must hold a whole cycle, or a seasonal step reads as a shift (A2-05)
     pos = np.flatnonzero(np.isfinite(arr))
-    y = arr[pos]
+    raw = arr[pos]
+    y = raw
     n = y.size
     dropped = int(arr.size - n)
     if n < 2 * min_size:
         raise ValueError(f"changepoints needs at least {2 * min_size} observed points for min_size={min_size}; got {n}")
+
+    if period is not None:
+        # Measured (A2-05): four years of daily data with a winter step every year gave 5 changes on pure seasonality.
+        # The phase median is robust to a few outliers; it uses observed values only, so a gap does not shift a phase.
+        phase = pos % period
+        profile = np.zeros(period)
+        for p in np.unique(phase):
+            profile[p] = float(np.median(raw[phase == p]))
+        y = raw - profile[phase]
 
     var = float(np.var(y))
     if penalty is None:
@@ -587,6 +610,8 @@ def changepoints(
         "observed_points": n,
         "dropped_missing": dropped,
     }
+    if period is not None:
+        report["deseasonalised_by"] = period
     if var == 0 or max_changes == 0:
         return [], _py(report)
 
@@ -634,6 +659,8 @@ def changepoints(
         before = float(y[bounds[j - 1] : k].mean())
         after = float(y[k : bounds[j + 1]].mean())
         shift = after - before
+        raw_before = float(raw[bounds[j - 1] : k].mean())
+        raw_after = float(raw[k : bounds[j + 1]].mean())
         changes.append({
             "index": int(pos[k]),
             "label": str(index[int(pos[k])]),
@@ -641,7 +668,7 @@ def changepoints(
             "after_mean": after,
             "shift": shift,
             "shift_in_sd": (shift / sd) if sd > 0 else None,
-            "ratio": (after / before) if before != 0 else None,     # after over before (live: 4 cells read c['ratio'])
+            "ratio": (raw_after / raw_before) if raw_before != 0 else None,  # raw values, as before (live: 4 cells read c['ratio'])
         })
     report["n_changes"] = len(changes)
     report.update({"diagnostic_only": True, "leak_warning": "fitted on every row you pass, including later ones: use it to look at the history, not to build model input or a backtest arm"})
@@ -1116,18 +1143,18 @@ class Ledger:
         """All entries in order, each with its running index (1, 2, 3 and so on)."""
         return [{"index": i, **entry} for i, entry in enumerate(self._entries, start=1)]
 
-    def save(self, path: str = "out/ledger.json", replace: bool = False) -> str:
+    def save(self, path: str = "out/ledger.json") -> str:
         """Write the entries as JSON, creating the parent folder if needed. Returns the path written.
 
         Motivation: WTI rep3 saved a fresh, empty ledger over the five entries an earlier cell had written (A4-05), and
         nothing reported the loss. Logic: the file already at ``path`` is read first. If this ledger extends it, or
         repeats it, this ledger is written. Otherwise the file's entries come first and this ledger's entries follow, so
-        a save never leaves fewer entries than the file held. ``replace=True`` writes this ledger alone, on purpose.
+        a save never leaves fewer entries than the file held. To start a ledger again, delete the file.
         A file that cannot be read as a list of entries raises ValueError and is left alone.
         """
         target = Path(path)
         ours = [dict(e) for e in self._entries]
-        on_disk = None if replace else _read_ledger(path)
+        on_disk = _read_ledger(path)
         if on_disk is None:
             merged = ours
         elif ours[: len(on_disk)] == on_disk:

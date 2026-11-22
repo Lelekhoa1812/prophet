@@ -74,17 +74,6 @@ def test_open_loads_the_existing_file_and_save_keeps_it(tmp_path):
     assert len(_on_disk(target)) == 6
 
 
-def test_replace_true_writes_exactly_this_ledger(tmp_path):
-    target = tmp_path / "ledger.json"
-    first = ps.Ledger()
-    _add_five(first)
-    first.save(str(target))
-    deliberate = ps.Ledger()
-    deliberate.add("reset", "the earlier ledger was built on the wrong file", "start again")
-    deliberate.save(str(target), replace=True)
-    assert [e["stage"] for e in _on_disk(target)] == ["reset"]
-
-
 def test_unreadable_existing_file_is_not_overwritten(tmp_path):
     target = tmp_path / "ledger.json"
     target.write_text("{not a list", encoding="utf-8")
