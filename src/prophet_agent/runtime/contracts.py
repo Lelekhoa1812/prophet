@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from prophet_agent.forecast.timesfm import nonnegative_domain
+from prophet_agent.runtime import grounding
 
 EXPECTED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
 INTERVAL_SHARE = 0.9      # share of steps that must sit inside q10 <= point <= q90
@@ -439,9 +440,48 @@ def check_scan(history, run_root) -> dict | None:
 CONTROL_OPTIONS = ("context_points", "ignore_ranges", "znorm", "symmetric_averaging")   # drivers (covariates) are inputs, not tuning
 
 
-def used_controls(args: dict) -> list[str]:
-    """The TimesFM tuning options a forecast call switched on (a false or empty value is the default)."""
-    return [k for k in CONTROL_OPTIONS if args.get(k)]
+SELECTION_LIMIT = 3       # configurations a planner may try on one series before the choice is reported as an optimistic selection
+
+
+def used_controls(args: dict, n_points: int | None = None) -> list[str]:
+    """The TimesFM tuning options a forecast call switched on (a false or empty value is the default). A context window that
+    covers the whole history is a no-op, not a treatment: the default already uses every point (A6-08; live retail rep4 used
+    context_points=504 on 504 points, measured configured_vs_default_pct 0.0, and counted it as tested). The history length is
+    ``n_points`` when known, else the length of the call's ``values``."""
+    if n_points is None and isinstance(args.get("values"), list):
+        n_points = len(args["values"])
+    out: list[str] = []
+    for k in CONTROL_OPTIONS:
+        v = args.get(k)
+        if not v:
+            continue
+        if k == "context_points" and _is_int(v) and _is_int(n_points) and v >= n_points:
+            continue
+        out.append(k)
+    return out
+
+
+def check_selection(history) -> dict | None:
+    """Warns when more than SELECTION_LIMIT distinct treatment configurations were backtested on the mission's series. Each
+    configured backtest is scored on the windows it was chosen on, with no multiplicity control, so the best of many is
+    optimistic (A6-08). A warning. None when no configured backtest ran."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    configs = set()
+    for h in obs:
+        if not isinstance(h.get("args"), dict) or _ok_result(h, "backtest_series") is None:
+            continue
+        used = used_controls(h["args"])
+        if used:
+            configs.add(tuple((k, str(h["args"].get(k))) for k in used))
+    if not configs:
+        return None
+    if len(configs) > SELECTION_LIMIT:
+        return _check("controls_selection", False,
+                      f"{len(configs)} treatment configurations were backtested on the same series; the best of them is optimistic "
+                      f"(more than {SELECTION_LIMIT} tried). Report the number tried, or confirm the choice with control_lab",
+                      "warn")
+    return _check("controls_selection", True,
+                  f"{len(configs)} treatment configuration(s) backtested, within the {SELECTION_LIMIT} allowed", "warn")
 
 
 # The lab candidates that measure each hand-set treatment. The lab's own candidates are close to the planner's options, not
@@ -463,7 +503,8 @@ def check_controls(history, args: dict, record: dict | None = None) -> dict | No
     most do not. Blocking when no lab measured it. Audit item 18: a lab counts only when it measured THIS forecast, so it must
     have run on the same horizon and series length (``record`` is the forecast's own record), and its table must hold a
     candidate for each treatment the forecast uses. A warning when the lab recommended the default or another treatment."""
-    used = used_controls(args)
+    rec_cfg = record.get("config") if isinstance(record, dict) and isinstance(record.get("config"), dict) else {}
+    used = used_controls(args, rec_cfg.get("history_points"))
     if not used:
         return None
     labs = [r for h in history if isinstance(r := _ok_result(h, "control_lab"), dict)]
@@ -723,6 +764,169 @@ def _baseline_gate(delivered: dict, backtests: list) -> dict:
     return _check("baseline_compared", True, "the forecast was compared with the baselines in a backtest at its horizon")
 
 
+_SHIFT_ENTRY = re.compile(r"shift|break|changepoint", re.I)
+_CAUSAL_DECISION = re.compile(r"correspond|\bregimes?\b|crisis|crash|\bcaused?\b|because|due to|driven by|known (?:event|oil|market)|"
+                              r"lockdown|covid|launch|promotion", re.I)
+_CITED_DECISION = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b|unexplained", re.I)
+_PROMISED_TEST = re.compile(r"\bwill (?:test|run|check|be tested|be run)\b|\bto be (?:tested|run)\b", re.I)
+
+
+def check_ledger_claims(history, run_root) -> list[dict]:
+    """Two checks on the newest saved ledger (A3-04). A shift decision that attributes the shift to a cause must cite a research
+    source id (S1, S2 ...) or a test, or say the shift is unexplained; otherwise it is a warning. A decision that promises a test
+    ("will test ... in control_lab") must find that test run in the mission. Live evidence (measured, audit round 3, A3): WTI rep4
+    named the regimes of five level shifts from memory and promised an ignore_ranges test no run performed. Empty when no ledger
+    was saved or ``run_root`` is unknown."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return []
+    entries = [e for e in ledgers[0] if isinstance(e, dict) and not e.get("superseded")]
+    out: list[dict] = []
+    shifts = [e for e in entries if _SHIFT_ENTRY.search(f"{e.get('stage', '')} {e.get('finding', '')}")]
+    if shifts:
+        bare = [e for e in shifts if _CAUSAL_DECISION.search(str(e.get("decision", "")))
+                and not _CITED_DECISION.search(str(e.get("decision", "")))]
+        if bare:
+            out.append(_check("causal_shift_cited", False,
+                              f"the ledger attributes a shift to a cause with no research source id or test (stage "
+                              f"'{bare[0].get('stage')}'); cite the S-id or the control_lab result, or record the shift as "
+                              "unexplained, kept as observed", "warn"))
+        else:
+            out.append(_check("causal_shift_cited", True, "every shift decision cites a source or a test, or says it is unexplained",
+                              "warn"))
+    promised = [e for e in entries if _PROMISED_TEST.search(str(e.get("decision", "")))]
+    if promised:
+        ran = any(_ok_result(h, "control_lab") is not None or _ok_result(h, "backtest_series") is not None
+                  for h in with_delegated(history if isinstance(history, list) else []))
+        out.append(_check("promised_tests_run", ran,
+                          "the test the ledger promised ran in this mission" if ran else
+                          f"the ledger promises a test ('{str(promised[0].get('decision'))[:120]}') and no control_lab or "
+                          "backtest_series ran; run it, or drop the promise", "warn"))
+    return out
+
+
+def _likely_recording_break(ev: dict) -> bool:
+    """A break the scan flags as possibly a recording change: on a calendar boundary, or shared by several entities on one date.
+    The flags are read from the finding and from each break row when present (the scan slice adds them; absent means unflagged)."""
+    rows = ev.get("breaks") if isinstance(ev.get("breaks"), list) else []
+    for src in [ev, *[r for r in rows if isinstance(r, dict)]]:
+        if src.get("on_calendar_boundary") is True:
+            return True
+        n = src.get("coincident_entities")
+        if _is_int(n) and n > 1:
+            return True
+    return False
+
+
+def check_shift_decisions(history, run_root) -> dict | None:
+    """Where the scan flags a level shift as a likely recording break, the ledger must name the treatment options (truncate, ignore
+    ranges, or flag) and a control_lab or backtest must have run before the shift is kept (A4-09). A warning. None when no flagged
+    shift exists or the scan cannot be read."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    flagged = [f for f in findings if f.get("id") == "changepoints.level_shift" and isinstance(f.get("evidence"), dict)
+               and _likely_recording_break(f["evidence"])]
+    if not flagged:
+        return None
+    ledgers = _saved_ledgers(history, run_root)
+    text = " ".join(str(e.get("decision", "")) for e in (ledgers[0] if ledgers else []) if isinstance(e, dict)
+                    and not e.get("superseded"))
+    names_options = bool(re.search(r"truncat|ignore_ranges|\bflag", text, re.I))
+    tested = any(_ok_result(h, "control_lab") is not None or _ok_result(h, "backtest_series") is not None
+                 for h in with_delegated(history if isinstance(history, list) else []))
+    ok = names_options and tested
+    if ok:
+        return _check("shift_decision_tested", True,
+                      "the flagged shift was tested (truncate, ignore or flag) before it was kept", "warn")
+    gap = "no control_lab or backtest_series ran" if not tested else "the ledger does not name the options (truncate, ignore_ranges or flag)"
+    return _check("shift_decision_tested", False,
+                  f"{len(flagged)} level shift(s) are flagged as likely recording breaks (calendar boundary, or shared by several "
+                  f"entities), and {gap}; test them before keeping the shift", "warn")
+
+
+OUTLIER_SHARE_RULE = 0.02     # the outliers skill: above about 2% of steps, treat the flags as noise or a broken feed until shown otherwise
+_OUTLIER_TEST = re.compile(r"winsori|robust|replace_outliers|ignore_ranges|control_lab|backtest", re.I)
+_PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
+
+
+def check_outlier_share(history, run_root) -> dict | None:
+    """Where the saved scan flags more than OUTLIER_SHARE_RULE of the steps as outliers (Hampel share, the scan's own field),
+    the ledger must state the share and test a winsorised or robust copy (A4-11). Measured, audit round 3: Beijing kept 6.3% to
+    8.8% of rows as real spikes with one template sentence. A warning. None when the scan shows no such series or no folder is
+    known."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    high = []
+    for f in findings:
+        ev = f.get("evidence") if isinstance(f.get("evidence"), dict) else {}
+        shares = ev.get("share_by_method") if isinstance(ev.get("share_by_method"), dict) else {}
+        share = _finite(shares.get("hampel"))
+        if f.get("id") == "outliers.share" and share is not None and share > OUTLIER_SHARE_RULE:
+            high.append((str(f.get("scope")), share))
+    if not high:
+        return None
+    ledgers = _saved_ledgers(history, run_root)
+    relevant = [e for e in (ledgers[0] if ledgers else []) if isinstance(e, dict) and not e.get("superseded")
+                and re.search(r"outlier|spike", " ".join(str(e.get(k, "")) for k in ("stage", "finding", "decision")), re.I)]
+    text = " ".join(f"{e.get('finding', '')} {e.get('decision', '')}" for e in relevant)
+    names = ", ".join(f"{s} ({v:.1%})" for s, v in high[:6])
+    if _PERCENT.search(text) and _OUTLIER_TEST.search(text):
+        return _check("outlier_share_decided", True,
+                      f"the ledger states the outlier share and tests a winsorised or robust copy for {names}", "warn")
+    return _check("outlier_share_decided", False,
+                  f"the scan flags more than {OUTLIER_SHARE_RULE:.0%} of the steps as outliers for {names}; the ledger must state the "
+                  "share and test a winsorised or robust copy (replace_outliers, ignore_ranges or control_lab) before keeping them",
+                  "warn")
+
+
+_HYPOTHESIS_STAGE = re.compile(r"hypothes", re.I)
+_HYPOTHESIS_OUTCOME = re.compile(r"\b(confirmed|refuted|supported|rejected)\b", re.I)
+
+
+def check_hypotheses(history, run_root) -> dict | None:
+    """The mission should state two or more falsifiable hypotheses and mark each confirmed or refuted (A4-10). An entry counts when it
+    carries an ``expected`` statement and an ``outcome`` of confirmed or refuted. Without those fields, an entry staged as a
+    hypothesis counts when its text states an outcome. A warning, not a block. None when no ledger was saved. Live evidence (measured,
+    audit round 3, A4): none of six ledgers held an expectation, although planner step 4 asks for one."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return None
+    entries = [e for e in ledgers[0] if isinstance(e, dict) and not e.get("superseded")]
+    tested = 0
+    for e in entries:
+        expected = str(e.get("expected") or "").strip()
+        outcome = str(e.get("outcome") or "").strip().lower()
+        if expected and outcome in ("confirmed", "refuted"):
+            tested += 1
+        elif not e.get("expected") and not e.get("outcome") and _HYPOTHESIS_STAGE.search(str(e.get("stage", ""))) \
+                and _HYPOTHESIS_OUTCOME.search(f"{e.get('finding', '')} {e.get('decision', '')}"):
+            tested += 1
+    if tested >= 2:
+        return _check("hypotheses_tested", True,
+                      f"{tested} falsifiable hypotheses were stated and marked confirmed or refuted", "warn")
+    return _check("hypotheses_tested", False,
+                  f"{tested} hypothesis test(s) recorded; the mission should state at least two falsifiable expectations and mark "
+                  "each confirmed or refuted", "warn")
+
+
+def check_frame(history, run_root) -> dict | None:
+    """The mission should record a frame before it forecasts: what the forecast is for, its horizon, and the decision it feeds (A3-13).
+    Read from the newest saved ledger, as an entry staged "frame" with a non-empty decision. A warning, not a block. None when no
+    ledger was saved."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return None
+    frames = [e for e in ledgers[0] if isinstance(e, dict) and not e.get("superseded")
+              and str(e.get("stage", "")).strip().lower() == "frame" and str(e.get("decision", "")).strip()]
+    if frames:
+        return _check("frame_recorded", True, "the ledger records the frame: purpose, horizon and the decision it feeds", "warn")
+    return _check("frame_recorded", False,
+                  "the ledger has no frame entry; record what the forecast is for, its horizon and the decision it feeds before "
+                  "forecasting", "warn")
+
+
 def check_evidence(history, *, run_root=None) -> list[dict]:
     """Checks on a mission's observations, in order. Never raises: a missing or malformed piece skips its check."""
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
@@ -760,12 +964,26 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
     if not forecasts:
         checks.append(_check("health_repaired", True, "no forecast yet; nothing to check"))
     else:
-        verdict = delivered_health(forecasts[-1][1])
+        # The gate follows the pack the person receives (forecast_report). A healthy timesfm_forecast run after a flat pack is a
+        # diagnostic; it does not repair the band that ships (A6-07; the pack is rebuilt only by a later forecast_report).
+        pack = next((rec for i, rec, _ in reversed(forecasts) if obs[i].get("tool") == "forecast_report"), None)
+        if pack is None:
+            pack = forecasts[-1][1]          # a run with no pack: its last forecast is what the answer delivers
+        verdict = delivered_health(pack)
         if verdict == "flat_unexpected":
             checks.append(_check("health_repaired", False,
-                                 "the last forecast's health says the cycle was lost, and it was never repaired"))
+                                 "the forecast the answer delivers says the cycle was lost, and no later pack was built on a "
+                                 "repaired forecast (rebuild the pack after the repair)"))
+            period = _health_period(pack)
+            if period is not None:
+                tested = any(isinstance(_ok_result(h, "control_lab"), dict) and (h.get("args") or {}).get("period") == period
+                             for h in obs)
+                checks.append(_check("flagged_period_tested", tested,
+                                     f"control_lab ran with period={period} on this flagged band" if tested else
+                                     f"the flagged band has health period {period}, and no control_lab ran with period={period}; "
+                                     "run control_lab with that period on the same series and horizon", "warn"))
         else:
-            checks.append(_check("health_repaired", True, f"the last forecast's health is {verdict or 'not reported'}"))
+            checks.append(_check("health_repaired", True, f"the pack's health is {verdict or 'not reported'}"))
 
         _, rec, args = forecasts[-1]
         point = rec.get("point")
@@ -796,6 +1014,23 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         decisions = check_scan_decisions(obs, run_root)
         if decisions is not None:
             checks.append(decisions)
+        outliers = check_outlier_share(obs, run_root)
+        if outliers is not None:
+            checks.append(outliers)
+        checks.extend(check_ledger_claims(obs, run_root))
+        shifts = check_shift_decisions(obs, run_root)
+        if shifts is not None:
+            checks.append(shifts)
+        hypotheses = check_hypotheses(obs, run_root)
+        if hypotheses is not None:
+            checks.append(hypotheses)
+        frame = check_frame(obs, run_root)
+        if frame is not None:
+            checks.append(frame)
+
+    selection = check_selection(obs)
+    if selection is not None:
+        checks.append(selection)
 
     if backtests and isinstance(backtests[-1].get("models"), dict):
         checks.extend(check_backtest(backtests[-1]))
@@ -898,3 +1133,131 @@ def trust_statement(history) -> str:
         rng += (f" On later held-out windows it held {_pct(f['heldout_raw'])} raw and {_pct(f.get('heldout_calibrated'))} "
                 f"after calibration; {used}.")
     return "**Accuracy check (computed from the stored backtest):** " + head + call + rng
+
+
+# ---------------------------------------------------------------- the written answer (A6-09)
+
+def _health_period(rec: dict) -> int | None:
+    health = rec.get("health") if isinstance(rec, dict) else None
+    p = health.get("period") if isinstance(health, dict) else None
+    return p if _is_int(p) and p >= 2 else None
+
+
+def _newest_backtest(obs: list) -> dict | None:
+    return next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "backtest_series"), dict)
+                 and isinstance(r.get("models"), dict)), None)
+
+
+def _scan_shift_counts(history: list, run_root) -> list[int] | None:
+    """The level-shift counts the saved scan reports, one per entity. A saved scan with no level-shift finding holds zero."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    counts = [f["evidence"]["count"] for f in findings if f.get("id") == "changepoints.level_shift"
+              and isinstance(f.get("evidence"), dict) and _is_int(f["evidence"].get("count"))]
+    return counts or [0]
+
+
+def check_ledger_answer(answer, history, run_root) -> dict | None:
+    """The answer and the newest saved ledger must take the same stance on negatives, outliers and gaps (A4-04). Live evidence
+    (measured): retail rep3 ledger "keep negative values" against an answer that "clipped to 0"; WTI rep3 "no gaps filled"
+    against a ledger of 109 gaps filled by interpolation. An entry marked superseded is left out, so a later correction counts.
+    None when no ledger was saved or ``run_root`` is unknown."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return None
+    decided = " . ".join(str(e.get("decision", "")) for e in ledgers[0]
+                         if isinstance(e, dict) and not e.get("superseded") and not e.get("superseded_by"))
+    ledger = grounding.treatment_stances(decided)
+    said = grounding.treatment_stances(answer if isinstance(answer, str) else "")
+    clashes = [(topic, l, a) for topic in sorted(set(ledger) & set(said)) for l in sorted(ledger[topic]) for a in sorted(said[topic])
+               if (l, a) in grounding.OPPOSED_STANCES or (a, l) in grounding.OPPOSED_STANCES]
+    if clashes:
+        topic, l, a = clashes[0]
+        return _check("ledger_answer_consistent", False,
+                      f"the ledger decides {topic} as '{l}', but the answer says '{a}'; make the answer follow the ledger, or "
+                      "record a superseding decision in the ledger first", "warn")
+    if set(ledger) & set(said):
+        return _check("ledger_answer_consistent", True,
+                      "the answer's treatments of " + ", ".join(sorted(set(ledger) & set(said))) + " agree with the ledger", "warn")
+    return None
+
+
+def check_answer(answer, history, *, run_root=None) -> list[dict]:
+    """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
+    makes, so an answer with no such claim adds nothing.
+
+    Motivation (audit round 3, A6-09): the answer is written by a model and the figures in it are matched, but its plain
+    claims were not. Live retail rep4 said "weekly (7-day) confirmed" with a health period of 5; live WTI said "naive is the
+    appropriate benchmark" with a backtest that ranked mean_last_season ahead. Those two reach the person, so they block.
+    Logic: the claims are read by grounding.py. A cycle must equal the measured health period, and a named best rule must be
+    the backtest's best or within RULE_TOLERANCE of it. A level-shift count and a cause with no citation are warnings.
+    """
+    text = answer if isinstance(answer, str) else ""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    checks: list[dict] = []
+
+    periods = grounding.claimed_periods(text)
+    if periods:
+        stored = {p for h in obs if (rec := _forecast_record(h)) is not None and (p := _health_period(rec)) is not None}
+        if stored:
+            wrong = [(n, s) for n, s in periods if n not in stored]
+            if wrong:
+                n, s = wrong[0]
+                checks.append(_check("answer_cycle_matches_health", False,
+                                     f"the answer states a cycle of {n} steps ({s[:160]}), but the health record measured period "
+                                     f"{', '.join(str(p) for p in sorted(stored))}; state the measured period"))
+            else:
+                checks.append(_check("answer_cycle_matches_health", True,
+                                     "every cycle the answer states is the period the health record measured"))
+
+    claims = grounding.claimed_best_baselines(text)
+    bt = _newest_backtest(obs)
+    if claims and bt is not None:
+        models, best = bt["models"], bt.get("best_baseline")
+        bm = _finite(models[best].get("mase")) if isinstance(best, str) and isinstance(models.get(best), dict) else None
+        wrong_rules = []
+        for name, sentence in claims:
+            nm = _finite(models[name].get("mase")) if isinstance(models.get(name), dict) else None
+            if name != best and nm is not None and bm is not None and nm > bm * (1 + RULE_TOLERANCE):
+                wrong_rules.append((name, nm, sentence))
+        if wrong_rules:
+            name, nm, sentence = wrong_rules[0]
+            checks.append(_check("answer_benchmark_matches", False,
+                                 f"the answer calls {name} the best benchmark (MASE {nm:.3f}), but the backtest ranked {best} "
+                                 f"best (MASE {bm:.3f}) ({sentence[:160]}); name {best}, or say why it was not used"))
+        else:
+            checks.append(_check("answer_benchmark_matches", True,
+                                 "the benchmark the answer names is the one the backtest ranked best, or within tolerance of it"))
+
+    counts = grounding.claimed_shift_counts(text)
+    stored_counts = _scan_shift_counts(obs, run_root) if counts else None
+    if counts and stored_counts is not None:
+        allowed = set(stored_counts) | {sum(stored_counts)}
+        wrong_counts = [(n, s) for n, s in counts if n not in allowed]
+        if wrong_counts:
+            n, s = wrong_counts[0]
+            checks.append(_check("answer_shift_count_matches", False,
+                                 f"the answer counts {n} level shifts ({s[:160]}), but the saved scan reports "
+                                 f"{', '.join(str(c) for c in stored_counts)}", "warn"))
+        else:
+            checks.append(_check("answer_shift_count_matches", True,
+                                 "the level-shift count the answer states is the scan's count", "warn"))
+
+    causes = grounding.uncited_causes(text)
+    if causes:
+        checks.append(_check("answer_causes_cited", False,
+                             f"the answer attributes a shift to a cause with no research source id or test ({causes[0][:160]}); "
+                             "cite the S-id of a research passage or the control_lab test, or say the shift is unexplained",
+                             "warn"))
+
+    reconciled = check_ledger_answer(text, obs, run_root)
+    if reconciled is not None:
+        checks.append(reconciled)
+
+    methods = grounding.unsupported_method_claims(text, obs)
+    if methods:
+        checks.append(_check("answer_methods_run", False,
+                             f"the answer says a method was tested or computed, but no tool call runs it ({methods[0][:160]}); "
+                             "run the treatment, or take the claim out", "warn"))
+    return checks

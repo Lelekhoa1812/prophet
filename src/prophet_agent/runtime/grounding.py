@@ -240,3 +240,195 @@ def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, st
 def snap_note(fixed: list[tuple[str, str]]) -> str:
     return (f"\n\n_{len(fixed)} figure(s) were corrected to the value the analysis printed (a copying slip, under 0.05%)._"
             if fixed else "")
+
+
+# ---------------------------------------------------------------- narrative claims (A6-09, A4-14, A4-04)
+#
+# A figure check does not catch a claim with no number in it: "weekly (7-day) confirmed" or "naive is the appropriate
+# benchmark". These readers pull the claims a written answer makes, as plain facts (a period, a best rule, a count, a cause,
+# a method that was tested). contracts.check_answer compares them with what the stored tool output says. Readers only: they
+# return text and numbers, and decide nothing on their own.
+
+def sentences(text: str) -> list[str]:
+    """The units a claim is read from: a table row whole, otherwise each sentence of each line."""
+    units: list[str] = []
+    for line in (text or "").split("\n"):
+        if line.lstrip().startswith("|"):
+            if line.strip():
+                units.append(line)
+            continue
+        units.extend(s for s in re.split(r"(?<=[.!?;])\s+", line) if s.strip())
+    return units
+
+
+_NEGATION = re.compile(r"\b(?:not|no|never|without|none|nor|untested|unconfirmed|unverified)\b|n't\b", re.I)
+
+
+def negated(unit: str, start: int) -> bool:
+    """True when a negation word sits in the few words before ``start``: "is not the best", "no cycle"."""
+    return bool(_NEGATION.search(unit[max(0, start - 25):start]))
+
+
+_CYCLE_CLAIMS = (
+    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\W{0,3}(?:\(|of\s+|=|:)?\W{0,3}(\d{1,3})[- ](?:day|step|period)?\b", re.I),
+    re.compile(r"\b(\d{1,3})[- ](?:day|step|period)s?\W{0,3}(?:weekly|cycles?|seasonal|seasonality|season|pattern|periodic|periodicity)\b", re.I),
+    re.compile(r"\b(?:period|cycle|season)\s*(?:=|:|of)\s*(\d{1,3})\b", re.I),
+)
+
+
+def claimed_periods(answer: str) -> list[tuple[int, str]]:
+    """The cycle lengths, in steps, that the answer states: "weekly (7-day) cycle" gives 7. Negated statements are left out."""
+    out: list[tuple[int, str]] = []
+    for unit in sentences(answer):
+        for pat in _CYCLE_CLAIMS:
+            for m in pat.finditer(unit):
+                n = int(m.group(1))
+                if n >= 2 and not negated(unit, m.start()):
+                    out.append((n, unit.strip()))
+    return out
+
+
+_BASELINE_NAMES = (
+    ("seasonal_naive", r"seasonal[ _-]naive"),
+    ("mean_last_season", r"mean[ _]of[ _]the[ _]last[ _]season|mean_last_season"),
+    ("tsb_expected", r"\bTSB\b|intermittent[- ]demand rule"),
+    ("drift", r"\bdrift\b"),
+    ("naive", r"\bnaive\b"),
+)
+_BEST_WORDS = re.compile(r"\b(?:best|most accurate|appropriate benchmark|right benchmark|the benchmark)\b", re.I)
+_NO_BEATS = re.compile(r"\bno (?:other |simple )?(?:model|method|rule|baseline|forecast)s? (?:beats?|outperforms?|is better than"
+                       r"|is more accurate than)\s+(.*)", re.I)
+
+
+def baselines_named(text: str) -> list[str]:
+    """The simple rules a text names, in order. A longer name is blanked first, so "seasonal naive" is not also "naive"."""
+    found: list[tuple[int, str]] = []
+    rest = text
+    for name, pat in _BASELINE_NAMES:
+        for m in re.finditer(pat, rest, re.I):
+            found.append((m.start(), name))
+        rest = re.sub(pat, lambda m: " " * len(m.group()), rest, flags=re.I)
+    return [n for _, n in sorted(found)]
+
+
+def claimed_best_baselines(answer: str) -> list[tuple[str, str]]:
+    """The simple rule the answer calls the best or the appropriate benchmark, one (rule, sentence) per sentence that names
+    exactly one rule. "No model beats naive" claims naive is best. A negated claim, or a sentence that names two rules, is
+    left out: it says nothing this check can settle."""
+    out: list[tuple[str, str]] = []
+    for unit in sentences(answer):
+        beats = _NO_BEATS.search(unit)
+        if beats:
+            names = set(baselines_named(beats.group(1)))
+            if len(names) == 1 and not negated(unit, beats.start()):
+                out.append((names.pop(), unit.strip()))
+            continue
+        best = _BEST_WORDS.search(unit)
+        if not best or negated(unit, best.start()):
+            continue
+        names = set(baselines_named(unit))
+        if len(names) == 1:
+            out.append((names.pop(), unit.strip()))
+    return out
+
+
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+_SHIFT_COUNT = re.compile(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+                          r"(?:level[- ]shifts?|regime shifts?|structural breaks?|breaks?|changepoints?)\b", re.I)
+
+
+def claimed_shift_counts(answer: str) -> list[tuple[int, str]]:
+    """The number of level shifts the answer states, as a whole number."""
+    out: list[tuple[int, str]] = []
+    for unit in sentences(answer):
+        for m in _SHIFT_COUNT.finditer(unit):
+            word = m.group(1).lower()
+            n = _NUMBER_WORDS[word] if word in _NUMBER_WORDS else int(word)
+            if not negated(unit, m.start()):
+                out.append((n, unit.strip()))
+    return out
+
+
+_CAUSE = re.compile(r"\b(?:correspond(?:s|ed)? to|caused by|due to|driven by|because of|reflects?|reflecting|as a result of)\b", re.I)
+_SHIFT_WORD = re.compile(r"\b(?:level[- ]shifts?|shifts?|breaks?|changepoints?|regimes?|spikes?|outliers?)\b", re.I)
+_CITED = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b", re.I)
+
+
+def uncited_causes(answer: str) -> list[str]:
+    """Sentences that attribute a shift, break, spike or outlier to a cause, with no research source id (S1, S2 ...) and no
+    test named in the same sentence."""
+    return [u.strip() for u in sentences(answer) if _CAUSE.search(u) and _SHIFT_WORD.search(u) and not _CITED.search(u)]
+
+
+# A method claim names a treatment and a verb of testing. Each treatment has the words a call that runs it would carry in its
+# arguments (the code, the options). Only arguments count: a tool's printed output mentions "outlier" in any scan.
+_METHOD_CLAIM = re.compile(r"\b(?:tested|backtested|computed|measured)\b", re.I)
+_TREATMENTS = (
+    (re.compile(r"winsori[sz]|outlier|spike", re.I), ("winsor", "outlier", "replace_outliers", "ignore_ranges", "hampel", "robust")),
+    (re.compile(r"first week|exclud|truncat|context", re.I), ("context", "ignore_ranges", "truncat", "exclude", "ctx_")),
+    (re.compile(r"changepoint|level[- ]shift|regime|structural break", re.I), ("changepoint", "level_shift", "ignore_ranges",
+                                                                             "truncat", "regime")),
+    (re.compile(r"\bprophet\b", re.I), ("fbprophet", "prophet import", "prophet(", "prophet.prophet")),
+    (re.compile(r"znorm|z-norm|normalis|normaliz", re.I), ("znorm",)),
+    (re.compile(r"symmetric", re.I), ("symmetric",)),
+    (re.compile(r"covariate|holiday|driver", re.I), ("covariate", "driver", "holiday")),
+)
+
+
+def _call_arguments(history) -> list[str]:
+    """The arguments of every call that did not fail, lower-cased, including the calls inside a sub-agent's evidence."""
+    out: list[str] = []
+    for h in history if isinstance(history, list) else []:
+        if not isinstance(h, dict):
+            continue
+        if h.get("kind") == "tool" and not h.get("error") and "args" in h:
+            out.append(_as_text(h.get("args")).lower())
+        elif h.get("kind") == "subagent":
+            out.extend(_call_arguments(h.get("evidence") or []))
+    return out
+
+
+def unsupported_method_claims(answer: str, history: list) -> list[str]:
+    """The units of the answer that say a treatment was tested or computed, where some named treatment has no successful call
+    whose arguments carry it. A unit that names no known treatment is not read (its claim cannot be checked)."""
+    calls = _call_arguments(history)
+    out: list[str] = []
+    for unit in sentences(answer):
+        m = _METHOD_CLAIM.search(unit)
+        if not m or negated(unit, m.start()):
+            continue
+        for rx, markers in _TREATMENTS:
+            if rx.search(unit) and not any(mk in c for c in calls for mk in markers):
+                out.append(unit.strip())
+                break
+    return out
+
+
+# Treatment stances (A4-04). A sentence that names a topic and a treatment verb gives the stance; a negation turns it into its
+# opposite ("were not clipped" is a keep). The ledger's decisions and the answer are read the same way, so they can be compared.
+_OPPOSITE = {"keep": "treat", "treat": "keep", "fill": "none", "none": "fill"}
+_TOPIC_STANCES = (
+    ("negatives", re.compile(r"negative|below zero", re.I), {
+        "keep": re.compile(r"\bkeep|\bkept\b|\bretain|\bgenuine\b", re.I),
+        "treat": re.compile(r"\bclip|\bfloor(?:ed)?\b|set to (?:zero|0)|truncat", re.I)}),
+    ("outliers", re.compile(r"outlier|spike", re.I), {
+        "keep": re.compile(r"\bkeep|\bkept\b|\bretain|real (?:spike|event|value)s?|\bgenuine\b", re.I),
+        "treat": re.compile(r"winsori[sz]|\bremov|\bexclud|\breplac|\bcapped\b|\bclipped\b|\bignored\b|\bdropped\b", re.I)}),
+    ("gaps", re.compile(r"\bgaps?\b|interpolat|imputed|\bfilled\b", re.I), {
+        "fill": re.compile(r"interpolat|\bfilled\b|\bimputed\b|straight[- ]line", re.I),
+        "none": re.compile(r"\bno gaps?\b|\bnot (?:filled|interpolated|imputed)\b|\bnot (?:a )?gaps?\b", re.I)}),
+)
+OPPOSED_STANCES = (("keep", "treat"), ("fill", "none"))
+
+
+def treatment_stances(text: str) -> dict[str, set[str]]:
+    """The stance the text takes on each topic (negatives, outliers, gaps), read sentence by sentence."""
+    out: dict[str, set[str]] = {}
+    for unit in sentences(text):
+        for topic, topic_rx, stances in _TOPIC_STANCES:
+            if not topic_rx.search(unit):
+                continue
+            for stance, rx in stances.items():
+                for m in rx.finditer(unit):
+                    out.setdefault(topic, set()).add(_OPPOSITE[stance] if negated(unit, m.start()) else stance)
+    return out
