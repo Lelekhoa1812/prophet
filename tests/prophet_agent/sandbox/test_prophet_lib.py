@@ -41,3 +41,14 @@ def test_report_aliases_analysts_write_are_answered():
     assert rep["outliers"].sum() == rep["count"] == rep["n_outliers"] and rep.get("nope") is None
     d = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=5)) - pd.Timestamp("2024-01-03")
     assert int(d.abs().argmin()) == 2
+
+
+def test_flag_positions_and_finding_field_names_are_answered():
+    import numpy as np
+    import prophet_stats as ps
+    from prophet_scan import Finding
+    x = np.r_[np.zeros(30) + np.linspace(0, 1, 30), [50.0], np.linspace(1, 2, 30)]
+    flags, rep = ps.hampel(x)
+    assert list(rep["outlier_indices"]) == list(np.flatnonzero(flags)) and 30 in rep["indices"]
+    f = Finding(id="F1", message="level shift in 2024", decision_needed="cut or keep", severity="major")
+    assert f["title"] == "level shift in 2024" and f["decision"] == "cut or keep" and f.get("nope") is None

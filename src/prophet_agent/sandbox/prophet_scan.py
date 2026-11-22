@@ -158,8 +158,21 @@ class Finding(dict):
     """A finding is a plain dict whose missing-key error names the keys that exist: a model that guesses a key (``message``,
     ``text``) reads the fix in the traceback instead of repeating the call."""
 
+    # Names models write for a finding's fields (live: finding['title'] failed two ledger cells, finding['detail'] one).
+    ALIASES = {"title": "message", "detail": "message", "description": "message", "summary": "message", "text": "message",
+               "finding": "message", "decision": "decision_needed", "action": "next_step", "recommendation": "next_step"}
+
     def __missing__(self, key: Any) -> Any:
+        target = self.ALIASES.get(key) if isinstance(key, str) else None
+        if target is not None and target in self:
+            return self[target]
         raise KeyError(f"a finding has no key {key!r}; its keys are {sorted(self)} (use 'message' for a one-line summary)")
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 class ScanResult(dict):

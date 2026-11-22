@@ -266,3 +266,26 @@ def test_short_calls_name_the_open_checklist_items():
     assert "3 left" in note and note.index("backtest_series") < note.index("forecast_report")
     assert _short_calls_note(GoalConfig(tool_budget=40), calls, items) == ""
     assert _short_calls_note(GoalConfig(tool_budget=None), calls, items) == ""
+
+
+def test_per_entity_scans_count_and_a_configured_backtest_measures_a_treatment():
+    from prophet_agent.runtime.contracts import check_controls, scan_ran
+    per = {"kind": "tool", "tool": "sandbox_python", "result": {"ok": True, "run_id": "a" * 32,
+           "outputs": ["out/scan_Tiantan.json (900 bytes)", {"path": "out/scan_Wanliu.json"}]}}
+    assert scan_ran([per]) and not scan_ran([{"kind": "tool", "tool": "sandbox_python", "result": {"outputs": ["out/scanner.py"]}}])
+    bt = {"kind": "tool", "tool": "backtest_series", "args": {"horizon": 20, "ignore_ranges": [[866, 867]]},
+          "result": {"configured_vs_default_pct": 1.2, "models": {}}}
+    assert check_controls([bt], {"ignore_ranges": [[866, 867]]})["ok"]
+    worse = {**bt, "result": {"configured_vs_default_pct": -0.4, "models": {}}}
+    assert not check_controls([worse], {"ignore_ranges": [[866, 867]]})["ok"]
+    assert not check_controls([bt], {"znorm": True})["ok"]          # a different option was not measured
+
+
+def test_skill_names_in_the_tools_own_words_resolve():
+    from prophet_agent.tools.skill_tool import _run
+    out = _run({"name": "profiling_a_new_dataset"}, "k")
+    assert out["name"] == "first-contact-profile" and out["resolved_from"] == "profiling_a_new_dataset"
+    assert _run({"name": "Outliers and level shifts"}, "k")["name"] == "outliers-and-level-shifts"
+    import pytest
+    with pytest.raises(ValueError):
+        _run({"name": "astrology"}, "k")

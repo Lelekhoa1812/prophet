@@ -28,13 +28,53 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
         return {"skills": skills}
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"name must be one of: {', '.join(s['name'] for s in skills)}")
-    key = name.strip()
-    try:
-        text = read_skill(key)
-    except KeyError:
-        raise ValueError(f"unknown skill {key!r}; valid names: {', '.join(s['name'] for s in skills)}") from None
+    asked = name.strip()
+    key = resolve_name(asked, [s["name"] for s in skills])
+    if key is None:
+        raise ValueError(f"unknown skill {asked!r}; valid names: {', '.join(s['name'] for s in skills)}")
+    text = read_skill(key)
     summary = next(s["summary"] for s in skills if s["name"] == key)
-    return {"name": key, "summary": summary, "text": text}
+    out = {"name": key, "summary": summary, "text": text}
+    if key != asked:
+        out["resolved_from"] = asked
+    return out
+
+
+# Topic words from this tool's own description, mapped to the playbook that covers them. Live: two missions asked for
+# "profiling_a_new_dataset" (the description's wording) and spent a call on the refusal.
+TOPICS = {"profil": "first-contact-profile", "first-contact": "first-contact-profile", "gap": "missing-data-and-gaps",
+          "missing": "missing-data-and-gaps", "outlier": "outliers-and-level-shifts", "level-shift": "outliers-and-level-shifts",
+          "changepoint": "changepoints-and-regimes", "regime": "changepoints-and-regimes", "intermittent": "zeros-censoring-and-intermittent",
+          "zero": "zeros-censoring-and-intermittent", "censor": "zeros-censoring-and-intermittent",
+          "season": "seasonality-and-calendar", "calendar": "seasonality-and-calendar", "smooth": "smoothing-without-leakage",
+          "leak": "smoothing-without-leakage", "backtest": "choose-model-by-backtest", "choos": "choose-model-by-backtest",
+          "timesfm": "timesfm-control-and-flat-forecasts", "flat": "timesfm-control-and-flat-forecasts",
+          "driver": "drivers-and-covariates", "covariate": "drivers-and-covariates", "interval": "intervals-and-trust-statement",
+          "trust": "intervals-and-trust-statement", "handover": "deliverables-and-handover", "deliverable": "deliverables-and-handover",
+          "conformal": "forecast-combination-and-conformal", "combin": "forecast-combination-and-conformal",
+          "kalman": "kalman-and-gradient-features", "knn": "knn-and-analogue-imputation", "imput": "knn-and-analogue-imputation",
+          "market": "market-and-macro-research", "macro": "market-and-macro-research", "web": "web-research-playbook",
+          "research": "web-research-playbook", "bayes": "bayesian-shrinkage-hierarchies", "shrink": "bayesian-shrinkage-hierarchies",
+          "hierarch": "bayesian-shrinkage-hierarchies"}
+
+
+def resolve_name(asked: str, names: list[str]) -> str | None:
+    """The playbook a name refers to: exact, then with spaces and underscores as hyphens, then the closest name, then the
+    first topic word it contains. None when nothing matches, so the caller is shown the list."""
+    import difflib
+    import re
+    if asked in names:
+        return asked
+    norm = re.sub(r"[^a-z0-9]+", "-", asked.lower()).strip("-")
+    if norm in names:
+        return norm
+    close = difflib.get_close_matches(norm, names, n=1, cutoff=0.75)
+    if close:
+        return close[0]
+    for word, target in TOPICS.items():
+        if word in norm and target in names:
+            return target
+    return None
 
 
 def skill_tool() -> Tool:

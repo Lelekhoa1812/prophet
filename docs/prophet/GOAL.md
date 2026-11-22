@@ -115,6 +115,41 @@ says so. Gemini finishes fastest with the fewest analysis cells (6 to 9 tools); 
 when it forecasts with the default. Six series on two providers is a small sample; no run here shows the agent matches a human
 analyst.
 
+### Evidence, live round 3 (real public series through the real API, TimesFM 3, 2026-11-22)
+
+Three missions on the code with auto-carry and planner.v17 (WTI 20 trading days, EUR/JPY 30 business days, Beijing PM2.5
+for 12 stations). Measured from the ledger:
+
+- Sandbox cells: 30 of 71 failed (42 %). None failed on a missing carried file (round 2: about 15 of 24 WTI failures).
+  Leaders: change-point field names (`mean_before`, `jump`, `at`) 13, `TimedeltaIndex.abs()` 6, `report['outliers']`
+  after `ps.hampel` 5. All three now work (aliases, flags reachable from the report, `abs` added).
+- WTI resent one broken line 8 times between other calls; the in-a-row counter never reached the fresh-analyst hand-over.
+  Recurrence within the last 10 calls of the tool now also counts.
+- Harness delegation fired in all three: a researcher for WTI and EUR/JPY, four parallel panel analysts for Beijing.
+- Outcomes: none finished with a forecast. Beijing's analysts spent the part's allowance (20 calls) before the lead
+  backtested; EUR/JPY ticked 8 of 8 checklist items and was stopped by the runtime, which counted the researcher's calls,
+  before the lead knew it was out; WTI spent its calls on analysis cells. Harness sub-agents now get their own allowance
+  and a short-calls note names the open items.
+- Variance-ratio test on the bundled files (measured): WTI and EUR/JPY consistent with a random walk (max |z| 1.26 and
+  1.86 against 2.49), daily CO2 and quake magnitudes mean-reverting (max |z| 10.1 and 23.6). It now appears in every
+  backtest and in the computed accuracy paragraph.
+
+### Evidence, live round 4 (same three missions, 2026-11-22)
+
+- Sandbox cells: 11 of 63 failed (17 %, from 42 % in round 3). WTI ran 4 cells with none failing.
+- WTI and EUR/JPY each delivered a pack with a naive centre line and TimesFM's band, after a backtest and calibration
+  (WTI checklist 7 of 7, EUR/JPY 7 of 8). Both still ended `partial`:
+  - WTI: the treatment check demanded a control_lab test of `ignore_ranges`, which control_lab does not accept; the
+    planner re-sent the pack three times and stall detection stopped it. A configured backtest_series (which scores
+    default TimesFM on the same windows) now counts as that measurement.
+  - EUR/JPY: every ledger cell failed on `report['outlier_indices']` (4) or `finding['title']` (2), so no ledger was saved.
+    Both names now resolve.
+- Beijing: the harness's four panel analysts ran inside their own allowance (the fix worked), but the lead re-ran
+  profiling 9 times because it saved scans per station (`out/scan_<station>.json`) and the "scan saved" item accepted only
+  `out/scan.json`. Per-entity scan files now count.
+- Two missions asked for the playbook `profiling_a_new_dataset` (the tool description's own words); names now resolve to
+  the nearest playbook.
+
 ### Pre-existing helpers that are not causal (found with `ps.causal_canary`, 2026-11-22)
 
 `ps.changepoints` and `ps.isolation_outliers` are fitted on every row passed, so a flag at time t depends on later rows. Their

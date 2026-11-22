@@ -11,6 +11,8 @@ deliverables only, the files named in them. Malformed input never raises; a chec
 """
 from __future__ import annotations
 
+import re
+
 import hashlib
 import math
 import numbers
@@ -298,9 +300,18 @@ def scan_ran(history) -> bool:
     saved it and failed later in the cell still saved it: the listed output is the evidence."""
     for h in history:
         res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
-        if isinstance(res, dict) and "out/scan.json" in [str(o).split(" (")[0] for o in (res.get("outputs") or [])]:
+        # out/scan.json, or one scan per entity (out/scan_<name>.json): live, a 12-station panel saved per-station scans and
+        # re-ran its profiling 9 times because this item never ticked.
+        if isinstance(res, dict) and any(SCAN_FILE.fullmatch(_output_path(o)) for o in (res.get("outputs") or [])):
             return True
     return False
+
+
+SCAN_FILE = re.compile(r"out/scan[^/]*\.json")
+
+
+def _output_path(o: Any) -> str:
+    return str(o.get("path", "")) if isinstance(o, dict) else str(o).split(" (")[0]
 
 
 def check_scan(history, run_root) -> dict | None:
@@ -331,6 +342,17 @@ def check_controls(history, args: dict) -> dict | None:
     if not used:
         return None
     labs = [r for h in history if isinstance(r := _ok_result(h, "control_lab"), dict)]
+    # backtest_series with the same options also scores default TimesFM on the same windows, which is the same measurement
+    # (live WTI: control_lab cannot take explicit ignore_ranges, so the planner could not satisfy this check and stalled).
+    configured = [r for h in history if isinstance(r := _ok_result(h, "backtest_series"), dict)
+                  and isinstance(r.get("configured_vs_default_pct"), (int, float))
+                  and set(used) <= set(used_controls(h.get("args") or {}))]
+    if configured and not labs:
+        gain = configured[-1]["configured_vs_default_pct"]
+        if gain > 0:
+            return _check("controls_tested", True, f"backtest_series measured the configuration {gain:+.1f}% against default TimesFM")
+        return _check("controls_tested", False, f"backtest_series measured the configuration {gain:+.1f}% against default "
+                      f"TimesFM, yet the forecast uses {', '.join(used)}", "warn")
     if not labs:
         return _check("controls_tested", False,
                       f"the forecast uses {', '.join(used)} but control_lab never ran; test the treatment on a leak-free "

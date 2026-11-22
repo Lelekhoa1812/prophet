@@ -27,13 +27,15 @@ class ReportDict(dict):
     ``blocked`` (True when the scan found a blocker); a change point's ``mean_before``, ``mean_after``, ``jump`` and ``at``
     read ``before_mean``, ``after_mean``, ``shift`` and ``index``; ``n_outliers`` and ``n_flagged`` read ``count``. An alias
     only answers when its target key is present. When the pair's value is a flag array, ``outliers``, ``flags``, ``mask``
-    and ``outlier_mask`` read it (live: 5 failed cells wrote ``report['outliers']`` after ``ps.hampel``).
+    and ``outlier_mask`` read it (live: 5 failed cells wrote ``report['outliers']`` after ``ps.hampel``), and
+    ``outlier_indices``, ``indices`` and ``positions`` read the flagged positions (live: 6 more cells).
     """
 
     ALIASES = {"missing_steps": "filled_periods", "blockers": "blocked", "mean_before": "before_mean",
                "mean_after": "after_mean", "jump": "shift", "at": "index", "n_outliers": "count", "n_flagged": "count",
                "date": "label"}
     FLAG_KEYS = ("outliers", "flags", "mask", "outlier_mask", "is_outlier")
+    INDEX_KEYS = ("outlier_indices", "indices", "outlier_index", "positions", "outlier_positions", "index")
     _flags: Any = None
 
     def __missing__(self, key: Any) -> Any:
@@ -42,6 +44,8 @@ class ReportDict(dict):
             return self[target]
         if key in self.FLAG_KEYS and self._flags is not None:
             return self._flags
+        if key in self.INDEX_KEYS and self._flags is not None:
+            return np.flatnonzero(self._flags)
         raise KeyError(f"no key {key!r} in this report; its keys are {sorted(self)}")
 
     def get(self, key: Any, default: Any = None) -> Any:

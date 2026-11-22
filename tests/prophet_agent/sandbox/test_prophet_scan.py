@@ -540,7 +540,8 @@ def test_a_guessed_key_names_the_keys_that_exist():
     r = _scan(_clean_frame())
     finding = r["findings"][0] if r["findings"] else sc._finding("x", "info", "all", {}, None, None)
     with pytest.raises(KeyError, match="its keys are"):
-        finding["text"]
+        finding["colour"]
+    assert finding["text"] == finding["message"]          # a documented alias
     assert isinstance(finding["message"], str) and finding["id"] in finding["message"]
 
 
