@@ -338,3 +338,40 @@ Observed working as designed: no questions were asked in any mission (R1), no mo
 boundaries (R3), retail called `ps.changepoints(..., period=7)` (planner v24), WTI completed verified.
 
 TimesFM 3 joint decoding: measured and not offered; see `EXPERIMENT_timesfm_joint_decoding.md`.
+
+### Live round on the round-4 build (measured, real NIM and TimesFM 3 through the API, 2026-11-23)
+
+The API process started at commit 8d4d433, so 7441589, d899d1c and 77de3ae (lab `ignore_ranges`, the `flat_expected`
+headline, `band_source`) were not loaded in this round. Tool calls count the lead's and the sub-agents' together.
+
+| Mission | Status | Stop reason | Seconds | Tool calls | Questions |
+|---|---|---|---|---|---|
+| retail rep 6 | completed | done_verified | 360 | 13 | 0 |
+| WTI rep 6 | completed | done_verified | 736 | 40 | 0 |
+| Beijing panel rep 4 | partial | stalled | 691 | 67 | 0 |
+| electricity panel rep 4 | failed | NIM call out of time | 901 | 60 | 0 |
+
+Against the round-3 build: retail went from partial (676 s, 22 calls) to verified (360 s, 13 calls); WTI stayed verified
+and ran faster (931 s to 736 s). Beijing built a forecast pack this time (rep 3 stopped with none), but for 3 of 12
+stations. Retail rep 6 quoted the pack's total and range exactly as printed.
+
+Root causes found in these runs and fixed (round 5, each with a regression test):
+
+- Electricity: at 899 s of the 900 s allowance a planner call started with a 1 s budget (round-4 A5-06 floored the cap at
+  1 s); the transport ran out at once and the mission ended `failed` after 49 delegated calls, with nothing kept for the
+  person. A call with under 45 s left, or one cut short by the allowance, is now a checkpoint the person continues.
+- Electricity: three calls named files their runs never wrote, one with a run id no tool had returned. The error now says
+  the run does not exist, or lists the files it did write.
+- Beijing: one analyst's file of 3 stations fed every backtest and the pack. The panel check took its expected count from
+  those results (3 of 3); `inspect_data` showed 12. The expected count now comes from the data's grouping column too,
+  any short result carries a `coverage_note` with the fix, and a repeated call carries it. After the evaluator refused
+  the finish for 3 of 12, the same backtest had been sent three more times and the run stalled.
+- All missions: `contracts.check_answer` (C3a, A6-09) had tests but no caller, so no answer claim was ever checked live.
+  It now runs after the answer is written; a blocking claim goes back to the composer once, then the answer leaves
+  partial. Replayed over the 169 stored live answers: 9 would have blocked at first, 6 of them reader misreads (fixed:
+  "365 days" against 364, a horizon read as a cycle, "105 cycles", `season=252`, "best" matched to a distant rule). The
+  3 left are true mismatches, including the two A6-09 cases. New check: a total the pack withheld is not stated.
+- The pack's total range came as two bounds (days independent, days together). The backtest now measures the variance
+  ratio R of the horizon total's standardised error (leave-one-out for its own check), and the computed accuracy
+  paragraph gives one 80 % range from it. Synthetic check: a random walk gives R of 5.4 to 5.8 at horizon 8; independent
+  noise gives 1.1 to 1.3.
