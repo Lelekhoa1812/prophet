@@ -22,7 +22,9 @@ from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_seri
 
 QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 MAX_HORIZON = 512
-ALLOWED_ARGS = {"values", "source", "horizon"} | CONTROL_ARGS
+# season and centre are accepted and ignored: the planner passes them on from backtest_series and forecast_report, as it
+# does for calibrate_intervals (live WTI rep2: a refused "season" cost a call of a 20-call allowance).
+ALLOWED_ARGS = {"values", "source", "horizon", "season", "centre"} | CONTROL_ARGS
 SHOWN = 30      # points of a forecast shown to the planner before it is thinned
 FULL_SHOWN = 120   # a forecast up to this many periods is shown in full: thinning hid hours the planner needed (48 h live)
 INTERMITTENT_ADI = 1.32   # Syntetos-Boylan cut-off: an average gap above this between periods with demand is intermittent

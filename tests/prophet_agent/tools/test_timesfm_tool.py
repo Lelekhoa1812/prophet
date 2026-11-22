@@ -143,3 +143,13 @@ def test_the_lumpy_band_brackets_the_expected_demand_point(monkeypatch):
     q10, q90 = out["quantiles"]["0.1"], out["quantiles"]["0.9"]
     assert all(lo <= p <= hi for lo, p, hi in zip(q10, out["point"], q90)), (q10, out["point"], q90)
     assert all(v >= 0 for v in q10 + q90), "demand cannot be negative"
+
+
+def test_season_and_centre_are_accepted_and_do_not_change_the_forecast(stub_engine):
+    # live WTI rep2: the planner passed season to timesfm_forecast, the call was refused, and the allowance went on it
+    from prophet_agent.tools.timesfm_tool import _run
+    plain = _run({"values": list(range(40)), "horizon": 3}, "k")
+    passed = _run({"values": list(range(40)), "horizon": 3, "season": 5, "centre": "mean_last_season"}, "k")
+    assert passed["point"] == plain["point"] and passed["config"] == plain["config"]
+    with pytest.raises(ValueError, match="unknown arguments"):
+        _run({"values": list(range(40)), "horizon": 3, "period_days": 7}, "k")
