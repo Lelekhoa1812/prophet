@@ -1509,6 +1509,31 @@ def check_ledger_answer(answer, history, run_root) -> dict | None:
     return None
 
 
+AVERAGE_GOAL = re.compile(r"\baverage\b|\bmean\b", re.I)
+
+
+def _average_range(text: str, obs: list, goal: str) -> dict | None:
+    """A goal that asks for the average over the horizon gets the average's own 80% range in the answer: the per-step average
+    of the measured total range. Blocks when the answer gives neither edge of it.
+
+    Live wti_budget rep3 (measured, 2026-11-23), "what will crude cost on average next month": the answer gave the average,
+    $90.76, with "80% range: $77-$110 by month-end", one day's band; the measured range of the month's average was 78.86 to
+    102.65 and appeared only in the computed paragraph below."""
+    if not AVERAGE_GOAL.search(goal or ""):
+        return None
+    mr = measured_total_range(obs)
+    if not mr or not all(isinstance(mr.get(k), (int, float)) for k in ("mean", "mean_q10", "mean_q90")):
+        return None
+    vals = grounding._sentence_values(text)
+    has = lambda t: any(abs(v - t) <= 0.01 * abs(t) for v in vals)
+    if has(mr["mean_q10"]) and has(mr["mean_q90"]):
+        return _check("answer_average_range", True, "the answer gives the measured 80% range of the average")
+    return _check("answer_average_range", False,
+                  f"the goal asks for an average over the horizon; the measured 80% range of that average is "
+                  f"{mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f} around {mr['mean']:,.2f}. Give that range for the average; "
+                  "one step's band is wider and answers a different question")
+
+
 def _misnamed_bound(text: str, obs: list) -> dict | None:
     """A bound of the horizon total (or the panel total) stated as the range without saying what it assumes. Blocks.
 
@@ -1540,7 +1565,7 @@ def _misnamed_bound(text: str, obs: list) -> dict | None:
     return None
 
 
-def check_answer(answer, history, *, run_root=None) -> list[dict]:
+def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict]:
     """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
     makes, so an answer with no such claim adds nothing.
 
@@ -1615,6 +1640,8 @@ def check_answer(answer, history, *, run_root=None) -> list[dict]:
 
     if (bound := _misnamed_bound(text, obs)) is not None:
         checks.append(bound)
+    if (avg := _average_range(text, obs, goal)) is not None:
+        checks.append(avg)
 
     withheld = _withheld_totals(obs)
     if withheld:

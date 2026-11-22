@@ -203,3 +203,19 @@ def test_a_panel_sum_of_bounds_called_the_likely_range_blocks():
     text = "The likely range, summing each client's 10–90% interval, is **3,871,341 – 5,089,679 kWh**."
     c = _named(contracts.check_answer(text, hist), "answer_total_range_named")
     assert c and not c[0]["ok"] and "give both bounds" in c[0]["detail"]
+
+
+# ---------------------------------------------------------------- the average's own range (live wti_budget reps 2 and 3)
+
+AVG_GOAL = "I need a number for next month's fuel budget. What will crude cost on average next month?"
+
+
+def test_an_average_goal_needs_the_averages_measured_range():
+    hist = _single_pack()                 # measured range of the 6-step average: about 8.5 to 11.5 around 10
+    mr = contracts.measured_total_range(hist)
+    day_band = "Next month's average: 10 per unit (80% range: 8 to 12 by month-end)."
+    c = _named(contracts.check_answer(day_band, hist, goal=AVG_GOAL), "answer_average_range")
+    assert len(c) == 1 and not c[0]["ok"] and c[0]["severity"] == "block" and f"{mr['mean_q10']:,.2f}" in c[0]["detail"]
+    good = f"Next month's average: 10 per unit, 80% range {mr['mean_q10']:.2f} to {mr['mean_q90']:.2f}."
+    assert _named(contracts.check_answer(good, hist, goal=AVG_GOAL), "answer_average_range")[0]["ok"]
+    assert _named(contracts.check_answer(day_band, hist, goal="Forecast next month."), "answer_average_range") == []

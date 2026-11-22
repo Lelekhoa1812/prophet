@@ -1810,13 +1810,13 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # The answer's plain claims (a cycle, the best rule, a total the pack withheld) are checked against the stored
             # output. The fix is in the words, so the composer rewrites once; a claim still wrong after that leaves partial.
             # Round 4: these checks were built (C3a) and tested but never called here, so none ran live.
-            claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT)) if cfg.depth == 0 else []
+            claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal)) if cfg.depth == 0 else []
             if claims:
                 rewritten = _compose(ctx, brain, f"claims:{tag}:{i}", goal, history, memo, context, answer,
                                      fixes=contracts.summarise(claims))
                 if rewritten is not None and rewritten.strip():
                     answer = rewritten
-                    claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT))
+                    claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
             if claims:
                 return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
                         "reason": "This answer states something the analysis output does not support: "
