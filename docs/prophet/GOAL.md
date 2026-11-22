@@ -580,3 +580,36 @@ independent bound. Replaying 160 stored answers found two more false blocks ("if
 correlated)"). The accepted wording for each bound is wider now; six hits remain on the stored answers, five plainly a single
 bound given as the 80 % range and one borderline ("under that assumption", naming the previous sentence's assumption).
 Gate: 1861 passed.
+
+### Repeat round of the six scenarios on build 4b5df07 (measured, 2026-11-23)
+
+The API process (pid 90241) started at 08:48 on 4b5df07 and served the whole round, so 6e734df and 66777be were not
+exercised live. One run per scenario, real NIM and TimesFM 3 through the API. Synthetic and real staging data are not
+mixed here; every figure comes from the mission's own evidence.
+
+| Scenario | Mission | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| retail | 0ae0d417 | **completed** | done_verified | 1,201 | 27 |
+| WTI | c85260a9 | **completed** | done_verified | 240 | 17 |
+| WTI business user | 6b5796f3 | **completed** | done_verified | 1,246 | 29 |
+| retail business user | 50074f99 | partial | partial_unverified | 555 | 26 |
+| electricity panel | 35c194a1 | partial | partial_unverified | 991 | 87 |
+| Beijing panel | 82fb34d9 | partial | partial_unverified | 1,772 | 109 |
+
+Round result: 3 of 6 done_verified on this build. Both checkpointed missions resumed and finished: 0ae0d417 is retail
+(the earlier note had the labels swapped) and 6b5796f3 is WTI business, so the automatic resume after the model-service
+outage works. The three partials stopped with an unverified answer. Causes, read from each mission's stored answer:
+
+- **retail business user (50074f99):** contract `answer_cycle_matches_health` blocked it. The answer stated a 3-step
+  cycle from the backtest flag (strength 0.25), but the health check measured a 6-day period. A real contradiction that
+  the check caught; the answer used the backtest's 3-step figure instead of the health record's.
+- **electricity panel (35c194a1):** the analysis could not close its gap. The answer reported the global_gbm panel
+  total and its 80 % range, but per-client MASE for global_gbm against naive, seasonal_naive and TimesFM was never
+  computed. The backtest reports gave overall means only. The agent spent 87 calls and did not write the per-client
+  table.
+- **Beijing panel (82fb34d9):** four figures (198, 203, 215, 191) in the answer did not match the analysis output, so
+  the answer was marked unverified after 109 calls and 46 iterations, the most of any mission in the round.
+
+Next: fix the composer so a cycle claim is copied from the health record, not from the backtest flag, and check whether
+the panel missions' per-client comparisons are computed before the answer is written. Then rerun the three partial
+scenarios on the same build. The 3-of-6 result is one run each and is not a rate.
