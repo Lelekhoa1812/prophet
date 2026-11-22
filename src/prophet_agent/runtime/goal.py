@@ -191,10 +191,13 @@ class Trace:
 
 
 def _view(obs: dict) -> dict:
-    """What the planner sees of an observation. A sub-agent shows its report, not its own working."""
+    """What the planner sees of an observation. A sub-agent shows its report, not its own working. A tool's full result
+    ("full") is never shown: read_observation pages it and grounding reads it."""
     if obs.get("kind") == "subagent":
         return {k: obs[k] for k in ("kind", "agent_id", "agent_type", "task", "tools", "status", "answer", "reason",
                                     "steps", "files", "unverified") if k in obs}
+    if "full" in obs:
+        return {k: v for k, v in obs.items() if k != "full"}
     return obs
 
 
@@ -208,6 +211,7 @@ def _clip(obj: Any, step: int | None = None) -> str:
 
 
 PAGE_CHARS = 3000   # one read_observation page; with its framing it stays under OBS_CHARS, so a page is not clipped again
+FULL_KEEP_CHARS = 200_000   # a full result longer than this is not kept beside its summary (the ledger still holds it)
 
 
 def _observation_tool(history: list[dict]) -> Tool:
@@ -221,7 +225,9 @@ def _observation_tool(history: list[dict]) -> Tool:
         if not isinstance(page, int):
             raise ValueError("page must be a whole number")
         obs = history[n - 1]
-        whole = canonical(obs["result"] if "result" in obs else {"error": obs.get("error")})
+        # Round 4 (live panels): the tool's own summary may already have cut the middle (sandbox stdout), so the full
+        # result kept beside it is paged when there is one.
+        whole = canonical(obs.get("full", obs["result"]) if "result" in obs else {"error": obs.get("error")})
         pages = max(1, -(-len(whole) // PAGE_CHARS))
         if not 1 <= page <= pages:
             raise ValueError(f"page {page} is outside 1..{pages} for step {n}")
@@ -232,6 +238,12 @@ def _observation_tool(history: list[dict]) -> Tool:
     return Tool("read_observation", read, idempotent=True,
                 doc="read_observation(step, page): the rest of a tool result the evidence clipped; step is the number the "
                     "clipped line names, page starts at 1 and the result says next when more pages follow")
+
+
+def _sub_observation_tools(tools: dict[str, Tool], sub_history: list[dict]) -> dict[str, Tool]:
+    """A sub-agent's tools with read_observation bound to its own history. Live (round 4 panels): sub-agents inherited the
+    lead's pager, so step 5 of a sub-agent paged the lead's step 5."""
+    return {**tools, "read_observation": _observation_tool(sub_history)}
 
 
 def _tool_lines(tools: dict[str, Tool]) -> str:
@@ -1041,12 +1053,18 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> d
         return {"kind": "tool", "tool": name, "args": args, "error": redact(str(exc)), "rejected": True}
     except Exception as exc:  # a tool failure is evidence for the planner; the ledger already recorded it
         return {"kind": "tool", "tool": name, "args": args, "error": redact(str(exc))}
+    full = result
     if tool.observe is not None:
         try:
             result = tool.observe(result)
         except Exception:  # a broken summariser must not hide the result from the planner
             pass
     obs = {"kind": "tool", "tool": name, "args": args, "result": result}
+    # Round 4 (live Beijing and electricity panels, 2026-11-23): the summary cut the middle of long output, and
+    # read_observation could only page the cut text, so analysts re-ran cells to see it. The full result is kept beside
+    # the summary (hidden from every prompt by _view) for paging and grounding, unless it is very large.
+    if result is not full and len(canonical(full)) <= FULL_KEEP_CHARS:
+        obs["full"] = full
     # The hint is part of the observation only: the ledger keeps the tool's own result, so a replay reads the same rows.
     if (hint := tool_module_hint(result, tool_names)) is not None:
         obs["hint"] = hint
@@ -1152,6 +1170,7 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     sub_cfg = GoalConfig(max_iterations=agent.steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps,
                          tag=f"d1.{agent_id}")
     sub_history: list[dict] = list(prior["evidence"]) if prior else []
+    sub_tools = _sub_observation_tools(sub_tools, sub_history)
     goal = _brief(spec, agent, agent_id, prior is not None)
     play = agents.playbooks(agent)
     sub_context = (context + "\n\n" if context else "") + (play[:7000] if play else "")
