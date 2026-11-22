@@ -263,8 +263,8 @@ contained (EUR/JPY "IMF 162.34", the agent's own segment mean), and delivered Ti
    no fetched page are removed and the removal is said. The composer sees both before it writes.
 4. **A state card** (newest file of each kind with its run id, backtest so far, sub-agent reports) is computed every step, so
    compaction cannot lose where the work stands.
-5. **One operating procedure** (`planner.v19`, 32 rules from 70): frame the decision, read the series' own clock, scan, hypotheses,
-   funnel, prepare, outside context, baselines, one treatment gate (control_lab), forecast, range, deliver. `composer.v5` writes in
+5. **One operating procedure** (`planner.v20`, 32 rules from 70): frame the decision, read the series' own clock, scan, hypotheses,
+   funnel, prepare, outside context, baselines, one treatment gate (control_lab), forecast, range, deliver. `composer.v6` writes in
    decision order.
 6. **The simple rule can be the centre line.** `backtest_series` reports wins, a paired bootstrap interval and a verdict over 12
    origins; when the verdict is `baseline_better`, the checklist asks for `forecast_report(centre='naive'|'drift')`, which charts the

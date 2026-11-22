@@ -324,6 +324,7 @@ def observe(result: dict) -> dict:
             "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
             "range_vs_centre_pct": range_vs_centre(result["forecast"]),
             "centre_line_total": _total(result["forecast"]),
+            "total_range_80": total_range(result["forecast"]),
             "deliverables": "built and listed in the manifest; no further build is needed"}
 
 
@@ -332,6 +333,31 @@ def _total(fc: dict) -> float | None:
     It is the total of the line, not a quantile of the total: the band's edges do not add up across days."""
     try:
         return round(float(sum(float(v) for v in fc["point"])), 2)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+Z90 = 1.2815515655446004          # the 90th percentile of a standard normal: the 10-90 band is +-Z90 standard deviations
+
+
+def total_range(fc: dict) -> dict | None:
+    """An 80 percent range for the TOTAL over the horizon, which is not the sum of the days' band edges.
+
+    Live retail: the planner added the per-day q10 and q90 into "329,049 to 851,044" and called it the range of the 14-day total.
+    That is only right if every day misses in the same direction by the same amount, so it overstates. Two bounds are given:
+    ``if_days_miss_independently`` (the days' standard deviations, read from each band, add in quadrature) and
+    ``if_days_miss_together`` (the edges add: the widest the total could be). The truth lies between; the answer states both
+    and never one of them as exact. Normal approximation, centred on the centre line's total.
+    """
+    try:
+        point, lo, hi = fc["point"], fc["quantiles"]["0.1"], fc["quantiles"]["0.9"]
+        centre = sum(float(v) for v in point)
+        sd = [(float(h) - float(l)) / (2 * Z90) for l, h in zip(lo, hi)]
+        spread = Z90 * sum(v * v for v in sd) ** 0.5
+        return {"centre": round(centre, 2),
+                "if_days_miss_independently": {"q10": round(centre - spread, 2), "q90": round(centre + spread, 2)},
+                "if_days_miss_together": {"q10": round(sum(float(v) for v in lo), 2), "q90": round(sum(float(v) for v in hi), 2)},
+                "note": "the 80 percent range of the total lies between these two; the edges of different days do not simply add"}
     except (KeyError, TypeError, ValueError):
         return None
 
