@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
+from prophet_agent.research.events import dated_events, iso_day
 from prophet_agent.research.fetch import fetch_page
 from prophet_agent.research.passages import best_passages, select_passages, stated_date
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
@@ -40,7 +41,7 @@ RECENCY = {"day": ("d", 1), "week": ("w", 7), "month": ("m", 31), "year": ("y", 
 SEARCH_ARGS = {"query", "kind", "max_results", "recency"}
 FETCH_ARGS = {"url", "queries", "max_chars"}
 RESEARCH_ARGS = {"queries", "kind", "recency", "fetch_top", "passages_per_page", "exclude_urls", "family", "region",
-                 "units"}
+                 "units", "data_end", "horizon_end"}
 MAX_EXCLUDE = 200
 MAX_REGISTRY = 6
 MIN_USABLE_CHARS = 100   # a fetched page with less text than this is thin: it counts as failed and is backfilled (A3-07)
@@ -270,10 +271,12 @@ def web_research_tool(args: Any, _key: str) -> dict:
     family = _family(args, queries)
     region = _short_text(args, "region", 80)
     units = _short_text(args, "units", 40)
+    data_end = iso_day(args.get("data_end"), "data_end")
+    horizon_end = iso_day(args.get("horizon_end"), "horizon_end")
     if family in REGIONAL_FAMILIES and not region:
         # A4-08 and A3-06: a regional family is never searched without the data's region (round 3 electricity run)
         return {"queries": queries, "family": family, "region_unknown": True, "sources": [], "failed": [],
-                "searched": 0, "new_sources": 0, "duplicate_sources": 0, "dropped_queries": [],
+                "events": [], "searched": 0, "new_sources": 0, "duplicate_sources": 0, "dropped_queries": [],
                 "metrics": _metrics([]),
                 "not_obtained": f"region unknown: no search was run for the {family} family. Read the region or "
                                 "units from inspect_data or ask the user, then call web_research again with region."}
@@ -324,6 +327,7 @@ def web_research_tool(args: Any, _key: str) -> dict:
                            "sources": sources, "failed": failed, "searched": len(ranked),
                            "new_sources": len(sources), "duplicate_sources": duplicates,
                            "metrics": _metrics(sources)}
+    out["events"] = dated_events(sources, data_end, horizon_end)
     if diagnostics:
         out["search_diagnostics"] = diagnostics
     return out
@@ -363,6 +367,9 @@ def observe(result: dict) -> dict:
         elif data.get("sources"):
             data["sources"].pop()
             dropped["sources"] = dropped.get("sources", 0) + 1
+        elif data.get("events"):
+            data["events"].pop()
+            dropped["events"] = dropped.get("events", 0) + 1
         elif isinstance(data.get("text"), str):
             excess = size() - OBSERVE_CHARS
             data["text"] = data["text"][:max(len(data["text"]) - excess - 200, 500)]
@@ -426,7 +433,8 @@ WEB_RESEARCH_SPEC = {
                    "the date range and new_sources: stop when a round adds no new primary domain and no dated claim. "
                    "Pages that could not be read or are thin are replaced by the next ranked results and listed in "
                    "failed. Repeated queries are searched once (repeated_queries counts them). Dated passages are kept "
-                   "even without query words.",
+                   "even without query words. events lists each dated sentence (date, event, source_url, how_sure: high, medium or "
+                   "low, a rule not a judgement) and its position against data_end and horizon_end.",
     "args": {"queries": "list of 1 to 8 search strings, each a different angle",
              "kind": "'text' (default) or 'news'",
              "recency": "optional 'day', 'week', 'month' or 'year'",
@@ -436,7 +444,9 @@ WEB_RESEARCH_SPEC = {
              "family": f"optional, one of {', '.join(family_names())}; left out, detected from the queries",
              "region": "the place the data describes, e.g. 'Portugal' or 'Beijing'; queries are scoped to it. Regional "
                        "families (electricity, retail, weather, prices, pm25) are not searched without it",
-             "units": "optional units of the data, e.g. 'kWh per day'; added to the queries"},
+             "units": "optional units of the data, e.g. 'kWh per day'; added to the queries",
+             "data_end": "optional ISO date (YYYY-MM-DD) of the last observed point; each event is placed against it",
+             "horizon_end": "optional ISO date (YYYY-MM-DD) of the forecast horizon end; events between the two are in the window"},
 }
 
 
