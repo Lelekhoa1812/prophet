@@ -503,9 +503,14 @@ def _panel_observe(result: dict) -> dict:
     for name, fc in items[:PANEL_SHOWN]:
         p, q, health = fc["point"], fc["quantiles"], fc.get("health") or {}
         head = _headline(fc)
+        rule = (fc.get("centre") or {}).get("rule", "timesfm")
         line = {"point_step_1": p[0], "point_last_step": p[-1], "q10_last_step": q["0.1"][-1], "q90_last_step": q["0.9"][-1],
-                "centre": (fc.get("centre") or {}).get("rule", "timesfm"), "health": health.get("verdict"),
+                "centre": rule, "health": health.get("verdict"),
                 "range_vs_centre_pct": range_vs_centre(fc), "centre_line_total": head["total"]}
+        if rule != "timesfm":
+            # The health check reads TimesFM's own line; with another centre it is not a verdict on the line drawn
+            # (live electricity rep14: flat_expected for all 60 clients under the pooled blend).
+            line["health_of"] = "TimesFM's line, not the drawn centre"
         if head["withheld"]:
             line["total_withheld"] = head["withheld"]
         if health.get("verdict") in ("check", "flat_unexpected") and health.get("causes"):

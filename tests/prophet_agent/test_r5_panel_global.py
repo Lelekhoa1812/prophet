@@ -207,3 +207,11 @@ def test_a_wide_panel_gets_counts_and_exceptions():
     v = panel_verdicts(pack, [bt])
     assert v["counts"]["health"] == {"ok": 40} and v["counts"]["backtest_best"] == {"timesfm": 29, "naive": 1}
     assert v["series_scored"].startswith("30 of 40") and v["exceptions"] == ["MT_007: health ok; backtest best naive (MASE 0.9)"]
+
+
+def test_health_under_a_pooled_centre_says_whose_line_it_judged(sandbox):
+    out = rt._run(_args(centre="global_blend"), "k")
+    obs = rt.observe(out)
+    assert all(ln.get("health_of") == "TimesFM's line, not the drawn centre" for ln in obs["series"].values())
+    plain = rt.observe(rt._run(_args(centre="timesfm"), "k"))
+    assert all("health_of" not in ln for ln in plain["series"].values())

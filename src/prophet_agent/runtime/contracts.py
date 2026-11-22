@@ -1409,12 +1409,14 @@ def panel_verdicts(obs: dict, history) -> dict | None:
             counts["backtest_best"][best] = counts["backtest_best"].get(best, 0) + 1
         if health != "ok" or (best in rules):
             exceptions.append(f"{name}: {text}")
+    drawn = set(_panel_rules(obs, res))
+    basis = "health from this pack; scores from the newest panel_backtest" + (
+        "; the health check judged TimesFM's line, not the drawn centre" if drawn and drawn != {"timesfm"} else "")
     if len(rows) <= PANEL_VERDICTS_LISTED:
-        return {"per_series": rows, "basis": "health from this pack; scores from the newest panel_backtest"}
+        return {"per_series": rows, "basis": basis}
     return {"counts": counts, "series_scored": f"{len(scores)} of {len(rows)} (the stored panel_backtest view)",
             "exceptions": exceptions[:PANEL_VERDICTS_LISTED],
-            "basis": "health from this pack; scores from the newest panel_backtest; exceptions are series whose health is not "
-                     "ok or whose best model was a simple rule"}
+            "basis": basis + "; exceptions are series whose health is not ok or whose best model was a simple rule"}
 
 
 PANEL_SCORE_OF = {"global_blend": "blend"}     # the pack's rule name -> panel_backtest's model name
