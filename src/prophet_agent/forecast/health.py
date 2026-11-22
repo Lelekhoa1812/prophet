@@ -100,6 +100,18 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
         flat = ratio < LEVEL_FLAT
         structured = bool(period)        # a cycle exists but too few cycles are in the context to build the expected path
 
+    # Naive comparison: how far the median path sits from the last observed value, in typical one-step moves of the history.
+    step = float(np.mean(np.abs(np.diff(x)))) if n > 1 else 0.0
+    if step > 1e-12:
+        out["vs_last_value"] = round(float(np.mean(np.abs(p - x[-1]))) / step, 2)
+        if flat:
+            if out["vs_last_value"] <= 1.0:
+                out["vs_last_value_note"] = (f"the median is within {out['vs_last_value']:.1f} typical one-step moves of the last "
+                                             "value, so it carries no directional view")
+            else:
+                out["vs_last_value_note"] = (f"the median sits {out['vs_last_value']:.1f} typical one-step moves from the last "
+                                             "value, so it does carry a level view even though its shape is flat")
+
     if q10 is not None and q90 is not None:
         band = float(np.mean(np.asarray(q90, dtype=float) - np.asarray(q10, dtype=float)))
         spread = float(np.std(x[-min(n, 365):]))

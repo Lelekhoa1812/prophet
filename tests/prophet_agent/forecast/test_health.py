@@ -3,6 +3,7 @@ are constructed so the check's reasoning is what is under test."""
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from prophet_agent.forecast.health import assess, dominant_period
 
@@ -87,3 +88,29 @@ def test_a_window_of_a_quarter_cycle_or_more_is_still_judged_on_shape():
     hist = _cycle(3000, 200, amp=10.0)
     out = assess(hist, np.full(120, hist[-1]), context_used=len(hist))
     assert out["verdict"] == "flat_unexpected"
+
+
+def test_a_flat_median_at_the_last_value_is_said_to_carry_no_directional_view():
+    """Added with the naive comparison: a flat median on a random walk sits at the last value, so the health check now
+    says how far it is in typical one-step moves, and that it carries no direction."""
+    rng = np.random.default_rng(3)
+    hist = 50 + np.cumsum(rng.normal(0, 1, 800))
+    out = assess(hist, np.full(30, hist[-1]), context_used=len(hist))
+    assert out["vs_last_value"] == 0.0
+    assert out["vs_last_value_note"].startswith("the median is within 0.0 typical one-step moves of the last value")
+    assert "carries no directional view" in out["vs_last_value_note"]
+
+
+def test_a_flat_median_well_away_from_the_last_value_is_not_called_directionless():
+    rng = np.random.default_rng(3)
+    hist = 50 + np.cumsum(rng.normal(0, 1, 800))
+    step = float(np.mean(np.abs(np.diff(hist))))
+    out = assess(hist, np.full(30, hist[-1] + 5 * step), context_used=len(hist))
+    assert out["vs_last_value"] == pytest.approx(5.0, abs=0.01)
+    assert "carries no directional view" not in out["vs_last_value_note"]
+    assert "does carry a level view" in out["vs_last_value_note"]
+
+
+def test_the_naive_comparison_is_absent_when_the_history_never_moves():
+    out = assess(np.full(60, 7.0), np.full(10, 7.0), context_used=60)
+    assert "vs_last_value" not in out

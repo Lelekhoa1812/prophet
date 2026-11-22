@@ -72,3 +72,40 @@ def test_the_tool_validates_arguments_and_returns_a_compact_view():
     res = _run({"values": x, "horizon": 8, "n_origins": 18}, "k", lambda: Engine(1.0))
     view = observe(res)
     assert view["recommend"] == "use_calibrated" and "q90" in view["calibrated"] and len(view["calibrated"]["q90"]) == 8
+
+
+def test_the_decision_follows_the_target_not_a_fixed_gain():
+    """The old rule needed a 0.02 improvement, so a band that moved from 0.692 to 0.708 against 0.80 was kept. The rule now
+    is: raw more than 0.05 from target AND calibrated closer. That case is accepted; a raw band already within 0.05 is not
+    touched, however the calibrated one moves."""
+    assert cal.use_calibrated(raw_gap=0.108, cal_gap=0.092, max_scale=1.2, width_ratio=1.2)
+    assert not cal.use_calibrated(raw_gap=0.04, cal_gap=0.0, max_scale=1.2, width_ratio=1.2)
+    assert not cal.use_calibrated(raw_gap=0.2, cal_gap=0.21, max_scale=1.2, width_ratio=1.2)
+    assert not cal.use_calibrated(raw_gap=0.2, cal_gap=0.1, max_scale=1.0, width_ratio=1.0)     # nothing was widened
+    assert not cal.use_calibrated(raw_gap=0.2, cal_gap=0.1, max_scale=2.0, width_ratio=cal.MAX_SCALE + 1)
+
+
+def test_the_gaps_and_target_are_reported_and_agree_with_the_coverage_figures():
+    out = cal.calibrate(_series(2.0), 8, engine=Engine(sd=1.0), n_origins=18)
+    assert out["target"] == cal.TARGET
+    assert out["raw_gap"] == pytest.approx(abs(out["heldout_coverage_raw"] - out["target"]), abs=1e-3)
+    assert out["calibrated_gap"] == pytest.approx(abs(out["heldout_coverage_calibrated"] - out["target"]), abs=1e-3)
+
+
+def test_a_second_pass_refits_at_a_higher_level_when_the_held_out_coverage_is_still_under_target():
+    """A band of sd 1 on a random walk with steps of sd 3: the first pass leaves the held-out windows more than five points
+    under target, so the second pass fits at a higher level (the target plus the shortfall) and keeps it because it lands
+    closer. The band is never narrowed."""
+    out = cal.calibrate(_series(3.0, seed=5), 8, engine=Engine(sd=1.0), n_origins=18)
+    assert out["target"] - out["heldout_coverage_raw"] > 0.05
+    sp = out["second_pass"]
+    assert sp is not None and sp["adopted"] is True
+    assert sp["level"] > out["target"] and out["scale_level"] == sp["level"]
+    assert sp["heldout_coverage"] == out["heldout_coverage_calibrated"]
+    assert out["calibrated_gap"] < out["raw_gap"]
+    assert all(s >= 1.0 for s in sp["scales_by_horizon_third"]), "the second pass never narrows either"
+
+
+def test_no_second_pass_when_the_first_pass_is_already_close():
+    out = cal.calibrate(_series(0.5, seed=3), 4, engine=Engine(sd=3.0), n_origins=18)
+    assert out["second_pass"] is None and out["scale_level"] == out["target"]

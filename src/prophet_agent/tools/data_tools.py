@@ -81,7 +81,7 @@ INSPECT_DATA_SPEC = {
 
 
 def _backtest(args: dict, _key: str) -> dict[str, Any]:
-    extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season"} - CONTROL_ARGS)
+    extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season", "combine"} - CONTROL_ARGS)
     if extra:
         raise ValueError(f"unknown arguments {extra}")
     horizon = args.get("horizon")
@@ -90,15 +90,18 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     named = resolve_series(args)
     if len(named) != 1:
         raise ValueError(f"backtest one series at a time; choose with source.name from {[n for n, _ in named][:20]}")
-    n_origins = args.get("n_origins", 8)
+    n_origins = args.get("n_origins", 12)
     if not isinstance(n_origins, int) or not 2 <= n_origins <= 30:
         raise ValueError("n_origins must be an integer from 2 to 30")
+    combine = args.get("combine", False)
+    if not isinstance(combine, bool):
+        raise ValueError("combine must be true or false")
     season = args.get("season")
     if season is not None and (not isinstance(season, int) or not 1 <= season <= 1000):
         raise ValueError("season must be an integer from 1 to 1000 (1 means none)")
     series = named[0][1]
     control = build_control(args, len(series), horizon, source_covariates(args))
-    return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control)
+    return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control, combine_forecasts=combine)
 
 
 def backtest_tool() -> Tool:
@@ -116,9 +119,13 @@ BACKTEST_SPEC = {
                    "not beat the best simple rule, say so in the answer rather than presenting the forecast as reliable. Accepts the "
                    "same control arguments as timesfm_forecast (history window, ignored points, covariates, znorm, "
                    "symmetric averaging); then it also scores default TimesFM, so you can see whether the configuration "
-                   "helped before using it. Future covariates must cover the history plus the horizon.",
+                   "helped before using it. Future covariates must cover the history plus the horizon. The result gives "
+                   "verdict (timesfm_better, baseline_better or no_clear_difference) from a paired 90 percent interval of "
+                   "the MASE gain over the best simple rule, and wins per window. With combine true it also scores a blend "
+                   "of TimesFM and the earlier-best rule, weighted on earlier windows only.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer periods ahead",
-             "n_origins": "windows to test, 2 to 30 (default 8)",
-             "season": "length of the repeating cycle in periods, 1 for none (default: detected from the data)",
+             "n_origins": "windows to test, 2 to 30 (default 12; fewer if the series is too short)",
+             "season": "length of the repeating cycle in periods, 1 for none (default: chosen from the data by one shared rule)",
+             "combine": "true to also score the TimesFM plus best-earlier-rule blend (default false)",
              **CONTROL_HELP},
 }

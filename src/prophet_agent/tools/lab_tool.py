@@ -82,6 +82,7 @@ def observe(result: dict) -> dict:
         "folds": result["fold_count"],
         "calls_spent": result["calls_spent"],
         "recommended": result["recommended"],
+        "baseline_beats_default": result.get("baseline_beats_default"),
         "table": lines,
         "skipped": [f"{s['candidate']}: {s['reason']}" for s in result["skipped"][:5]],
         "failed": [f"{f['candidate']}: {f['error']}" for f in result["failed"][:5]],

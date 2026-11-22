@@ -385,3 +385,45 @@ def test_the_model_is_not_loaded_when_the_experiment_is_refused():
     tool = T.lab_tool(no_model)
     with pytest.raises(ValueError, match="needs at least"):
         tool.fn({"values": noise(30).tolist(), "horizon": H}, "k")
+
+
+# ------------------------------------------------------------------------- the baseline gate and multiplicity --
+class LastValueEngine:
+    """Repeats the last value with a fixed band. On white noise a mean of the last eight points beats it, so the default
+    is the worse reference here and the lab has to say so. Behaviour is set by the test, not measured on TimesFM."""
+
+    def forecast_controlled(self, series, horizon, control):
+        series = np.asarray(series, dtype=float)
+        point = np.full(horizon, float(series[-1]))
+        return Forecast(point, point[:, None] + np.linspace(-1, 1, 9)[None, :] * 5.0)
+
+
+def test_a_simple_baseline_that_beats_the_default_is_named_and_the_recommendation_says_so():
+    out = L.run_lab(noise(), H, LastValueEngine(), folds=8)
+    bb = out["baseline_beats_default"]
+    assert bb is not None and bb["name"] == "mean_last_8" and bb["gain"] > L.BASELINE_GATE_PCT
+    assert out["recommended"] == L.BASELINE_NOTE
+    assert "a simple baseline beats default TimesFM on these folds; consider it or a combination" == out["recommended"]
+
+
+def test_no_baseline_gate_when_the_default_is_as_good_as_the_best_rule():
+    out = L.run_lab(noise(), H, MeanEngine(respect_ignore=False), folds=8)
+    assert out["baseline_beats_default"] is None
+    assert out["recommended"] == "keep the default"
+
+
+def test_holm_step_down_adjusts_the_smallest_p_by_the_family_size_and_never_decreases():
+    adj = L._holm({"a": 0.01, "b": 0.04, "c": 0.03, "d": None})
+    assert adj["a"] == pytest.approx(0.03)          # 3 * 0.01
+    assert adj["c"] == pytest.approx(0.06)          # 2 * 0.03, then carried up to the running maximum
+    assert adj["b"] == pytest.approx(0.06)          # 1 * 0.04 is below the running maximum
+    assert "d" not in adj                           # no p-value, so not in the family
+    assert L._holm({"x": 0.9, "y": 0.9})["x"] == pytest.approx(1.0)
+
+
+def test_an_adoption_must_survive_holm_correction_across_the_treatments_tested():
+    out = L.run_lab(spiky(), H, MeanEngine(), folds=8)
+    adopted = [nm for nm, d in out["decisions"].items() if d["decision"] == "adopt"]
+    assert adopted, "the injected spikes should still be adopted after correction"
+    for nm in adopted:
+        assert out["decisions"][nm]["holm_p"] is not None and out["decisions"][nm]["holm_p"] <= L.HOLM_ALPHA

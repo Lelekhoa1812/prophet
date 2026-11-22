@@ -10,6 +10,9 @@ are paired fold by fold against the default (MASE, RMSSE, pinball loss, sMAPE). 
 MASE difference gives the interval, a paired Wilcoxon test gives a p-value for reporting, and named rules turn the
 evidence into adopt, harmful or no evidence. The result is a measured verdict on this series in these windows, not a
 claim that a treatment works in general.
+Two guards sit on top. A simple baseline that beats the default by more than 5 percent on these folds is reported as
+beating it, whatever the treatments do. And an adoption must survive a Holm step-down correction across every treatment
+tested on the same folds, since trying many treatments on one set of folds invites a lucky winner.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from scipy import stats
 from . import metrics
 from .baselines import moving_average, seasonal_naive
 from .control import Control, build_control
+from .paired import bootstrap_gain
 from .tsb import TSB
 from .types import Forecast
 
@@ -45,6 +49,9 @@ FOLD_GAP_HORIZONS = 1       # horizons left unscored between one test window and
 MIN_HISTORY = 16            # points before the first origin; shorter histories say nothing about the model or a season
 MAX_CALLS = 240             # engine calls per run; the full grid over 8 folds needs about 70, the rest is headroom
 MAX_HORIZON = 512           # the same limit as timesfm_forecast
+HOLM_ALPHA = 0.05           # family-wise level for adopting a treatment when several are tested on the same folds
+BASELINE_GATE_PCT = 5.0     # a simple baseline with this much lower MASE than the default is reported as beating it
+BASELINE_NOTE = "a simple baseline beats default TimesFM on these folds; consider it or a combination"
 MAX_PERIOD = 1000           # the same limit as backtest_series' season
 
 # ------------------------------------------------------------------------------------------- treatment settings --
@@ -402,15 +409,20 @@ def _paired(base: np.ndarray, cand: np.ndarray, seed: int) -> dict[str, Any]:
     diffs = base - cand
     wins = int((diffs > 0).sum())
     p_value = _wilcoxon(diffs)
-    mean_base = float(base.mean())
-    if not mean_base > 0:
-        return {"gain": math.nan, "wins": wins, "lo": math.nan, "hi": math.nan, "p": p_value}
-    rng = np.random.default_rng(seed)
-    picks = rng.integers(0, len(diffs), size=(BOOTSTRAP_RESAMPLES, len(diffs)))
-    means = diffs[picks].mean(axis=1)
-    tail = (1 - CONFIDENCE) / 2 * 100
-    lo, hi = np.percentile(means, [tail, 100 - tail]) / mean_base
-    return {"gain": float(diffs.mean()) / mean_base, "wins": wins, "lo": float(lo), "hi": float(hi), "p": p_value}
+    g = bootstrap_gain(base, cand, seed, CONFIDENCE, BOOTSTRAP_RESAMPLES)
+    return {"gain": g["gain"], "wins": wins, "lo": g["lo"], "hi": g["hi"], "p": p_value}
+
+
+def _holm(pvals: Mapping[str, float | None]) -> dict[str, float]:
+    """Holm step-down adjusted p-values for the entries that have one. Entries with None are left out of the family."""
+    items = sorted(((p, nm) for nm, p in pvals.items() if p is not None))
+    m = len(items)
+    out: dict[str, float] = {}
+    running = 0.0
+    for i, (p, nm) in enumerate(items):
+        running = max(running, min(1.0, (m - i) * p))
+        out[nm] = running
+    return out
 
 
 def _wilcoxon(diffs: np.ndarray) -> float | None:
@@ -621,12 +633,31 @@ def run_lab(series: Any, horizon: int, engine: Any, candidates: Sequence[str] | 
     simple = [b for b in baselines if b != "zero"]
     best = min(simple, key=lambda b: _nanmean(base_sc[b]["mase"]))
     best_m = _nanmean(base_sc[best]["mase"])
+    # Multiplicity: every treatment is tested on the same folds, so an adoption must survive a Holm step-down correction
+    # across all treatments that have a p-value.
+    holm = _holm({nm: pair_of[nm]["p"] for nm in decisions})
+    for nm, d in decisions.items():
+        d["holm_p"] = None if holm.get(nm) is None else round(holm[nm], 4)
+        if d["decision"] == "adopt" and (holm.get(nm) is None or holm[nm] > HOLM_ALPHA):
+            adj = "n/a" if holm.get(nm) is None else f"{holm[nm]:.3f}"
+            d["decision"] = "no evidence"
+            d["reason"] = (f"does not survive Holm correction at {HOLM_ALPHA:.0%} across {len(holm)} treatments "
+                           f"(adjusted p {adj}). " + d["reason"])
+    # Baseline gate: the default TimesFM is only the reference, so a simple rule that beats it on these folds must be said.
+    gain_base = (default_mase - best_m) / default_mase * 100 if default_mase > 0 and math.isfinite(best_m) else math.nan
+    baseline_beats = ({"name": best, "gain": round(gain_base, 2)} if math.isfinite(gain_base) and gain_base > BASELINE_GATE_PCT
+                      else None)
+
     adopted = [nm for nm, d in decisions.items() if d["decision"] == "adopt"]
     if adopted:
         top = max(adopted, key=lambda nm: gain_of[nm])
         final = by_name[top].prepare(_fold_context(x, cov.past, cov.future, n, h, m))
         recommended: Any = {"candidate": top, "treatment": by_name[top].summary,
                             "control": final.control.describe(), "note": final.note}
+        if baseline_beats is not None:
+            recommended["baseline_note"] = BASELINE_NOTE
+    elif baseline_beats is not None:
+        recommended = BASELINE_NOTE
     else:
         recommended = "keep the default"
 
@@ -661,6 +692,11 @@ def run_lab(series: Any, horizon: int, engine: Any, candidates: Sequence[str] | 
     if "symmetric_averaging" in runs:
         caveats.append("Symmetric averaging runs the model twice inside each call, so its real cost is about double the "
                        "call count shown.")
+    if baseline_beats is not None:
+        caveats.append(f"{best} has {baseline_beats['gain']:.1f}% lower MASE than the default on these folds "
+                       "(gain measured against the default's MASE).")
+    if adopted:
+        caveats.append(f"Adopted treatments pass a Holm correction at {HOLM_ALPHA:.0%} across the {len(holm)} treatments with a p-value.")
     if len(adopted) > 1:
         caveats.append("More than one treatment was adopted. Each was measured alone, so their combined effect is not known.")
 
@@ -687,6 +723,7 @@ def run_lab(series: Any, horizon: int, engine: Any, candidates: Sequence[str] | 
         "table": rows,
         "decisions": decisions,
         "recommended": recommended,
+        "baseline_beats_default": baseline_beats,
         "skipped": skipped,
         "failed": failed,
         "caveats": caveats,
