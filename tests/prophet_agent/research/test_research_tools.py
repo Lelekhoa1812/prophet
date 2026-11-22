@@ -235,7 +235,7 @@ def test_family_argument_overrides_detection_and_unknown_family_is_refused(monke
     assert {s["name"] for s in out["sources"] if s["origin"] == "registry"} == \
         {p["name"] for p in registry_pages("gold")}
     with pytest.raises(ValueError, match="family must be one of"):
-        tool.fn({"queries": ["WTI"], "family": "weather"}, "key")
+        tool.fn({"queries": ["WTI"], "family": "astrology"}, "key")
 
 
 def test_a_failed_registry_page_is_listed_with_its_origin(monkeypatch):
@@ -273,7 +273,7 @@ def test_bad_exclude_urls_are_refused(value):
 def test_repeats_across_queries_are_counted_once(monkeypatch):
     recording(monkeypatch)
     tool, _ = tools_by_name()["web_research"]
-    out = tool.fn({"queries": ["weather in Paris", "Paris rain forecast"]}, "key")
+    out = tool.fn({"queries": ["weather in Paris", "Paris rain forecast"], "region": "Paris, France"}, "key")
     assert out["duplicate_sources"] == 3
     assert len({s["url"] for s in out["sources"]}) == len(out["sources"])
 

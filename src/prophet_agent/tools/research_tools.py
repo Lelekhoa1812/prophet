@@ -22,7 +22,8 @@ from typing import Any
 
 from prophet_agent.research.fetch import fetch_page
 from prophet_agent.research.passages import best_passages
-from prophet_agent.research.primary import PRIMARY_SOURCES, detect_family, registry_pages
+from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
+                                            is_us_region, registry_pages, resolve_family)
 from prophet_agent.research.rank import credibility, host_of, parse_date, rank_hits, rank_report
 from prophet_agent.research.search import KINDS, Hit, normalise_url, web_search
 from prophet_agent.runtime.runner import Tool
@@ -37,7 +38,8 @@ OBSERVE_CHARS = 9000
 RECENCY = {"day": ("d", 1), "week": ("w", 7), "month": ("m", 31), "year": ("y", 366)}
 SEARCH_ARGS = {"query", "kind", "max_results", "recency"}
 FETCH_ARGS = {"url", "queries", "max_chars"}
-RESEARCH_ARGS = {"queries", "kind", "recency", "fetch_top", "passages_per_page", "exclude_urls", "family"}
+RESEARCH_ARGS = {"queries", "kind", "recency", "fetch_top", "passages_per_page", "exclude_urls", "family", "region",
+                 "units"}
 MAX_EXCLUDE = 200
 MAX_REGISTRY = 6
 
@@ -105,13 +107,37 @@ def _exclude(value: Any) -> set[str]:
 
 
 def _family(args: dict, queries: list[str]) -> str | None:
-    """The series family given by the planner, or detected from the query words when it is left out."""
+    """The series family given by the planner (aliases such as 'tariffs' are mapped), or detected from the query words
+    when it is left out. An unknown family is refused and the valid names are listed (A3-06)."""
     value = args.get("family")
     if value is None:
         return detect_family(" ".join(queries))
-    if value not in PRIMARY_SOURCES:
-        raise ValueError(f"family must be one of {list(PRIMARY_SOURCES)} or left out")
-    return value
+    family = resolve_family(value) if isinstance(value, str) else None
+    if family is None:
+        raise ValueError(f"family must be one of {family_names()} or left out")
+    return family
+
+
+def _short_text(args: dict, name: str, limit: int) -> str:
+    value = args.get(name)
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(f"{name} must be a string of up to {limit} characters or left out")
+    return " ".join(value.split())
+
+
+def _scope_queries(queries: list[str], region: str, units: str) -> tuple[list[str], list[dict]]:
+    """The queries to send, scoped to the data's region and units (A4-08), and the queries dropped because they name
+    US grid operators for a region that is not the United States (A3-06). Without a region nothing is added."""
+    kept, dropped = [], []
+    for query in queries:
+        if region and not is_us_region(region) and is_us_grid_query(query):
+            dropped.append({"query": query, "why": f"names US grid operators; the data's region is {region!r}"})
+            continue
+        extra = [part for part in (region, units) if part and part.lower() not in query.lower()]
+        kept.append(" ".join([query, *extra]))
+    return kept, dropped
 
 
 def _date_of(page, hit: Hit | None) -> tuple[str | None, str]:
@@ -196,6 +222,16 @@ def web_research_tool(args: Any, _key: str) -> dict:
     per_page = _int(args, "passages_per_page", 3, 1, MAX_PASSAGES_PER_PAGE)
     exclude = _exclude(args.get("exclude_urls"))
     family = _family(args, queries)
+    region = _short_text(args, "region", 80)
+    units = _short_text(args, "units", 40)
+    if family in REGIONAL_FAMILIES and not region:
+        # A4-08 and A3-06: a regional family is never searched without the data's region (round 3 electricity run)
+        return {"queries": queries, "family": family, "region_unknown": True, "sources": [], "failed": [],
+                "searched": 0, "new_sources": 0, "duplicate_sources": 0, "dropped_queries": [],
+                "metrics": _metrics([]),
+                "not_obtained": f"region unknown: no search was run for the {family} family. Read the region or "
+                                "units from inspect_data or ask the user, then call web_research again with region."}
+    scoped, dropped_queries = _scope_queries(queries, region, units)
 
     # round 0: the primary pages for the family, read directly without a search
     registry = registry_pages(family)[:MAX_REGISTRY]
@@ -206,14 +242,14 @@ def web_research_tool(args: Any, _key: str) -> dict:
 
     # round 1: searches for the queries, then the top new pages
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        results = list(pool.map(lambda q: web_search(q, kind=kind, max_results=10, timelimit=timelimit), queries))
+        results = list(pool.map(lambda q: web_search(q, kind=kind, max_results=10, timelimit=timelimit), scoped))
     merged, diagnostics = [], []
-    for query, result in zip(queries, results):
+    for query, result in zip(scoped, results):
         merged.extend(result)
         if not result:
             diagnostics.append(f"{query!r}: " + ("; ".join(result.diagnostics[-2:]) or "no results"))
     fresh = [h for h in merged if normalise_url(h.url) not in exclude and normalise_url(h.url) not in registry_keys]
-    ranked, repeats = rank_report(fresh, recency_days=days, queries=queries, kind=kind)
+    ranked, repeats = rank_report(fresh, recency_days=days, queries=scoped, kind=kind)
     duplicates = (len(merged) - len(fresh)) + repeats + (len(registry) - len(registry_todo))
     chosen = ranked[:fetch_top]
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -226,7 +262,7 @@ def web_research_tool(args: Any, _key: str) -> dict:
         if not page.ok:
             failed.append({"url": url, "why": page.note or "fetch failed", "origin": origin})
             continue
-        passages = best_passages(page, queries, k=per_page)
+        passages = best_passages(page, scoped, k=per_page)
         date, date_source = _date_of(page, hit)
         source = {"origin": origin, "url": url, "final_url": page.final_url,
                   "title": page.title or (hit.title if hit else name), "date": date, "date_source": date_source,
@@ -238,8 +274,10 @@ def web_research_tool(args: Any, _key: str) -> dict:
         sources.append(source)
     for number, source in enumerate(sources, 1):
         source["id"] = f"S{number}"
-    out: dict[str, Any] = {"queries": queries, "family": family, "sources": sources, "failed": failed,
-                           "searched": len(ranked), "new_sources": len(sources), "duplicate_sources": duplicates,
+    out: dict[str, Any] = {"queries": queries, "searched_queries": scoped, "dropped_queries": dropped_queries,
+                           "family": family, "region": region or None, "units": units or None,
+                           "sources": sources, "failed": failed, "searched": len(ranked),
+                           "new_sources": len(sources), "duplicate_sources": duplicates,
                            "metrics": _metrics(sources)}
     if diagnostics:
         out["search_diagnostics"] = diagnostics
@@ -347,7 +385,10 @@ WEB_RESEARCH_SPEC = {
              "fetch_top": "how many top-ranked new pages to read, whole number 1 to 8 (default 4)",
              "passages_per_page": "passages per source, whole number 1 to 6 (default 3)",
              "exclude_urls": "optional list of up to 200 URLs already read in this mission",
-             "family": "optional 'oil', 'gas', 'gold', 'fx', 'rates', 'equities' or 'inflation'; left out, detected from the queries"},
+             "family": f"optional, one of {', '.join(family_names())}; left out, detected from the queries",
+             "region": "the place the data describes, e.g. 'Portugal' or 'Beijing'; queries are scoped to it. Regional "
+                       "families (electricity, retail, weather, prices, pm25) are not searched without it",
+             "units": "optional units of the data, e.g. 'kWh per day'; added to the queries"},
 }
 
 
