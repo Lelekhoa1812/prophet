@@ -447,3 +447,38 @@ Root causes and fixes in these runs:
 - Electricity rep 8: `forecast_report` refused 60 series (panel cap 50) and crashed on a per-series centre dict with
   `seasonal_naive` (KeyError). The cap is 100 and the dict builds. Open, in build: delivering the pooled model's forecast
   (`panel_backtest` can rank it best) and a total across the panel's entities with its range.
+
+### Business users and panels after the pooled centres (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| electricity panel rep 9 | bc5d421 | partial | could not close a gap | 1,202 | 119 |
+| retail, business user rep 4 | bc5d421 | partial | stalled | 225 | 20 |
+| retail, business user rep 5 | 2bf706d | partial | scan decisions unrecorded | 390 | 21 |
+| electricity panel rep 10 | bc5d421 API, 2bf706d tree | **completed** | **done_verified** | 1,532 | 103 |
+
+Electricity rep 10 is the first electricity mission to finish verified: all 60 clients, a pooled-model panel backtest
+(TimesFM and the pooled blend tied at mean MASE 1.70, sign-flip p = 0.80; seasonal naive 1.93) and a 7-day panel total.
+The API ran bc5d421 for the goal loop; sandbox cells import helpers from disk on each run, so they ran the newer tree.
+
+Root causes and fixes:
+
+- Retail rep 4 asked "what should I expect for next month?". `FORECAST_GOAL` matched none of the business phrasings, so the
+  mission had no checklist, no stall rescue and no forecast. It now matches plain future questions (next month or quarter,
+  coming weeks, what will X cost, how much will we sell). Rep 4 also answered "is that real?" by comparing two raw 60-day
+  windows; a question about whether a change is real now points the planner to `ps.change_test`. Rep 5 used it (+10.3 %,
+  p = 0.484) and built the forecast with the measured total range (held 9 of 12 windows).
+- Electricity rep 9 ended with eight scan findings undecided and an answer that was only that gap. The decision recipe took
+  the first six rows, all one id over six clients, so it covered one id of eight. It is now one entry per id with the series
+  folded in. A run that stops short of met without a draft now asks for every established result, with the gap last.
+- Retail rep 5's repair cell guarded each ledger add on `scan["calendar"]`, a key the scan file does not have; both adds
+  were skipped and the saved ledger kept the same sha256. Beijing rep 5 and electricity rep 9 guessed other layouts.
+  `ps.Ledger.decide(finding_id, decision)` now reads the stage, scope and measure from the saved scan, an unknown id raises
+  with the real ids, and saving an opened ledger with no new entry prints a note.
+- Rep 5 wrote "the recent dip is not statistically real" over a measured rise. The composer now corrects a premise the
+  evidence contradicts before giving a verdict.
+- Electricity rep 10's answer said the blend was the centre line; the pack drew TimesFM for all 60 clients, because
+  `forecast_report` refused centre "blend" on a panel twice. On a panel "blend" is now the pooled blend (`global_blend`). The
+  answer also called the sum of the clients' 10 to 90 % bounds the likely range and said it assumed independent errors;
+  summing bounds assumes every client misses the same way at once. The computed accuracy paragraph now names the drawn
+  centre per series and both panel-total bounds with what each assumes.
