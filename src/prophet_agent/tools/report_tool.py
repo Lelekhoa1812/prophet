@@ -81,6 +81,16 @@ ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre", "
 # best rule was mean_last_season, the pack refused it, and the planner fell back to naive). "blend" is the equal-weight
 # blend of TimesFM and one of those rules, delivered only when this tool's backtest says it wins (see _blend_centre).
 CENTRES = ("timesfm", "naive", "drift", "seasonal_naive", "mean_last_season", "blend")
+# Panel-only centres: one model fitted on every series together, set for the whole panel (never inside a per-series dict).
+GLOBAL_CENTRES = ("global_gbm", "global_blend")
+PANEL_CENTRES = CENTRES + GLOBAL_CENTRES
+GLOBAL_NOTE = {"global_gbm": "Centre line from one gradient-boosted model trained on all series together, set by the caller because "
+                             "panel_backtest ranked it best (this tool cannot see that backtest). The range is that model's calibrated band.",
+               "global_blend": "Centre line: an equal-weight blend of TimesFM 3 and one gradient-boosted model trained on all series "
+                               "together, set by the caller because panel_backtest ranked the blend best (this tool cannot see that "
+                               "backtest). The range is the average of the two bands."}
+GLOBAL_ITEM_NOTE = {"global_gbm": "centre: one model trained on all series together",
+                    "global_blend": "centre: equal blend of TimesFM 3 and one model trained on all series together"}
 RULE_TEXT = {"naive": "the last value repeated", "drift": "the average historical change extended",
              "seasonal_naive": "the value one season back repeated", "mean_last_season": "the average of the last season"}
 
@@ -319,6 +329,56 @@ _RULE_TEXT = RULE_TEXT   # every rule a panel centre may name (live electricity 
 PANEL_SHOWN = 30     # series with a line of their own in the observation; the rest are counted, and in the files
 
 
+def _ladder(point: Any, q10: Any, q90: Any) -> dict[str, list[float]]:
+    """Nine quantile levels (0.1 .. 0.9, the keys TimesFM's forecast uses) from a band with its point as the middle one.
+    The levels between the given ones are linear, so the lines are the band's own."""
+    import numpy as np
+    levels = [round(0.1 * k, 1) for k in range(1, 10)]
+    grid = np.stack([np.interp(levels, [0.1, 0.5, 0.9], [float(a), float(b), float(c)])
+                     for a, b, c in zip(q10, point, q90)], axis=1)          # (levels, steps)
+    return {f"{lvl:.1f}": [round(float(v), 6) for v in grid[i]] for i, lvl in enumerate(levels)}
+
+
+def _global_centre(tfm: dict, pooled: dict, mode: str) -> dict:
+    """One series of a panel with its centre from the pooled model (``global_gbm``), or the equal-weight blend of that model
+    and TimesFM (``global_blend``): the point is the mean of the two, and every quantile level is the mean of the two bands.
+    Nothing is fitted here; the pooled forecast comes from global_forecast over the whole panel."""
+    import numpy as np
+    gq = _ladder(pooled["point"], pooled["q10"], pooled["q90"])
+    if mode == "global_gbm":
+        return {**tfm, "point": [round(float(v), 6) for v in pooled["point"]], "quantiles": gq, "centre": {"rule": mode}}
+    point = 0.5 * (np.asarray(tfm["point"], dtype=float) + np.asarray(pooled["point"], dtype=float))
+    q = {k: [round(0.5 * (float(a) + float(b)), 6) for a, b in zip(tfm["quantiles"][k], gq[k])] for k in gq}
+    return {**tfm, "point": [round(float(v), 6) for v in point], "quantiles": q, "timesfm_point": tfm["point"],
+            "centre": {"rule": mode}}
+
+
+def _panel_total(fcs: dict[str, dict], horizon: int, withheld: list[str]) -> dict | None:
+    """The panel's total over the horizon: the sum of each series' centre-line total, with two bounds for its 80 percent range.
+
+    Motivation vs Logic
+    Motivation: the goal asked for one total across the panel, and the pack gave only each series' line, so the answer added
+    the numbers by hand.
+    Logic: each series' bounds come from total_range, not re-derived. The series' independent half-widths add in quadrature
+    (they are taken to miss independently); the together bound is the sum of the series' together bounds. A series whose
+    headline total was withheld is still summed, and ``withheld_for`` names it so the reader can see what the sum includes.
+    """
+    ranges = [total_range(fc) for fc in fcs.values()]
+    if not ranges or any(r is None for r in ranges):
+        return None
+    centre = sum(r["centre"] for r in ranges)
+    half = sum(((r["if_days_miss_independently"]["q90"] - r["if_days_miss_independently"]["q10"]) / 2) ** 2 for r in ranges) ** 0.5
+    total = {"centre": round(centre, 2), "steps": horizon,
+             "if_entities_miss_independently": {"q10": round(centre - half, 2), "q90": round(centre + half, 2)},
+             "if_entities_miss_together": {"q10": round(sum(r["if_days_miss_together"]["q10"] for r in ranges), 2),
+                                           "q90": round(sum(r["if_days_miss_together"]["q90"] for r in ranges), 2)},
+             "note": "the 80 percent range of the panel total lies between these two bounds, under two assumptions (series move "
+                     "together; series move independently)"}
+    if withheld:
+        total["withheld_for"] = withheld
+    return total
+
+
 def _panel_centres(centre: Any, names: list[str]) -> dict[str, str]:
     """The centre rule per series: one rule for every series, or a dict {series name: rule}. Series not named keep TimesFM;
     the result holds only the series whose centre is not TimesFM's."""
@@ -327,8 +387,10 @@ def _panel_centres(centre: Any, names: list[str]) -> dict[str, str]:
     if isinstance(centre, str):
         if centre == "blend":
             raise ValueError(blend_refused)
+        if centre in GLOBAL_CENTRES:
+            return {}                               # the pooled model is set for the whole panel by _panel
         if centre not in CENTRES:
-            raise ValueError(f"centre must be one of {list(CENTRES)}, or a dict of series name to rule")
+            raise ValueError(f"centre must be one of {list(PANEL_CENTRES)}, or a dict of series name to rule")
         return {} if centre == "timesfm" else {n: centre for n in names}
     if isinstance(centre, dict):
         unknown = sorted(set(centre) - set(names))
@@ -340,11 +402,19 @@ def _panel_centres(centre: Any, names: list[str]) -> dict[str, str]:
         if bad:
             raise ValueError(f"each centre rule must be one of {list(CENTRES)}; got {bad}")
         return {k: v for k, v in centre.items() if v != "timesfm"}
-    raise ValueError(f"centre must be one of {list(CENTRES)}, or a dict of series name to rule")
+    raise ValueError(f"centre must be one of {list(PANEL_CENTRES)}, or a dict of series name to rule")
 
 
 def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]:
-    """Forecast every series of a panel in one TimesFM call and build one pack for all of them."""
+    """Forecast every series of a panel in one TimesFM call and build one pack for all of them.
+
+    Motivation vs Logic
+    Motivation: panel_backtest can rank the pooled gradient-boosted model or its blend first, and the pack must be able to draw
+    the line that was ranked.
+    Logic: a global centre is one model fitted on every series together (global_forecast), set for the whole panel. Each
+    series keeps its own TimesFM health check. The panel total is built from the centre lines and their bands (_panel_total).
+    """
+    import numpy as np
     names = [n for n, _ in named]
     if len(named) > MAX_PANEL:
         raise ValueError(f"a panel holds up to {MAX_PANEL} series; this file has {len(named)}. Pick up to {MAX_PANEL} with source.name")
@@ -354,15 +424,28 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
     if used:
         raise ValueError(f"control options {used} apply to one series; build the panel with the defaults, then forecast the series "
                          "that needs them on its own with forecast_report")
-    rules = _panel_centres(args.get("centre", "timesfm"), names)
+    centre_arg = args.get("centre", "timesfm")
+    global_mode = centre_arg if isinstance(centre_arg, str) and centre_arg in GLOBAL_CENTRES else None
+    rules = {} if global_mode else _panel_centres(centre_arg, names)
     title = str(args.get("title", "Forecast"))[:MAX_TITLE] or "Forecast"
     fcs = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season")}, key)["series"]
+    horizon = len(next(iter(fcs.values()))["point"])
+    pooled, fit_info = {}, {}
+    if global_mode:
+        from prophet_agent.forecast.global_gbm import global_forecast
+        season = _season_arg(args)
+        # One model fitted on every series together. A season of 1 means "chosen from the data" to the rules, which the pooled
+        # model does not take, so it is passed as no season.
+        pooled = global_forecast({n: np.asarray(v, dtype=float) for n, v in named}, horizon,
+                                 season=season if season and season >= 2 else None, report_into=fit_info)
     items, out_fc = [], {}
     for name, arr in named:
         values = [float(v) for v in arr]
         fc = fcs[name]
         rule = rules.get(name, "timesfm")
-        if rule != "timesfm":
+        if global_mode:
+            fc = _global_centre(fc, pooled[name], global_mode)
+        elif rule != "timesfm":
             fc = _centre(fc, values, rule, _season_arg(args))
         fc = _floor_at_zero(fc, values)
         out_fc[name] = fc
@@ -374,12 +457,19 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
                                 "q10": fc["quantiles"]["0.1"], "q90": fc["quantiles"]["0.9"]}
         if ahead:
             item.update(dates=dates, future_dates=ahead)
-        if rule != "timesfm":
+        if global_mode:
+            item["centre_note"] = GLOBAL_ITEM_NOTE[global_mode]
+        elif rule != "timesfm":
             item["centre_note"] = f"centre: {_RULE_TEXT[rule]}"
         items.append(item)
     ruled = [n for n in names if n in rules]
     flagged = [n for n in names if (out_fc[n].get("health") or {}).get("verdict") in ("check", "flat_unexpected")]
     note = f"{len(named)} series forecast together by TimesFM 3, default settings, no external drivers."
+    if global_mode:
+        note += " " + GLOBAL_NOTE[global_mode]
+        fallback = (fit_info.get("calibration") or {}).get("fallback")
+        if fallback:
+            note += f" Band calibration: {fallback}."
     if ruled:
         note += " Centre line from a simple rule, where the backtest found it more accurate: " + ", ".join(ruled[:20]) + "."
     if flagged:
@@ -387,6 +477,7 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
     floored = [n for n in names if out_fc[n].get("floor")]
     if floored:
         note += " Days below zero were floored at zero (history never negative) in: " + ", ".join(floored[:20]) + "."
+    withheld = [n for n in names if _headline(out_fc[n])["total"] is None]
     pack = build_panel_pack(series=items, title=title, note=note)
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
@@ -396,6 +487,7 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
         "run_id": pack.run_id,
         "manifest": f"{pack.workdir}/manifest.json",
         "files": [{"path": o.path, "sha256": o.sha256, "bytes": o.bytes} for o in pack.outputs],
+        "panel_total": _panel_total(out_fc, horizon, withheld),
     }
 
 
@@ -415,6 +507,7 @@ def _panel_observe(result: dict) -> dict:
         lines[name] = line
     return {"n_series": result["n_series"], "series": lines,
             **({"not_shown": len(items) - PANEL_SHOWN} if len(items) > PANEL_SHOWN else {}),
+            **({"panel_total": result["panel_total"]} if result.get("panel_total") else {}),
             "run_id": result["run_id"], "files": [f["path"] for f in result["files"]], "manifest": result["manifest"],
             "deliverables": "one chart grid per 12 series (forecast_grid.png and .svg, then forecast_grid_2 and so on), a workbook "
                             "with Summary and Forecast sheets, a report and a PDF, all listed in the manifest; no further build is needed"}
@@ -601,7 +694,7 @@ FORECAST_REPORT_SPEC = {
                    "your backtest, or the pack will show the default forecast. n_origins belongs to backtest_series and is refused "
                    "here; season is used only by the seasonal centre rules and the blend's rule.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
-             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm)",
+             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm); 'global_gbm' or 'global_blend' (panel only, the whole panel) sets the pooled gradient-boosted model, or its blend with TimesFM, as the centre",
              "season": "optional integer, only for the seasonal centre rules: the season backtest_series used (default: chosen from the data by the same rule as the backtest)",
              "calibrate": "optional true, one series only (refused for a panel): replace the 10-90 percent band by the calibrated one when a held-out test on past windows shows it covers closer to 80 percent (the point forecast never changes)",
              **CONTROL_HELP},
