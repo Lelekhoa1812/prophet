@@ -14,7 +14,7 @@ from pathlib import Path
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.sandbox.catalogue import build_catalogue
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
-from prophet_agent.tools.series_io import RUN_ID
+from prophet_agent.tools.series_io import RUN_ID, missing_output
 
 MAX_CODE_CHARS = 20_000
 SEEN_STDOUT = 3_500
@@ -43,7 +43,7 @@ def carried_inputs(carry) -> dict[str, Path]:
         base = (SANDBOX_ROOT / item["run_id"]).resolve()
         target = (base / rel).resolve()
         if not rel or not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
-            raise ValueError(f"no file {rel!r} in the outputs of run {item['run_id']}")
+            raise ValueError(missing_output(item["run_id"], rel))
         key = f"carried/{target.name}"
         if key in mounted and mounted[key] != target:
             raise ValueError(f"two carried files are named {target.name!r}; each file name can be carried once. Carry one, or "

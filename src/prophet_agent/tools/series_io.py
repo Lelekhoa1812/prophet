@@ -44,6 +44,23 @@ def _clean(name: str, raw: Any) -> np.ndarray:
     return arr
 
 
+def missing_output(run_id: str, rel: str) -> str:
+    """Why a named output is not there, with what would fix it: the run does not exist (an id that no tool returned), or
+    it exists and these are the files it did write.
+
+    Live electricity rep4 (2026-11-23): three calls named files their runs never wrote, one with a run id no tool had
+    returned. "no file" alone left the planner guessing which run held the file.
+    """
+    base = SANDBOX_ROOT / run_id
+    if not base.is_dir():
+        return (f"no run {run_id} exists. A run id is the run_id a sandbox_python result returned; copy it from that "
+                "result, or re-run the step that writes the file")
+    out = base / OUT_DIR
+    wrote = sorted(str(f.relative_to(base)) for f in out.rglob("*") if f.is_file())[:12] if out.is_dir() else []
+    return (f"no file {rel!r} in the outputs of run {run_id}; that run wrote "
+            + (", ".join(wrote) if wrote else "no files") + ". Name one of those, or the run that saved this file")
+
+
 def source_path(args: dict) -> Path:
     """The file a ``source`` argument names, after the same checks as resolve_series: a hex run id and a file inside the
     run's ``out/`` folder. Raises ValueError with the fix when either check fails."""
@@ -54,7 +71,7 @@ def source_path(args: dict) -> Path:
     base = (SANDBOX_ROOT / source["run_id"]).resolve()
     target = (base / rel).resolve()
     if not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
-        raise ValueError(f"no file {rel!r} in the outputs of run {source['run_id']}")
+        raise ValueError(missing_output(source["run_id"], rel))
     return target
 
 
@@ -70,7 +87,7 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     base = (SANDBOX_ROOT / source["run_id"]).resolve()
     target = (base / rel).resolve()
     if not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
-        raise ValueError(f"no file {rel!r} in the outputs of run {source['run_id']}")
+        raise ValueError(missing_output(source["run_id"], rel))
     try:
         doc = json.loads(target.read_text(encoding="utf-8"))
     except ValueError:
