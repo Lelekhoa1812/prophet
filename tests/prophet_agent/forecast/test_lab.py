@@ -348,7 +348,8 @@ def test_the_tool_spec_has_the_same_shape_as_the_forecast_spec():
     spec = T.LAB_TOOL_SPEC
     assert spec["name"] == "control_lab"
     assert {"title", "activity", "description", "args"} <= set(spec)
-    assert {"values", "source", "horizon", "period", "candidates", "past_covariates", "future_covariates"} == set(spec["args"])
+    assert {"values", "source", "horizon", "period", "candidates", "past_covariates", "future_covariates",
+            "ignore_ranges"} == set(spec["args"])
 
 
 def test_the_tool_is_idempotent_and_its_observe_is_short():

@@ -19,7 +19,8 @@ from prophet_agent.forecast.timesfm import TimesFMEngine
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
-ALLOWED_ARGS = {"values", "source", "horizon", "period", "candidates", "past_covariates", "future_covariates"}
+ALLOWED_ARGS = {"values", "source", "horizon", "period", "candidates", "past_covariates", "future_covariates",
+                "ignore_ranges"}
 MAX_OBSERVED_ROWS = 14      # the table the planner sees: the reference, the treatments and the baselines
 MAX_OBSERVED_NOTES = 3      # caveats shown to the planner; the full list is kept in the ledger
 
@@ -63,8 +64,9 @@ def _run(args: dict, _key: str, engine_factory: Callable[[], Any] | None = None)
                          "future_covariates": args.get("future_covariates")}, len(series), horizon,
                         source_covariates(args))
     engine = _LazyEngine(engine_factory or _timesfm)
+    ranges = args.get("ignore_ranges")      # validated inside run_lab with the tools' own rules (A6-08c)
     return run_lab(series, horizon, engine, candidates, period=period,
-                   past_covariates=cov.past, future_covariates=cov.future)
+                   past_covariates=cov.past, future_covariates=cov.future, ranges=ranges)
 
 
 def observe(result: dict) -> dict:
@@ -120,5 +122,7 @@ LAB_TOOL_SPEC = {
              "past_covariates": "optional, drivers known only up to now: {name: list as long as the history} or a list "
                                 "of names stored under 'covariates' in the source file",
              "future_covariates": "optional, drivers known ahead: {name: list as long as the history PLUS the horizon} or "
-                                  "a list of names stored under 'covariates' in the source file"},
+                                  "a list of names stored under 'covariates' in the source file",
+             "ignore_ranges": "optional list of [start, end) index pairs to test as the ignore_ranges candidate; each fold "
+                              "ignores only the part inside its own history"},
 }
