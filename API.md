@@ -197,6 +197,27 @@ curl -OJ "localhost:8010/api/notebooks/$NID/tables/$NAME/download?version=2"   #
 
 Kept tables are available to later turns as `derived/<name>.csv`.
 
+### Panel backtests (one score per entity and model)
+
+A panel backtest scores every entity against each model. The summary lists the panels a mission ran, and the entities are paged so a large panel stays readable:
+
+```bash
+curl -s localhost:8010/api/missions/$TURN/panels                       # [{"step","entities","models","overall","wins","best_overall","coverage_80",...}]
+curl -s "localhost:8010/api/missions/$TURN/panels/$STEP/entities?page=1&page_size=25&sort=mase:timesfm&order=desc"
+```
+
+Each entity row gives `best_model` (lowest finite MASE, so lower is better) and `mase` for every model. `sort` is `entity`, `best`, or `mase:<model>`. `order` is `asc` or `desc`. `page_size` runs from 1 to 200. Bad paging or sort returns 422. An unknown mission or step returns 404.
+
+### Reproducibility bundle (download)
+
+A zip a person can keep and check, built from what the mission stored:
+
+```bash
+curl -OJ localhost:8010/api/missions/$TURN/repro        # prophet-<id>-repro.zip
+```
+
+It holds the code cells, the inputs and outputs with their sha256 (`hashes.json`), the ledger, the configuration (prompts, budget, packages), the events, the mission record, the answer and a `README.txt`. It is read-only and never includes `.env` or key-shaped text. Inputs over 200 MB are listed by hash and not copied. The README says that rerunning the same code on the same input should give the same figures. The bundle does not rerun anything, so checking the figures needs a fresh run.
+
 ## One-off quick forecasts (no notebook)
 
 ```bash

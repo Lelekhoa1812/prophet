@@ -53,6 +53,32 @@ export type Mission = {
   datasets: DatasetRef[];
 };
 
+// A panel backtest's summary, and one page of its entities (best model and MASE per model). Measured on saved history.
+export type PanelSummary = {
+  step: number;
+  entities: number;
+  models: string[];
+  horizon: number | null;
+  origins: number | null;
+  season: number | null;
+  overall: Record<string, number>;
+  wins: Record<string, number>;
+  best_overall: string | null;
+  coverage_80: Record<string, number>;
+  reading: string | null;
+  basis: string | null;
+};
+export type PanelEntityPage = {
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  sort: string;
+  order: "asc" | "desc";
+  models: string[];
+  rows: { entity: string; best_model: string | null; mase: Record<string, number | null> }[];
+};
+
 export type MissionRow = { id: string; goal: string; title: string; status: string; created: number; updated: number; pinned: boolean };
 
 export type ToolInfo = { name: string; title: string; activity: string; description: string };
@@ -184,6 +210,11 @@ export const api = {
   archiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
   unarchiveMission: (id: string) => req<{ id: string }>(`/api/missions/${id}`, { method: "PATCH", body: JSON.stringify({ archived: false }) }),
   mission: (id: string, after = 0) => req<Mission>(`/api/missions/${id}?after=${after}`),
+  panels: (id: string) => req<PanelSummary[]>(`/api/missions/${id}/panels`),
+  panelEntities: (id: string, step: number, q: { page: number; pageSize: number; sort: string; order: "asc" | "desc" }) =>
+    req<PanelEntityPage>(
+      `/api/missions/${id}/panels/${step}/entities?page=${q.page}&page_size=${q.pageSize}&sort=${encodeURIComponent(q.sort)}&order=${q.order}`,
+    ),
   // The model id is sent only when one is selected, so the server default applies otherwise.
   createMission: (goal: string, datasetIds: string[] = [], model?: string) =>
     req<{ id: string }>("/api/missions", {
@@ -398,4 +429,8 @@ export function artifactUrl(runId: string, path: string): string {
 export function tableDownloadUrl(notebookId: string, name: string, version?: number): string {
   const q = version ? `?version=${version}` : "";
   return `/api/notebooks/${notebookId}/tables/${encodeURIComponent(name)}/download${q}`;
+}
+
+export function reproBundleUrl(missionId: string): string {
+  return `/api/missions/${missionId}/repro`;
 }

@@ -1,12 +1,13 @@
 import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, FileText, Play, RotateCcw, SkipForward } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type AnsweredQuestion, type ArtifactRun, type DatasetRef, type Mission, type ToolInfo } from "../lib/api";
+import { api, reproBundleUrl, type AnsweredQuestion, type ArtifactRun, type DatasetRef, type Mission, type ToolInfo } from "../lib/api";
 import { errorMessage, formatDuration, truncate } from "../lib/format";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
 import { cn, formatBytes, isCheckpoint, isWorking } from "../lib/utils";
 import { Markdown } from "./Markdown";
 import { MentionText } from "./MentionChip";
 import { QuestionCard, SKIPPED } from "./QuestionCard";
+import { PanelTable } from "./PanelTable";
 import { Results } from "./Results";
 import { Button, Card, Spinner } from "./ui";
 
@@ -428,6 +429,16 @@ export function Turn({
 
         <Results runs={runs} />
 
+        <PanelTable missionId={mission.id} working={working} />
+
+        {!working && runs.length > 0 && (
+          <p className="text-meta text-muted">
+            <a className="underline underline-offset-2" href={reproBundleUrl(mission.id)} download>
+              Download the reproducibility bundle
+            </a>{" "}
+            (code, inputs and outputs with checksums, ledger and answer; no keys or .env).
+          </p>
+        )}
 
         {text && <AnswerActions text={text} seconds={Math.max(0, (mission.events[mission.events.length - 1]?.ts ?? startedAt) - startedAt)} />}
 
