@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from prophet_agent import prompts
-from prophet_agent.nim.errors import redact
+from prophet_agent.nim.errors import Exhausted, redact
 from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN
 
 from . import contracts
@@ -364,6 +364,11 @@ def _repeat_obs(name: str, args: Any, history: list[dict], pos: int) -> dict:
         obs["note"] = obs["note"].replace("gave the same result", "gave the same error")
     if earlier.get("rejected"):
         obs["rejected"] = True     # an identical refused call is refused again, and is not charged
+    if earlier.get("coverage_note"):
+        # Live Beijing rep4: after the finish was refused for 3 of 12 stations, the same backtest was sent three more times.
+        # The repeat says what the call is short of, not only that it was made.
+        obs["coverage_note"] = earlier["coverage_note"]
+        obs["note"] += " It is short of entities: " + earlier["coverage_note"]
     return obs
 
 
@@ -1045,6 +1050,24 @@ def _repair_source(args: Any, history: list[dict]) -> Any:
     return args
 
 
+COVERAGE_TOOLS = ("forecast_report", "backtest_series", "timesfm_forecast", "panel_backtest")
+
+
+def _coverage_note(obs: dict, history: list[dict]) -> str | None:
+    """A forecast or backtest that covers fewer entities than the uploaded data holds says so where the planner reads it.
+    Live Beijing rep4: one analyst's file of 3 of the 12 stations fed every backtest and the pack, and nothing said so."""
+    if obs.get("tool") not in COVERAGE_TOOLS or obs.get("error"):
+        return None
+    k = contracts.result_entities(obs.get("result"))
+    data = contracts.data_entity_count(history)
+    if k is None or data is None or k >= data[0]:
+        return None
+    n, col = data
+    return (f"this result covers {k} of the {n} values of '{col}' in the uploaded data. If the goal is the whole panel, build "
+            f"all {n} with pl.panel(df, entity='{col}', ...), save them with pl.save_panel in one run and pass that file; otherwise say which ones the "
+            "answer covers and why")
+
+
 def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> dict:
     try:
         result = ctx.call(tool, args)
@@ -1512,6 +1535,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args, tools))
         if obs.get("kind") == "tool":
             obs.setdefault("step", len(history) + 1)     # the number read_observation pages back by (1-based, as evidence shows)
+            note = _coverage_note(obs, history)
+            if note:
+                obs["coverage_note"] = note
         history.append(obs)
 
         if obs.get("kind") == "tool" and _stalled(history, cfg.stall_window):
@@ -1814,6 +1840,9 @@ def _ground_result(result: dict, history: list[dict], goal: str) -> dict:
     return out
 
 
+MIN_CALL_S = 45.0   # seconds of the segment's allowance below which no model call starts: it is a checkpoint instead
+
+
 class NimBrain:
     """Adapter from the goal loop to the NIM transport. Output is schema-bound and parsed here."""
 
@@ -1841,17 +1870,30 @@ class NimBrain:
         if self.on_wait is not None:
             extra["on_wait"] = self.on_wait
         if self.remaining is not None and (left := self.remaining()) is not None:
-            extra["budget_s"] = max(1.0, min(BUDGET_S, float(left)))
+            if left < MIN_CALL_S:
+                # Live electricity rep4 (2026-11-23): a planner call started with 1 s of the 900 s allowance left, ran out at
+                # once, and the provider's "budget spent" failed the whole mission after 49 delegated calls. Too little time
+                # for a call is the allowance being spent: a checkpoint the person continues, with every step kept.
+                raise BudgetExceeded("max_seconds")
+            extra["budget_s"] = min(BUDGET_S, float(left))
         return extra
+
+    def _complete(self, messages: list[dict], **kw: Any) -> Any:
+        extra = self._extra()
+        try:
+            return self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages,
+                                        **kw, **extra)
+        except Exhausted:
+            # A call cut short by the segment's allowance (not by the provider's own budget) ran out of the person's time,
+            # not of models: that is a checkpoint too.
+            if extra.get("budget_s", BUDGET_S) < BUDGET_S and (self.remaining() or 0.0) < MIN_CALL_S:
+                raise BudgetExceeded("max_seconds") from None
+            raise
 
     def write(self, messages: list[dict]) -> str:
         """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line)."""
-        reply = self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages, thinking=False,
-                                     max_tokens=self.write_tokens, **self._extra())
-        return reply.text
+        return self._complete(messages, thinking=False, max_tokens=self.write_tokens).text
 
     def decide(self, messages: list[dict], schema: dict, name: str) -> dict:
-        reply = self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages,
-                                     thinking=self.thinking, max_tokens=self.max_tokens,
-                                     schema=schema, schema_name=name, **self._extra())
+        reply = self._complete(messages, thinking=self.thinking, max_tokens=self.max_tokens, schema=schema, schema_name=name)
         return json.loads(reply.text)

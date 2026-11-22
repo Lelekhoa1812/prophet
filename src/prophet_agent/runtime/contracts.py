@@ -613,6 +613,41 @@ def researched(history) -> bool:
     return False
 
 
+def data_entity_count(history) -> tuple[int, str] | None:
+    """How many entities the uploaded data holds, read from inspect_data: the unique count of its one grouping column, with
+    the column's name. None when no inspection found exactly one grouping column with two or more values.
+
+    Live Beijing rep4 (2026-11-23): the lead built every backtest and the pack from one analyst's file of 3 stations. The
+    panel check read the expected count from those same results, so 3 of 3 looked complete; the data held 12."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    best: tuple[int, str] | None = None
+    for h in obs:
+        r = _ok_result(h, "inspect_data")
+        prof = r.get("profile") if isinstance(r, dict) else None
+        if not isinstance(prof, dict):
+            continue
+        groups = [g for hint in prof.get("layout_hints") or [] if isinstance(hint, str)
+                  for g in re.findall(r"grouping column\(s\) \[([^\]]*)\]", hint)]
+        names = [n.strip().strip("'\"") for g in groups for n in g.split(",") if n.strip()]
+        if len(names) != 1:
+            continue
+        col = next((c for c in prof.get("columns") or [] if isinstance(c, dict) and c.get("name") == names[0]), None)
+        k = col.get("unique") if isinstance(col, dict) else None
+        if _is_int(k) and k >= 2 and (best is None or k > best[0]):
+            best = (k, names[0])
+    return best
+
+
+def result_entities(result) -> int | None:
+    """How many series a forecast or backtest result covers: n_series, entities (panel_backtest) or its series table."""
+    if not isinstance(result, dict):
+        return None
+    for key in ("n_series", "entities"):
+        if _is_int(result.get(key)):
+            return result[key]
+    return None
+
+
 def panel_entities(history) -> dict | None:
     """For a panel mission (a result naming more than one series): how many entities the mission has, how many the newest
     forecast delivered, and which are missing when the names are known. None when no panel result was seen (A3-12; live
@@ -638,6 +673,9 @@ def panel_entities(history) -> dict | None:
                 delivered = len(delivered_names) + not_shown
             elif tool != "backtest_series" and _is_int(r.get("series_count")):
                 delivered, delivered_names, not_shown = r["series_count"], None, 0
+    data = data_entity_count(obs)
+    if data is not None and delivered is not None and data[0] > (expected or 0):
+        expected, names = data[0], None      # the data holds more entities than any result covered
     if expected is None or expected < 2:
         return None
     missing = None
