@@ -77,7 +77,7 @@ function PanelRun({ missionId, run }: { missionId: string; run: PanelSummary }) 
 
       <div className="-mx-1 overflow-x-auto rounded-xl border border-sand-2/25">
         <table className="w-full min-w-[32rem] border-collapse text-caption tabular-nums">
-          <caption className="sr-only">MASE by entity and model, lower is better</caption>
+          <caption className="sr-only">Error (MASE, a scaled error) by entity and model: lower is better, 1.0 is the naive rule</caption>
           <thead className="bg-night-2 text-left text-sand-1">
             <tr>
               <th scope="col" aria-sort={ariaFor("entity") as "ascending" | "descending" | "none"} className="p-0">
