@@ -724,6 +724,42 @@ def _baseline_gate(delivered: dict, backtests: list) -> dict:
     return _check("baseline_compared", True, "the forecast was compared with the baselines in a backtest at its horizon")
 
 
+OUTLIER_SHARE_RULE = 0.02     # the outliers skill: above about 2% of steps, treat the flags as noise or a broken feed until shown otherwise
+_OUTLIER_TEST = re.compile(r"winsori|robust|replace_outliers|ignore_ranges|control_lab|backtest", re.I)
+_PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
+
+
+def check_outlier_share(history, run_root) -> dict | None:
+    """Where the saved scan flags more than OUTLIER_SHARE_RULE of the steps as outliers (Hampel share, the scan's own field),
+    the ledger must state the share and test a winsorised or robust copy (A4-11). Measured, audit round 3: Beijing kept 6.3% to
+    8.8% of rows as real spikes with one template sentence. A warning. None when the scan shows no such series or no folder is
+    known."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    high = []
+    for f in findings:
+        ev = f.get("evidence") if isinstance(f.get("evidence"), dict) else {}
+        shares = ev.get("share_by_method") if isinstance(ev.get("share_by_method"), dict) else {}
+        share = _finite(shares.get("hampel"))
+        if f.get("id") == "outliers.share" and share is not None and share > OUTLIER_SHARE_RULE:
+            high.append((str(f.get("scope")), share))
+    if not high:
+        return None
+    ledgers = _saved_ledgers(history, run_root)
+    relevant = [e for e in (ledgers[0] if ledgers else []) if isinstance(e, dict) and not e.get("superseded")
+                and re.search(r"outlier|spike", " ".join(str(e.get(k, "")) for k in ("stage", "finding", "decision")), re.I)]
+    text = " ".join(f"{e.get('finding', '')} {e.get('decision', '')}" for e in relevant)
+    names = ", ".join(f"{s} ({v:.1%})" for s, v in high[:6])
+    if _PERCENT.search(text) and _OUTLIER_TEST.search(text):
+        return _check("outlier_share_decided", True,
+                      f"the ledger states the outlier share and tests a winsorised or robust copy for {names}", "warn")
+    return _check("outlier_share_decided", False,
+                  f"the scan flags more than {OUTLIER_SHARE_RULE:.0%} of the steps as outliers for {names}; the ledger must state the "
+                  "share and test a winsorised or robust copy (replace_outliers, ignore_ranges or control_lab) before keeping them",
+                  "warn")
+
+
 def check_evidence(history, *, run_root=None) -> list[dict]:
     """Checks on a mission's observations, in order. Never raises: a missing or malformed piece skips its check."""
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
@@ -797,6 +833,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         decisions = check_scan_decisions(obs, run_root)
         if decisions is not None:
             checks.append(decisions)
+        outliers = check_outlier_share(obs, run_root)
+        if outliers is not None:
+            checks.append(outliers)
 
     if backtests and isinstance(backtests[-1].get("models"), dict):
         checks.extend(check_backtest(backtests[-1]))
