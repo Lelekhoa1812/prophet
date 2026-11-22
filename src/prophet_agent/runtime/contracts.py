@@ -911,6 +911,22 @@ def check_hypotheses(history, run_root) -> dict | None:
                   "each confirmed or refuted", "warn")
 
 
+def check_frame(history, run_root) -> dict | None:
+    """The mission should record a frame before it forecasts: what the forecast is for, its horizon, and the decision it feeds (A3-13).
+    Read from the newest saved ledger, as an entry staged "frame" with a non-empty decision. A warning, not a block. None when no
+    ledger was saved."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return None
+    frames = [e for e in ledgers[0] if isinstance(e, dict) and not e.get("superseded")
+              and str(e.get("stage", "")).strip().lower() == "frame" and str(e.get("decision", "")).strip()]
+    if frames:
+        return _check("frame_recorded", True, "the ledger records the frame: purpose, horizon and the decision it feeds", "warn")
+    return _check("frame_recorded", False,
+                  "the ledger has no frame entry; record what the forecast is for, its horizon and the decision it feeds before "
+                  "forecasting", "warn")
+
+
 def check_evidence(history, *, run_root=None) -> list[dict]:
     """Checks on a mission's observations, in order. Never raises: a missing or malformed piece skips its check."""
     obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
@@ -1008,6 +1024,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         hypotheses = check_hypotheses(obs, run_root)
         if hypotheses is not None:
             checks.append(hypotheses)
+        frame = check_frame(obs, run_root)
+        if frame is not None:
+            checks.append(frame)
 
     selection = check_selection(obs)
     if selection is not None:
