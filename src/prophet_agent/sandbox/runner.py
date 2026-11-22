@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import resource
 import signal
 import subprocess
@@ -190,14 +191,37 @@ def memory_limit_enforced() -> bool:
 SHORT_MODULES = {"ps": "prophet_stats", "sc": "prophet_scan"}
 
 
+def _result_from_manifest(manifest: Path) -> SandboxResult:
+    """The stored result of a finished run, read back from its manifest (round 4, A5-10)."""
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    fields = {f.name for f in SandboxResult.__dataclass_fields__.values()}
+    outputs = [OutputFile(**o) for o in data.get("outputs", [])]
+    kwargs = {k: v for k, v in data.items() if k in fields and k != "outputs"}
+    return SandboxResult(outputs=outputs, **kwargs)
+
+
 def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64,
-               files: dict[str, bytes] | None = None, inputs: dict[str, Path] | None = None) -> SandboxResult:
+               files: dict[str, bytes] | None = None, inputs: dict[str, Path] | None = None,
+               run_id: str | None = None) -> SandboxResult:
     """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data).
 
     ``inputs`` maps a file name to a path on disk; each is copied to ``in/<name>``, which the program can read but not
     change. ``prophet_lib`` and the other ``prophet_*`` modules are importable from ``lib/``.
+
+    ``run_id`` (round 4, A5-10) is given by an idempotent caller: its key seeds the id, so a re-run finds the folder. A folder
+    with a manifest is a finished run and its stored result is returned without running the code again. A folder without a
+    manifest is an interrupted run and is cleared before the code runs once under the same id.
     """
-    run_id = uuid.uuid4().hex
+    if run_id is not None:
+        if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+            raise ValueError("run_id must be 32 lowercase hex characters")
+        folder = (SANDBOX_ROOT / run_id).resolve()
+        if (folder / "manifest.json").is_file():
+            return _result_from_manifest(folder / "manifest.json")
+        if folder.exists():
+            shutil.rmtree(folder)
+    else:
+        run_id = uuid.uuid4().hex
     wd = (SANDBOX_ROOT / run_id).resolve()
     home = wd / "home"
     (wd / OUT_DIR).mkdir(parents=True)
