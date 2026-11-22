@@ -75,11 +75,16 @@ def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
         if spans:
             out.append({"name": str(name), "spans": spans})
     return out
-ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate"} | CONTROL_ARGS
+ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre"} | CONTROL_ARGS
+CENTRES = ("timesfm", "naive", "drift")
 
 
-def _method_note(config: dict) -> str:
+def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
+    if centre:
+        rule = {"naive": "the last value repeated", "drift": "the average historical change extended"}[centre["rule"]]
+        return (f"Centre line: {rule}, because the backtest found it more accurate than TimesFM; the range is TimesFM 3's "
+                "band, recentred on it.")
     c = config.get("control")
     if not c:
         return "TimesFM 3, default settings, no external drivers."
@@ -137,6 +142,25 @@ def _calibrated(fc: dict, values: list[float], args: dict) -> dict:
     return {**fc, "quantiles": res["calibrated"]["quantiles"], "interval_calibration": info}
 
 
+def _centre(fc: dict, values: list[float], which: str) -> dict:
+    """The forecast with its centre line replaced by a simple rule (the band stays TimesFM's, shifted to the new centre so the
+    band keeps its width around it). Used when the backtest said the rule was more accurate. Records what was done."""
+    import numpy as np
+    h = len(fc["point"])
+    last = float(values[-1])
+    if which == "naive":
+        new = np.full(h, last)
+    else:   # drift: the average change over the history, extended
+        slope = (float(values[-1]) - float(values[0])) / max(len(values) - 1, 1)
+        new = last + slope * np.arange(1, h + 1)
+    old = np.asarray(fc["point"], dtype=float)
+    shift = new - old
+    q = {k: [round(float(v) + float(d), 4) for v, d in zip(vals, shift)] for k, vals in fc["quantiles"].items()}
+    return {**fc, "point": [round(float(v), 4) for v in new], "quantiles": q, "timesfm_point": fc["point"],
+            "centre": {"rule": which, "reason": "the backtest found this simple rule more accurate than TimesFM's centre line; "
+                       "the band is TimesFM's, recentred on the rule"}}
+
+
 def _run(args: dict, key: str) -> dict[str, Any]:
     extra = sorted(set(args) - ALLOWED_ARGS)
     if extra:
@@ -146,19 +170,24 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     if len(named) != 1:
         raise ValueError(f"the pack is for one series; choose one with source.name from {[n for n, _ in named][:20]}")
     title = str(args.get("title", "Forecast"))[:MAX_TITLE] or "Forecast"
-    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate")}, key)
+    centre = args.get("centre", "timesfm")
+    if centre not in CENTRES:
+        raise ValueError(f"centre must be one of {list(CENTRES)}")
+    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre")}, key)
     if "series" in fc:
         fc = next(iter(fc["series"].values()))
     values = [float(v) for v in named[0][1]]
     if args.get("calibrate") is True:
         fc = _calibrated(fc, values, args)
+    if centre != "timesfm":
+        fc = _centre(fc, values, centre)
     hist_dates = run_dates(args, named[0][0])
     if hist_dates is not None and len(hist_dates) != len(values):
         hist_dates = None
     ahead = _future_dates(hist_dates, len(fc["point"])) if hist_dates else None
     q = fc["quantiles"]
     pack = build_forecast_pack(history=values, point=fc["point"], q10=q["0.1"], q90=q["0.9"], title=title,
-                               note=_method_note(fc["config"]) + _health_note(fc.get("health")), dates=hist_dates if ahead else None, future_dates=ahead,
+                               note=_method_note(fc["config"], fc.get("centre")) + _health_note(fc.get("health")), dates=hist_dates if ahead else None, future_dates=ahead,
                                events=_event_spans(args, len(values), len(fc["point"])),
                                ignored=args.get("ignore_ranges"), q30=q.get("0.3"), q70=q.get("0.7"))
     if not pack.ok:
@@ -194,6 +223,7 @@ FORECAST_REPORT_SPEC = {
                    "timesfm_forecast: pass exactly the configuration that won your backtest, or the pack will show the default forecast. "
                    "Backtest-only settings (season, n_origins) belong to backtest_series and are refused here.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
+             "centre": "optional 'timesfm' (default), 'naive' or 'drift': when backtest_series says a simple rule was more accurate (verdict baseline_better), chart that rule as the centre line with TimesFM's band around it",
              "calibrate": "optional true: replace the 10-90 percent band by the calibrated one when a held-out test on past windows shows it covers closer to 80 percent (the point forecast never changes)",
              **CONTROL_HELP},
 }

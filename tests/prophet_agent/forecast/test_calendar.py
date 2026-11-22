@@ -32,3 +32,13 @@ def test_the_report_dates_follow_the_series_calendar():
     hist = [d.isoformat() for d in _nyse_days("2021-01-04", "2026-11-17")]
     ahead = _future_dates(hist, 10)
     assert "2026-11-26" not in ahead and ahead[0] == "2026-11-18"
+
+
+def test_a_simple_rule_can_be_the_centre_line_with_timesfms_band_recentred():
+    from prophet_agent.tools.report_tool import _centre, _method_note
+    fc = {"point": [10.0, 11.0], "quantiles": {"0.1": [9.0, 9.5], "0.5": [10.0, 11.0], "0.9": [11.0, 12.5]}, "config": {}}
+    out = _centre(fc, [5.0, 8.0, 12.0], "naive")
+    assert out["point"] == [12.0, 12.0] and out["timesfm_point"] == [10.0, 11.0]
+    assert out["quantiles"]["0.1"] == [11.0, 10.5] and out["quantiles"]["0.9"] == [13.0, 13.5]   # widths kept
+    assert _centre(fc, [5.0, 8.0, 12.0], "drift")["point"] == [15.5, 19.0]
+    assert "more accurate than TimesFM" in _method_note({}, out["centre"])
