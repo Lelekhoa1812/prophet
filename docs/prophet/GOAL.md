@@ -290,8 +290,9 @@ Open: item 10 (the plan horizon is not compared with the requested horizon; need
 record), and the build items (MinT reconciliation, the equal-weight blend as a centre rule, and a live `panel_backtest` on a
 real panel).
 
-Known limit: a space at the exact point where a free-text reply is cut is lost on continuation, because the cleaning step
-trims it. A mid-word cut joins correctly.
+Fixed (2026-11-22, `fx-clean-text`, commit 5e9ad9d): a continuation keeps the one real space at a word-boundary cut and the
+line break at a line-boundary cut. A mid-word cut still joins directly. Not verified against the live model's continuation
+spacing, which needs a live run that cuts a reply.
 
 Licence wording: locked as a permanent rule (2026-11-22). Licence and research-use wording lives only in Markdown documents;
 `tests/prophet_agent/test_licence_wording_guard.py` enforces it. The prompt and skill scrub is done. `evaluator.v9` is the
