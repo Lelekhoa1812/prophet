@@ -115,6 +115,20 @@ MAX_ASKS = 8              # questions a mission may put to the person; past this
 SUB_STEPS = 14            # default step budget of a delegated sub-agent
 BRANCH_BLOCK = 100_000    # step numbers reserved per plan step for parallel sub-agents, and per agent within it
 BRANCH_STRIDE = 20_000
+# The horizon a goal asks for: "next 20 trading days", "60 days ahead", "horizon of 12 periods" (digits only). Units are
+# read as written; converting them to the series' own periods needs the series step (see horizon_checks).
+HORIZON_REQUEST = re.compile(
+    r"\b(?:next|horizon of|ahead)\s+(\d{1,4})[\s-]*(trading\s+days?|business\s+days?|days?|weeks?|months?|quarters?|years?"
+    r"|periods?|steps?)\b"
+    r"|\b(\d{1,4})[\s-]+(trading\s+days?|business\s+days?|days?|weeks?|months?|quarters?|years?|periods?|steps?)\s+"
+    r"(?:ahead|horizon)\b", re.I)
+HORIZON_LABELS = {"period": "periods", "trading_day": "trading days", "day": "days", "week": "weeks", "month": "months",
+                  "quarter": "quarters", "year": "years"}
+UNIT_DAYS = {"day": 1.0, "trading_day": 7.0 / 5, "week": 7.0, "month": 365.25 / 12, "quarter": 365.25 / 4, "year": 365.25}
+SERIES_STEPS = {"daily": 1.0, "day": 1.0, "weekly": 7.0, "week": 7.0, "monthly": 365.25 / 12, "quarterly": 365.25 / 4,
+                "yearly": 365.25, "annual": 365.25}
+CALENDAR_STEPS = frozenset({"monthly", "quarterly", "yearly", "annual"})   # periods that follow the calendar, not a fixed length
+STEP_TEXT = re.compile(r"(\d+(?:\.\d+)?)\s*days?(?:\s+00:00:00)?")         # the profile's text for a regular step: "7 days 00:00:00"
 
 
 @dataclass
@@ -1012,6 +1026,141 @@ def _delegate(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: Goa
     return results
 
 
+def _horizon_unit(text: str) -> str:
+    """The unit a horizon phrase names, as one of the keys of HORIZON_LABELS."""
+    t = text.lower()
+    if t.startswith(("trading", "business")):
+        return "trading_day"
+    if t.startswith(("period", "step")):
+        return "period"
+    for unit in ("day", "week", "month", "quarter", "year"):
+        if t.startswith(unit):
+            return unit
+    return "period"
+
+
+def requested_horizon(goal: str) -> tuple[int, str] | None:
+    """The horizon the goal asks for, as (count, unit), or None when it states none or states more than one.
+
+    Motivation vs Logic
+    Motivation: "next 20 trading days" is the span the person wants a forecast over. A plan that forecasts 14 steps answers
+    a different question, and nothing compared the two (audit item 10, 2026-11-22).
+    Logic: read the phrasings people use with digits ("next N unit", "N unit ahead", "horizon of N unit"). Word numbers are
+    not read. Two different horizons in one goal are ambiguous, so none is returned and no comparison is made: that is a
+    decision for the person, not a guess.
+    """
+    found = set()
+    for m in HORIZON_REQUEST.finditer(goal or ""):
+        found.add((int(m.group(1) or m.group(3)), _horizon_unit(m.group(2) or m.group(4))))
+    if len(found) != 1:
+        return None
+    count, unit = next(iter(found))
+    return (count, unit) if count >= 1 else None
+
+
+def _plan_horizon(history: list[dict]) -> tuple[int, dict] | None:
+    """The horizon of the forecast that stands (the newest single-series one) and its record. None when no such forecast
+    has run. A panel pack is skipped: it holds several series and has no horizon of its own.
+
+    Motivation vs Logic
+    Motivation: the check must read the horizon the plan actually used, which is the one TimesFM was given, not the one the
+    planner says it meant to use.
+    Logic: the record's configuration holds the horizon TimesFM ran; if a record does not carry it, the call's own argument
+    is the next source.
+    """
+    latest = None
+    for h in history:
+        rec = contracts._forecast_record(h) if isinstance(h, dict) else None
+        if rec is not None and not rec.get("panel"):
+            latest = (h, rec)
+    if latest is None:
+        return None
+    h, rec = latest
+    cfg = rec.get("config") if isinstance(rec.get("config"), dict) else {}
+    horizon = cfg.get("horizon")
+    if not (isinstance(horizon, int) and not isinstance(horizon, bool)):
+        args = h.get("args") if isinstance(h.get("args"), dict) else {}
+        horizon = args.get("horizon")
+    if not (isinstance(horizon, int) and not isinstance(horizon, bool)) or horizon < 1:
+        return None
+    return horizon, rec
+
+
+def _series_step(rec: dict) -> tuple[float, bool] | None:
+    """The series step in days, and whether it is a calendar step (monthly, quarterly, yearly). None when the forecast record
+    does not state a usable step.
+
+    Motivation vs Logic
+    Motivation: "6 weeks" is 6 periods of a weekly series and 42 of a daily one. Without the step the request cannot be turned
+    into the periods the forecast runs in.
+    Logic: accept a step name ("weekly"), the profile's own text ("7 days 00:00:00") or a number of days. Anything else is
+    no step at all, so the caller reports the comparison as not made rather than guessing one.
+    """
+    cfg = rec.get("config") if isinstance(rec.get("config"), dict) else {}
+    step = cfg.get("series_step", rec.get("series_step"))
+    if isinstance(step, bool):
+        return None
+    if isinstance(step, (int, float)):
+        return (float(step), False) if 0 < step < 1e6 else None
+    if not isinstance(step, str):
+        return None
+    text = step.strip().lower()
+    if text in SERIES_STEPS:
+        return SERIES_STEPS[text], text in CALENDAR_STEPS
+    m = STEP_TEXT.fullmatch(text)
+    if m and 0 < float(m.group(1)) < 1e6:
+        return float(m.group(1)), False
+    return None
+
+
+def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
+    """The check that the forecast that stands runs over the horizon the goal asks for. Empty when the goal states no horizon
+    or no forecast has run: the check is left out, not reported as passing.
+
+    Motivation vs Logic
+    Motivation: before this, a plan of 14 steps for a request of 20 trading days could finish as "met", because no check put
+    the plan's horizon beside the requested one. The mismatch has to be visible and has to be answered.
+    Logic: a request in periods must equal the forecast's horizon. A calendar request is converted with the series step, and a
+    daily series reads one period per trading day. A mismatch is a block: the finish is refused and the planner must forecast
+    the requested span. A calendar request with no recorded step cannot be converted; that is a warning the answer carries,
+    not a block, so every calendar forecast is not refused for a field the record does not yet hold.
+    """
+    request = requested_horizon(goal)
+    plan = _plan_horizon(history)
+    if request is None or plan is None:
+        return []
+    count, unit = request
+    horizon, rec = plan
+    label = HORIZON_LABELS[unit] if count != 1 else HORIZON_LABELS[unit].rstrip("s")
+    asked = f"the request asks for {count} {label}"
+    if unit == "period":
+        expected, slack = float(count), 0.5
+    else:
+        step = _series_step(rec)
+        if step is None:
+            return [contracts._check("horizon_matches_request", False,
+                                     f"{asked}, but the series step is not recorded, so the request cannot be converted into "
+                                     f"periods; the forecast runs {horizon} periods", "warn")]
+        step_days, calendar = step
+        if unit == "trading_day" and step_days == 1.0:
+            expected = float(count)
+        else:
+            expected = count * UNIT_DAYS[unit] / step_days
+        # A calendar step lines up with the calendar; a fixed-length step cannot, since month lengths vary by a day or two.
+        slack = 0.5 if calendar or unit not in ("month", "quarter", "year") else 1.0
+    ok = abs(expected - horizon) <= slack
+    detail = f"{asked}, which is {expected:.1f} periods at the series step; the forecast runs {horizon} periods"
+    if not ok:
+        detail += ", so the plan must forecast the requested span"
+    return [contracts._check("horizon_matches_request", ok, detail, "block")]
+
+
+def horizon_note(goal: str, history: list[dict]) -> str | None:
+    """The failing horizon checks as one sentence for the person, or None when every check holds or none applies."""
+    failing = [c for c in horizon_checks(goal, history) if not c["ok"]]
+    return ("Horizon check (computed): " + contracts.summarise(failing)) if failing else None
+
+
 def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfig, context: str,
          history: list[dict]) -> dict:
     """The loop itself. Used for the goal and, recursively with depth 1, for a delegated sub-agent."""
@@ -1057,6 +1206,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
                                        external=bool(EXTERNAL_GOAL.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
+            if (horizon_line := horizon_note(goal, history)):
+                note += "\n\n" + horizon_line       # the planner sees a mismatch while it can still forecast the right span
             if (short := _short_calls_note(cfg, history, items)):
                 note += "\n\n" + short
             done_now, calls_now = sum(it.get("status") == "done" for it in items), _calls_used(history)
@@ -1184,7 +1335,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                         "reason": "The analysis finished but no written answer was produced.", "evidence": history}
             # A model saying it is finished is a claim; the checks run on the evidence. A blocking failure goes back to the
             # planner as work to do, at most MAX_CONTRACT_BLOCKS times, then the answer leaves labelled partial.
-            blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT))
+            # The horizon check is the goal's own (the request is in the goal text), so it runs for the goal and not for a
+            # delegated sub-agent, whose brief may name a span of its own.
+            horizon = horizon_checks(goal, history) if cfg.depth == 0 else []
+            blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT) + horizon)
             if blocked and contract_blocks < MAX_CONTRACT_BLOCKS and not last and not out_of_calls and not cfg.finish_now:
                 contract_blocks += 1
                 history.append({"kind": "evaluation", "verdict": "not_met", "contract": [c["name"] for c in blocked],
@@ -1345,6 +1499,10 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
             if removed:
                 result = {**result, "answer": checked, "outside_removed": removed}
         result = _ground_result(result, history + _web_evidence(ctx), goal)
+        # A horizon the plan did not use is a note the answer carries, whatever the status: a partial answer names it too.
+        hz_note = horizon_note(goal, history)
+        if hz_note and isinstance(result.get("answer"), str) and result["answer"].strip() and hz_note not in result["answer"]:
+            result = {**result, "answer": result["answer"].rstrip() + "\n\n" + hz_note}
         trust = contracts.trust_statement(history)
         if trust and isinstance(result.get("answer"), str) and result["answer"].strip() and "Accuracy check (computed" not in result["answer"]:
             # Written by code from the stored backtest, after grounding: the figures in it are the ledger's own.
