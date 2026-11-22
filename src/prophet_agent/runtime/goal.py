@@ -110,6 +110,7 @@ MUST_NOT_CHANGE = ("synthetic or expected numbers are never presented as observe
 STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "impossible": "impossible", "stalled": "stalled",
                 "checkpoint": "budget_part_spent"}
 MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
+REPAIR_CALLS = 8          # one extra allowance, granted once, when a blocked answer meets a spent tool budget (2026-11-22)
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 MAX_ASKS = 8              # questions a mission may put to the person; past this the work decides with what it has
 SUB_STEPS = 14            # default step budget of a delegated sub-agent
@@ -1185,6 +1186,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     stuck = None                       # (next checklist item, calls since the last newly ticked item)
     rescue = False                     # set by the first stall: the next step hands the stuck item to a fresh analyst
     contract_blocks = 0       # times a deterministic check sent a "met" answer back for more work
+    repair_granted = False    # the one repair allowance, granted when a blocked answer met a spent tool budget
     for i in range(cfg.end):
         if i and i % seg_len == 0:
             # A new part of the work starts here. The marker is an observation, so the planner and the replay see it.
@@ -1339,6 +1341,22 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # delegated sub-agent, whose brief may name a span of its own.
             horizon = horizon_checks(goal, history) if cfg.depth == 0 else []
             blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT) + horizon)
+            if (blocked and out_of_calls and not repair_granted and cfg.depth == 0 and cfg.tool_budget is not None
+                    and contract_blocks < MAX_CONTRACT_BLOCKS and not last and not cfg.finish_now):
+                # The tool budget is spent, so the fix could not run and the answer would leave partial for want of one call.
+                # Live (WTI rep2 and retail rep1, 2026-11-22) both blocked answers met a spent budget. One allowance, for this
+                # fix only, goes to the config and to the runtime's own limit, so the planner's notes and the enforcement agree.
+                repair_granted = True
+                cfg.tool_budget += REPAIR_CALLS
+                runtime_budget = getattr(getattr(ctx, "rt", None), "budget", None)
+                if isinstance(runtime_budget, dict) and runtime_budget.get("max_tool_calls") is not None:
+                    runtime_budget["max_tool_calls"] = int(runtime_budget["max_tool_calls"]) + REPAIR_CALLS
+                contract_blocks += 1
+                history.append({"kind": "evaluation", "verdict": "not_met", "contract": [c["name"] for c in blocked],
+                                "missing": "A required check failed on the evidence: " + contracts.summarise(blocked)
+                                + f". Fix the cause with a tool call before finishing. A repair allowance of {REPAIR_CALLS} "
+                                "tool calls was granted for this fix only."})
+                continue
             if blocked and contract_blocks < MAX_CONTRACT_BLOCKS and not last and not out_of_calls and not cfg.finish_now:
                 contract_blocks += 1
                 history.append({"kind": "evaluation", "verdict": "not_met", "contract": [c["name"] for c in blocked],

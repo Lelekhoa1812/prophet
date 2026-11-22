@@ -863,3 +863,17 @@ def test_a_sub_agent_gets_the_step_budget_its_type_declares(store, monkeypatch):
     _, out = run(store, goal_program("g", {"a": _tool("a")}, brain))
     assert out["result"]["status"] == "met"
     assert agents.TYPES["general"].steps in budgets, budgets
+
+
+def test_a_blocked_answer_meeting_a_spent_tool_budget_gets_one_repair_allowance(store):
+    # Live (WTI rep2, retail rep1, 2026-11-22): the answer was blocked after the 20-call allowance was spent, so the fix
+    # never ran and the answer left partial. One repair allowance lets the planner make the missing call and finish.
+    # The spent budget forces a finish without asking the planner, so the scripted planner is first asked after the
+    # repair allowance is granted: it runs the missing backtest, then finishes.
+    brain = ScriptedBrain(
+        plans=[call("sandbox_python"), call("timesfm_forecast"), call("backtest_series"), finish()],
+        evals=[met("forecast 1, 2, 3"), met("forecast 1, 2, 3")])
+    _, out = run(store, goal_program("forecast", _gate_tools(), brain, GoalConfig(max_iterations=10, tool_budget=2)))
+    assert out["result"]["status"] == "met", out["result"].get("contract_failures")
+    assert brain.calls["plan"] == 4, "the blocked finish got a repair call, not a partial stop"
+    assert any("repair allowance" in str(h.get("missing", "")) for h in out["result"]["evidence"])
