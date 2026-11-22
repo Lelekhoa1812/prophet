@@ -232,4 +232,8 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             "no_clear_difference."
             + (" 'timesfm' is the configured run (see control); 'timesfm_default' is the same model with no control. "
                "configured_vs_default_pct above 0 means the configuration helped on these windows." if configured else ""))
+    from prophet_agent.forecast.randomwalk import random_walk_test
+    rw = random_walk_test(x)
+    if rw is not None:
+        out["random_walk"] = rw      # whether the series' changes are predictable at all, judged on the whole history
     return out

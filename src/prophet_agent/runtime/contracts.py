@@ -562,7 +562,8 @@ def trust_facts(history) -> dict | None:
     tf, base = (models.get("timesfm") or {}).get("mase"), (models.get(best) or {}).get("mase") if best else None
     facts = {"origins": bt.get("origins") or bt.get("n_origins"), "horizon": bt.get("horizon"), "timesfm_mase": tf,
              "best_baseline": best, "baseline_mase": base, "gain_pct": bt.get("timesfm_vs_best_baseline_pct"),
-             "backtest_coverage": bt.get("timesfm_range_coverage_80"), "verdict": bt.get("verdict")}
+             "backtest_coverage": bt.get("timesfm_range_coverage_80"), "verdict": bt.get("verdict"),
+             "random_walk": (bt.get("random_walk") or {}).get("verdict")}
     cal = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "calibrate_intervals"), dict)
                 and "heldout_coverage_raw" in r), None)
     if cal is not None:
@@ -596,6 +597,9 @@ def trust_statement(history) -> str:
         call = f" TimesFM was {abs(f['gain_pct']):.1f}% more accurate." if isinstance(f.get("gain_pct"), (int, float)) else ""
     else:
         call = " The two are not distinguishable over this many windows, so the centre line is no better than the simple rule."
+    if f.get("random_walk") == "consistent_with_random_walk":
+        call += (" A variance-ratio test finds the series' changes indistinguishable from a random walk, so no method is "
+                 "expected to call its direction; read the range, not the line.")
     rng = f" In that backtest the 10-90% range held {_pct(f.get('backtest_coverage'))} of outcomes (target 80%)."
     if f.get("heldout_raw") is not None:
         used = "the calibrated range is used" if f.get("calibration") == "use_calibrated" else "the raw range is kept"
