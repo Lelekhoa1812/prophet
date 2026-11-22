@@ -404,8 +404,9 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool]) -> dic
                                   f"{panel['time']!r}, value columns {panel['values']}. Take the entities ranked {lo} to {hi} in "
                                   f"sorted order of {panel['entity']!r} (print their names first). For each one separately: "
                                   "profile coverage and gaps, zeros, outliers and level shifts, seasonality and trend, and how "
-                                  "it differs from the others in your slice. Prepare each as a regular series (gaps filled by "
-                                  "interpolation, never zero) and save them together with pl.save_series({name: series}, "
+                                  "it differs from the others in your slice. Prepare them with `series, report = pl.panel(df_slice, "
+                                  f"{panel['entity']!r}, {panel['time']!r}, <value column>)` (gaps filled by interpolation, "
+                                  "never zero), print the report table, and save them with pl.save_panel(series, "
                                   "'out/series.json').",
                           "deliverable": "A table, one row per entity: rows, first and last date, missing share, gaps filled, "
                                          "outliers, level shifts with dates, dominant period, and one line on what is unusual; "
