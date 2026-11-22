@@ -78,7 +78,8 @@ def test_the_pack_gives_the_total_a_range_between_independent_and_together():
     fc = {"point": [100.0] * 4, "quantiles": {"0.1": [90.0] * 4, "0.9": [110.0] * 4}}
     r = total_range(fc)
     assert r["centre"] == 400.0
-    assert r["if_days_miss_together"] == {"q10": 360.0, "q90": 440.0}          # the edges add
+    assert r["if_days_miss_together"] == {"q10": 360.0, "q90": 440.0, "mean_q10": 90.0, "mean_q90": 110.0}   # the edges add
     # four equal days: sd 7.80 each, total sd 15.6, 80% half-width 20.0: half of the together case
-    assert r["if_days_miss_independently"] == {"q10": 380.0, "q90": 420.0}
+    assert r["if_days_miss_independently"] == {"q10": 380.0, "q90": 420.0, "mean_q10": 95.0, "mean_q90": 105.0}
+    assert r["mean_per_step"] == 100.0 and r["steps"] == 4
     assert total_range({}) is None

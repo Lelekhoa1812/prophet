@@ -795,9 +795,37 @@ def _plan_messages(goal: str, tools: dict[str, Tool], history: list[dict], memo:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+MAX_ASKED = 5
+
+
+def asked_questions(goal: str) -> list[str]:
+    """The questions the person wrote in the goal, in their order: each sentence that ends with a question mark.
+
+    Live retail_biz (2026-11-23): "Sales feel like they've been slipping lately. Is that real, or just the usual ups and
+    downs? And what should I expect for next month?" The answer was a forecast report and never said whether the slip was
+    real. Questions a person asks are what the answer is judged by first."""
+    units = re.split(r"(?<=[.!?])\s+", " ".join((goal or "").split()))
+    return [u.strip()[:200] for u in units if u.strip().endswith("?")][:MAX_ASKED]
+
+
+def _asked_block(goal: str, for_whom: str) -> str:
+    qs = asked_questions(goal)
+    if not qs:
+        return ""
+    listed = "\n".join(f"{n}. {q}" for n, q in enumerate(qs, 1))
+    if for_whom == "evaluator":
+        return ("\n\nThe person asked these questions. The goal is met only when the evidence answers each one directly "
+                "(a yes or no, a number, or a plain statement), not only the forecast around it:\n" + listed)
+    if for_whom == "composer":
+        return ("\n\nThe person asked these questions. Open the answer by answering each one directly, in their order and in "
+                "plain words, from the evidence; say so when the evidence cannot answer one:\n" + listed)
+    return "Questions the person asked (the answer must address each one with evidence):\n" + listed
+
+
 def _eval_messages(goal: str, history: list[dict], memo: Memo, context: str = "") -> list[dict]:
     system = prompts.current("evaluator").text
-    user = f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
+    user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
+            + _asked_block(goal, "evaluator"))
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -847,7 +875,8 @@ def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, 
                    "do not restate coverage or MASE figures that differ from it, and never call the forecast better than a simple rule "
                    "unless these facts say so):\n" + trust + ("\n\n" + outside if outside else ""))
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
-            f"\n\n{outside + chr(10) + chr(10) if outside else ''}Draft (the content to keep; its formatting was lost):\n{draft}")
+            f"\n\n{outside + chr(10) + chr(10) if outside else ''}Draft (the content to keep; its formatting was lost):\n{draft}"
+            + _asked_block(goal, "composer"))
     if bad:
         user += (f"\n\nThese figures in the draft do not appear in the evidence: {', '.join(bad)}. Remove each of them, "
                  "row numbers included. Describe a row in words if the evidence gives no number for it.")
@@ -1374,6 +1403,80 @@ def _series_step(rec: dict) -> tuple[float, bool] | None:
     return None
 
 
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+          "december")
+NAMED_MONTH = re.compile(r"\b(?:all of|for|in|during|through|over|the month of|until|to the end of)\s+(" + "|".join(MONTHS)
+                         + r")(?:\s+(\d{4}))?\b", re.I)
+NEXT_MONTH = re.compile(r"\bnext (?:calendar )?month\b", re.I)
+WINDOW_SLACK_DAYS = 4      # a trading-day series has no weekend or holiday rows, so its last date can fall a few days short
+
+
+def _month_end(year: int, month: int):
+    import calendar
+    import datetime as dt
+    return dt.date(year, month, calendar.monthrange(year, month)[1])
+
+
+def requested_window(goal: str, history: list[dict]) -> tuple[str, Any] | None:
+    """The calendar month the person asked about, as (label, last date), read from the goal and from their answers to
+    questions. "Next month" is the month after the data's last date; a named month is the next one that ends after it.
+    None when no such month is named, or the data's last date is unknown.
+
+    Live wti_budget (2026-11-23): asked for "next month", the person answered "All of December 2026"; the plan forecast 21
+    trading days from 18 November, which end on 16 December, and the answer said the second half was not forecast."""
+    import datetime as dt
+    end = _data_facts(history).get("data_end")
+    if not end:
+        return None
+    last = dt.date.fromisoformat(end)
+    from .grounding import _as_text
+    texts = [goal or ""] + [_as_text(h.get("answers")) for h in history
+                            if h.get("kind") in ("ask_user", "evaluator_question") and h.get("answers")]
+    found = None
+    for text in texts:                                   # the person's answer, given later, wins over the goal's words
+        for m in NAMED_MONTH.finditer(text):
+            month = MONTHS.index(m.group(1).lower()) + 1
+            year = int(m.group(2)) if m.group(2) else last.year
+            if not m.group(2) and _month_end(year, month) <= last:
+                year += 1
+            if _month_end(year, month) > last:
+                found = (f"{m.group(1).capitalize()} {year}", _month_end(year, month))
+        if NEXT_MONTH.search(text) and found is None:
+            y, mo = (last.year + 1, 1) if last.month == 12 else (last.year, last.month + 1)
+            found = (f"next month ({MONTHS[mo - 1].capitalize()} {y})", _month_end(y, mo))
+    return found
+
+
+def _forecast_last_date(history: list[dict]):
+    """The date of the last forecast step in the newest pack's table, or None when it has no dates."""
+    import datetime as dt
+    for h in reversed(history):
+        res = contracts._ok_result(h, "forecast_report") if isinstance(h, dict) else None
+        rows = ((res or {}).get("table") or {}).get("rows") if isinstance(res, dict) else None
+        if rows:
+            try:
+                return dt.date.fromisoformat(str(rows[-1]["date"])[:10])
+            except (KeyError, TypeError, ValueError):
+                return None
+    return None
+
+
+def window_checks(goal: str, history: list[dict]) -> list[dict]:
+    """The pack reaches the end of the calendar month the person asked about. A block: the plan must forecast that far."""
+    window = requested_window(goal, history)
+    last = _forecast_last_date(history)
+    if window is None or last is None:
+        return []
+    label, end = window
+    import datetime as dt
+    ok = last >= end - dt.timedelta(days=WINDOW_SLACK_DAYS)
+    detail = f"the request covers {label}, which ends {end.isoformat()}; the forecast's last date is {last.isoformat()}"
+    if not ok:
+        detail += (". Forecast through the end of that month (count the steps from the data's last date), then report the "
+                   "figures for that month's dates only")
+    return [contracts._check("window_matches_request", ok, detail, "block")]
+
+
 def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
     """The check that the forecast that stands runs over the horizon the goal asks for. Empty when the goal states no horizon
     or no forecast has run: the check is left out, not reported as passing.
@@ -1386,8 +1489,11 @@ def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
     the requested span. A calendar request with no recorded step cannot be converted; that is a warning the answer carries,
     not a block, so every calendar forecast is not refused for a field the record does not yet hold.
     """
+    window = window_checks(goal, history)
     request = requested_horizon(goal)
     plan = _plan_horizon(history)
+    if window:
+        return window          # a calendar month asked for by name is the span; "next month" counted in days is not
     if request is None or plan is None:
         return []
     count, unit = request
@@ -1469,6 +1575,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
                                        external=bool(EXTERNAL_GOAL.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
+            if (asked := _asked_block(goal, "planner")):
+                note += "\n\n" + asked
             if (horizon_line := horizon_note(goal, history)):
                 note += "\n\n" + horizon_line       # the planner sees a mismatch while it can still forecast the right span
             if (short := _short_calls_note(cfg, history, items)):

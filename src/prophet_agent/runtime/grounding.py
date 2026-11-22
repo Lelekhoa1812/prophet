@@ -173,7 +173,20 @@ def evidence_text(history: list, goal: str) -> str:
     """What a figure may be checked against: what the tools returned, what the person answered, and the goal they
     wrote. Not the model's own words. Its tool arguments, rationale, questions and draft reasons are excluded, because a
     model that checks its figures against its own output would verify any number it made up."""
-    return "\n".join([goal or "", *_observed(history)])
+    return "\n".join([goal or "", *_observed(history), *_computed(history)])
+
+
+def _computed(history: list):
+    """Figures code computes from stored results and appends to the answer itself: the measured range of the horizon total.
+    They are the ledger's own numbers, so an answer that repeats them is grounded. Live retail_biz (2026-11-23): the
+    appended range 777,152 to 1,137,370 was flagged as unverified, and the run ended partial for it."""
+    from prophet_agent.runtime import contracts      # here, not at import: contracts imports this module
+    try:
+        rng = contracts.measured_total_range(history)
+    except Exception:
+        return
+    if rng:
+        yield " ".join(f"{rng[k]:,.0f} {rng[k]:.2f}" for k in ("q10", "q90", "centre", "mean", "mean_q10", "mean_q90"))
 
 
 def unverified(answer: str, history: list, goal: str) -> list[str]:
@@ -307,10 +320,16 @@ _NO_BEATS = re.compile(r"\bno (?:other |simple )?(?:model|method|rule|baseline|f
                        r"|is more accurate than)\s+(.*)", re.I)
 
 
+def _plain(text: str) -> str:
+    """Accents dropped, one letter for one letter: "naïve" reads as "naive" (live retail_biz wrote "seasonal naïve")."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c))
+
+
 def baselines_named(text: str) -> list[str]:
     """The simple rules a text names, in order. A longer name is blanked first, so "seasonal naive" is not also "naive"."""
     found: list[tuple[int, str]] = []
-    rest = text
+    rest = _plain(text)
     for name, pat in _BASELINE_NAMES:
         for m in re.finditer(pat, rest, re.I):
             found.append((m.start(), name))
@@ -323,7 +342,7 @@ def claimed_best_baselines(answer: str) -> list[tuple[str, str]]:
     exactly one rule. "No model beats naive" claims naive is best. A negated claim, or a sentence that names two rules, is
     left out: it says nothing this check can settle."""
     out: list[tuple[str, str]] = []
-    for unit in sentences(answer):
+    for unit in sentences(_plain(answer)):
         beats = _NO_BEATS.search(unit)
         if beats:
             names = set(baselines_named(beats.group(1)))

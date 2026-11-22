@@ -552,9 +552,15 @@ def total_range(fc: dict) -> dict | None:
         centre = sum(float(v) for v in point)
         sd = [(float(h) - float(l)) / (2 * Z90) for l, h in zip(lo, hi)]
         spread = Z90 * sum(v * v for v in sd) ** 0.5
-        return {"centre": round(centre, 2),
-                "if_days_miss_independently": {"q10": round(centre - spread, 2), "q90": round(centre + spread, 2)},
-                "if_days_miss_together": {"q10": round(sum(float(v) for v in lo), 2), "q90": round(sum(float(v) for v in hi), 2)},
+        n = len(point)
+        # The average over the horizon is the total over the step count, and so is its range: an average's range is not the
+        # mean of the daily ranges (live wti_budget averaged the daily bounds by hand, and the figure could not be grounded).
+        return {"centre": round(centre, 2), "steps": n, "mean_per_step": round(centre / n, 2),
+                "if_days_miss_independently": {"q10": round(centre - spread, 2), "q90": round(centre + spread, 2),
+                                               "mean_q10": round((centre - spread) / n, 2), "mean_q90": round((centre + spread) / n, 2)},
+                "if_days_miss_together": {"q10": round(sum(float(v) for v in lo), 2), "q90": round(sum(float(v) for v in hi), 2),
+                                          "mean_q10": round(sum(float(v) for v in lo) / n, 2),
+                                          "mean_q90": round(sum(float(v) for v in hi) / n, 2)},
                 "note": "the 80 percent range of the total, under two assumptions (days move together; days move independently), lies between these two bounds; the edges of different days do not simply add"}
     except (KeyError, TypeError, ValueError):
         return None

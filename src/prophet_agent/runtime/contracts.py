@@ -1213,6 +1213,7 @@ def _measured_total(history) -> tuple[dict, int] | None:
         return None
     half = TOTAL_Z90 * (ratio * sd2) ** 0.5
     return ({"q10": centre - half, "q90": centre + half, "centre": centre, "variance_ratio": ratio,
+             "mean": centre / horizon, "mean_q10": (centre - half) / horizon, "mean_q90": (centre + half) / horizon,
              "origins": te.get("origins"), "held_measured": te.get("held_measured")}, horizon)
 
 
@@ -1232,7 +1233,8 @@ def trust_statement(history) -> str:
     found = _measured_total(history)
     if found is not None:
         mr, h = found
-        extra = (f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f}, using the day-to-day error correlation "
+        extra = (f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f} (per step on average: "
+                 f"{mr['mean']:,.2f}, range {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f}), using the day-to-day error correlation "
                  f"measured over {mr['origins']} past windows; built the same way, the range held the actual total in "
                  f"{mr['held_measured']} of {mr['origins']} windows.")
     if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
