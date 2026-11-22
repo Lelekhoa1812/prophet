@@ -1562,6 +1562,43 @@ def check_ledger_answer(answer, history, run_root) -> dict | None:
     return None
 
 
+HEALTH_WORDS = ("flat_expected", "flat_unexpected", "check")
+HEALTH_TOKEN = re.compile(r"\b(flat[_ ]expected|flat[_ ]unexpected)\b|\b(check)\b(?= verdict| health)", re.I)
+
+
+def _series_health_named(text: str, obs: list) -> dict | None:
+    """A sentence that gives one panel series a health verdict the pack did not give it. Blocks.
+
+    Live Beijing rep9 (measured, 2026-11-23): "Two stations (Nongzhanguan, Huairou) received a flat_expected verdict" while the
+    pack, and the answer's own table, gave Huairou "ok". Only a sentence with one non-ok verdict and no "ok" in it is read, so a
+    sentence contrasting two verdicts is left alone."""
+    pack = next(((h, r) for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict) and r.get("n_series")),
+                None)
+    if pack is None:
+        return None
+    h, res = pack
+    full = h.get("full") if isinstance(h.get("full"), dict) else {}
+    fs = (full.get("forecast") or {}).get("series") if isinstance(full.get("forecast"), dict) else None
+    health = ({str(n): (fc.get("health") or {}).get("verdict") for n, fc in fs.items() if isinstance(fc, dict)}
+              if isinstance(fs, dict) and fs else
+              {str(n): ln.get("health") for n, ln in (res.get("series") or {}).items() if isinstance(ln, dict)})
+    if not health:
+        return None
+    for s in grounding.sentences(text):
+        if s.lstrip().startswith("|"):
+            continue                                   # a table row states its own series' cell
+        tokens = {m.group(0).lower().replace(" ", "_") for m in HEALTH_TOKEN.finditer(s)}
+        if len(tokens) != 1 or re.search(r"\bok\b", s, re.I):
+            continue
+        said = tokens.pop()
+        wrong = [n for n in health if re.search(rf"\b{re.escape(n)}\b", s) and health[n] != said]
+        if wrong:
+            return _check("answer_series_health_matches", False,
+                          f"the answer gives {', '.join(wrong[:4])} the health verdict {said} ({s[:160]}), but the pack gave "
+                          + "; ".join(f"{n}: {health[n]}" for n in wrong[:4]) + ". State each series' verdict as the pack gives it")
+    return None
+
+
 MAE_WORD = re.compile(r"\bMAE\b", re.I)
 
 
@@ -1720,6 +1757,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(avg)
     if (metric := _metric_named(text, obs)) is not None:
         checks.append(metric)
+    if (health := _series_health_named(text, obs)) is not None:
+        checks.append(health)
 
     withheld = _withheld_totals(obs)
     if withheld:

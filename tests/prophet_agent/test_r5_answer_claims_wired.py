@@ -230,3 +230,16 @@ def test_mase_scores_called_mae_block_unless_a_cell_printed_an_mae():
     assert _named(contracts.check_answer(text.replace("MAE", "MASE"), [bt]), "answer_metric_named") == []
     own = {"kind": "tool", "tool": "sandbox_python", "result": {"stdout": "MAE per model: timesfm 812.4"}}
     assert _named(contracts.check_answer(text, [bt, own]), "answer_metric_named") == []
+
+
+def test_a_series_given_a_health_verdict_the_pack_did_not_give_it_blocks():
+    # live Beijing rep9 (2026-11-23): "Two stations (Nongzhanguan, Huairou) received a flat_expected verdict"; Huairou was ok
+    pack = {"kind": "tool", "tool": "forecast_report", "result": {"n_series": 2, "series": {
+        "Nongzhanguan": {"health": "flat_expected"}, "Huairou": {"health": "ok"}}}}
+    bad = "Two stations (Nongzhanguan, Huairou) received a *flat_expected* verdict."
+    c = _named(contracts.check_answer(bad, [pack]), "answer_series_health_matches")
+    assert len(c) == 1 and not c[0]["ok"] and "Huairou: ok" in c[0]["detail"]
+    for fine in ("Nongzhanguan received a flat_expected verdict.",
+                 "Huairou is ok, while Nongzhanguan is flat_expected.",
+                 "| Huairou | 44 | flat_expected |"):
+        assert _named(contracts.check_answer(fine, [pack]), "answer_series_health_matches") == [], fine
