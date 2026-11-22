@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -38,6 +39,11 @@ AUTO_CONTINUE_PARTS = 2   # parts a mission may start by itself after the first;
 # Statuses a person can continue or answer now from. The two legacy names are missions that stopped at a limit before
 # checkpoints existed; their stored steps are intact, so they resume the same way instead of being stranded.
 RESUMABLE_AT_CHECKPOINT = ("checkpoint", "budget_exhausted", "iteration_budget")
+# After a checkpoint caused by the language model service, the next automatic part waits this long first, doubling with each
+# automatic part and capped at MODEL_SERVICE_WAIT_MAX_S. Live (2026-11-23): during a network outage both automatic parts
+# restarted at once, failed again within seconds, and the missions sat at a checkpoint after the network came back.
+MODEL_SERVICE_WAIT_S = 60.0
+MODEL_SERVICE_WAIT_MAX_S = 300.0
 
 
 class MissionService:
@@ -60,6 +66,8 @@ class MissionService:
         self.datasets = datasets or DatasetStore(Path(db_path).parent / "datasets")
         self.notebooks = Notebooks(self.store, self.datasets, Path(db_path).parent / "notebooks")
         self.goal_cfg = goal_cfg or GoalConfig()
+        self.model_service_wait_s = MODEL_SERVICE_WAIT_S   # 0 in tests
+        self._sleep, self._clock = time.sleep, time.monotonic
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
         # Missions a previous process left running would otherwise block their notebook forever.
@@ -403,6 +411,8 @@ class MissionService:
             self.store.append_event(mission_id, "mission.auto_continue_stopped",
                                     {"reason": "no checklist progress in the last automatic part", "checklist_done": done})
             return None
+        if not self._wait_for_model_service(mission_id, used):
+            return None
         budget["auto_progress"] = done
         budget["auto_continued"] = used + 1
         budget["segment"] = int(budget.get("segment", 0)) + 1
@@ -412,6 +422,23 @@ class MissionService:
         self.store.append_event(mission_id, "mission.auto_continue", {"part": budget["segment"] + 1,
                                                                       "automatic_parts_used": used + 1})
         return self._build_program(self.store.mission(mission_id))
+
+    def _wait_for_model_service(self, mission_id: str, used: int) -> bool:
+        """When the part ended because the language model service failed, wait before the next automatic part, so a short
+        outage does not spend the automatic parts in seconds. False when the mission left its checkpoint meanwhile (the person
+        continued, answered now or cancelled), so this thread starts nothing."""
+        last = next((e for e in reversed(self.store.events(mission_id)) if e["kind"] == "mission.checkpoint"), None)
+        if last is None or (last.get("payload") or {}).get("which") != "model_service" or self.model_service_wait_s <= 0:
+            return True
+        wait = min(self.model_service_wait_s * (2 ** used), MODEL_SERVICE_WAIT_MAX_S)
+        self.store.append_event(mission_id, "mission.auto_continue_waiting",
+                                {"seconds": wait, "reason": "the language model service failed; waiting before trying again"})
+        deadline = self._clock() + wait
+        while (left := deadline - self._clock()) > 0:
+            self._sleep(min(5.0, left))
+            if self.store.mission(mission_id)["status"] not in RESUMABLE_AT_CHECKPOINT:
+                return False
+        return True
 
     def _checklist_done(self, mission_id: str) -> int:
         """Checklist items done at the latest progress event (0 when the mission has none)."""
