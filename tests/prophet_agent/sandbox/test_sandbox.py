@@ -120,3 +120,12 @@ def test_forking_is_refused():
     r = run_python("import os\nos.fork()", timeout_s=5)
     assert not r.ok
     assert "starting processes is blocked" in r.stderr
+
+
+def test_a_read_of_out_name_falls_back_to_the_carried_copy(tmp_path):
+    from prophet_agent.sandbox.runner import run_python
+    src = tmp_path / "scan.json"
+    src.write_text('{"ok": 1}')
+    res = run_python("import json\nprint(json.load(open('out/scan.json'))['ok'])\nprint(open('in/carried/out/scan.json').read())",
+                     inputs={"carried/scan.json": src})
+    assert res.ok and res.stdout.split()[0] == "1", res.stderr

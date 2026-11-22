@@ -91,6 +91,19 @@ def _hook(event, args):
     elif event in ("socket.connect", "socket.bind", "socket.sendto"):
         raise PermissionError("network access is blocked in the sandbox")
 sys.addaudithook(_hook)
+import builtins, io
+_OPEN = builtins.open
+CARRIED = os.path.join(WD, "in", "carried")
+def _open(file, mode="r", *a, **k):
+    # A read of out/<name> or in/carried/out/<name> that does not exist falls back to in/carried/<name>: earlier outputs are
+    # mounted there, and planners write the path they wrote to (live: about 15 failed cells in one mission). Reads only.
+    if isinstance(file, str) and not any(c in mode for c in "wax+") and not os.path.exists(file):
+        alt = os.path.join(CARRIED, os.path.basename(file))
+        if os.path.exists(alt):
+            file = alt
+    return _OPEN(file, mode, *a, **k)
+builtins.open = _open
+io.open = _open
 sys.path.insert(0, os.path.join(WD, "lib"))   # prophet_lib: loaders and profiling helpers
 sys.argv = [TARGET]
 runpy.run_path(TARGET, run_name="__main__")

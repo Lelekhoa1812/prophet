@@ -698,6 +698,31 @@ def _runs_with_outputs(history: list[dict]) -> list[tuple[str, set[str]]]:
     return runs
 
 
+AUTO_CARRY_KINDS = (".json", ".csv", ".parquet", ".txt")
+from prophet_agent.tools.sandbox_tool import MAX_CARRY as AUTO_CARRY_MAX   # never more than the tool accepts
+
+
+def _auto_carry(args: Any, history: list[dict]) -> Any:
+    """Every sandbox run starts with an empty out/. The newest earlier output of each data file (json, csv, parquet, txt) is
+    mounted at in/carried/<file name> automatically, beside whatever the planner carried itself: live missions kept opening
+    out/scan.json or in/carried/scan.json without carrying it (about 15 failed cells in one run). Deterministic from the
+    history, so a replay asks for the same call."""
+    if not isinstance(args, dict):
+        return args
+    newest: dict[str, tuple[str, str]] = {}
+    for run, paths in _runs_with_outputs(history):
+        for p in paths:
+            if p.lower().endswith(AUTO_CARRY_KINDS):
+                newest[p.rsplit("/", 1)[-1]] = (run, p)
+    given = [c for c in args.get("carry") or [] if isinstance(c, dict)]
+    have = {str(c.get("file", "")).rsplit("/", 1)[-1] for c in given}
+    room = max(0, AUTO_CARRY_MAX - len(given))
+    extra = [{"run_id": r, "file": p} for name, (r, p) in sorted(newest.items()) if name not in have][:room]
+    if not extra:
+        return args
+    return {**args, "carry": given + extra}
+
+
 def _repair_source(args: Any, history: list[dict]) -> Any:
     """A planner sometimes writes a run id that never existed (a model copies the shape of an id, not the id). When the
     named run has no such file on disk, the newest run of THIS mission that wrote the file stands in. Runs of other missions
@@ -971,6 +996,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         else:
             name = plan.get("tool", "")
             args = _repair_source(plan.get("args", {}), history)
+            if name == "sandbox_python":
+                args = _auto_carry(args, history)
             if name not in tools:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
             else:

@@ -89,3 +89,16 @@ def test_the_panel_trigger_reads_the_full_profile_from_the_ledger_when_history_h
     assert _harness_plan("Forecast PM2.5 for every station", [compact], TOOLS) is None
     plan = _harness_plan("Forecast PM2.5 for every station", [compact], TOOLS, lambda t: [INSPECT["result"]] if t == "inspect_data" else [])
     assert plan["auto"] == "panel"
+
+
+def test_newest_data_outputs_are_carried_into_every_sandbox_run():
+    from prophet_agent.runtime.goal import _auto_carry
+    h = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True, "run_id": "a" * 32,
+          "outputs": ["out/scan.json (10 bytes)", "out/chart.png (99 bytes)"]}},
+         {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True, "run_id": "b" * 32,
+          "outputs": ["out/scan.json (12 bytes)", "out/series.json (50 bytes)"]}}]
+    out = _auto_carry({"code": "x"}, h)
+    assert {"run_id": "b" * 32, "file": "out/scan.json"} in out["carry"] and len(out["carry"]) == 2   # png not carried
+    mine = _auto_carry({"code": "x", "carry": [{"run_id": "a" * 32, "file": "out/scan.json"}]}, h)
+    assert mine["carry"][0]["run_id"] == "a" * 32 and len(mine["carry"]) == 2      # the planner's choice wins
+    assert _auto_carry({"code": "x"}, []) == {"code": "x"}

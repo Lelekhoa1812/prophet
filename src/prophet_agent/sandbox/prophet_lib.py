@@ -988,7 +988,8 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     return path
 
 
-def load_series(path: str | Path = "in/carried/series.json", name: str | None = None) -> pd.Series | dict[str, pd.Series]:
+def load_series(path: str | Path = "in/carried/series.json", name: str | None = None, run_id: str | None = None,
+                carry: Any = None) -> pd.Series | dict[str, pd.Series]:
     """Read a file written by ``save_series`` back as a pandas Series with its dates as the index (a dict of Series when it holds
     several and no ``name`` is given). Earlier outputs are at in/carried/<file name> (bring them with ``carry``)."""
     obj = json.loads(_resolve_input(path).read_text(encoding="utf-8"))
