@@ -1889,6 +1889,9 @@ def _install_polars_names() -> None:
         pd.Series: {"null_count": series_null_count, "is_null": lambda self: self.isna(),
                     "is_not_null": lambda self: self.notna(), "sort": series_sort},
     }
+    # Not polars, but the same kind of gap: Series.abs() exists, TimedeltaIndex.abs() does not, and "nearest date" code writes
+    # (dates - target).abs().argmin() (live: 6 failed cells in one mission).
+    additions[pd.TimedeltaIndex] = {"abs": lambda self: abs(self)}
     for cls, methods in additions.items():
         for name, fn in methods.items():
             if not hasattr(cls, name):

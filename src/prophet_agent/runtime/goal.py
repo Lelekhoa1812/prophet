@@ -361,7 +361,7 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
     inspected = any(h.get("kind") == "tool" and h.get("tool") in contracts.INSPECTION_TOOLS and not h.get("error") for h in history)
     auto = [h for h in history if h.get("kind") == "subagent" and h.get("auto")]
     kinds = {h.get("auto") for h in auto}
-    if _error_run(history) >= AUTO_REPEAT:
+    if max(_error_run(history), _error_recurrence(history)) >= AUTO_REPEAT:
         code, err = _last_failure(history)
         key = "repeat:" + err
         if key not in kinds and "sandbox_python" in tools:
@@ -679,6 +679,20 @@ def _error_run(history: list[dict]) -> int:
             break
         first, n = sig, n + 1
     return n
+
+
+RECUR_WINDOW = 10   # recent calls of one tool in which a recurring failure is counted
+
+
+def _error_recurrence(history: list[dict], window: int = RECUR_WINDOW) -> int:
+    """How often the newest failure's signature appears among the last ``window`` calls of the same tool, whatever ran in
+    between. Live (WTI): one broken line was resent 8 times between other calls, so a count of failures strictly in a row
+    never reached the hand-over threshold."""
+    calls = [h for h in history if h.get("kind") == "tool"]
+    if not calls or not (sig := _error_signature(calls[-1])):
+        return 0
+    same = [h for h in calls if h.get("tool") == calls[-1].get("tool")][-window:]
+    return sum(_error_signature(h) == sig for h in same)
 
 
 def _runs_with_outputs(history: list[dict]) -> list[tuple[str, set[str]]]:

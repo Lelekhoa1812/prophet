@@ -24,3 +24,20 @@ def test_a_flags_array_explains_a_text_key_read():
     assert flags.sum() >= 1 and flags[30]                       # still an ordinary boolean array
     with pytest.raises(TypeError, match=r"hampel\(\) returned a boolean array of flags.*report keys"):
         flags["is_outlier"]
+
+
+def test_report_aliases_analysts_write_are_answered():
+    import numpy as np
+    import pandas as pd
+    import prophet_stats as ps
+    import prophet_lib  # noqa: F401  installs the pandas additions
+    rng = np.random.default_rng(0)
+    x = np.r_[rng.normal(0, 1, 120), rng.normal(5, 1, 120)]
+    x[30] = 40
+    changes, _ = ps.changepoints(x)
+    c = changes[0]
+    assert c["mean_before"] == c["before_mean"] and c["jump"] == c["shift"] and c["at"] == c["index"]
+    flags, rep = ps.hampel(x)
+    assert rep["outliers"].sum() == rep["count"] == rep["n_outliers"] and rep.get("nope") is None
+    d = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=5)) - pd.Timestamp("2024-01-03")
+    assert int(d.abs().argmin()) == 2

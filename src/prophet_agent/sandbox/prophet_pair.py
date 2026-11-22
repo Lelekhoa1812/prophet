@@ -24,16 +24,31 @@ class ReportDict(dict):
     """A report or summary dict. A missing key raises KeyError that names the keys that exist.
 
     Documented aliases: ``missing_steps`` reads ``filled_periods`` (the number of gap periods filled) and ``blockers`` reads
-    ``blocked`` (True when the scan found a blocker). An alias only answers when its target key is present.
+    ``blocked`` (True when the scan found a blocker); a change point's ``mean_before``, ``mean_after``, ``jump`` and ``at``
+    read ``before_mean``, ``after_mean``, ``shift`` and ``index``; ``n_outliers`` and ``n_flagged`` read ``count``. An alias
+    only answers when its target key is present. When the pair's value is a flag array, ``outliers``, ``flags``, ``mask``
+    and ``outlier_mask`` read it (live: 5 failed cells wrote ``report['outliers']`` after ``ps.hampel``).
     """
 
-    ALIASES = {"missing_steps": "filled_periods", "blockers": "blocked"}
+    ALIASES = {"missing_steps": "filled_periods", "blockers": "blocked", "mean_before": "before_mean",
+               "mean_after": "after_mean", "jump": "shift", "at": "index", "n_outliers": "count", "n_flagged": "count",
+               "date": "label"}
+    FLAG_KEYS = ("outliers", "flags", "mask", "outlier_mask", "is_outlier")
+    _flags: Any = None
 
     def __missing__(self, key: Any) -> Any:
         target = self.ALIASES.get(key) if isinstance(key, str) else None
         if target is not None and target in self:
             return self[target]
+        if key in self.FLAG_KEYS and self._flags is not None:
+            return self._flags
         raise KeyError(f"no key {key!r} in this report; its keys are {sorted(self)}")
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 class ExplainedArray(np.ndarray):
@@ -153,7 +168,13 @@ def wrap_pairs(namespace: dict) -> None:
                     arr._keys = sorted(out[1]) if len(out) > 1 and isinstance(out[1], dict) else []
                     out = (arr, *out[1:])
                 if len(out) > 1 and type(out[1]) is dict:
-                    out = (out[0], ReportDict(out[1]), *out[2:])
+                    rep = ReportDict(out[1])
+                    if isinstance(out[0], np.ndarray) and out[0].dtype == bool:
+                        rep._flags = out[0]
+                    out = (out[0], rep, *out[2:])
+                if out and isinstance(out[0], list) and out[0] and all(type(d) is dict for d in out[0]):
+                    # a list of records (change points, segments): each answers the same aliases and explains a missing key
+                    out = ([ReportDict(d) for d in out[0]], *out[1:])
                 return kind(out)
             return wrapper
         namespace[name] = make(fn, name)

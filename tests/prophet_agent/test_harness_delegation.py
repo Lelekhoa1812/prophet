@@ -40,6 +40,11 @@ def test_five_identical_failures_hand_the_cell_to_a_fresh_analyst_once_per_error
     seen = [FLAT] + [bad] * 5 + [{"kind": "subagent", "agent_type": "analyst", "auto": plan["auto"]}] + [bad] * 5
     assert _harness_plan("Forecast daily sales", seen, TOOLS) is None
     assert _harness_plan("Forecast daily sales", [FLAT] + [bad] * 4, TOOLS) is None
+    good = {"kind": "tool", "tool": "sandbox_python", "args": {"code": "print(1)"}, "result": {"ok": True, "run_id": "b" * 32}}
+    read = {"kind": "tool", "tool": "analyst_skill", "args": {}, "result": {"text": "..."}}
+    mixed = [FLAT] + [bad, good, read, bad, good, bad, read, bad, good, bad]      # live WTI: the same line, between other calls
+    assert _harness_plan("Forecast daily sales", mixed, TOOLS)["auto"].startswith("repeat:")
+    assert _harness_plan("Forecast daily sales", mixed[:-1], TOOLS) is None       # newest call succeeded: nothing to hand over
 
 
 def test_the_accuracy_paragraph_says_when_a_simple_rule_wins():
