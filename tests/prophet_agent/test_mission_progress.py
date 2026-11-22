@@ -296,3 +296,15 @@ def test_calibration_accepts_the_pack_centre_and_says_it_has_no_effect():
     import pytest
     with pytest.raises(ValueError, match="horizon"):          # accepted, so the next check is reached
         _run({"centre": "naive", "values": [1.0] * 50}, "k")
+
+
+def test_idle_calls_name_the_next_item_and_clipped_output_keeps_its_tail():
+    from prophet_agent.runtime.goal import _idle_note
+    from prophet_agent.tools.sandbox_tool import SEEN_STDOUT, observe
+    items = [{"item": "scan", "status": "done"}, {"item": "analysis ledger", "status": "open", "next": True}]
+    assert _idle_note(7, items) == "" and "analysis ledger" in _idle_note(8, items)
+    assert _idle_note(20, [{"item": "scan", "status": "done"}]) == ""
+    text = "HEAD\n" + "x" * 9000 + "\nSUMMARY TABLE"
+    seen = observe({"ok": True, "run_id": "a" * 32, "stdout": text, "outputs": [], "stderr": "", "timed_out": False})
+    assert seen["stdout"].startswith("HEAD") and seen["stdout"].endswith("SUMMARY TABLE") and len(seen["stdout"]) < SEEN_STDOUT + 100
+    assert "Do not re-run" in seen["stdout_note"]

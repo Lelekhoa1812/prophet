@@ -18,6 +18,7 @@ from prophet_agent.tools.series_io import RUN_ID
 
 MAX_CODE_CHARS = 20_000
 SEEN_STDOUT = 3_500
+SEEN_TAIL = 1_200          # of the shown characters, how many come from the end
 SEEN_STDERR = 1_500
 
 
@@ -68,10 +69,18 @@ def make_run(datasets: dict[str, Path] | None = None):
 
 
 def observe(result: dict) -> dict:
-    out = {"ok": result["ok"], "run_id": result["run_id"], "stdout": result["stdout"][:SEEN_STDOUT],
+    text = result["stdout"]
+    if len(text) > SEEN_STDOUT:
+        # Head and tail: a summary table usually prints last. Live (Beijing): cells printed about 9,000 characters, the
+        # planner saw the first 3,500 and re-ran the same profiling about 35 times "to confirm" what was cut.
+        head, tail = text[: SEEN_STDOUT - SEEN_TAIL], text[-SEEN_TAIL:]
+        text = head + f"\n[... {len(result['stdout']) - SEEN_STDOUT} characters cut ...]\n" + tail
+    out = {"ok": result["ok"], "run_id": result["run_id"], "stdout": text,
            "outputs": [f"{o['path']} ({o['bytes']} bytes)" for o in result["outputs"]]}
     if len(result["stdout"]) > SEEN_STDOUT:
-        out["stdout_note"] = f"{len(result['stdout'])} characters; print less or summarise"
+        out["stdout_note"] = (f"{len(result['stdout'])} characters printed; the middle is cut. Do not re-run this cell to see "
+                              "it: save the figures to a file under out/ (csv or json) and print only the lines the next "
+                              "decision needs, one per entity")
     if result["stderr"]:
         out["stderr_tail"] = result["stderr"][-SEEN_STDERR:]
     if result["timed_out"]:

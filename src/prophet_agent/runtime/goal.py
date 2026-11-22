@@ -499,6 +499,20 @@ def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
     return streak, last, kind
 
 
+IDLE_CALLS = 8     # calls without a newly ticked checklist item before the planner is told which item to do next
+
+
+def _idle_note(idle: int, items: list[dict]) -> str:
+    """After IDLE_CALLS calls with no new checklist item ticked, name the next item. Live (Beijing): about 35 profiling cells
+    in a row, each re-checking the last, and the ledger and backtest never ran."""
+    nxt = next((it["item"] for it in items if it.get("next")), None) or \
+        next((it["item"] for it in items if it.get("status") != "done"), None)
+    if idle < IDLE_CALLS or not nxt:
+        return ""
+    return (f"No checklist item has been ticked in the last {idle} calls. What is established is enough to move on: do this "
+            f"next, in one call: {nxt}. Re-running or re-checking an earlier analysis is not progress.")
+
+
 SHORT_CALLS_SLACK = 3    # calls beyond one per open checklist item before the run is told to stop exploring
 
 
@@ -984,6 +998,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     seg_len = cfg.max_iterations
     started = time.time()
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
+    best_done, calls_at_best = -1, 0   # most checklist items ticked so far, and the call count when that was reached
     contract_blocks = 0       # times a deterministic check sent a "met" answer back for more work
     for i in range(cfg.end):
         if i and i % seg_len == 0:
@@ -1008,6 +1023,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             note += "\n\n" + contracts.render_progress(items)
             if (short := _short_calls_note(cfg, history, items)):
                 note += "\n\n" + short
+            done_now, calls_now = sum(it.get("status") == "done" for it in items), _calls_used(history)
+            if done_now > best_done:
+                best_done, calls_at_best = done_now, calls_now
+            if (idle := _idle_note(calls_now - calls_at_best, items)):
+                note += "\n\n" + idle
             _status(ctx, i, history, items, started)
         auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t))
                 if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
