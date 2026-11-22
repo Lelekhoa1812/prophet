@@ -764,6 +764,47 @@ def _baseline_gate(delivered: dict, backtests: list) -> dict:
     return _check("baseline_compared", True, "the forecast was compared with the baselines in a backtest at its horizon")
 
 
+_SHIFT_ENTRY = re.compile(r"shift|break|changepoint", re.I)
+_CAUSAL_DECISION = re.compile(r"correspond|\bregimes?\b|crisis|crash|\bcaused?\b|because|due to|driven by|known (?:event|oil|market)|"
+                              r"lockdown|covid|launch|promotion", re.I)
+_CITED_DECISION = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b|unexplained", re.I)
+_PROMISED_TEST = re.compile(r"\bwill (?:test|run|check|be tested|be run)\b|\bto be (?:tested|run)\b", re.I)
+
+
+def check_ledger_claims(history, run_root) -> list[dict]:
+    """Two checks on the newest saved ledger (A3-04). A shift decision that attributes the shift to a cause must cite a research
+    source id (S1, S2 ...) or a test, or say the shift is unexplained; otherwise it is a warning. A decision that promises a test
+    ("will test ... in control_lab") must find that test run in the mission. Live evidence (measured, audit round 3, A3): WTI rep4
+    named the regimes of five level shifts from memory and promised an ignore_ranges test no run performed. Empty when no ledger
+    was saved or ``run_root`` is unknown."""
+    ledgers = _saved_ledgers(history, run_root) if run_root is not None else []
+    if not ledgers:
+        return []
+    entries = [e for e in ledgers[0] if isinstance(e, dict) and not e.get("superseded")]
+    out: list[dict] = []
+    shifts = [e for e in entries if _SHIFT_ENTRY.search(f"{e.get('stage', '')} {e.get('finding', '')}")]
+    if shifts:
+        bare = [e for e in shifts if _CAUSAL_DECISION.search(str(e.get("decision", "")))
+                and not _CITED_DECISION.search(str(e.get("decision", "")))]
+        if bare:
+            out.append(_check("causal_shift_cited", False,
+                              f"the ledger attributes a shift to a cause with no research source id or test (stage "
+                              f"'{bare[0].get('stage')}'); cite the S-id or the control_lab result, or record the shift as "
+                              "unexplained, kept as observed", "warn"))
+        else:
+            out.append(_check("causal_shift_cited", True, "every shift decision cites a source or a test, or says it is unexplained",
+                              "warn"))
+    promised = [e for e in entries if _PROMISED_TEST.search(str(e.get("decision", "")))]
+    if promised:
+        ran = any(_ok_result(h, "control_lab") is not None or _ok_result(h, "backtest_series") is not None
+                  for h in with_delegated(history if isinstance(history, list) else []))
+        out.append(_check("promised_tests_run", ran,
+                          "the test the ledger promised ran in this mission" if ran else
+                          f"the ledger promises a test ('{str(promised[0].get('decision'))[:120]}') and no control_lab or "
+                          "backtest_series ran; run it, or drop the promise", "warn"))
+    return out
+
+
 OUTLIER_SHARE_RULE = 0.02     # the outliers skill: above about 2% of steps, treat the flags as noise or a broken feed until shown otherwise
 _OUTLIER_TEST = re.compile(r"winsori|robust|replace_outliers|ignore_ranges|control_lab|backtest", re.I)
 _PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
@@ -890,6 +931,7 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
         outliers = check_outlier_share(obs, run_root)
         if outliers is not None:
             checks.append(outliers)
+        checks.extend(check_ledger_claims(obs, run_root))
 
     selection = check_selection(obs)
     if selection is not None:
