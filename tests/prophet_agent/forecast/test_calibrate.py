@@ -128,3 +128,89 @@ def test_ewma_sigma_uses_only_the_history_it_is_given():
     a = np.cumsum(np.ones(50))
     assert cal.ewma_sigma(a) == pytest.approx(1.0)
     assert cal.ewma_sigma(np.r_[a, 1000.0]) > cal.ewma_sigma(a)
+
+
+def _split_conformal_scales(scores, target=0.8, buckets=3):
+    """The plain split-conformal scale per horizon bucket, fitted on every window at once (no adaptation)."""
+    out = []
+    for idx in cal._buckets(scores.shape[1], buckets):
+        cell = np.sort(scores[:, idx].ravel())
+        k = min(cell.size, int(np.ceil((cell.size + 1) * target)))
+        out.append(float(cell[k - 1]))
+    return out
+
+
+def test_aci_scale_follows_errors_that_double_and_ends_above_the_whole_period_scale():
+    """Scores of |N(0,1)| for 60 windows, then the same scores doubled for 60 more. The split-conformal scale fitted on the
+    whole period mixes the two regimes; the adaptive scale moves its alpha down as misses pile up after the jump, so its
+    final scale sits above that whole-period scale."""
+    rng = np.random.default_rng(11)
+    scores = np.vstack([np.abs(rng.normal(0, 1.0, (60, 3))), 2 * np.abs(rng.normal(0, 1.0, (60, 3)))])
+    aci = cal.aci_scales(scores)
+    whole = _split_conformal_scales(scores)
+    assert all(a > w for a, w in zip(aci["scales"], whole)), (aci["scales"], whole)
+    assert min(aci["alpha_final"]) < 0.2, "misses after the jump must push the miscoverage level down"
+    assert all(s >= 1.0 for s in aci["scales"]) and all(0.01 <= a <= 0.5 for a in aci["alpha_final"])
+
+
+def test_aci_on_a_stationary_well_calibrated_stream_keeps_alpha_near_target_and_the_scale_near_split_conformal():
+    """Half-normal scores over 400 windows, so the true 80 percent quantile is 1.2816. ACI's guarantee is on the long-run
+    average miscoverage level, so the test checks the average of each bucket's alpha path (after a burn-in of 50 windows)
+    within 0.03 of 0.2. The final alpha is not held to a tight band: with the fast rate 0.05 it moves by up to 0.04 a window,
+    and on this stream the final alpha ranged 0.10 to 0.30 across buckets, which moves the final scale by up to about 25
+    percent (observed on seeds 1 to 5 and 23, where the worst bucket was 25.1 percent off). The scale tolerance is therefore
+    30 percent; the sampling error of the split-conformal scale itself is about 3 to 4 percent."""
+    rng = np.random.default_rng(23)
+    scores = np.abs(rng.normal(0, 1.0, (400, 3)))
+    aci = cal.aci_scales(scores)
+    whole = _split_conformal_scales(scores)
+    for path in aci["alpha_path"]:
+        assert np.mean(path[50:]) == pytest.approx(0.2, abs=0.03), aci["alpha_path"]
+    for s, w in zip(aci["scales"], whole):
+        assert abs(s - w) / w < 0.30, (aci["scales"], whole)
+
+
+def test_calibrate_on_a_volatility_jump_reports_the_adaptive_coverage_and_never_narrows_the_band():
+    """Calm first 70 percent, then a volatility jump: the model's band ignores the regime. Whatever method is chosen, the
+    adaptive held-out coverage is reported, and the chosen band is never narrower than raw at any step."""
+    rng = np.random.default_rng(13)
+    n = 500
+    sd = np.where(np.arange(n) < int(0.7 * n), 0.3, 3.0)
+    x = 100 + np.cumsum(rng.normal(0, sd))
+    out = cal.calibrate(x, 8, engine=Engine(sd=0.5), n_origins=18)
+    assert out["heldout_coverage_adaptive"] is not None
+    assert 0.0 <= out["heldout_coverage_adaptive"] <= 1.0
+    assert out["method"] in {"quantile_scaling", "ewma_volatility", "adaptive_conformal"}
+    if out["method"] == "adaptive_conformal":
+        assert out["heldout_coverage_adaptive"] == out["heldout_coverage_calibrated"]
+    raw_w = np.array(out["raw"]["q90"]) - np.array(out["raw"]["q10"])
+    cal_w = np.array(out["calibrated"]["q90"]) - np.array(out["calibrated"]["q10"])
+    assert (cal_w >= raw_w - 1e-9).all(), "a band is only widened, never narrowed below raw"
+    assert out["point"] == [round(float(x[-1]), 4)] * 8
+
+
+def test_the_adaptive_scales_are_fitted_on_fit_windows_only_so_held_out_values_cannot_move_them(monkeypatch):
+    """Two series that agree up to the first held-out origin and differ after it. The adaptive scales are fitted from the
+    fit windows; the first call to aci_scales inside calibrate receives exactly those windows, so its input must be the
+    same in both runs, while the held-out coverage differs."""
+    base = _series(2.0, seed=9)
+    seen = []
+    real = cal.aci_scales
+
+    def spy(scores, *args, **kwargs):
+        seen.append(np.asarray(scores).copy())
+        return real(scores, *args, **kwargs)
+
+    monkeypatch.setattr(cal, "aci_scales", spy)
+    out_a = cal.calibrate(base, 8, engine=Engine(sd=1.0), n_origins=18)
+    fit_a = seen[0]
+    seen.clear()
+    # The first held-out origin is the one at index fitted_on; every window before it is untouched by the change below.
+    first_held_origin = len(base) - 8 * (out_a["origins"] - out_a["fitted_on"])
+    changed = base.copy()
+    changed[first_held_origin:] += np.linspace(-30.0, 30.0, len(base) - first_held_origin)
+    out_b = cal.calibrate(changed, 8, engine=Engine(sd=1.0), n_origins=18)
+    fit_b = seen[0]
+    assert fit_a.shape == (out_a["fitted_on"], 8)
+    assert np.array_equal(fit_a, fit_b), "held-out values reached the fit of the adaptive scales"
+    assert out_a["heldout_coverage_adaptive"] != out_b["heldout_coverage_adaptive"], "the held-out windows did change"

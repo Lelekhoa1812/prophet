@@ -19,6 +19,14 @@ from target AND the calibrated held-out coverage is closer to target than the ra
 band that moved from 0.69 to 0.71 against a target of 0.80, which is the case that matters most. If the held-out coverage
 is still more than 0.05 under target after the horizon-third scales, a second pass refits at a higher level (see the
 ``second_pass`` field). Scales never go below 1, so the band is never narrowed.
+
+Adaptive conformal (added as a candidate): Adaptive Conformal Inference (Gibbs and Candes, 2021) moves the miscoverage level
+alpha after each fit window: alpha rises when the band covered that window and falls when it missed, so a band that has
+gone stale after a regime change is widened without waiting for a full refit. The DtACI extension (Gibbs and Candes, 2022)
+runs several learning rates side by side and reports the one with the lowest recent pinball loss. Its scales are fitted on
+the fit windows only and applied as fixed scales to the held-out windows, so the held-out windows never move the alpha path.
+It is chosen only when it lands at least GAP_STEP closer to target than the method already chosen, and it is never narrower
+than raw.
 """
 from __future__ import annotations
 
@@ -36,6 +44,9 @@ BUCKETS = 3                 # horizon thirds get their own scale: error grows wi
 MIN_ORIGINS = 6
 MAX_SCALE = 5.0             # a band more than five times wider is a model that has failed, not a band to publish
 Q_LO, Q_MID, Q_HI = 0, 4, 8
+ACI_GAMMAS = (0.005, 0.01, 0.05)  # learning rates run in parallel (DtACI, Gibbs and Candes 2022): slow, medium, fast
+ACI_LOOKBACK = 4            # the expert used is the one with the lowest pinball loss over this many recent windows
+ALPHA_LO, ALPHA_HI = 0.01, 0.5    # the miscoverage level alpha is clipped to this range, so the scale stays sensible
 
 
 def _ratios(actual: np.ndarray, q: np.ndarray) -> np.ndarray:
@@ -131,6 +142,62 @@ def vol_band(q: np.ndarray, sigma: float, scales: list[float]) -> np.ndarray:
     return out
 
 
+def _conformal_scale(pool: np.ndarray, alpha: float) -> float:
+    """The score quantile at level 1 - alpha, with the finite-sample rank, clipped to [1, MAX_SCALE]. No past scores: the raw band."""
+    n = pool.size
+    if n == 0:
+        return 1.0
+    k = min(n, math.ceil((n + 1) * (1 - alpha)))
+    return float(min(max(np.sort(pool)[k - 1], 1.0), MAX_SCALE))
+
+
+def aci_scales(scores_by_window: Any, target: float = TARGET, gammas: tuple = ACI_GAMMAS, start: float | None = None,
+               buckets: int = BUCKETS, lookback: int = ACI_LOOKBACK) -> dict:
+    """Adaptive conformal scales (Gibbs and Candes 2021, DtACI in 2022), one per horizon bucket.
+
+    ``scores_by_window`` has shape (windows, horizon), in time order: each entry is a normalised score (see ``_ratios``), so
+    a scale of 1 is the raw band edge. For each bucket and each learning rate gamma, the miscoverage level starts at ``start``
+    (default 1 - target) and, after each window, moves by gamma * (alpha_target - err), where err is the share of that window's
+    steps that fell outside the band at the current level. The band for a window uses the conformal quantile at level
+    1 - alpha of the scores from earlier windows only, so no window is scored with its own score. Each learning rate runs
+    in parallel, and the one predicting each window is the one with the lowest pinball loss over the last ``lookback`` windows.
+    The returned scale is the conformal quantile of all windows at the final alpha of the expert that would be used next.
+    Alpha is clipped to [ALPHA_LO, ALPHA_HI]; scales are clipped to [1, MAX_SCALE].
+
+    Returns {"scales": one per bucket, "alpha_final": the final alpha per bucket, "alpha_path": the alpha used for each window
+    per bucket}.
+    """
+    s = np.asarray(scores_by_window, dtype=float)
+    if s.ndim != 2 or s.shape[0] < 1:
+        raise ValueError("aci_scales needs scores shaped (windows, horizon) with at least one window")
+    alpha_target = 1 - target
+    a0 = alpha_target if start is None else float(start)
+    scales, alpha_final, paths = [], [], []
+    for idx in _buckets(s.shape[1], buckets):
+        sc = s[:, idx]
+        n_win, g = sc.shape[0], len(gammas)
+        alpha = np.full(g, a0)
+        loss = np.zeros((n_win, g))
+        path = []
+        for t in range(n_win):
+            pool = sc[:t].ravel()
+            pred = np.array([_conformal_scale(pool, a) for a in alpha])
+            recent = loss[max(0, t - lookback):t].sum(axis=0) if t > 0 else np.zeros(g)
+            best = int(np.argmin(recent))
+            path.append(float(alpha[best]))
+            y = sc[t]
+            for i in range(g):
+                d = y - pred[i]
+                loss[t, i] = float(np.mean(np.where(d >= 0, target * d, (target - 1) * d)))
+                err = float(np.mean(y > pred[i]))
+                alpha[i] = float(np.clip(alpha[i] + gammas[i] * (alpha_target - err), ALPHA_LO, ALPHA_HI))
+        best = int(np.argmin(loss[max(0, n_win - lookback):].sum(axis=0)))
+        scales.append(_conformal_scale(sc.ravel(), float(alpha[best])))
+        alpha_final.append(float(alpha[best]))
+        paths.append(path)
+    return {"scales": scales, "alpha_final": alpha_final, "alpha_path": paths}
+
+
 def wilson(hits: int, n: int, conf: float = 0.9) -> list[float]:
     """Wilson score interval for a coverage share; with few windows a coverage of 0.7 is not proof the band is too narrow."""
     if n <= 0:
@@ -208,6 +275,17 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
     if (vol is not None and target - raw_cov > GAP_STEP and vol["width_vs_raw"] >= 1.0
             and abs(vol["heldout_coverage"] - target) + 1e-9 < abs(cal_cov - target)):
         method, cal_cov = "ewma_volatility", vol["heldout_coverage"]
+    # The adaptive candidate: scales fitted on the fit windows alone (no held-out window moves the alpha path), then applied
+    # as fixed scales to the held-out windows. It is chosen only when it lands at least GAP_STEP closer to target than the
+    # method already chosen, and only when it widens the band on average, so it is never narrower than raw.
+    adaptive_cov = None
+    if split >= 2:
+        aci_fit = aci_scales(_ratios(actual[:split], q[:split]), target)["scales"]
+        held_a = np.stack([apply_scales(q[i], aci_fit) for i in range(split, k)])
+        adaptive_cov = _coverage(held_actual, held_a)
+        aci_width = _width(held_a) / max(_width(q[split:]), 1e-12)
+        if aci_width >= 1.0 and abs(adaptive_cov - target) <= abs(cal_cov - target) - GAP_STEP + 1e-9:
+            method, cal_cov = "adaptive_conformal", adaptive_cov
     cal_gap = abs(cal_cov - target)
     final = engine.forecast_controlled(x, horizon, control) if control is not None and not control.is_default \
         else engine.forecast(x, horizon)
@@ -215,6 +293,9 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
     if method == "ewma_volatility":
         scales = fit_vol_scales(actual, q, sig, target)
         cal_q = vol_band(raw_q, ewma_sigma(x), scales)
+    elif method == "adaptive_conformal":
+        scales = aci_scales(_ratios(actual, q), target)["scales"]
+        cal_q = apply_scales(raw_q, scales)
     else:
         scales = fit_scales(actual, q, level)
         cal_q = apply_scales(raw_q, scales)
@@ -238,6 +319,7 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
         "scale_level": round(level, 3), "second_pass": second_pass,
         "width_ratio": round(width_ratio, 3),
         "method": method, "ewma_volatility": vol,
+        "heldout_coverage_adaptive": None if adaptive_cov is None else round(adaptive_cov, 3),
         "heldout_points": n_held,
         "heldout_raw_wilson90": wilson(int(round(raw_cov * n_held)), n_held),
         "heldout_calibrated_wilson90": wilson(int(round(cal_cov * n_held)), n_held),
