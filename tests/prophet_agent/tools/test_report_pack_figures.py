@@ -128,3 +128,15 @@ def test_a_healthy_forecast_keeps_its_headline_total_and_the_verdict_beside_it()
     view = rt.observe({"forecast": fc, "run_id": "r", "files": [], "manifest": "m"})
     assert view["headline"] == {"verdict": "ok", "total": 243.0, "withheld": None}
     assert view["centre_line_total"] == 243.0
+
+
+def test_a_flat_expected_forecast_keeps_its_headline_total():
+    """flat_expected is a valid verdict (a random walk has no pattern to repeat; the range is the forecast), so its total is
+    not withheld. Only a verdict that says the forecast is wrong or unchecked withholds it."""
+    import sys
+    import prophet_agent.tools.report_tool  # noqa: F401
+    rt = sys.modules["prophet_agent.tools.report_tool"]
+    fc = {"point": [10.0, 10.0, 10.0], "health": {"verdict": "flat_expected"}}
+    out = rt._headline(fc)
+    assert out["withheld"] is None and out["total"] is not None
+    assert rt._headline({**fc, "health": {"verdict": "flat_unexpected"}})["total"] is None

@@ -509,13 +509,17 @@ def _floor_note(fc: dict) -> str:
             "below zero, so these days are floored at zero in the chart, the workbook and the table.")
 
 
+# flat_expected is a valid verdict: the history has no repeating pattern, so the level line and its range are the forecast.
+HEADLINE_VERDICTS = ("ok", "flat_expected")
+
+
 def _headline(fc: dict) -> dict:
     """The one total an answer may headline, with the health verdict beside it (audit A7-03).
 
     Motivation vs Logic
     Motivation: the headline total was shown next to a health verdict of flat_unexpected and a day below zero, and the answer
     text called the verdict ok. The total must not stand alone when the check that judges the forecast did not pass.
-    Logic: the total is shown only when the health verdict is ok and no day had to be floored. Otherwise it is withheld and
+    Logic: the total is shown only when the health verdict is ok or flat_expected and no day had to be floored. Otherwise it is withheld and
     ``withheld`` says why, in words, so the answer can show the reason first. The verdict is always reported.
     """
     verdict = (fc.get("health") or {}).get("verdict")
@@ -523,7 +527,7 @@ def _headline(fc: dict) -> dict:
     if (fc.get("floor") or {}).get("applied"):
         reasons.append(f"{fc['floor']['days_below_zero']} forecast day(s) were below zero in a series whose history never is, "
                        "so they are floored at zero and the total is not a headline")
-    if verdict != "ok":
+    if verdict not in HEADLINE_VERDICTS:
         reasons.append(f"the health check verdict is {verdict or 'missing'}, not ok")
     return {"verdict": verdict, "total": None if reasons else _total(fc), "withheld": "; ".join(reasons) or None}
 
