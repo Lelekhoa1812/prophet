@@ -100,9 +100,8 @@ def sandbox_python_tool(datasets: dict[str, Path] | None = None) -> Tool:
 
 _SPEC_TEXT = (
     "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guardrailed sandbox: no network, no secrets, one "
-    "minute. pandas only: `pl` is prophet_lib, not polars (df.null_count(), is_null() and sort() work, as do the helpers "
-    "below). The person's uploaded files are in in/ (read-only). Import: `import prophet_lib as pl`, `import prophet_stats "
-    "as ps`, `import prophet_scan as sc`. A helper that returns (value, report) is unpacked: `value, report = ...`. "
+    "minute. pandas only: `pl` is prophet_lib, not polars (null_count, is_null and sort also work). The person's uploaded files are in in/ (read-only). Import: `import prophet_lib as pl`, `import prophet_stats "
+    "as ps`, `import prophet_scan as sc`. Unpack (value, report) helpers: `value, report = ...`. "
     "Entities that share dates are never summed silently: pass entity= and key=, or use pl.panel for all of them. "
     "pl.chart(kind, data, x=, y=, title=<the finding>, subtitle=<measure, unit, period>, unit=, source=, path='out/name.png') "
     "returns the problems it finds: read them. pl.size_report(path) and pl.query(sql, t=path) read files too big to load. "

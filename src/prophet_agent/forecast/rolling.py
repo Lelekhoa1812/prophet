@@ -24,6 +24,7 @@ from typing import Any
 
 import numpy as np
 
+from prophet_agent.forecast.baselines import candidate_rules, rule_windows
 from prophet_agent.forecast.combine import adopt_equal_blend, combine, equal_blend
 from prophet_agent.forecast.health import season_check
 from prophet_agent.forecast.metrics import paired_signflip, wis
@@ -270,7 +271,9 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
     # quantiles (tools/timesfm_tool.py). The backtest scores that object, and TimesFM's median is kept as its own model
     # (audit A6-01). The classification uses the whole history, as the delivery tool does.
     lumpy = is_intermittent(x)
-    simple = tuple(nm for nm in SIMPLE if not (lumpy and nm == "tsb_expected"))   # equal to the delivered point when lumpy
+    # A4-12: the rule set matches the demand class (tsb_expected only for intermittent demand), so a continuous series
+    # cannot name TSB as its best rule (measured, synthetic random walk: tsb_expected was chosen at MASE 1.08).
+    simple = tuple(nm for nm in candidate_rules(SIMPLE, x) if not (lumpy and nm == "tsb_expected"))   # equal to the delivered point when lumpy
     preds: list[dict[str, np.ndarray]] = []
     actuals: list[np.ndarray] = []
     bands: list[np.ndarray] = []
@@ -360,6 +363,7 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
                                            else "median; band: TimesFM quantiles"),
                            "intermittent": bool(lumpy)}
     win = _mean_last_window(m)
+    out["rule_windows"] = rule_windows(m, n)     # A4-12: the trailing window each simple rule uses, printed beside its score
     out["mean_last_season_window"] = {
         "points": win, "season": m,
         "note": (f"mean of the last {win} points; no season was found, so this is a {win}-point mean, not a season mean"

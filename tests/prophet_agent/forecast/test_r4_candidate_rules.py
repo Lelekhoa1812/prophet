@@ -3,8 +3,7 @@
 Finding A4-12: retail rep4 picked tsb_expected (an intermittent-demand rule) as the best simple rule for a series with
 ADI = 1.0. The rolling backtest still builds its candidate list with TSB for every series that is not lumpy. Measured
 offline with a fake engine (synthetic): on a random walk of 160 points, best_baseline is tsb_expected (MASE 1.08 against
-naive 1.35). The class filter lives in baselines.candidate_rules; wiring it into forecast/rolling.py belongs to slice C2,
-so the end-to-end test is an strict xfail until that change lands.
+naive 1.35). The class filter lives in baselines.candidate_rules and rolling_backtest builds its rule set with it.
 
 Intermittency uses tsb.is_intermittent (ADI above 1.32). The finding's "or fewer than three in four periods" is implied by
 it: a series with sales in under 75 percent of periods has ADI above 1.333.
@@ -56,8 +55,6 @@ def test_a_series_that_goes_below_zero_is_never_intermittent():
     assert "tsb_expected" not in candidate_rules(SIMPLE, s)
 
 
-@pytest.mark.xfail(strict=True, reason="A4-12 wiring: forecast/rolling.py (slice C2) must build `simple` with candidate_rules; "
-                                       "remove this marker when it does")
 def test_backtest_best_baseline_is_not_tsb_on_a_continuous_series():
     out = R.rolling_backtest(_random_walk(), 4, n_origins=12, season=1, engine=NaiveEngine())
     assert out["best_baseline"] != "tsb_expected"

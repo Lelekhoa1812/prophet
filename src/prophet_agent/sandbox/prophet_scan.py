@@ -906,8 +906,7 @@ class _Battery:
             {"breaks": rows[:5], "count": len(rows), "search": "binary segmentation on the seasonal residual"
              if p0 and n_obs >= 2 * p0 else "binary segmentation on the raw series",
              "recording_hypothesis_breaks": 0},
-            "For each break: is there a known event (launch, price, supply, unit or system change) on that date? A median "
-            "jump of ten times or more with no event is a unit change and must be resolved first.",
+            _break_question(rows),
             "Split the history at the break only after the event is recorded; never fit the break on the full series in a backtest.",
         )
         self._level_findings.append((self.findings[-1], rows))
@@ -1494,3 +1493,21 @@ def write_scan(result: dict, path: str = "out/scan.json") -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(_jsonable(result), indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     return str(target)
+
+
+def _break_question(rows: list[dict]) -> str:
+    """The decision text for a level-shift finding, with the measured size of the largest break.
+
+    Motivation (live Beijing, round 4, measured): the text stated the unit-change rule ("a median jump of ten times or more
+    ... is a unit change") without the measured ratio, and the planner reported "median jumps of 10x or more" for breaks
+    whose ratios were 1.05 to 1.34, then stopped without forecasting. The measured ratio now leads, and the rule is stated
+    as the threshold it is."""
+    ratios = [r["median_ratio"] for r in rows if r.get("median_ratio")]
+    biggest = max(ratios) if ratios else None
+    size = (f"The largest break moves the median {biggest:.2f} times" if biggest is not None
+            else "The median ratio across the breaks could not be measured")
+    unit = (" which is a unit-change size: resolve it before modelling."
+            if biggest is not None and biggest >= _UNIT_RATIO else
+            f" (a unit change would be {_UNIT_RATIO:.0f} times or more, so none of these is one).")
+    return (f"{size}{unit} For each break: is there a known event (launch, price, supply, system change) on that date? "
+            "Without one, record it as unexplained and kept as observed, or test it (truncate, flag or none) in a backtest.")
