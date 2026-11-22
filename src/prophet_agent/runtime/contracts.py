@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from prophet_agent.forecast.timesfm import nonnegative_domain
+from prophet_agent.runtime import grounding
 
 EXPECTED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
 INTERVAL_SHARE = 0.9      # share of steps that must sit inside q10 <= point <= q90
@@ -898,3 +899,96 @@ def trust_statement(history) -> str:
         rng += (f" On later held-out windows it held {_pct(f['heldout_raw'])} raw and {_pct(f.get('heldout_calibrated'))} "
                 f"after calibration; {used}.")
     return "**Accuracy check (computed from the stored backtest):** " + head + call + rng
+
+
+# ---------------------------------------------------------------- the written answer (A6-09)
+
+def _health_period(rec: dict) -> int | None:
+    health = rec.get("health") if isinstance(rec, dict) else None
+    p = health.get("period") if isinstance(health, dict) else None
+    return p if _is_int(p) and p >= 2 else None
+
+
+def _newest_backtest(obs: list) -> dict | None:
+    return next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "backtest_series"), dict)
+                 and isinstance(r.get("models"), dict)), None)
+
+
+def _scan_shift_counts(history: list, run_root) -> list[int] | None:
+    """The level-shift counts the saved scan reports, one per entity. A saved scan with no level-shift finding holds zero."""
+    findings = _saved_scan_findings(history, run_root)
+    if findings is None:
+        return None
+    counts = [f["evidence"]["count"] for f in findings if f.get("id") == "changepoints.level_shift"
+              and isinstance(f.get("evidence"), dict) and _is_int(f["evidence"].get("count"))]
+    return counts or [0]
+
+
+def check_answer(answer, history, *, run_root=None) -> list[dict]:
+    """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
+    makes, so an answer with no such claim adds nothing.
+
+    Motivation (audit round 3, A6-09): the answer is written by a model and the figures in it are matched, but its plain
+    claims were not. Live retail rep4 said "weekly (7-day) confirmed" with a health period of 5; live WTI said "naive is the
+    appropriate benchmark" with a backtest that ranked mean_last_season ahead. Those two reach the person, so they block.
+    Logic: the claims are read by grounding.py. A cycle must equal the measured health period, and a named best rule must be
+    the backtest's best or within RULE_TOLERANCE of it. A level-shift count and a cause with no citation are warnings.
+    """
+    text = answer if isinstance(answer, str) else ""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    checks: list[dict] = []
+
+    periods = grounding.claimed_periods(text)
+    if periods:
+        stored = {p for h in obs if (rec := _forecast_record(h)) is not None and (p := _health_period(rec)) is not None}
+        if stored:
+            wrong = [(n, s) for n, s in periods if n not in stored]
+            if wrong:
+                n, s = wrong[0]
+                checks.append(_check("answer_cycle_matches_health", False,
+                                     f"the answer states a cycle of {n} steps ({s[:160]}), but the health record measured period "
+                                     f"{', '.join(str(p) for p in sorted(stored))}; state the measured period"))
+            else:
+                checks.append(_check("answer_cycle_matches_health", True,
+                                     "every cycle the answer states is the period the health record measured"))
+
+    claims = grounding.claimed_best_baselines(text)
+    bt = _newest_backtest(obs)
+    if claims and bt is not None:
+        models, best = bt["models"], bt.get("best_baseline")
+        bm = _finite(models[best].get("mase")) if isinstance(best, str) and isinstance(models.get(best), dict) else None
+        wrong_rules = []
+        for name, sentence in claims:
+            nm = _finite(models[name].get("mase")) if isinstance(models.get(name), dict) else None
+            if name != best and nm is not None and bm is not None and nm > bm * (1 + RULE_TOLERANCE):
+                wrong_rules.append((name, nm, sentence))
+        if wrong_rules:
+            name, nm, sentence = wrong_rules[0]
+            checks.append(_check("answer_benchmark_matches", False,
+                                 f"the answer calls {name} the best benchmark (MASE {nm:.3f}), but the backtest ranked {best} "
+                                 f"best (MASE {bm:.3f}) ({sentence[:160]}); name {best}, or say why it was not used"))
+        else:
+            checks.append(_check("answer_benchmark_matches", True,
+                                 "the benchmark the answer names is the one the backtest ranked best, or within tolerance of it"))
+
+    counts = grounding.claimed_shift_counts(text)
+    stored_counts = _scan_shift_counts(obs, run_root) if counts else None
+    if counts and stored_counts is not None:
+        allowed = set(stored_counts) | {sum(stored_counts)}
+        wrong_counts = [(n, s) for n, s in counts if n not in allowed]
+        if wrong_counts:
+            n, s = wrong_counts[0]
+            checks.append(_check("answer_shift_count_matches", False,
+                                 f"the answer counts {n} level shifts ({s[:160]}), but the saved scan reports "
+                                 f"{', '.join(str(c) for c in stored_counts)}", "warn"))
+        else:
+            checks.append(_check("answer_shift_count_matches", True,
+                                 "the level-shift count the answer states is the scan's count", "warn"))
+
+    causes = grounding.uncited_causes(text)
+    if causes:
+        checks.append(_check("answer_causes_cited", False,
+                             f"the answer attributes a shift to a cause with no research source id or test ({causes[0][:160]}); "
+                             "cite the S-id of a research passage or the control_lab test, or say the shift is unexplained",
+                             "warn"))
+    return checks
