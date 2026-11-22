@@ -1084,6 +1084,17 @@ class Ledger:
     def __init__(self) -> None:
         self._entries: list[dict[str, Any]] = []
 
+    @classmethod
+    def open(cls, path: str = "out/ledger.json") -> "Ledger":
+        """A ledger that starts with the entries already saved at ``path`` (empty when the file does not exist).
+
+        Motivation: each sandbox cell is a fresh process, so a plain ``Ledger()`` cannot see the entries an earlier cell
+        saved. Logic: read the file once, so ``entries`` shows the history and later ``save`` calls extend it.
+        """
+        led = cls()
+        led._entries = _read_ledger(path) or []
+        return led
+
     @property
     def entries(self) -> list[dict[str, Any]]:
         """All entries in order, each with its running index. Read-only: a copy, so changing it changes nothing."""
@@ -1105,12 +1116,48 @@ class Ledger:
         """All entries in order, each with its running index (1, 2, 3 and so on)."""
         return [{"index": i, **entry} for i, entry in enumerate(self._entries, start=1)]
 
-    def save(self, path: str = "out/ledger.json") -> str:
-        """Write the entries as JSON, creating the parent folder if needed. Returns the path written."""
+    def save(self, path: str = "out/ledger.json", replace: bool = False) -> str:
+        """Write the entries as JSON, creating the parent folder if needed. Returns the path written.
+
+        Motivation: WTI rep3 saved a fresh, empty ledger over the five entries an earlier cell had written (A4-05), and
+        nothing reported the loss. Logic: the file already at ``path`` is read first. If this ledger extends it, or
+        repeats it, this ledger is written. Otherwise the file's entries come first and this ledger's entries follow, so
+        a save never leaves fewer entries than the file held. ``replace=True`` writes this ledger alone, on purpose.
+        A file that cannot be read as a list of entries raises ValueError and is left alone.
+        """
         target = Path(path)
+        ours = [dict(e) for e in self._entries]
+        on_disk = None if replace else _read_ledger(path)
+        if on_disk is None:
+            merged = ours
+        elif ours[: len(on_disk)] == on_disk:
+            merged = ours  # this ledger extends or repeats the file
+        elif on_disk[: len(ours)] == ours:
+            merged = on_disk  # this ledger repeats an earlier part of the file: keep the file as it is
+        else:
+            merged = on_disk + ours  # another cell's entries: keep them, add these after them
+        self._entries = merged
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         return str(target)
+
+
+def _read_ledger(path: str) -> list[dict[str, Any]] | None:
+    """The entries saved at ``path`` without their index, or None when there is no file.
+
+    Motivation: ``Ledger.save`` must read the file it replaces, and a damaged file must not be overwritten silently.
+    Logic: a file that is not a JSON list of objects raises ValueError, so the caller stops instead of losing it.
+    """
+    target = Path(path)
+    if not target.exists():
+        return None
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"cannot read ledger at {path}: {exc}; not overwriting it") from exc
+    if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
+        raise ValueError(f"cannot read ledger at {path}: expected a JSON list of entries; not overwriting it")
+    return [{k: v for k, v in e.items() if k != "index"} for e in data]
 
 
 # ---------------------------------------------------------------------------------------------------------------------
