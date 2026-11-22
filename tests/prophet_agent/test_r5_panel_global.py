@@ -153,3 +153,32 @@ def test_the_accuracy_facts_name_the_drawn_centre_and_both_total_bounds():
     # a pack that shows only some of its series names no centre count, rather than a wrong one
     assert "centre line" not in panel_sentence(
         [{"kind": "tool", "tool": "forecast_report", "result": {"n_series": 60, "series": series}}])
+
+
+def _pack_and_bt(rule, overall, best):
+    series = {f"MT_{i:03d}": {"centre": rule} for i in range(1, 4)}
+    return [{"kind": "tool", "tool": "panel_backtest", "result": {"overall": overall, "best_overall": best}},
+            {"kind": "tool", "tool": "forecast_report", "result": {"n_series": 3, "series": series}}]
+
+
+def test_a_panel_pack_drawing_a_rule_the_backtest_ranked_well_behind_blocks():
+    # live electricity rep11 (measured, 2026-11-23): pooled model 1.539 against TimesFM 1.331, drawn for all 60 clients
+    from prophet_agent.runtime.contracts import check_evidence, check_panel_centre
+    overall = {"timesfm": 1.3313, "blend": 1.3611, "global_gbm": 1.5394, "naive": 1.8071}
+    bad = check_panel_centre(_pack_and_bt("global_gbm", overall, "timesfm"))
+    assert not bad["ok"] and bad["severity"] == "block" and "centre 'timesfm'" in bad["detail"] and "16% worse" in bad["detail"]
+    assert [c for c in check_evidence(_pack_and_bt("global_gbm", overall, "timesfm"))
+            if c["name"] == "panel_centre_matches_backtest" and not c["ok"]]
+    assert check_panel_centre(_pack_and_bt("timesfm", overall, "timesfm"))["ok"]
+    # the pooled blend is scored as "blend"; within 2 percent of the best passes (rep10: 1.70 against 1.70)
+    assert check_panel_centre(_pack_and_bt("global_blend", {"blend": 1.7044, "timesfm": 1.70}, "timesfm"))["ok"]
+    best_blend = check_panel_centre(_pack_and_bt("timesfm", {"blend": 1.0, "timesfm": 1.2}, "blend"))
+    assert not best_blend["ok"] and "centre 'global_blend'" in best_blend["detail"]
+
+
+def test_per_series_rules_or_no_panel_backtest_add_no_panel_centre_check():
+    from prophet_agent.runtime.contracts import check_panel_centre
+    hist = _pack_and_bt("timesfm", {"timesfm": 2.0, "naive": 1.0}, "naive")
+    hist[1]["result"]["series"]["MT_001"]["centre"] = "naive"
+    assert check_panel_centre(hist) is None
+    assert check_panel_centre(hist[1:]) is None

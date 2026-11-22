@@ -1080,6 +1080,8 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
                              "the forecast was never compared with the simple baselines (no successful backtest)"))
     else:
         checks.append(_baseline_gate(forecasts[-1][1], backtests))
+    if (panel_centre := check_panel_centre(obs)) is not None:
+        checks.append(panel_centre)
 
     if not forecasts:
         checks.append(_check("health_repaired", True, "no forecast yet; nothing to check"))
@@ -1288,6 +1290,49 @@ CENTRE_WORDS = {"timesfm": "TimesFM", "global_gbm": "the pooled gradient-boosted
                 "drift": "the drift rule", "blend": "the blend"}
 
 
+def _panel_rules(h: dict, res: dict) -> list[str]:
+    """The centre rule of each series a panel pack drew, from the full result when stored, else the shown lines."""
+    full = h.get("full") if isinstance(h.get("full"), dict) else {}
+    lines = ((full.get("forecast") or {}).get("series") if isinstance(full.get("forecast"), dict) else None) \
+        or res.get("series") or {}
+    return [((ln.get("centre") or {}).get("rule", "timesfm") if isinstance(ln.get("centre"), dict)
+             else ln.get("centre") or "timesfm") for ln in lines.values() if isinstance(ln, dict)]
+
+
+PANEL_SCORE_OF = {"global_blend": "blend"}     # the pack's rule name -> panel_backtest's model name
+
+
+def check_panel_centre(history) -> dict | None:
+    """A panel pack that draws one rule for every series draws one the panel backtest did not score worse than its best by more
+    than RULE_TOLERANCE. None when there is no panel pack, no panel backtest, or the pack sets rules per series.
+
+    Live electricity rep11 (measured, 2026-11-23): panel_backtest put TimesFM first (overall MASE 1.331) and the pooled model
+    fourth (1.539, 16 % worse); the pack drew the pooled model for all 60 clients, and its total was 3.08 million kWh where
+    rep10's TimesFM pack gave 4.38 million. Nothing compared the drawn panel centre with the ranking."""
+    pack = next(((h, r) for h in reversed(history) if isinstance(r := _ok_result(h, "forecast_report"), dict)
+                 and r.get("n_series")), None)
+    bt = next((r for h in reversed(with_delegated(history)) if isinstance(r := _ok_result(h, "panel_backtest"), dict)
+               and isinstance(r.get("overall"), dict) and r.get("best_overall")), None)
+    if pack is None or bt is None:
+        return None
+    rules = set(_panel_rules(*pack))
+    if len(rules) != 1:
+        return None
+    rule = rules.pop()
+    scored, best = PANEL_SCORE_OF.get(rule, rule), str(bt["best_overall"])
+    overall = bt["overall"]
+    if not isinstance(overall.get(scored), (int, float)) or not isinstance(overall.get(best), (int, float)):
+        return None
+    if scored == best or overall[scored] <= overall[best] * (1 + RULE_TOLERANCE):
+        return _check("panel_centre_matches_backtest", True,
+                      f"the panel pack draws {rule}, within {RULE_TOLERANCE:.0%} of the best panel score ({best})")
+    pct = 100 * (overall[scored] / overall[best] - 1)
+    return _check("panel_centre_matches_backtest", False,
+                  f"the panel pack draws {rule} for every series, but panel_backtest scored it {overall[scored]:.3g} overall "
+                  f"against {overall[best]:.3g} for {best}, {pct:.0f}% worse; rebuild the pack with centre "
+                  f"'{ {'blend': 'global_blend'}.get(best, best) }', or set rules per series from the per-entity scores")
+
+
 def panel_sentence(history) -> str:
     """The newest panel pack in plain words: which centre line it drew for how many series, and the panel total with both
     bounds named for what they assume.
@@ -1299,11 +1344,7 @@ def panel_sentence(history) -> str:
         res = _ok_result(h, "forecast_report")
         if not isinstance(res, dict) or not res.get("n_series"):
             continue
-        full = h.get("full") if isinstance(h.get("full"), dict) else {}
-        lines = ((full.get("forecast") or {}).get("series") if isinstance(full.get("forecast"), dict) else None) \
-            or res.get("series") or {}
-        rules = [((ln.get("centre") or {}).get("rule", "timesfm") if isinstance(ln.get("centre"), dict)
-                  else ln.get("centre") or "timesfm") for ln in lines.values() if isinstance(ln, dict)]
+        rules = _panel_rules(h, res)
         counts: dict[str, int] = {}
         for r in rules:
             counts[r] = counts.get(r, 0) + 1
