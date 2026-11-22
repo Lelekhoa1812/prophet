@@ -358,3 +358,47 @@ def uncited_causes(answer: str) -> list[str]:
     """Sentences that attribute a shift, break, spike or outlier to a cause, with no research source id (S1, S2 ...) and no
     test named in the same sentence."""
     return [u.strip() for u in sentences(answer) if _CAUSE.search(u) and _SHIFT_WORD.search(u) and not _CITED.search(u)]
+
+
+# A method claim names a treatment and a verb of testing. Each treatment has the words a call that runs it would carry in its
+# arguments (the code, the options). Only arguments count: a tool's printed output mentions "outlier" in any scan.
+_METHOD_CLAIM = re.compile(r"\b(?:tested|backtested|computed|measured)\b", re.I)
+_TREATMENTS = (
+    (re.compile(r"winsori[sz]|outlier|spike", re.I), ("winsor", "outlier", "replace_outliers", "ignore_ranges", "hampel", "robust")),
+    (re.compile(r"first week|exclud|truncat|context", re.I), ("context", "ignore_ranges", "truncat", "exclude", "ctx_")),
+    (re.compile(r"changepoint|level[- ]shift|regime|structural break", re.I), ("changepoint", "level_shift", "ignore_ranges",
+                                                                             "truncat", "regime")),
+    (re.compile(r"\bprophet\b", re.I), ("fbprophet", "prophet import", "prophet(", "prophet.prophet")),
+    (re.compile(r"znorm|z-norm|normalis|normaliz", re.I), ("znorm",)),
+    (re.compile(r"symmetric", re.I), ("symmetric",)),
+    (re.compile(r"covariate|holiday|driver", re.I), ("covariate", "driver", "holiday")),
+)
+
+
+def _call_arguments(history) -> list[str]:
+    """The arguments of every call that did not fail, lower-cased, including the calls inside a sub-agent's evidence."""
+    out: list[str] = []
+    for h in history if isinstance(history, list) else []:
+        if not isinstance(h, dict):
+            continue
+        if h.get("kind") == "tool" and not h.get("error") and "args" in h:
+            out.append(_as_text(h.get("args")).lower())
+        elif h.get("kind") == "subagent":
+            out.extend(_call_arguments(h.get("evidence") or []))
+    return out
+
+
+def unsupported_method_claims(answer: str, history: list) -> list[str]:
+    """The units of the answer that say a treatment was tested or computed, where some named treatment has no successful call
+    whose arguments carry it. A unit that names no known treatment is not read (its claim cannot be checked)."""
+    calls = _call_arguments(history)
+    out: list[str] = []
+    for unit in sentences(answer):
+        m = _METHOD_CLAIM.search(unit)
+        if not m or negated(unit, m.start()):
+            continue
+        for rx, markers in _TREATMENTS:
+            if rx.search(unit) and not any(mk in c for c in calls for mk in markers):
+                out.append(unit.strip())
+                break
+    return out

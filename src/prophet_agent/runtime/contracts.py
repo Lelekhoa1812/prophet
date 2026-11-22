@@ -991,4 +991,10 @@ def check_answer(answer, history, *, run_root=None) -> list[dict]:
                              f"the answer attributes a shift to a cause with no research source id or test ({causes[0][:160]}); "
                              "cite the S-id of a research passage or the control_lab test, or say the shift is unexplained",
                              "warn"))
+
+    methods = grounding.unsupported_method_claims(text, obs)
+    if methods:
+        checks.append(_check("answer_methods_run", False,
+                             f"the answer says a method was tested or computed, but no tool call runs it ({methods[0][:160]}); "
+                             "run the treatment, or take the claim out", "warn"))
     return checks
