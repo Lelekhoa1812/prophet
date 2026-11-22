@@ -22,12 +22,30 @@ export type AnsweredQuestion = {
 // A file the person attached to a quick forecast.
 export type DatasetRef = { id: string; name: string; bytes: number };
 
+export type OutcomeReason = {
+  code: string;
+  user_reason: string;
+  next_step: string;
+  checks?: { name: string; plain: string }[];
+  figures?: string[];
+  which?: string | null;
+};
+export type MissionOutcome = {
+  status: string;
+  reasons: OutcomeReason[];
+  developer: { status?: string; stop_reason?: string | null; reason?: string | null; contract_failures?: string[] };
+};
+
 export type Mission = {
   id: string;
   goal: string;
   status: string;
   budget: Record<string, unknown>;
   answer: any;
+  // Named reasons the mission stopped short, in plain words. developer holds the planner's own text for debugging only.
+  outcome?: MissionOutcome;
+  // The latest status line from the runtime: checklist counts, the next item and elapsed seconds.
+  progress?: { step: number; tool_calls: number; elapsed_s: number; checklist_done: number; checklist_total: number; next: string | null } | null;
   events: EventRow[];
   steps: StepRow[];
   questions: OpenQuestion[];

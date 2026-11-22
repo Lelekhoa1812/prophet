@@ -316,7 +316,8 @@ export function Turn({
   const elapsed = now - startedAt;
   const answer = mission.answer && typeof mission.answer === "object" ? (mission.answer as Record<string, any>) : null;
   const text = (answer?.status === "met" || answer?.status === "partial") && typeof answer.answer === "string" ? answer.answer : "";
-  const unverified: string[] = Array.isArray(answer?.unverified) ? answer.unverified.map(String) : [];
+  // The named reasons come from the API (outcome). The planner's own text is never shown as a reason.
+  const reasons = mission.outcome?.reasons ?? [];
   const problem = problemFor(mission);
 
   // One quiet announcer for the two moments a screen reader user needs to hear: a question for them, or a finished answer.
@@ -372,8 +373,19 @@ export function Turn({
             <Spinner className="text-ember" />
             <span role="status">{currentActivity(mission, tools)}</span>
             <span className="text-sand-2 tabular-nums">{formatDuration(elapsed)}</span>
-            {elapsed > 60 && <span className="hidden text-sand-2 sm:inline">Longer requests can take a few minutes.</span>}
           </div>
+        )}
+
+        {working && (
+          <p className="text-caption text-sand-2 tabular-nums">
+            {mission.progress && mission.progress.checklist_total > 0 && (
+              <>
+                {mission.progress.checklist_done} of {mission.progress.checklist_total} checks done
+                {mission.progress.next ? `. Next: ${mission.progress.next}` : ""}.{" "}
+              </>
+            )}
+            Measured runs took a median of about 9 minutes, and up to about 29 minutes.
+          </p>
         )}
 
         <p className="sr-only" aria-live="polite">
@@ -387,18 +399,35 @@ export function Turn({
         ))}
 
         {answer?.status === "partial" && (
-          <Card role="status" className="grid gap-1.5 border-ember/40 p-4">
+          <Card role="status" className="grid gap-2 border-ember/40 p-4">
             <p className="text-base font-bold text-sand-0">This is a partial answer.</p>
-            {typeof answer.reason === "string" && answer.reason && <p className="text-caption text-sand-1">{answer.reason}</p>}
-            {unverified.length > 0 && (
-              <p className="text-caption text-sand-1">Not found in the results: {unverified.join(", ")}</p>
-            )}
+            <ul aria-label="Why this answer is partial" className="grid gap-2.5">
+              {reasons.map((r) => (
+                <li key={r.code} className="grid gap-1">
+                  <p className="text-caption text-sand-1">{r.user_reason}</p>
+                  {r.checks && r.checks.length > 0 && (
+                    <ul className="grid gap-0.5 pl-4 text-caption text-sand-1 list-disc">
+                      {r.checks.map((c) => (
+                        <li key={c.name}>{c.plain}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {r.figures && r.figures.length > 0 && (
+                    <p className="text-caption text-sand-1 [overflow-wrap:anywhere]">
+                      Could not be traced to the results: {r.figures.join(", ")}
+                    </p>
+                  )}
+                  <p className="text-caption text-sand-0">Next: {r.next_step}</p>
+                </li>
+              ))}
+            </ul>
           </Card>
         )}
 
         {text && <Markdown text={text} className="text-lead leading-[1.7]" />}
 
         <Results runs={runs} />
+
 
         {text && <AnswerActions text={text} seconds={Math.max(0, (mission.events[mission.events.length - 1]?.ts ?? startedAt) - startedAt)} />}
 

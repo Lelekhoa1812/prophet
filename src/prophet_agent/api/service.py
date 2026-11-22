@@ -27,6 +27,7 @@ from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import Runtime, Tool
 from prophet_agent.runtime.store import LeaseHeld, Store
 from prophet_agent.tools.notebook_tools import NotebookBinding
+from prophet_agent.api.outcome import outcome_for
 
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
@@ -380,6 +381,7 @@ class MissionService:
 
     def snapshot(self, mission_id: str, after_seq: int = 0) -> dict:
         mission = self.store.mission(mission_id)
+        all_events = self.store.events(mission_id)
         return {
             "id": mission_id,
             "goal": mission["goal"],
@@ -389,6 +391,10 @@ class MissionService:
             "seq": mission.get("seq"),
             "datasets": [self.datasets.get(d) for d in mission["budget"].get("dataset_ids", []) if self._has(d)],
             "answer": mission["answer"],
+            # Named reasons a mission stopped short (plain words), with the planner's own text under developer.
+            "outcome": outcome_for(mission["status"], mission["answer"], mission["budget"], all_events),
+            # The latest status line the runtime wrote: where the work stands, for the console's progress line.
+            "progress": next((e["payload"] for e in reversed(all_events) if e["kind"] == "mission.progress"), None),
             "events": self.store.events(mission_id, after_seq),
             "steps": self.store.steps(mission_id),
             "questions": self.store.open_questions(mission_id),

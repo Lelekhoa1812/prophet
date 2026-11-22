@@ -50,21 +50,41 @@ def _call(method: str, path: str, body: Any = None, raw: bytes | None = None, he
         raise ProphetError(f"Prophet is not running at {BASE}. Start it with: python -m prophet_agent.api")
 
 
+def _reasons(mission: dict) -> list[dict]:
+    """The named reasons from the API's outcome: plain words and a next step. The planner's own text is not sent."""
+    rows = []
+    for r in (mission.get("outcome") or {}).get("reasons", []):
+        row: dict[str, Any] = {"code": r["code"], "reason": r["user_reason"], "next": r["next_step"]}
+        if r.get("checks"):
+            row["checks"] = [c["plain"] for c in r["checks"]]
+        if r.get("figures"):
+            row["figures"] = r["figures"]
+        rows.append(row)
+    return rows
+
+
 def _answer_text(mission: dict) -> dict:
     ans = mission.get("answer")
     out: dict[str, Any] = {"turn_id": mission["id"], "status": mission["status"]}
     if mission["status"] == "waiting_user":
         out["questions"] = [{"question_id": q["id"], "questions": q["payload"]["questions"]} for q in mission.get("questions", [])]
         out["next"] = "Call prophet_answer with the question_id and an answers object keyed by each question's header."
+    elif mission["status"] == CHECKPOINT:
+        out["reasons"] = _reasons(mission)
+        out["next"] = ("Paused at a checkpoint. Call prophet_continue to keep going with a fresh allowance, "
+                       "or prophet_answer_now to write the answer from what has been found.")
     elif isinstance(ans, dict) and ans.get("status") == "met":
         out["answer"] = ans.get("answer")
     elif isinstance(ans, dict) and ans.get("status") == "partial":
         out["answer"] = ans.get("answer")
-        out["partial"] = ans.get("reason")
-        if ans.get("unverified"):
-            out["unverified_figures"] = ans["unverified"]
+        out["reasons"] = _reasons(mission)
+        out["partial"] = " ".join(r["reason"] for r in out["reasons"]) or "This answer is partial."
+        figures = [f for r in out["reasons"] for f in r.get("figures", [])]
+        if figures:
+            out["unverified_figures"] = figures
     elif ans:
-        out["detail"] = ans
+        # Stopped without a written answer (impossible, failed, stalled, cancelled): the plain reasons, never the raw answer.
+        out["reasons"] = _reasons(mission)
     return out
 
 
@@ -126,6 +146,26 @@ def t_status(a: dict) -> Any:
     return out
 
 
+def _resume(a: dict, action: str) -> Any:
+    """Continue a checkpointed mission, or write its answer now, as the console does; then wait for the next stop."""
+    turn_id = a["turn_id"]
+    _call("POST", f"/api/missions/{turn_id}/{action}")
+    wait = float(a.get("wait_seconds", 240))
+    m = _wait(turn_id, wait) if wait > 0 else _call("GET", f"/api/missions/{turn_id}")
+    out = _answer_text(m)
+    if m["status"] in WORKING:
+        out["next"] = "Still working. Call prophet_status with this turn_id to continue waiting."
+    return out
+
+
+def t_continue(a: dict) -> Any:
+    return _resume(a, "continue")
+
+
+def t_answer_now(a: dict) -> Any:
+    return _resume(a, "answer-now")
+
+
 def t_answer(a: dict) -> Any:
     r = _call("POST", f"/api/questions/{a['question_id']}/answer", {"answers": a["answers"]})
     m = _wait(r["mission_id"], float(a.get("wait_seconds", 240)))
@@ -180,6 +220,12 @@ TOOLS: dict[str, tuple[str, dict, Callable[[dict], Any]]] = {
         "Answer questions Prophet asked (status waiting_user). 'answers' is an object keyed by each question's header; the value is an offered label, a list of labels for multi-select, or your own text.",
         _schema({"question_id": S, "answers": {"type": "object"}, "wait_seconds": N}, ["question_id", "answers"]), t_answer),
     "prophet_cancel": ("Stop a turn that is working or waiting.", _schema({"turn_id": S}, ["turn_id"]), t_cancel),
+    "prophet_continue": (
+        "Continue a turn that paused at a checkpoint (its allowance of time or tool calls ran out). Every step so far is kept; waits for the next stop.",
+        _schema({"turn_id": S, "wait_seconds": N}, ["turn_id"]), t_continue),
+    "prophet_answer_now": (
+        "Write the answer for a turn paused at a checkpoint from the evidence found so far. It is labelled partial and says what is missing.",
+        _schema({"turn_id": S, "wait_seconds": N}, ["turn_id"]), t_answer_now),
     "prophet_files": ("List the charts, workbooks and reports a turn produced, with download URLs and sha256.",
                       _schema({"turn_id": S}, ["turn_id"]), t_files),
     "prophet_quick_forecast": (
