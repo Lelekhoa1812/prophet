@@ -257,6 +257,13 @@ def _forecast_record(h: dict) -> dict | None:
     res = _ok_result(h, "forecast_report")
     if isinstance(res, dict) and isinstance(res.get("forecast"), dict):
         return res["forecast"]
+    if isinstance(res, dict) and "n_series" in res and isinstance(res.get("series"), dict):
+        # A panel pack, seen as one line per series. It is held only when a series delivered on TimesFM's own line lost its
+        # cycle; a series centred on a simple rule does not deliver TimesFM's line.
+        lost = [n for n, ln in res["series"].items() if isinstance(ln, dict) and ln.get("health") == "flat_unexpected"
+                and ln.get("centre", "timesfm") == "timesfm"]
+        return {"panel": True, "n_series": res["n_series"],
+                "health": {"verdict": "flat_unexpected" if lost else "ok", "causes": [f"cycle lost: {', '.join(lost[:6])}"] if lost else []}}
     return None
 
 
@@ -374,6 +381,17 @@ def check_controls(history, args: dict) -> dict | None:
     return _check("controls_tested", True, "control_lab ran and the treatment was measured")
 
 
+def delivered_health(rec: dict) -> str | None:
+    """The health verdict of the line actually delivered. When the pack's centre line is a simple rule (the backtest found it
+    more accurate), TimesFM's line is shown for reference only, so its health does not hold the mission (live retail: 17
+    pack builds with a rule as centre, each held because TimesFM's own line had lost the weekly cycle)."""
+    centre = rec.get("centre") if isinstance(rec, dict) else None
+    if isinstance(centre, dict) and centre.get("rule"):
+        return f"centre_rule:{centre['rule']}"
+    health = rec.get("health") if isinstance(rec, dict) else None
+    return health.get("verdict") if isinstance(health, dict) else None
+
+
 def check_ledger(history, run_root) -> dict | None:
     """The analyst's ledger: a sandbox step saved ``out/ledger.json`` (``ps.Ledger.save``) with a finding and a decision for at
     least ``MIN_LEDGER_STAGES`` distinct stages. A forecast whose data was never broken down and decided on leaves no such
@@ -435,8 +453,7 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
                   "status": "done" if backtested else "todo"})
     items.append({"item": "forecast the series (timesfm_forecast)", "status": "done" if forecasts else "todo"})
     if forecasts:
-        health = forecasts[-1][1].get("health")
-        verdict = health.get("verdict") if isinstance(health, dict) else None
+        verdict = delivered_health(forecasts[-1][1])
         items.append({"item": "forecast health is not flat_unexpected", "status": "todo" if verdict == "flat_unexpected" else "done",
                       "detail": f"health: {verdict or 'not reported'}"})
     if wants_files:
@@ -506,8 +523,7 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
     if not forecasts:
         checks.append(_check("health_repaired", True, "no forecast yet; nothing to check"))
     else:
-        health = forecasts[-1][1].get("health")
-        verdict = health.get("verdict") if isinstance(health, dict) else None
+        verdict = delivered_health(forecasts[-1][1])
         if verdict == "flat_unexpected":
             checks.append(_check("health_repaired", False,
                                  "the last forecast's health says the cycle was lost, and it was never repaired"))

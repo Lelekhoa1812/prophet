@@ -51,3 +51,14 @@ def test_the_pack_states_how_far_the_band_reaches_from_the_centre():
     assert r["first_step"] == {"below_pct": -0.8, "above_pct": 0.8}
     assert r["last_step"] == {"below_pct": -3.5, "above_pct": 3.2}
     assert range_vs_centre({"point": [0.0], "quantiles": {"0.1": [-1], "0.9": [1]}}) is None
+
+
+def test_seasonal_centre_rules_deliver_the_backtests_own_lines():
+    from prophet_agent.tools.report_tool import _centre, _method_note
+    values = [10.0, 20.0, 30.0, 40.0, 50.0] * 6
+    fc = {"point": [35.0] * 7, "quantiles": {"0.1": [30.0] * 7, "0.9": [40.0] * 7}}
+    sn = _centre(fc, values, "seasonal_naive", 5)
+    assert sn["point"] == [10.0, 20.0, 30.0, 40.0, 50.0, 10.0, 20.0] and sn["centre"]["season"] == 5
+    assert sn["quantiles"]["0.1"][0] == 5.0                       # band recentred: 30 - 35 + 10
+    ml = _centre(fc, values, "mean_last_season", 5)
+    assert ml["point"] == [30.0] * 7 and "average of the last season (season 5)" in _method_note({}, ml["centre"])

@@ -150,6 +150,21 @@ for 12 stations). Measured from the ledger:
 - Two missions asked for the playbook `profiling_a_new_dataset` (the tool description's own words); names now resolve to
   the nearest playbook.
 
+### Evidence, live rounds 5 to 8 (real public series through the real API, TimesFM 3, 2026-11-22)
+
+| Round | WTI | EUR/JPY | Beijing (12 stations) | Retail | Sandbox cells failed |
+|---|---|---|---|---|---|
+| 5 | completed, verified (19 calls) | partial: two figures no tool printed | checkpoint, 40 of 97 cells failed | not run | 52 of 129 |
+| 6 | partial: stalled on a refused `centre` | partial: the removal note re-inserted 175.3 | checkpoint, profiling loop | not run | 17 of 82 |
+| 7 | completed, verified (27 calls) | partial: three derived percentages | checkpoint, 2 of 74 failed, ledger never written | not run | 13 of 107 |
+| 8 | not run | partial: two derived figures | checklist 7 of 7, 3 of 12 stations packed before the budget ran out | checkpoint: 17 pack builds held by TimesFM's flat line | 34 of 94 |
+
+What each round changed is in the commit log. The measured pattern: market series now finish in about 20 calls with a naive
+centre line, TimesFM's calibrated band, primary-source context and the variance-ratio finding; "partial" there is now
+always an answer figure that no tool printed, which is the grounding check working. Panels are the open problem: the
+pack was one series per call (a panel pack is being added), and the retail run showed that a rule-centred pack was held
+by the health of TimesFM's own line, which the pack did not deliver (fixed: health is judged on the delivered line).
+
 ### Pre-existing helpers that are not causal (found with `ps.causal_canary`, 2026-11-22)
 
 `ps.changepoints` and `ps.isolation_outliers` are fitted on every row passed, so a flag at time t depends on later rows. Their

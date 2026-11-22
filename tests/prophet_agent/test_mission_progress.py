@@ -308,3 +308,23 @@ def test_idle_calls_name_the_next_item_and_clipped_output_keeps_its_tail():
     seen = observe({"ok": True, "run_id": "a" * 32, "stdout": text, "outputs": [], "stderr": "", "timed_out": False})
     assert seen["stdout"].startswith("HEAD") and seen["stdout"].endswith("SUMMARY TABLE") and len(seen["stdout"]) < SEEN_STDOUT + 100
     assert "Do not re-run" in seen["stdout_note"]
+
+
+def test_a_rule_centre_line_is_not_held_by_timesfms_lost_cycle():
+    from prophet_agent.runtime.contracts import delivered_health
+    lost = {"health": {"verdict": "flat_unexpected"}}
+    assert delivered_health(lost) == "flat_unexpected"
+    assert delivered_health({**lost, "centre": {"rule": "naive"}}) == "centre_rule:naive"
+    assert delivered_health({}) is None
+
+
+def test_a_panel_pack_counts_as_the_forecast_and_is_held_only_by_a_timesfm_line_that_lost_its_cycle():
+    from prophet_agent.runtime.contracts import check_evidence, progress
+    def pack(lines):
+        return {"kind": "tool", "tool": "forecast_report", "args": {"horizon": 14},
+                "result": {"n_series": len(lines), "series": lines, "run_id": "a" * 32, "files": ["out/forecast.xlsx"]}}
+    ok = pack({"A": {"health": "ok", "centre": "timesfm"}, "B": {"health": "flat_unexpected", "centre": "naive"}})
+    bad = pack({"A": {"health": "flat_unexpected", "centre": "timesfm"}})
+    item = lambda h: next(i for i in progress([h]) if i["item"].startswith("forecast health"))
+    assert item(ok)["status"] == "done" and item(bad)["status"] == "todo"
+    assert all(c["ok"] for c in check_evidence([ok]) if c["name"] == "health_repaired")
