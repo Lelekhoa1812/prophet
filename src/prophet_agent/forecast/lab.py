@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy import stats
 
@@ -30,7 +31,7 @@ from . import metrics
 from .baselines import moving_average, seasonal_naive
 from .control import Control, build_control
 from .paired import bootstrap_gain
-from .tsb import TSB
+from .tsb import INTERMITTENT_ADI, TSB, is_intermittent  # noqa: F401  one definition of intermittent (A6-01)
 from .types import Forecast
 
 # ----------------------------------------------------------------------------------------- decision thresholds --
@@ -65,7 +66,6 @@ MIN_USABLE = 8              # the usable-point floor build_control enforces
 N_QUANTILES = 9
 
 # ------------------------------------------------------------------------------------------------ baselines --
-INTERMITTENT_ADI = 1.32     # Syntetos-Boylan cut-off, as in the forecast tool: above it demand is intermittent
 TSB_MIN_SHARE = 0.5         # the TSB baseline is run when at least this share of fold histories are intermittent
 SIMPLE_BASELINES = ("naive", "mean_last_8", "seasonal_naive")
 CANDIDATE_NAMES = ("default", "ctx_2h", "ctx_4h", "ctx_8h", "ctx_season", "ignore_outliers", "replace_outliers",
@@ -345,13 +345,6 @@ def _choose(grid: list[Candidate], requested: Sequence[str] | None) -> list[Cand
 
 
 # ------------------------------------------------------------------------------------------- baselines --
-
-def is_intermittent(hist: np.ndarray) -> bool:
-    """True when demand is intermittent: the average gap between periods with demand is above INTERMITTENT_ADI."""
-    s = np.nan_to_num(np.asarray(hist, dtype=float))
-    sold = int(np.count_nonzero(s > 0))
-    return sold > 0 and len(s) / sold > INTERMITTENT_ADI
-
 
 def _baseline(name: str, hist: np.ndarray, horizon: int, period: int | None) -> Forecast:
     """Reference forecasts. All read only the history they are given. The zero forecast is what a MASE-only reading

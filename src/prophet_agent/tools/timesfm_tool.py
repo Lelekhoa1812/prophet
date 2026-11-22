@@ -16,7 +16,7 @@ import numpy as np
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, Control, build_control
 from prophet_agent.forecast.health import assess
 from prophet_agent.forecast.timesfm import CHECKPOINT, TimesFMEngine
-from prophet_agent.forecast.tsb import TSB, expected_volume
+from prophet_agent.forecast.tsb import INTERMITTENT_ADI, expected_volume, is_intermittent, tsb_band  # noqa: F401
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, run_dates, source_covariates
 
@@ -27,14 +27,8 @@ MAX_HORIZON = 512
 ALLOWED_ARGS = {"values", "source", "horizon", "season", "centre"} | CONTROL_ARGS
 SHOWN = 30      # points of a forecast shown to the planner before it is thinned
 FULL_SHOWN = 120   # a forecast up to this many periods is shown in full: thinning hid hours the planner needed (48 h live)
-INTERMITTENT_ADI = 1.32   # Syntetos-Boylan cut-off: an average gap above this between periods with demand is intermittent
-
-
-def is_intermittent(series: Any) -> bool:
-    """True when demand is intermittent: the average gap between periods with demand is above INTERMITTENT_ADI."""
-    s = np.nan_to_num(np.asarray(series, dtype=float))
-    sold = int(np.count_nonzero(s > 0))
-    return sold > 0 and len(s) / sold > INTERMITTENT_ADI
+# One definition of intermittent demand, shared with the backtest and calibration (forecast/tsb.py): the backtest must score
+# the forecast this tool delivers (A6-01). That definition also refuses series that go below zero (a price, a balance).
 
 
 def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, engine: Any, control: Control | None = None) -> dict[str, Any]:
@@ -46,9 +40,9 @@ def _one(series: np.ndarray, point: np.ndarray, q: np.ndarray, horizon: int, eng
     shown = [round(float(v), 4) for v in expected_volume(series, horizon)] if lumpy else median
     if lumpy:
         # The band must bracket the point shown. TimesFM's band sits on its median, near zero for lumpy demand, so the
-        # point (the mean under TSB) fell outside it (audit item 14). The TSB model's own quantiles share the point's
-        # distribution: the mean of its samples is the expected volume.
-        q = TSB().predict([np.asarray(series, dtype=float)], horizon).q[0]
+        # point (the mean under TSB) fell outside it (audit item 14). The TSB band is the one the backtest scores, widened
+        # so it always contains the expected volume (tsb_band, A6-02).
+        q = tsb_band(np.asarray(series, dtype=float), horizon)
     ctx_used = min(len(series), (control.context_points if control is not None and control.context_points else engine.global_context))
     if lumpy:
         health = {"verdict": "flat_expected", "reason": "intermittent demand: the point is the expected demand, a level by design; "

@@ -87,6 +87,9 @@ def test_real_timesfm_forecast_through_the_durable_runtime(tmp_path, monkeypatch
             self.plans = [
                 {"action": "call_tool", "tool": "timesfm_forecast", "args": {"values": values, "horizon": 12},
                  "rationale": "forecast the next 12 weeks"},
+                # Round 3, A5-04: a forecast finish with checklist items still to do is refused twice, then judged.
+                {"action": "finish", "rationale": "enough"},
+                {"action": "finish", "rationale": "enough"},
                 {"action": "finish", "rationale": "enough"},
             ]
             self.evals = [{"verdict": "met", "reason": "forecast returned", "answer": "12-week forecast ready"}]
