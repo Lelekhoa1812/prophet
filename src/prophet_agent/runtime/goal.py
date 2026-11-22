@@ -1106,6 +1106,21 @@ DATE_TEXT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|Ma
 OUTSIDE_HEAD = re.compile(r"^#{1,4}\s*Outside context\s*$", re.I | re.M)
 
 
+def _web_evidence(ctx: Ctx) -> list[dict]:
+    """The passages of every page the mission read, as one evidence item for grounding (the loop's history holds only the
+    planner's clipped view, and compaction may have folded it away)."""
+    texts: list[str] = []
+    for tool in ("web_research", "web_fetch"):
+        for res in ctx.store.tool_results(ctx.mission_id, tool):
+            if not isinstance(res, dict):
+                continue
+            for src in res.get("sources") or []:
+                texts.extend(p.get("text", "") for p in src.get("passages") or [] if isinstance(p, dict))
+            if isinstance(res.get("text"), str):
+                texts.append(res["text"])
+    return [{"kind": "tool", "tool": "web_sources", "args": {}, "result": {"passages": texts}}] if texts else []
+
+
 def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
     """Removes lines of the answer's Outside context section whose figures appear in no fetched web passage, and says so.
     Live, an answer cited "IMF: EUR/JPY 162.34", a number from the agent's own analysis that no source contained, and
@@ -1157,11 +1172,14 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                     ctx.store.append_event(ctx.mission_id, "provider.waiting", info)
 
             bind(ctx._guard_time, note)
-        result = _ground_result(_run(ctx, brain, goal, tools, cfg, context, history), history, goal)
+        result = _run(ctx, brain, goal, tools, cfg, context, history)
+        # Outside claims are checked against the pages first (lines whose figures no page holds are removed), then the whole
+        # answer is grounded against the analysis evidence plus the text of the pages that were read.
         if isinstance(result.get("answer"), str):
             checked, removed = _check_outside(ctx, result["answer"])
             if removed:
                 result = {**result, "answer": checked, "outside_removed": removed}
+        result = _ground_result(result, history + _web_evidence(ctx), goal)
         trust = contracts.trust_statement(history)
         if trust and isinstance(result.get("answer"), str) and result["answer"].strip() and "Accuracy check (computed" not in result["answer"]:
             # Written by code from the stored backtest, after grounding: the figures in it are the ledger's own.
