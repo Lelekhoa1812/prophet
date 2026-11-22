@@ -113,7 +113,7 @@ _SPEC_TEXT = (
     "as ps`, `import prophet_scan as sc`. Unpack (value, report) helpers: `value, report = ...`. "
     "Entities that share dates are never summed silently: pass entity= and key=, or use pl.panel for all of them. "
     "pl.chart(kind, data, x=, y=, title=<the finding>, subtitle=<measure, unit, period>, unit=, source=, path='out/name.png') "
-    "returns the problems it finds: read them. pl.size_report(path) and pl.query(sql, t=path) read files too big to load. "
+    "returns the problems it finds. pl.size_report(path) and pl.query(sql, t=path) read files too big to load. "
     "Also: pl.profile(path), pl.as_number(s), pl.as_dates(s), pl.holiday_covariate(index, country, subdiv, horizon) "
     "and pl.event_covariate(index, "
     "[(first, last), ...], horizon) for known-ahead drivers, pl.detect_anomalies(values, season) (candidates "

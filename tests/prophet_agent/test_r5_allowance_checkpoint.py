@@ -57,9 +57,34 @@ def test_a_call_cut_short_by_the_allowance_is_a_checkpoint():
         b.write([])
 
 
-def test_a_provider_failure_with_time_to_spare_is_still_a_failure():
-    with pytest.raises(Exhausted):
+def test_a_provider_failure_with_time_to_spare_is_a_model_service_checkpoint():
+    # Changed in round 5 (live electricity rep7): a provider failure is a checkpoint the service can continue, not a failure.
+    with pytest.raises(BudgetExceeded) as exc:
         _brain(Client(fail=True), BUDGET_S + 100).decide([], {}, "plan")
+    assert exc.value.which == "model_service" and "budget spent" in exc.value.detail
+
+
+class Cut(Client):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def complete(self, models, messages, **kw):
+        raise self.error
+
+
+def test_a_stream_cut_is_a_model_service_checkpoint_and_missing_keys_still_fail():
+    from prophet_agent.nim.errors import NimError, NotConfigured
+    with pytest.raises(BudgetExceeded) as exc:
+        NimBrain(Cut(NimError("nim stream cut 4 times; the continuation limit is reached")), ["m"]).write([])
+    assert exc.value.which == "model_service" and "stream cut" in exc.value.detail
+    with pytest.raises(NotConfigured):
+        NimBrain(Cut(NotConfigured("no key")), ["m"]).decide([], {}, "plan")
+
+
+def test_the_checkpoint_reason_has_plain_words():
+    from prophet_agent.api.outcome import BUDGET_REASON
+    assert "continuing retries" in BUDGET_REASON["model_service"]
 
 
 def test_without_an_allowance_nothing_changes():

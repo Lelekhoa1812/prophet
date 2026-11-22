@@ -69,6 +69,7 @@ USER_REASON = {
 BUDGET_REASON = {
     "max_seconds": "This part of the work used its time allowance.",
     "max_tool_calls": "This part of the work used its tool-call allowance.",
+    "model_service": "The language model service failed several times in a row. Every step so far is kept; continuing retries from here.",
 }
 
 STALL_MARK = "kept repeating the same step"

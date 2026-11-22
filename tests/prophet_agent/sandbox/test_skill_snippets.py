@@ -71,6 +71,8 @@ CATALOGUE_EXAMPLES: dict[str, str] = {
     "ps.changepoints": "shifts, rep = ps.changepoints(x, min_size=20, max_changes=5)\nassert 'n_changes' in rep",
     "ps.hampel": "flags, rep = ps.hampel(x, window=7, n_sigmas=3.0, causal=True)\nassert 'count' in rep",
     "ps.stl_outliers": "flags, rep = ps.stl_outliers(x, period=7, k=3.0)\nassert 'count' in rep",
+    "ps.change_test": ("verdict, rep = ps.change_test(df['units'], recent=7, dates=df['date'])\n"
+                       "assert verdict in ('rise', 'decline', 'within usual variation', 'not enough history')"),
     "pl.detect_anomalies": "res = pl.detect_anomalies(x, season=7)\nassert 'candidates' in res and 'values' in res",
     "pl.dominant_period": "period, strength = pl.dominant_period(x)\nassert strength >= 0",
     "pl.find_season": "res = pl.find_season(x)\nassert 'strongest_lag' in res",

@@ -30,8 +30,8 @@ CATALOGUE: tuple[tuple[str, Any, str], ...] = (
     ("ps", prophet_stats, "changepoints"),
     ("ps", prophet_stats, "hampel"),
     ("ps", prophet_stats, "stl_outliers"),
+    ("ps", prophet_stats, "change_test"),       # "is the change real?" (round 5, live retail_biz)
     ("pl", prophet_lib, "detect_anomalies"),
-    ("pl", prophet_lib, "dominant_period"),
     ("pl", prophet_lib, "find_season"),
     ("pl", prophet_lib, "read_table"),
     ("pl", prophet_lib, "to_number"),

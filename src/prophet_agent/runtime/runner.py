@@ -63,9 +63,10 @@ def is_argument_refusal(exc: BaseException) -> bool:
 
 
 class BudgetExceeded(Exception):
-    def __init__(self, which: str):
+    def __init__(self, which: str, detail: str | None = None):
         super().__init__(f"budget exhausted: {which}")
         self.which = which
+        self.detail = detail      # what stopped the part, in words (a provider error, already redacted)
 
 
 @dataclass(frozen=True)
@@ -234,7 +235,8 @@ class Runtime:
             # The segment's allowance of time or tool calls is spent. That is a checkpoint, never a failure: the stored
             # steps stay, and the person continues with a fresh allowance (see MissionService.continue_mission).
             self.store.set_status(mission_id, "checkpoint")
-            self.store.append_event(mission_id, "mission.checkpoint", {"which": exc.which})
+            self.store.append_event(mission_id, "mission.checkpoint",
+                                    {"which": exc.which, **({"detail": exc.detail} if exc.detail else {})})
             self.store.release_lease(mission_id, self.owner)
             return {"status": "checkpoint", "which": exc.which,
                     "reason": f"this part of the work reached its {exc.which} allowance"}

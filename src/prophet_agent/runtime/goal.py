@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from prophet_agent import prompts
-from prophet_agent.nim.errors import Exhausted, redact
+from prophet_agent.nim.errors import Exhausted, NimError, NotConfigured, redact
 from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN
 
 from . import contracts
@@ -1998,17 +1998,29 @@ class NimBrain:
             extra["budget_s"] = min(BUDGET_S, float(left))
         return extra
 
+    def _last_error(self) -> str:
+        import sys
+        return str(sys.exc_info()[1] or "the model service gave no usable answer")
+
     def _complete(self, messages: list[dict], **kw: Any) -> Any:
         extra = self._extra()
         try:
             return self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages,
                                         **kw, **extra)
+        except NotConfigured:
+            raise                       # no key or provider: continuing cannot help, so the mission fails and says why
         except Exhausted:
             # A call cut short by the segment's allowance (not by the provider's own budget) ran out of the person's time,
             # not of models: that is a checkpoint too.
             if extra.get("budget_s", BUDGET_S) < BUDGET_S and (self.remaining() or 0.0) < MIN_CALL_S:
                 raise BudgetExceeded("max_seconds") from None
-            raise
+            raise BudgetExceeded("model_service", redact(str(self._last_error()))) from None
+        except NimError as exc:
+            # Live electricity rep7 (2026-11-23): "nim stream cut 4 times" inside one analyst failed the whole mission after
+            # 64 calls. A provider failure is not the analysis failing: it is a checkpoint. Nothing after the failed call was
+            # stored, so a continued run replays the stored steps and retries that call; the service continues on its own
+            # up to its auto_continue limit, then the person decides.
+            raise BudgetExceeded("model_service", redact(str(exc))) from None
 
     def write(self, messages: list[dict]) -> str:
         """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line)."""

@@ -175,7 +175,9 @@ C. Questions, notebooks and non-forecast analysis
     run, or batch the work, and say what you did. A problem your own code caused is never a question: fix it.
 22. Questions that are not forecasts are analysis too: totals, comparisons, rankings, shares, changes over time are computed
     in sandbox_python from the files and answered from what was printed. Cite each number as file > sheet > column with
-    the rows used, and say which rows were left out and why.
+    the rows used, and say which rows were left out and why. Whether a change is real ("is it slipping?", "has it grown?")
+    is answered with `ps.change_test(values, recent=28, dates=dates)`: quote its reading and p-value. A forecast's slope is
+    never evidence that a change already happened.
 23. Joins: report both row counts and the unmatched counts, and check the key is unique on the side you expect. Names are
     keys: compare raw unique counts with `pl.tidy_text(col)` before grouping.
 24. Notebook turns: use the source cards and saved tables in the context before opening anything. Save a cleaned table that
