@@ -13,9 +13,20 @@ const LABEL = 20;
 
 type Fc = NonNullable<ArtifactRun["forecast"]>;
 
-// The forecast, drawn from the numbers in the run: the series so far in sand, the forecast in ember, and the
-// shaded band where 8 in 10 outcomes are expected (the P10 to P90 range). The figcaption describes it in words, so the
-// drawing itself is hidden from screen readers.
+// Where the shaded band came from, read from the forecast's config (A7-13). A band is called calibrated only when the
+// config says so, with its held-out coverage when that is given. Otherwise it is the raw model band, which has not been
+// checked against past forecasts, so the chart must not say it covers a fixed share of outcomes.
+export function bandSource(config: Record<string, unknown> | null): string {
+  if (config?.band_source !== "calibrated") return "raw TimesFM band, not yet checked against past forecasts";
+  const c = config.band_coverage;
+  if (typeof c !== "number" || !Number.isFinite(c)) return "calibrated band";
+  const pct = c <= 1 ? c * 100 : c;
+  return `calibrated band (held-out coverage ${pct.toFixed(1)}%)`;
+}
+
+// The forecast, drawn from the numbers in the run: the series so far in sand, the forecast in ember, and the shaded band
+// between the 10th and 90th percentile of the model's outcomes. The figcaption says in words what the band is and where it
+// came from, so the drawing itself is hidden from screen readers.
 export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
   const point = fc.point ?? [];
   const lo10 = fc.q10 ?? [];
@@ -46,12 +57,13 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
   const first = point[0];
   const last = point[n - 1];
   const change = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : null;
+  const source = bandSource(fc.config);
   const reading =
     n === 1
-      ? `The forecast is ${formatNumber(first)}, most likely between ${formatNumber(lo10[0])} and ${formatNumber(hi90[0])}.`
+      ? `The forecast is ${formatNumber(first)}. The likely range is ${formatNumber(lo10[0])} to ${formatNumber(hi90[0])}.`
       : `The forecast moves from ${formatNumber(first)} to ${formatNumber(last)} over ${n} periods${
           change !== null ? ` (${change >= 0 ? "+" : ""}${change.toFixed(1)}%)` : ""
-        }. By the end, 8 in 10 outcomes are expected between ${formatNumber(lo10[n - 1])} and ${formatNumber(hi90[n - 1])}.`;
+        }. By the end, the likely range is ${formatNumber(lo10[n - 1])} to ${formatNumber(hi90[n - 1])}.`;
 
   return (
     <figure className="grid gap-3">
@@ -84,9 +96,10 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
             <span><span aria-hidden="true" className="mr-1.5 inline-block h-0.5 w-5 bg-sand-1 align-middle" />Your data</span>
           )}
           <span><span aria-hidden="true" className="mr-1.5 inline-block h-0.5 w-5 bg-ember align-middle" />Forecast</span>
-          <span><span aria-hidden="true" className="mr-1.5 inline-block h-2.5 w-5 bg-ember/25 align-middle" />Likely range (8 in 10)</span>
+          <span><span aria-hidden="true" className="mr-1.5 inline-block h-2.5 w-5 bg-ember/25 align-middle" />Likely range (10th to 90th percentile)</span>
         </span>
         <span className="text-sand-0">{reading}</span>
+        <span className="text-sand-2">Band source: {source}.</span>
       </figcaption>
     </figure>
   );

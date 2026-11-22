@@ -1102,6 +1102,9 @@ def isolation_outliers(
 # Ledger
 # ---------------------------------------------------------------------------------------------------------------------
 
+_LEDGER_OUTCOMES = ("confirmed", "refuted", "not tested")
+
+
 class Ledger:
     """The data-quality and decision ledger: what was found, what was decided, and the evidence for it.
 
@@ -1129,17 +1132,37 @@ class Ledger:
         """All entries in order, each with its running index. Read-only: a copy, so changing it changes nothing."""
         return self.to_dict()
 
-    def add(self, stage: str, finding: str, decision: str, evidence: Any = None) -> None:
-        """Record one finding and the decision taken about it. stage, finding and decision must be non-empty text."""
+    def add(self, stage: str, finding: str, decision: str, evidence: Any = None, expected: str | None = None,
+            outcome: str | None = None) -> None:
+        """Record one finding and the decision taken about it. stage, finding and decision must be non-empty text.
+
+        ``expected`` is the prediction written down before the test ("the level shifted in 2024"), and ``outcome`` says
+        what the test showed: "confirmed", "refuted" or "not tested". Both are optional, so entries without them keep their
+        old shape. An outcome needs an expectation to test against, and a blank expectation is refused.
+
+        Motivation vs Logic (A4-10): none of the audited ledgers recorded a falsifiable expectation, so the method's
+        hypothesis step could not be seen. The fields make it visible; a later check may require them.
+        """
         for field_name, value in (("stage", stage), ("finding", finding), ("decision", decision)):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"every ledger entry needs a non-empty {field_name}")
-        self._entries.append({
+        entry: dict[str, Any] = {
             "stage": stage,
             "finding": finding,
             "decision": decision,
             "evidence": _py(evidence),
-        })
+        }
+        if expected is not None:
+            if not isinstance(expected, str) or not expected.strip():
+                raise ValueError("an expected value, when given, must be non-empty text")
+            entry["expected"] = expected
+        if outcome is not None:
+            if outcome not in _LEDGER_OUTCOMES:
+                raise ValueError(f"outcome must be one of {_LEDGER_OUTCOMES}, not {outcome!r}")
+            if expected is None:
+                raise ValueError("an outcome needs an expected value to test against")
+            entry["outcome"] = outcome
+        self._entries.append(entry)
 
     def to_dict(self) -> list[dict[str, Any]]:
         """All entries in order, each with its running index (1, 2, 3 and so on)."""

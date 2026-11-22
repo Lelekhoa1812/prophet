@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import warnings
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
 import pandas as pd
@@ -1075,6 +1076,67 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
         elif fill == "interpolate":
             s = s.interpolate(limit_direction="both")
     return s
+
+
+TIME_DST_POLICIES = ("keep_as_is", "sum_repeated_hour", "drop_repeated")
+
+
+def time_policy(df: pd.DataFrame, time: str, value: str, *, timezone: str | None = None, dst: str = "keep_as_is",
+                grain: str | None = None) -> tuple[pd.DataFrame, dict]:
+    """Apply a time rule to a loaded frame before the scan: the timezone and what to do with a repeated clock hour.
+
+    Motivation vs Logic (A7-10): the scan reports a daylight-saving repeated hour as a major ``time.dst_shift`` and the
+    contract blocks until a decision is recorded, yet the person had no way to state the rule. Logic: an aware column is
+    converted to ``timezone`` and its offset dropped, so the stamps are wall-clock in that zone. With a timezone, a
+    stamp is in the repeated hour only when its wall time is ambiguous in that zone. ``sum_repeated_hour`` adds the
+    values of the repeated stamps into the first, and ``drop_repeated`` keeps the first and removes the rest. Other
+    duplicates are left alone. A missing hour (spring forward) is not filled, so the scan still reports it.
+
+    Returns the new frame and a report (counts, the policy used and the ``grain`` to pass to the scan as ``freq``).
+    Unknown policies, zones or grains raise ValueError.
+    """
+    if dst not in TIME_DST_POLICIES:
+        raise ValueError(f"dst must be one of {TIME_DST_POLICIES}, not {dst!r}")
+    zone = None
+    if timezone is not None:
+        try:
+            zone = ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone {timezone!r}") from exc
+    if grain is not None:
+        try:
+            pd.tseries.frequencies.to_offset(grain)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"unknown grain {grain!r}") from exc
+    out = df.copy()
+    ts = out[time] if pd.api.types.is_datetime64_any_dtype(out[time]) else pd.to_datetime(out[time], errors="coerce")
+    if getattr(ts.dt, "tz", None) is not None:
+        if zone is not None:
+            ts = ts.dt.tz_convert(zone)
+        ts = ts.dt.tz_localize(None)
+    present = ts.notna()
+    if zone is not None:
+        # NaT here means ambiguous (the repeated hour); a nonexistent wall time is shifted forward, so it is not counted.
+        ambiguous = ts.dt.tz_localize(zone, ambiguous="NaT", nonexistent="shift_forward").isna() & present
+    else:
+        ambiguous = pd.Series(False, index=ts.index)   # without a zone no stamp can be called a repeated hour
+    repeated = present & ts.duplicated(keep=False) & ambiguous
+    later = repeated & ts.duplicated(keep="first")
+    first = repeated & ~later
+    report: dict[str, Any] = {"timezone": timezone, "dst": dst, "grain": grain,
+                              "ambiguous_wall_times": int(ts[ambiguous].nunique()) if zone is not None else None,
+                              "repeated_stamps": int(ts[repeated].nunique()), "rows_removed": 0,
+                              "not_filled": "a missing hour (spring forward) is not filled; the scan still reports it"}
+    out[time] = ts
+    if dst == "keep_as_is" or not repeated.any():
+        return out, report
+    if dst == "sum_repeated_hour":
+        values = pd.to_numeric(out[value], errors="coerce")
+        sums = values[repeated].groupby(ts[repeated].to_numpy()).sum(min_count=1)
+        out[value] = values
+        out.loc[first, value] = sums.reindex(ts[first]).to_numpy()
+    report["rows_removed"] = int(later.sum())
+    return out[~later].reset_index(drop=True), report
 
 
 def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None,

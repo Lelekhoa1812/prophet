@@ -239,6 +239,26 @@ def _ts(ns: Any) -> str:
     return str(pd.Timestamp(int(ns)))
 
 
+def _on_calendar_boundary(stamp: Any) -> bool:
+    """True when a break stamp is midnight on 1 January or on the first of any month (A4-09). NaT is never a boundary."""
+    try:
+        ts = pd.Timestamp(stamp)
+    except (TypeError, ValueError):
+        return False
+    if pd.isna(ts):
+        return False
+    return ts.day == 1 and ts.hour == 0 and ts.minute == 0 and ts.second == 0
+
+
+def _date_key(stamp: Any) -> str | None:
+    """The calendar date of a break stamp, used to find breaks that share a date across entities."""
+    try:
+        ts = pd.Timestamp(stamp)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(ts) else str(ts.date())
+
+
 def _median(x: np.ndarray) -> float | None:
     """Median of the observed values, or None when nothing is observed."""
     ok = x[~np.isnan(x)]
@@ -475,6 +495,10 @@ class _Battery:
         self.volume: dict[str, float] = {}
         self.medians: dict[str, float] = {}
         self.series: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        # A4-09: every break row with its date, and the level-shift findings, so the cross-entity pass can flag breaks
+        # that share a date across entities or fall on a calendar boundary.
+        self._break_rows: list[tuple[str, str | None, dict]] = []
+        self._level_findings: list[tuple[dict, list[dict]]] = []
 
     def add(self, fid: str, severity: str, scope: Any, evidence: Any, decision: str | None, next_step: str | None) -> None:
         self.findings.append(_finding(fid, severity, scope, evidence, decision, next_step))
@@ -870,16 +894,54 @@ class _Battery:
                 sev = "minor"
             if rank[sev] > rank[worst]:
                 worst = sev
-            rows.append({"at": str(label_at(idx)), "shift_in_sd": sd, "median_before": before,
-                         "median_after": after, "median_ratio": ratio, "severity": sev})
+            stamp = label_at(idx)
+            row = {"at": str(stamp), "shift_in_sd": sd, "median_before": before,
+                   "median_after": after, "median_ratio": ratio, "severity": sev,
+                   "on_calendar_boundary": _on_calendar_boundary(stamp), "coincident_entities": [],
+                   "recording_hypothesis": False}
+            rows.append(row)
+            self._break_rows.append((label, _date_key(stamp), row))
         self.add(
             "changepoints.level_shift", worst, label,
             {"breaks": rows[:5], "count": len(rows), "search": "binary segmentation on the seasonal residual"
-             if p0 and n_obs >= 2 * p0 else "binary segmentation on the raw series"},
+             if p0 and n_obs >= 2 * p0 else "binary segmentation on the raw series",
+             "recording_hypothesis_breaks": 0},
             "For each break: is there a known event (launch, price, supply, unit or system change) on that date? A median "
             "jump of ten times or more with no event is a unit change and must be resolved first.",
             "Split the history at the break only after the event is recorded; never fit the break on the full series in a backtest.",
         )
+        self._level_findings.append((self.findings[-1], rows))
+
+    def _recording_hypotheses(self) -> None:
+        """Flag each break that falls on a calendar boundary or shares its date with another entity (A4-09).
+
+        Motivation vs Logic: a step that every station shows on 1 January is more likely a change in how the data was
+        recorded than a change in demand, and a step shared by several entities on one date usually has one cause. Logic:
+        group the breaks by date across entities, mark each break with the other entities on its date, and mark the break
+        a recording hypothesis when either flag holds. The finding keeps its severity; its decision asks for a test of the
+        options (truncate, flag, none) before the break is kept.
+        """
+        by_date: dict[str, set[str]] = {}
+        for label, key, _row in self._break_rows:
+            if key is not None:
+                by_date.setdefault(key, set()).add(label)
+        for label, key, row in self._break_rows:
+            row["coincident_entities"] = sorted(by_date.get(key, set()) - {label}) if key is not None else []
+            row["recording_hypothesis"] = bool(row["on_calendar_boundary"] or row["coincident_entities"])
+        # The finding stores a JSON-safe copy of each row, so the flags are written back by position (the first five).
+        for f, rows in self._level_findings:
+            for shown, row in zip(f["evidence"]["breaks"], rows):
+                shown["coincident_entities"] = row["coincident_entities"]
+                shown["on_calendar_boundary"] = row["on_calendar_boundary"]
+                shown["recording_hypothesis"] = row["recording_hypothesis"]
+            n = sum(1 for r in rows if r["recording_hypothesis"])
+            if n:
+                f["evidence"]["recording_hypothesis_breaks"] = n
+                f["decision_needed"] = (
+                    f"{f['decision_needed']} Recording hypothesis: {n} of the breaks falls on a calendar boundary or on the same "
+                    "date as another entity. Test it before keeping the break: fit with the break truncated, with a flag "
+                    "for it, and with neither, and compare walk-forward error. Keep the option that a held-out check favours."
+                )
 
     def _censoring(self, label: str, arr: np.ndarray, obs: np.ndarray, label_at: Any, prof: dict) -> None:
         cen = self._try(label, "censoring_check", lambda: ps.censoring_check(arr), prof)
@@ -970,6 +1032,7 @@ class _Battery:
     # -- cross-entity (after every entity) ----------------------------------------------------------------------------
 
     def cross_entity(self) -> None:
+        self._recording_hypotheses()
         self._scale()
         self._concentration()
         self._heterogeneity()
