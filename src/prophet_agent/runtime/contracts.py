@@ -1509,6 +1509,29 @@ def check_ledger_answer(answer, history, run_root) -> dict | None:
     return None
 
 
+MAE_WORD = re.compile(r"\bMAE\b", re.I)
+
+
+def _metric_named(text: str, obs: list) -> dict | None:
+    """Scores called MAE when the backtests scored MASE. Blocks unless an analysis step printed an MAE of its own.
+
+    Live electricity rep12 (measured, 2026-11-23): the answer's table headed "Overall MAE" listed panel_backtest's MASE scores
+    (1.47 and so on). MAE is in the data's own units; MASE is scaled by the series' typical step change, so the two are not
+    interchangeable and a reader would misjudge the error by orders of magnitude."""
+    if not MAE_WORD.search(text):
+        return None
+    scored = any(isinstance(_ok_result(h, t), dict) for h in with_delegated(obs) for t in ("backtest_series", "panel_backtest"))
+    if not scored:
+        return None
+    own = any(MAE_WORD.search(json.dumps(h.get("result"), default=str)) for h in with_delegated(obs)
+              if isinstance(h, dict) and h.get("tool") == "sandbox_python")
+    if own:
+        return None
+    return _check("answer_metric_named", False,
+                  "the answer calls the scores MAE, but the backtests scored MASE (mean absolute scaled error: the error divided "
+                  "by the series' typical step change, 1 meaning as good as the naive rule); name the metric MASE")
+
+
 AVERAGE_GOAL = re.compile(r"\baverage\b|\bmean\b", re.I)
 
 
@@ -1642,6 +1665,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(bound)
     if (avg := _average_range(text, obs, goal)) is not None:
         checks.append(avg)
+    if (metric := _metric_named(text, obs)) is not None:
+        checks.append(metric)
 
     withheld = _withheld_totals(obs)
     if withheld:

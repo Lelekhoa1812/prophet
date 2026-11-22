@@ -219,3 +219,14 @@ def test_an_average_goal_needs_the_averages_measured_range():
     good = f"Next month's average: 10 per unit, 80% range {mr['mean_q10']:.2f} to {mr['mean_q90']:.2f}."
     assert _named(contracts.check_answer(good, hist, goal=AVG_GOAL), "answer_average_range")[0]["ok"]
     assert _named(contracts.check_answer(day_band, hist, goal="Forecast next month."), "answer_average_range") == []
+
+
+def test_mase_scores_called_mae_block_unless_a_cell_printed_an_mae():
+    # live electricity rep12, electricity rep4 and Beijing (2026-11-23): panel_backtest's MASE table headed "Overall MAE"
+    bt = {"kind": "tool", "tool": "panel_backtest", "result": {"overall": {"timesfm": 1.47}, "best_overall": "timesfm"}}
+    text = "| Model | Overall MAE |\n|---|---|\n| TimesFM | 1.47 |"
+    c = _named(contracts.check_answer(text, [bt]), "answer_metric_named")
+    assert len(c) == 1 and not c[0]["ok"] and "name the metric MASE" in c[0]["detail"]
+    assert _named(contracts.check_answer(text.replace("MAE", "MASE"), [bt]), "answer_metric_named") == []
+    own = {"kind": "tool", "tool": "sandbox_python", "result": {"stdout": "MAE per model: timesfm 812.4"}}
+    assert _named(contracts.check_answer(text, [bt, own]), "answer_metric_named") == []
