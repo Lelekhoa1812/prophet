@@ -1017,6 +1017,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     rejected_finishes = 0     # consecutive finishes the evaluator turned down
     best_done, calls_at_best = -1, 0   # most checklist items ticked so far, and the call count when that was reached
     stuck = None                       # (next checklist item, calls since the last newly ticked item)
+    rescue = False                     # set by the first stall: the next step hands the stuck item to a fresh analyst
     contract_blocks = 0       # times a deterministic check sent a "met" answer back for more work
     for i in range(cfg.end):
         if i and i % seg_len == 0:
@@ -1047,7 +1048,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             if (idle := _idle_note(calls_now - calls_at_best, items)):
                 note += "\n\n" + idle
             nxt = next((it["item"] for it in items if it.get("next")), None)
-            stuck = (nxt, calls_now - calls_at_best) if nxt else None
+            stuck = (nxt, STUCK_CALLS if rescue else calls_now - calls_at_best) if nxt else None
+            rescue = False
             _status(ctx, i, history, items, started)
         auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t), stuck)
                 if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
@@ -1103,6 +1105,13 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         history.append(obs)
 
         if obs.get("kind") == "tool" and _stalled(history, cfg.stall_window):
+            if cfg.depth == 0 and cfg.auto_delegate and stuck and not any(h.get("kind") == "stall_rescue" for h in history):
+                # The first stall is not the end: the next checklist item goes to a fresh analyst, and only a second stall
+                # stops the run (live retail: four identical diagnostics cells ended the mission at 11 calls, no forecast).
+                history.append({"kind": "stall_rescue", "note": "the same step repeated with the same result; the next "
+                                "checklist item (" + stuck[0] + ") goes to a fresh analyst. Build on its report."})
+                rescue = True
+                continue
             # Repeating the same call will not help. Judge what was found so far: a best answer, labelled partial,
             # beats an empty "stalled".
             verdict = ctx.step(f"evalstall:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),

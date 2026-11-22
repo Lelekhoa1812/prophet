@@ -33,6 +33,7 @@ class ReportDict(dict):
 
     ALIASES = {"missing_steps": "filled_periods", "blockers": "blocked", "mean_before": "before_mean",
                "mean_after": "after_mean", "jump": "shift", "at": "index", "n_outliers": "count", "n_flagged": "count",
+               "outlier_count": "count", "num_outliers": "count", "outlier_share": "share", "pct": "share",
                "date": "label"}
     FLAG_KEYS = ("outliers", "flags", "mask", "outlier_mask", "is_outlier")
     INDEX_KEYS = ("outlier_indices", "indices", "outlier_index", "positions", "outlier_positions", "index")

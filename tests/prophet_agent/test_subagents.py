@@ -203,3 +203,18 @@ def test_harness_sub_agents_do_not_spend_the_lead_agents_allowance(store):
     tools_used = [h.get("tool") for h in out["result"]["evidence"] if h.get("kind") == "tool"]
     assert "backtest_series" in tools_used, out        # the lead's second call still fits its own allowance of 2
     assert store.count_tool_calls(mid) == 5            # 2 by the lead, 3 by the harness's researcher
+
+
+def test_the_first_stall_hands_the_next_item_to_a_fresh_analyst_before_stopping(store):
+    same = {"action": "call_tool", "tool": "sandbox_python", "args": {"code": "print(1)"}, "rationale": "again"}
+    cell = _tool("sandbox_python", lambda a, k: {"ok": True, "run_id": "a" * 32, "stdout": "1", "outputs": []})
+    tools = {"sandbox_python": cell, "inspect_data": _tool("inspect_data")}
+    brain = KeyedBrain([same] * 30, {"sub-agent a1": [{"action": "finish", "rationale": "done"}]})
+    goal = "Forecast daily sales for the next 14 days"
+    mid = store.create_mission(goal, {})
+    out = Runtime(store).run(mid, goal_program(goal, tools, brain, GoalConfig(max_iterations=30, stall_window=4)))
+    ev = out["result"]["evidence"]
+    rescue = [i for i, h in enumerate(ev) if h.get("kind") == "stall_rescue"]
+    subs = [i for i, h in enumerate(ev) if h.get("kind") == "subagent" and str(h.get("auto", "")).startswith("stuck:")]
+    assert rescue and subs and subs[0] > rescue[0], [h.get("kind") for h in ev]
+    assert out["result"]["status"] in ("partial", "stalled")          # the second stall still stops the run
