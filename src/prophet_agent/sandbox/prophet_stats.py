@@ -76,6 +76,8 @@ def _py(v: Any) -> Any:
     if isinstance(v, (list, tuple)):
         return [_py(i) for i in v]
     if isinstance(v, np.ndarray):
+        if v.ndim == 0:      # a 0-d array: tolist() gives a scalar (live: 5 ledger cells failed on 'int' is not iterable)
+            return _py(v.item())
         return [_py(i) for i in v.tolist()]
     if isinstance(v, (bool, np.bool_)):
         return bool(v)

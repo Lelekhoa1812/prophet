@@ -21,7 +21,7 @@ SEEN_STDOUT = 3_500
 SEEN_STDERR = 1_500
 
 
-MAX_CARRY = 8
+MAX_CARRY = 40          # a 12-entity panel saves a series and a scan per entity (live: 8 refused 7 calls)
 
 
 def carried_inputs(carry) -> dict[str, Path]:

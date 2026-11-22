@@ -129,3 +129,12 @@ def test_a_read_of_out_name_falls_back_to_the_carried_copy(tmp_path):
     res = run_python("import json\nprint(json.load(open('out/scan.json'))['ok'])\nprint(open('in/carried/out/scan.json').read())",
                      inputs={"carried/scan.json": src})
     assert res.ok and res.stdout.split()[0] == "1", res.stderr
+
+
+def test_short_module_names_import_and_a_ledger_takes_numpy_scalars():
+    from prophet_agent.sandbox.runner import run_python
+    code = ("import numpy as np\nfrom ps import Ledger\nimport sc\nL = Ledger()\n"
+            "L.add('coverage', 'no gaps', 'keep', {'n': np.array(5), 'share': np.float64(0.5)})\nL.save()\n"
+            "print(len(L.entries) if hasattr(L, 'entries') else 'ok', hasattr(sc, 'scan'))")
+    res = run_python(code)
+    assert res.ok and res.stdout.split()[-1] == "True", res.stderr

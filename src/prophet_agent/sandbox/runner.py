@@ -182,6 +182,9 @@ def memory_limit_enforced() -> bool:
     return platform.system() == "Linux"
 
 
+SHORT_MODULES = {"ps": "prophet_stats", "sc": "prophet_scan"}
+
+
 def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64,
                files: dict[str, bytes] | None = None, inputs: dict[str, Path] | None = None) -> SandboxResult:
     """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data).
@@ -198,6 +201,11 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     home.mkdir()
     for module in sorted(LIB_DIR.glob("prophet_*.py")):
         shutil.copy2(module, wd / "lib" / module.name)
+    # The documented short names as modules too, so `from ps import Ledger` works like `import prophet_stats as ps`
+    # (live: two cells failed on it). `pl` is left out: it would shadow polars in code that means polars.
+    for short, full in SHORT_MODULES.items():
+        (wd / "lib" / f"{short}.py").write_text(f"import {full} as _m\n"
+                                                "globals().update({k: v for k, v in vars(_m).items() if not k.startswith('__')})\n")
     for name, src in (inputs or {}).items():
         parts = name.split("/")
         if name.startswith(".") or len(parts) > 2 or (len(parts) == 2 and parts[0] not in ("derived", "carried")) or not parts[-1]:
