@@ -797,12 +797,26 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
     if not forecasts:
         checks.append(_check("health_repaired", True, "no forecast yet; nothing to check"))
     else:
-        verdict = delivered_health(forecasts[-1][1])
+        # The gate follows the pack the person receives (forecast_report). A healthy timesfm_forecast run after a flat pack is a
+        # diagnostic; it does not repair the band that ships (A6-07; the pack is rebuilt only by a later forecast_report).
+        pack = next((rec for i, rec, _ in reversed(forecasts) if obs[i].get("tool") == "forecast_report"), None)
+        if pack is None:
+            pack = forecasts[-1][1]          # a run with no pack: its last forecast is what the answer delivers
+        verdict = delivered_health(pack)
         if verdict == "flat_unexpected":
             checks.append(_check("health_repaired", False,
-                                 "the last forecast's health says the cycle was lost, and it was never repaired"))
+                                 "the forecast the answer delivers says the cycle was lost, and no later pack was built on a "
+                                 "repaired forecast (rebuild the pack after the repair)"))
+            period = _health_period(pack)
+            if period is not None:
+                tested = any(isinstance(_ok_result(h, "control_lab"), dict) and (h.get("args") or {}).get("period") == period
+                             for h in obs)
+                checks.append(_check("flagged_period_tested", tested,
+                                     f"control_lab ran with period={period} on this flagged band" if tested else
+                                     f"the flagged band has health period {period}, and no control_lab ran with period={period}; "
+                                     "run control_lab with that period on the same series and horizon", "warn"))
         else:
-            checks.append(_check("health_repaired", True, f"the last forecast's health is {verdict or 'not reported'}"))
+            checks.append(_check("health_repaired", True, f"the pack's health is {verdict or 'not reported'}"))
 
         _, rec, args = forecasts[-1]
         point = rec.get("point")
