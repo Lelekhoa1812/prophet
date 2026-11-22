@@ -60,6 +60,9 @@ _OFF_GRID_MAJOR = 0.05  # share of stamps off the regular grid (proposal)
 _GAP_SHARE_MAJOR = 0.20  # share of grid steps that are missing (proposal)
 _WEEKEND_GAP_SHARE = 0.90  # share of all Saturdays and Sundays in range with no record that makes the series a business-day calendar (proposal)
 _TOD_MIN_DAYS = 10  # days in a calendar month needed to read the first time of day (proposal)
+_WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")  # Monday is 0, as pandas counts
+_CLOSED_WEEKDAY_SHARE = 0.90  # share of one weekday's periods with no record that makes it a closed day (proposal; A1-06)
+_CLOSED_MIN_PERIODS = 4  # periods a weekday needs before its absence is judged (proposal)
 
 # Coverage and zeros
 _DEAD_RUN_MIN = 14  # consecutive zeros treated as a dead segment, in observed steps (proposal: two weeks of daily data)
@@ -652,8 +655,46 @@ class _Battery:
                 "print(pd.to_datetime(df[{!r}]).dt.floor('D').value_counts().sort_index().head())".format(self.time_name),
             )
 
+    def _closed_days(self, label: str, ut: np.ndarray, vs: np.ndarray, prof: dict) -> None:
+        """A closed weekday: nearly every period on one weekday has no record (no stamp, or an empty value). Each weekday
+        is judged on its own, so one pooled weekend share cannot hide a closed Saturday.
+
+        Motivation vs Logic: the live retail file holds every calendar day, and Saturday has no value on 0.99 of its
+        periods, while the pooled weekend share is 0.52 and under the business-day threshold (A1-06, measured-raw). rep4
+        then built a Monday to Friday series and dropped 99 trading Sundays. A weekend-only closure with absent stamps is
+        already calendar.business_days, so it is not repeated here.
+        """
+        if ut.size < _CLOSED_MIN_PERIODS:
+            return
+        idx = pd.DatetimeIndex(np.asarray(ut, dtype="int64"))
+        full = pd.date_range(idx.min().normalize(), idx.max().normalize(), freq="D")
+        has = np.zeros(len(full), dtype=bool)
+        has[full.get_indexer(idx.normalize())[~np.isnan(vs)]] = True
+        dow = np.asarray(full.day_of_week)
+        per_day: dict[str, float] = {}
+        for k, name in enumerate(_WEEKDAY_NAMES):
+            on = dow == k
+            if on.any():
+                per_day[name] = float(1 - has[on].mean())
+        closed = [w for w in _WEEKDAY_NAMES if per_day.get(w, 0.0) >= _CLOSED_WEEKDAY_SHARE]
+        if not closed or (prof.get("business_day_calendar") and set(closed) <= {"Saturday", "Sunday"}):
+            return
+        trading = [w for w in _WEEKDAY_NAMES if w not in closed]
+        names = ", ".join(closed)
+        self.add(
+            "calendar.closed_days", "major", label,
+            {"closed": closed, "trading_weekdays": trading, "share_by_weekday": per_day, "periods": int(full.size)},
+            f"Does the source close on {names}? {names} has no record on {_CLOSED_WEEKDAY_SHARE:.0%} or more of its periods while "
+            "the other weekdays trade. Confirm the closure before choosing a calendar: forecast the trading days rather than a "
+            "Monday-to-Friday grid by default, and never fill closed days with zero or by interpolation.",
+            f"s, rep = pl.prepare_series(df, {self.value_name!r}, {self.time_name!r}, closed={closed!r})  "
+            "# closed days stay empty; .dropna() before save_series",
+        )
+
     def _values(self, label: str, ut: np.ndarray, vs: np.ndarray, prof: dict) -> None:
         nan_n = int(np.isnan(vs).sum())
+        if self.step == _DAY_NS:
+            self._closed_days(label, ut, vs, prof)
         if nan_n:
             share = nan_n / ut.size
             self.add(
