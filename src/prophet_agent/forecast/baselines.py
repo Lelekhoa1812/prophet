@@ -36,8 +36,36 @@ def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray,
     return p, _band(p, sd, floor=_nonneg(s))
 
 
-def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4) -> tuple[np.ndarray, np.ndarray]:
-    """Mean of the last k same-phase values, e.g. the last 4 same weekdays for daily data with season=7."""
+def _phase_sd(s: np.ndarray, season: int) -> np.ndarray:
+    """Residual sd of the lag-season difference for each phase of the season (length ``season``).
+
+    A phase with fewer than three differences takes the pooled sd of all of them, so a short history never gives a band
+    of zero width by accident.
+    """
+    resid = s[season:] - s[:-season]
+    pooled = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
+    sd = np.full(season, pooled)
+    phase = (np.arange(len(resid)) + season) % season
+    for ph in range(season):
+        r = resid[phase == ph]
+        if len(r) >= 3:
+            sd[ph] = float(np.std(r) / np.sqrt(2))
+    return sd
+
+
+def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
+                   band_mode: str = "phase") -> tuple[np.ndarray, np.ndarray]:
+    """Mean of the last k same-phase values, e.g. the last 4 same weekdays for daily data with season=7.
+
+    Motivation vs Logic
+    Motivation: the h-step error of a seasonal naive forecast repeats one season and does not accumulate, so a band that
+    widens with sqrt(h) is too wide at 2 and 3 seasons out (audit A2-13: 4.54 at horizon 1 against 16.37 at horizon 13 on a
+    period-4 series with noise 2, measured, synthetic).
+    Logic: band_mode "phase" (the default) uses the residual sd of the lag-season difference for the forecast's own phase,
+    with no growth in h. band_mode "sqrt" keeps the earlier random-walk band for callers that need it.
+    """
+    if band_mode not in ("phase", "sqrt"):
+        raise ValueError("band_mode must be 'phase' or 'sqrt'")
     s = np.asarray(series, dtype=float)
     if len(s) < season:
         return moving_average(s, h, season)
@@ -47,9 +75,14 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4) -> tuple
         idx = idx[idx >= 0]
         idx = idx[idx < len(s)]
         p[i] = s[idx].mean() if len(idx) else s[-season:].mean()
-    resid = s[season:] - s[:-season]
-    sd = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
-    return p, _band(p, sd, floor=_nonneg(s))
+    if band_mode == "sqrt":
+        resid = s[season:] - s[:-season]
+        sd = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
+        return p, _band(p, sd, floor=_nonneg(s))
+    phase_sd = _phase_sd(s, season)
+    sd_h = phase_sd[(len(s) + np.arange(h)) % season]
+    q = p[:, None] + Z[None, :] * sd_h[:, None]
+    return p, (np.clip(q, 0, None) if _nonneg(s) else q)
 
 
 def seasonal_year(series: np.ndarray, h: int, season: int = 52) -> tuple[np.ndarray, np.ndarray]:
