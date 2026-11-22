@@ -482,8 +482,11 @@ def explains_withheld(answer: str) -> bool:
 
 
 # Words that name what a total's bound assumes. A sentence that gives a bound without them presents it as the range.
-_TOGETHER_WORDS = re.compile(r"together|same way|same direction|at once|cautious|widest|worst|all miss|in step", re.I)
-_INDEPENDENT_WORDS = re.compile(r"independen", re.I)
+_TOGETHER_WORDS = re.compile(r"together|same way|same direction|at once|cautious|widest|worst|all miss|in step|compound|"
+                             r"(?<!un)correlat|accumulat|in the same", re.I)
+# Live electricity rep15 (2026-11-23): "if clients' errors cancel out" names the independent bound correctly and was blocked.
+_INDEPENDENT_WORDS = re.compile(r"independen|cancel|offset|average out|uncorrelated|unrelated|separately|on their own|"
+                                r"do not move together|don't move together|not together", re.I)
 _WORD_SCALE = re.compile(r"^\s*(million|mn|m\b|thousand|k\b|billion|bn)", re.I)
 _WORD_SCALES = {"million": 1e6, "mn": 1e6, "m": 1e6, "thousand": 1e3, "k": 1e3, "billion": 1e9, "bn": 1e9}
 

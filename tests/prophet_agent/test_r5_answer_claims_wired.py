@@ -270,3 +270,21 @@ def test_a_total_of_a_level_blocks_and_the_accuracy_facts_give_the_average():
     flow = [_level("net_sales_gbp")] + _single_pack()
     assert "80% range of the 6-step total" in contracts.trust_statement(flow)
     assert _named(contracts.check_answer("The 6-day total is 60.", flow), "answer_level_not_summed") == []
+
+
+def test_errors_that_cancel_out_names_the_independent_bound():
+    # live electricity rep15 (2026-11-23): a correct sentence was blocked because it did not say "independently"
+    from prophet_agent.runtime.grounding import bound_misnamed
+    s = ("The 80 % likely range lies between 3,574,094 and 3,876,811 kWh if clients' errors cancel out, and between "
+         "2,121,003 and 5,167,948 kWh if they all miss the same way.")
+    assert bound_misnamed(s, 3_574_094, 3_876_811, False) is None
+    assert bound_misnamed(s, 2_121_003, 5_167_948, True) is None
+    assert bound_misnamed("The range is 3,574,094 to 3,876,811 kWh.", 3_574_094, 3_876_811, False)
+
+
+def test_compounding_or_correlated_errors_name_the_together_bound():
+    from prophet_agent.runtime.grounding import bound_misnamed
+    assert bound_misnamed("80% range £390,667 to £554,963 if daily errors cancel, or £192,095 to £794,892 if they compound.",
+                          192_095, 794_892, True) is None
+    assert bound_misnamed("$1,622.3 - $2,042.5 (perfectly correlated).", 1_622.3, 2_042.5, True) is None
+    assert bound_misnamed("$1,622.3 - $2,042.5 (uncorrelated).", 1_622.3, 2_042.5, True)
