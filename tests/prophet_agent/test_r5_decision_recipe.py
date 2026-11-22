@@ -78,3 +78,12 @@ def test_the_open_ledger_item_gives_the_decide_cell_for_the_scan(tmp_path):
     assert item["status"] == "todo" and d.startswith("0 of")
     assert d.index("calendar.closed_days") < d.index("values.negative") < d.index("seasonality.strength")
     assert "led.decide('values.negative'" in d and SCAN_RUN in d and "only saved decisions" in d
+
+
+def test_the_gap_section_carries_no_figures():
+    # live WTI rep10 (2026-11-23): the reason's unsupported figures were copied into the answer and failed the figure check
+    from prophet_agent.runtime.goal import _gap_draft
+    d = _gap_draft({"answer": "", "reason": "The draft still cites figures (2.1% outliers, drift MASE 7.12, 0.05 threshold) "
+                                            "that no tool output printed; MASE 7.12 is not in the backtest."})
+    assert "7.12" not in d and "2.1" not in d and "0.05" not in d
+    assert "no tool output printed" in d

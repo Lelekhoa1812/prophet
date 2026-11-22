@@ -895,6 +895,11 @@ def _gap_draft(verdict: dict) -> str:
     answer, reason = verdict.get("answer", "") or "", verdict.get("reason", "") or ""
     if answer.strip():
         return answer
+    # The gap is described without its figures. Live WTI rep10 (2026-11-23): the reason named the unsupported figures ("2.1%
+    # outliers, drift MASE 7.12"), the composer copied it into 'Not settled', and the answer failed the figure check on them.
+    reason = re.sub(r"\s*\([^()]*\d[^()]*\)", "", reason)
+    reason = re.sub(r"[$\u00a3\u20ac]?-?\d[\d,]*(?:\.\d+)?\s?%?", "", reason)
+    reason = re.sub(r"\s{2,}", " ", reason).strip()
     return ("(No draft was written.) Write the answer from the evidence above: every result the analysis established for the "
             "goal (data checks, backtest scores against the simple rules, the forecast and its range, files), as fully as for a "
             "finished answer. End with a short section headed 'Not settled' that says, in plain words: " + (reason or "the goal is "
