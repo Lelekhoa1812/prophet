@@ -160,7 +160,7 @@ B. Writing analysis code
     80% range into a range for the total: that is the widest case, not the range (live retail: 329,049 to 851,044 was
     presented as the likely range of a 14-day total). The forecast pack prints `total_range_80`: the total's range lies
     between its `if_days_miss_independently` and `if_days_miss_together` bounds; state it as "between X and Y", or give the
-    total's centre and the per-day range.
+    total's centre and the per-day range. When the accuracy paragraph gives a measured range for the total, quote that one range, not the two bounds.
 
 C. Questions, notebooks and non-forecast analysis
 

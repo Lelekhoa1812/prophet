@@ -234,6 +234,56 @@ def _blend_choice(errs: dict[str, list[float]], rule: str | None, k: int, horizo
                      rule: models[rule]["mase"]}}
 
 
+Z90 = 1.2815515655446004      # standard normal 90th percentile: the 10-90 band is +-Z90 standard deviations
+MIN_TOTAL_ORIGINS = 4        # fewer origins than this: the correlation of the day errors is not measured
+
+
+def _total_error(actuals: list[np.ndarray], points: list[np.ndarray], bands: list[np.ndarray], horizon: int) -> dict:
+    """Whether the day-to-day errors move together, measured on the stored origins, and how the total's range would have done.
+
+    Motivation vs Logic
+    Motivation: the pack gives two bounds for the 80 percent range of the horizon total (days independent, days together) and
+    no guidance on which applies. The walk-forward backtest holds the errors that decide it.
+    Logic: each day's error is standardised by that day's band sd. R = sum over origins of (sum of errors)^2 over sum of
+    squared errors: 1 when days are independent, the horizon when they move together, clipped to that range. The held counts
+    check the two bounds and a measured range against the actual totals. The measured range uses R leaving out the origin it
+    grades, so the check does not grade itself.
+    """
+    sds, errs = [], []
+    for act, pt, q in zip(actuals, points, bands):
+        sd = np.maximum((np.asarray(q[:, 8], dtype=float) - np.asarray(q[:, 0], dtype=float)) / (2 * Z90), 1e-12)
+        sds.append(sd)
+        errs.append((np.asarray(act, dtype=float) - np.asarray(pt, dtype=float)) / sd)
+    a = np.array([float(e.sum()) ** 2 for e in errs])
+    b = np.array([float((e ** 2).sum()) for e in errs])
+
+    def ratio(num: float, den: float) -> float:
+        if den <= 0:
+            return 1.0
+        return float(min(max(num / den, 1.0 / horizon), float(horizon)))
+
+    r_all = ratio(float(a.sum()), float(b.sum()))
+    held_ind = held_tog = held_meas = 0
+    for j, (act, pt, q, sd) in enumerate(zip(actuals, points, bands, sds)):
+        total = float(np.sum(act))
+        centre = float(np.sum(pt))
+        var_sum = float(np.sum(sd ** 2))
+        spread = Z90 * var_sum ** 0.5
+        if centre - spread <= total <= centre + spread:
+            held_ind += 1
+        if float(np.sum(q[:, 0])) <= total <= float(np.sum(q[:, 8])):
+            held_tog += 1
+        r_loo = ratio(float(a.sum() - a[j]), float(b.sum() - b[j]))
+        half = Z90 * (r_loo * var_sum) ** 0.5
+        if centre - half <= total <= centre + half:
+            held_meas += 1
+    return {"origins": len(actuals), "variance_ratio": round(r_all, 4),
+            "held_independent": held_ind, "held_together": held_tog, "held_measured": held_meas,
+            "note": ("The variance ratio R says how far the day-to-day errors move together: 1 means independent days, and "
+                     f"{horizon} (the horizon) means every day misses in the same direction, so the measured range lies between "
+                     "the two bounds according to R.")}
+
+
 def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origins: int = DEFAULT_ORIGINS,
                      season: int | None = None, engine: Any = None, control: Any = None, combine_forecasts: bool = False,
                      blend_centre: bool = False, freq_hint: str | None = None, dates: Any = None) -> dict:
@@ -429,6 +479,8 @@ def rolling_backtest(values: list[float] | np.ndarray, horizon: int, *, n_origin
             "a description only."
             + (" 'timesfm' is the configured run (see control); 'timesfm_default' is the same model with no control. "
                "configured_vs_default_pct above 0 means the configuration helped on these windows." if configured else ""))
+    if not lumpy and k >= MIN_TOTAL_ORIGINS and horizon >= 2:
+        out["total_error"] = _total_error(actuals, [preds[j]["timesfm"] for j in range(k)], bands, horizon)
     from prophet_agent.forecast.randomwalk import random_walk_test
     rw = random_walk_test(x)
     if rw is not None:

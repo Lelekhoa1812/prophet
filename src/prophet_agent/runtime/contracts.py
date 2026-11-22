@@ -1091,6 +1091,11 @@ def trust_facts(history) -> dict | None:
              "best_baseline": best, "baseline_mase": base, "gain_pct": bt.get("timesfm_vs_best_baseline_pct"),
              "backtest_coverage": bt.get("timesfm_range_coverage_80"), "verdict": bt.get("verdict"),
              "random_walk": (bt.get("random_walk") or {}).get("verdict")}
+    te = bt.get("total_error")
+    if isinstance(te, dict) and isinstance(te.get("variance_ratio"), (int, float)):
+        facts.update(total_variance_ratio=te.get("variance_ratio"), total_origins=te.get("origins"),
+                     total_held_measured=te.get("held_measured"), total_held_independent=te.get("held_independent"),
+                     total_held_together=te.get("held_together"))
     cal = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "calibrate_intervals"), dict)
                 and "heldout_coverage_raw" in r), None)
     if cal is not None:
@@ -1106,13 +1111,64 @@ def _pct(v: Any) -> str:
     return f"{100 * float(v):.0f}%" if isinstance(v, (int, float)) else "not measured"
 
 
+TOTAL_Z90 = 1.2815515655446004      # as in report_tool: the 10-90 band is +-Z90 standard deviations
+
+
+def _measured_total(history) -> tuple[dict, int] | None:
+    """The pack's horizon total with its range built from the measured day-to-day error correlation, and the horizon it is for.
+
+    The newest successful forecast_report gives the per-step band and the total's centre; the newest backtest with a
+    total_error of the same horizon gives the variance ratio. The range is centre +- Z90 * sqrt(R * sum of day variances), so
+    R = 1 is independent days and R = horizon is days that move together. None when either piece is missing or the horizons
+    differ (a truncated table cannot be summed)."""
+    obs = [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+    rep = next((r for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict)), None)
+    if rep is None:
+        return None
+    table, tr = rep.get("table"), rep.get("total_range_80")
+    if not isinstance(table, dict) or table.get("rows_omitted") != 0 or not isinstance(tr, dict):
+        return None
+    rows = table.get("rows") or []
+    horizon = len(rows)
+    te = None
+    for h in reversed(obs):
+        r = _ok_result(h, "backtest_series")
+        if isinstance(r, dict) and r.get("horizon") == horizon and isinstance(r.get("total_error"), dict):
+            te = r["total_error"]
+            break
+    if te is None:
+        return None
+    try:
+        sd2 = sum(((float(row["q90"]) - float(row["q10"])) / (2 * TOTAL_Z90)) ** 2 for row in rows)
+        centre, ratio = float(tr["centre"]), float(te["variance_ratio"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    half = TOTAL_Z90 * (ratio * sd2) ** 0.5
+    return ({"q10": centre - half, "q90": centre + half, "centre": centre, "variance_ratio": ratio,
+             "origins": te.get("origins"), "held_measured": te.get("held_measured")}, horizon)
+
+
+def measured_total_range(history) -> dict | None:
+    """The 80 percent range of the pack's horizon total, using the day-to-day error correlation measured on the backtest.
+    None when the pieces are missing or the backtest horizon differs from the pack's table length."""
+    found = _measured_total(history)
+    return found[0] if found else None
+
+
 def trust_statement(history) -> str:
     """One computed paragraph on how far to trust the forecast: the backtest score against the best simple rule, what that
     means for the centre line, and how often the range held. It is appended to the answer as written by code, so a model can
     never misquote it (live: an answer said a range "reached 87.5%" when the stored calibration said otherwise)."""
     f = trust_facts(history)
+    extra = ""
+    found = _measured_total(history)
+    if found is not None:
+        mr, h = found
+        extra = (f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f}, using the day-to-day error correlation "
+                 f"measured over {mr['origins']} past windows; built the same way, the range held the actual total in "
+                 f"{mr['held_measured']} of {mr['origins']} windows.")
     if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
-        return ""
+        return ("**Accuracy check (computed from the stored backtest):**" + extra) if extra else ""
     rule = BASELINE_NAMES.get(f["best_baseline"], str(f["best_baseline"]))
     head = (f"Over {f['origins']} past windows of {f['horizon']} steps, TimesFM scored MASE {f['timesfm_mase']:.3g} against "
             f"{f['baseline_mase']:.3g} for the best simple rule ({rule}).")
@@ -1132,7 +1188,7 @@ def trust_statement(history) -> str:
         used = "the calibrated range is used" if f.get("calibration") == "use_calibrated" else "the raw range is kept"
         rng += (f" On later held-out windows it held {_pct(f['heldout_raw'])} raw and {_pct(f.get('heldout_calibrated'))} "
                 f"after calibration; {used}.")
-    return "**Accuracy check (computed from the stored backtest):** " + head + call + rng
+    return "**Accuracy check (computed from the stored backtest):** " + head + call + rng + extra
 
 
 # ---------------------------------------------------------------- the written answer (A6-09)
