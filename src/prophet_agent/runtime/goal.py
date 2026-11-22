@@ -638,6 +638,48 @@ def _failure_text(h: dict) -> str | None:
     return None
 
 
+def _error_class(why: str) -> str:
+    """The exception name in a failure line ("TypeError: list indices ..." gives "TypeError"). Lines without one give the
+    whole line, so two identical unnamed failures still match."""
+    head = why.split(":", 1)[0].strip()
+    return head if head and " " not in head else why.strip()
+
+
+def _class_streak(history: list[dict]) -> int:
+    """How many of the latest tool calls failed with the same error class as the latest failure (round 4, A3-11)."""
+    count, cls = 0, None
+    for h in reversed(history):
+        if h.get("kind") not in ("tool", "ask_user"):
+            continue
+        why = _failure_text(h)
+        if why is None:
+            break
+        this = _error_class(why)
+        if cls is None:
+            cls = this
+        if this != cls:
+            break
+        count += 1
+    return count
+
+
+_MODULE_MISS = re.compile(r"No module named '([A-Za-z_][\w]*)'|module '[\w.]+' has no attribute '([A-Za-z_]\w*)'")
+
+
+def tool_module_hint(result: Any, names: Any) -> str | None:
+    """A sandbox cell that imports, or reads an attribute named after, a tool gets the fix in the observation (round 4,
+    A3-11). Live: `import backtest_series` and `prophet_stats.panel_backtest(...)` failed as module lookups."""
+    if not isinstance(result, dict):
+        return None
+    text = str(result.get("stderr_tail") or result.get("stderr") or "")
+    for m in _MODULE_MISS.finditer(text):
+        name = m.group(1) or m.group(2)
+        if name in names:
+            return (f"'{name}' is a tool, not a Python module. Call it with call_tool (action call_tool, tool '{name}', "
+                    "args as its JSON fields); do not import or call it from sandbox_python.")
+    return None
+
+
 def _failure_streak(history: list[dict]) -> tuple[int, str, str]:
     """How many of the latest tool calls or questions were refused in a row, the latest error, and the kind of step.
 
@@ -699,11 +741,15 @@ def _budget_note(i: int, cfg: "GoalConfig", history: list[dict]) -> str:
         left = min(left, cfg.tool_budget - _calls_used(history))
     note = f"Budget: step {i + 1} of this part of the work; {max(left, 0)} steps left in it."
     streak, err, kind = _failure_streak(history)
+    same = _class_streak(history)
     if streak >= 2 and kind == "ask_user":
         note += (f" The last {streak} questions were refused ({err}). Do not send that question again. Fix its shape, or "
                  "decide without asking and say what you assumed.")
-    elif streak >= 3:
-        note += (f" The last {streak} calls failed in a row ({err}). Stop writing the large step again. Run one small cell "
+    elif same >= 2 or streak >= 3:
+        # Round 4, A3-11: the probe is due at two failures of one error class, not three (live retail: three TypeErrors in a
+        # row before any probe). A streak of three of mixed classes keeps the probe too.
+        count = same if same >= 2 else streak
+        note += (f" The last {count} calls failed in a row ({err}). Stop writing the large step again. Run one small cell "
                  "that only prints the structure that failed (print(type(x)); print(list(x)[:20]) or x.keys()), read it, "
                  "then fix that one line; keep the part that worked in a separate cell so it is not re-run.")
     elif streak >= 2:
@@ -984,7 +1030,7 @@ def _repair_source(args: Any, history: list[dict]) -> Any:
     return args
 
 
-def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
+def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> dict:
     try:
         result = ctx.call(tool, args)
     except (BudgetExceeded, Cancelled, OutcomeUnknown, Paused):
@@ -1000,7 +1046,11 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict) -> dict:
             result = tool.observe(result)
         except Exception:  # a broken summariser must not hide the result from the planner
             pass
-    return {"kind": "tool", "tool": name, "args": args, "result": result}
+    obs = {"kind": "tool", "tool": name, "args": args, "result": result}
+    # The hint is part of the observation only: the ledger keeps the tool's own result, so a replay reads the same rows.
+    if (hint := tool_module_hint(result, tool_names)) is not None:
+        obs["hint"] = hint
+    return obs
 
 
 def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: float) -> None:
@@ -1430,7 +1480,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 if (pos := _repeat_of(name, args, history)) is not None:
                     obs = _repeat_obs(name, args, history, pos)     # not sent again: the earlier result stands
                 else:
-                    obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args))
+                    obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args, tools))
         if obs.get("kind") == "tool":
             obs.setdefault("step", len(history) + 1)     # the number read_observation pages back by (1-based, as evidence shows)
         history.append(obs)
