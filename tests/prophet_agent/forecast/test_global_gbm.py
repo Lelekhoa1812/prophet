@@ -133,17 +133,22 @@ def test_bad_inputs_are_refused_with_the_reason():
         gg.global_forecast(panel, 3, season=1)
 
 
-def test_eight_entities_by_400_points_stay_within_a_cpu_budget():
-    """A cost guard against a blow-up (a quadratic loop, a refit per entity), not a speed benchmark.
+def test_eight_entities_by_400_points_stay_within_a_work_budget(monkeypatch):
+    """A cost guard against a blow-up (a refit per entity, unthinned training rows), not a speed benchmark.
 
-    Gate decision (2026-11-23): this was a 10 s wall-clock bound. Wall time depends on what else the machine runs, and it
-    failed under concurrent load at 11.7, 18.6, 22.1, 40, 102 and 275 s while passing alone at 4.4 to 7.4 s, so it gated on
-    machine load, not on the code. CPU time on one thread does not count time spent waiting for other processes. Measured
-    at load 15.8 after split-conformal calibration (A2-02): 15.1 s CPU. The bound leaves room for about 2.5 times that."""
-    from threadpoolctl import threadpool_limits
-    panel = make_panel(entities=8, n=400)
-    with threadpool_limits(limits=1):
-        start = time.process_time()
-        gg.panel_backtest(panel, 12, n_origins=3, season=7, engine=Engine(sd=1.0))
-        used = time.process_time() - start
-    assert used < 40.0, f"used {used:.1f} s of CPU"
+    Gate decision (2026-11-23): this was a 10 s wall-clock bound, then a 40 s single-thread CPU bound. Both depend on what
+    else the machine runs: wall time failed under load at 11.7 to 275 s, and CPU time also inflated under heavy core
+    contention (about ten concurrent test runs) while passing alone. The guard now counts the work itself, which does not
+    depend on load: model fits and training rows. Measured on this panel: 15 fits (each origin fits the three quantile
+    models and the two calibration models) and 245,664 training rows in all."""
+    rows: list[int] = []
+    real_fit = gg._fit
+
+    def counting(X, y, *args, **kwargs):
+        rows.append(len(y))
+        return real_fit(X, y, *args, **kwargs)
+
+    monkeypatch.setattr(gg, "_fit", counting)
+    gg.panel_backtest(make_panel(entities=8, n=400), 12, n_origins=3, season=7, engine=Engine(sd=1.0))
+    assert len(rows) <= 3 * 5, f"{len(rows)} model fits for 3 origins"
+    assert max(rows) <= gg.TRAIN_ROW_TARGET * 1.25 and sum(rows) <= 300_000, (max(rows), sum(rows))
