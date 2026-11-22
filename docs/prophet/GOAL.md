@@ -505,4 +505,24 @@ finished in 270 s.
   the range without what it assumes; replayed, it blocks rep 7 and electricity rep 10 and passes the other stored answers.
 - Electricity rep 12's only backtest covered one analyst's 15 clients, and the lead re-ran an entity-listing cell three
   times. The coverage note now gives the cell that saves all 60 (checked on the real file). Its answer also called MASE
-  "MAE"; open.
+  "MAE"; now blocked (see below).
+
+### Answer checks on ranges and metrics, and the next reruns (measured, 2026-11-23)
+
+| Mission | Build | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| WTI, business user rep 3 | efab5f9 | completed | done_verified | 360 | 24 |
+| electricity panel rep 13 | efab5f9 | **completed** | **done_verified** | 886 | 75 |
+| WTI, business user rep 4 | 5c6968e | **completed** | **done_verified** | 330 | 23 |
+| retail, business user rep 8 | 5c6968e | **completed** | **done_verified** | 435 | 28 |
+
+Electricity rep 13 is the second verified electricity mission: the pack drew the pooled blend the backtest ranked (centre
+"blend" now maps to it), and the answer gave the 7-day total with both bounds named. Its first line still calls the
+pooled blend a "per-client blend".
+
+- WTI rep 3 answered "what will crude cost on average next month" with one day's band ($77 to $110) as the range of the
+  average. Replay found the same in reps 1 and 2 (rep 2: $75 to $110 against a measured 80.66 to 100.85), so those
+  "verified" answers overstated the uncertainty of the monthly average. `answer_average_range` now blocks an average goal
+  whose answer lacks the measured range of the average. Rep 4 gave $80.44 to $100.62, the measured range.
+- MASE scores reported as "MAE": replaying the last 120 stored answers found electricity reps 4 and 12 and one Beijing run,
+  with no false hit. `answer_metric_named` blocks it unless a cell printed an MAE of its own.
