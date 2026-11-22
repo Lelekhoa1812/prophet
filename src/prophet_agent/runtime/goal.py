@@ -352,6 +352,15 @@ def _last_failure(history: list[dict]) -> tuple[str, str]:
     return "", ""
 
 
+def _stored_step_name(ctx: Ctx) -> str | None:
+    """The name of the step the ledger already holds at the next position, or None on a fresh run."""
+    store, mid = getattr(ctx, "store", None), getattr(ctx, "mission_id", None)
+    if store is None or mid is None:
+        return None
+    rec = store.step_record(mid, ctx.step_idx + 1)
+    return rec["name"] if rec is not None and rec.get("status") == "done" else None
+
+
 def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                   full: Callable[[str], list] | None = None, stuck: tuple[str, int] | None = None) -> dict | None:
     """Delegations the harness starts itself instead of hoping the planner will. Live, the planner delegated once in 1,983
@@ -1051,8 +1060,15 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             stuck = (nxt, STUCK_CALLS if rescue else calls_now - calls_at_best) if nxt else None
             rescue = False
             _status(ctx, i, history, items, started)
+        stored = _stored_step_name(ctx)
+        # A resumed run follows the decision the ledger holds at this position: the harness's choice depends on the call
+        # allowance, which grows when a run continues, so recomputing it could take the other path (live retail: "replay
+        # diverged at step 48: the ledger has plan:d0:21, the program asked for auto:d0:21", and the mission failed).
         auto = (_harness_plan(goal, history, tools, lambda t: ctx.store.tool_results(ctx.mission_id, t), stuck)
-                if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate else None)
+                if cfg.depth == 0 and not cfg.finish_now and not out_of_calls and cfg.auto_delegate
+                and not (stored or "").startswith("plan:") else None)
+        if auto is None and (stored or "").startswith("auto:") and cfg.depth == 0:
+            auto = ctx.store.step_record(ctx.mission_id, ctx.step_idx + 1)["v"]      # the stored harness plan, replayed
         if auto is not None:
             plan = ctx.step(f"auto:{tag}:{i}", lambda c: auto)
         else:

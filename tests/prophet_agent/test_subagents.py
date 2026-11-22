@@ -218,3 +218,18 @@ def test_the_first_stall_hands_the_next_item_to_a_fresh_analyst_before_stopping(
     subs = [i for i, h in enumerate(ev) if h.get("kind") == "subagent" and str(h.get("auto", "")).startswith("stuck:")]
     assert rescue and subs and subs[0] > rescue[0], [h.get("kind") for h in ev]
     assert out["result"]["status"] in ("partial", "stalled")          # the second stall still stops the run
+
+
+def test_a_resumed_run_follows_the_stored_planner_step_even_if_the_harness_would_now_delegate(store, monkeypatch):
+    from prophet_agent.runtime import goal as goal_mod
+    tools = {"inspect_data": _tool("inspect_data"), "sandbox_python": _tool("sandbox_python")}
+    plans = [{"action": "call_tool", "tool": "inspect_data", "args": {}, "rationale": "look"}, {"action": "finish", "rationale": "done"}]
+    mid = store.create_mission("Forecast daily sales", {})
+    first = Runtime(store).run(mid, goal_program("Forecast daily sales", tools, KeyedBrain(plans)))
+    # Now the harness would delegate at every step (as a larger call allowance can make it do on a resumed part).
+    monkeypatch.setattr(goal_mod, "_harness_plan", lambda *a, **k: {"action": "delegate", "auto": "x", "task": "t",
+                                                                    "agent_type": "analyst"})
+    store.set_status(mid, "running")
+    replay = KeyedBrain([], {})
+    again = Runtime(store).run(mid, goal_program("Forecast daily sales", tools, replay))
+    assert again["status"] == first["status"] and replay.calls == 0, again
