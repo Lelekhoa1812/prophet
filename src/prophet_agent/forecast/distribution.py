@@ -26,6 +26,57 @@ def _phi(x: np.ndarray) -> np.ndarray:
     return 0.5 * (1.0 + _ERF(x / math.sqrt(2.0)))
 
 
+def random_walk_corr(periods: int) -> np.ndarray:
+    """Correlation between the cumulative errors of a random walk at horizons h and h': sqrt(min(h, h') / max(h, h')).
+
+    Motivation vs Logic
+    Motivation: a single rho treats the 1-step and 7-step errors of a price-like series as equally related, which they are
+    not (audit A2-04: periods 1 and 7 correlate 0.378 for a random walk, periods 4 and 5 correlate 0.894).
+    Logic: the cumulative error at horizon h is the sum of h steps, so Cov(h, h') = min(h, h') and the correlation follows.
+    """
+    h = np.arange(1, int(periods) + 1, dtype=float)
+    lo = np.minimum.outer(h, h)
+    hi = np.maximum.outer(h, h)
+    return np.sqrt(lo / hi)
+
+
+def corr_from_errors(errors: np.ndarray, min_origins: int = 20) -> tuple[np.ndarray, str]:
+    """Correlation between periods estimated from standardised backtest errors, origins by periods.
+
+    Motivation vs Logic
+    Motivation: the correlation between horizons is a property of the series, so a constant taken from another series is
+    wrong for price-like data (audit A2-04). Estimating it needs origins; with few origins the estimate is noise.
+    Logic: rows with any non-finite error are dropped. With fewer than ``min_origins`` complete rows, or a constant column,
+    the random-walk structure is returned and the source says so. Otherwise the sample correlation of the errors is returned,
+    labelled as estimated.
+    """
+    e = np.asarray(errors, dtype=float)
+    if e.ndim != 2:
+        raise ValueError("errors must be origins by periods")
+    periods = e.shape[1]
+    e = e[np.isfinite(e).all(axis=1)]
+    if e.shape[0] < min_origins or periods < 2:
+        return random_walk_corr(periods), "random_walk_fallback"
+    sd = e.std(axis=0, ddof=1)
+    if not (sd > 0).all():
+        return random_walk_corr(periods), "random_walk_fallback"
+    corr = np.corrcoef((e - e.mean(axis=0)) / sd, rowvar=False)
+    if not np.isfinite(corr).all():
+        return random_walk_corr(periods), "random_walk_fallback"
+    return corr, "estimated_from_origins"
+
+
+def _cholesky_corr(corr: np.ndarray) -> np.ndarray:
+    """Lower Cholesky factor of a correlation matrix. An estimate that is not positive definite is clipped to the nearest
+    positive semi-definite matrix (eigenvalues floored at a small positive value) and rescaled to unit diagonal."""
+    c = np.asarray(corr, dtype=float)
+    c = (c + c.T) / 2.0
+    w, v = np.linalg.eigh(c)
+    c2 = (v * np.clip(w, 1e-10, None)) @ v.T
+    s = 1.0 / np.sqrt(np.diag(c2))
+    return np.linalg.cholesky(c2 * np.outer(s, s))
+
+
 @dataclass(frozen=True)
 class Draws:
     """Common random numbers: uniform draws (n, periods) with marginal U(0,1) and correlation rho between periods."""
@@ -39,6 +90,23 @@ class Draws:
         e = rng.standard_normal((n, periods))
         x = math.sqrt(rho) * z0[:, None] + math.sqrt(1.0 - rho) * e
         return cls(_phi(x))
+
+    @classmethod
+    def make_corr(cls, n: int, corr: np.ndarray, seed: int = 11) -> "Draws":
+        """Uniform draws (n, periods) whose Gaussian copula has the given correlation matrix between periods.
+
+        Motivation vs Logic
+        Motivation: a single rho understates the spread of a multi-period total when errors accumulate (audit A2-04: a random
+        walk's 7-period total has sd 11.83; the single-rho copula gave 5.29 at rho 0 and 6.60 at rho 0.1, synthetic).
+        Logic: correlated standard normals are e @ L.T with L the Cholesky factor of ``corr``; the uniforms are their normal
+        CDF. The marginals stay uniform, so the caller maps each period through its own quantile function and scales it.
+        """
+        c = np.asarray(corr, dtype=float)
+        if c.ndim != 2 or c.shape[0] != c.shape[1]:
+            raise ValueError("corr must be a square matrix")
+        L = _cholesky_corr(c)
+        e = np.random.default_rng(seed).standard_normal((n, c.shape[0]))
+        return cls(_phi(e @ L.T))
 
 
 _CACHE: dict[tuple, Draws] = {}
