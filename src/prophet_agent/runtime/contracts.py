@@ -1508,6 +1508,108 @@ def _centre_named_wrong(text: str, obs: list) -> dict | None:
     return None
 
 
+# A table in the answer that gives each station's day-by-day figures must copy them from that station's own day. The figure
+# check matches a number against every number in the evidence, so a table cell of 52 is "grounded" by any 52 anywhere.
+# Live Beijing 0137871e (2026-11-23): the table gave Aotizhongxin day 1 as 52 (12 to 132); the stored forecast gives 40.7
+# (4.5 to 114.2), and the figure check passed it.
+_DAY_HEAD = re.compile(r"\bday\s*(\d{1,3})\b", re.I)
+_AVG_HEAD = re.compile(r"average|\bmean\b", re.I)
+_BAND_HEAD = re.compile(r"\bq\s*\d|\d\s*%|\bband|\brange\b|\blow|\bhigh|\blower\b|\bupper\b|\binterval|\bmin\b|\bmax\b|"
+                        r"percentile|quantile", re.I)
+_NUMBER_TOKEN = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+
+def _tables(text: str) -> list[list[list[str]]]:
+    """The markdown tables in a text, each as its rows of cells, separator rows dropped."""
+    tables, cur = [], []
+    for line in list(text.splitlines()) + [""]:
+        s = line.strip()
+        if s.startswith("|") and s.endswith("|") and len(s) > 1:
+            cur.append(s)
+            continue
+        if cur:
+            rows = [[c.strip() for c in r[1:-1].split("|")] for r in cur]
+            rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r if c)]
+            if rows:
+                tables.append(rows)
+            cur = []
+    return tables
+
+
+def _printed_matches(token: str, value: float) -> bool:
+    """A printed figure matches the value when it is the value rounded to the printed decimals."""
+    digits = token.replace(",", "")
+    decimals = len(digits.split(".")[1]) if "." in digits else 0
+    return abs(float(digits) - value) <= 0.5 * 10 ** -decimals + 1e-9
+
+
+def _table_matches_panel(text: str, obs: list) -> dict | None:
+    """The day-by-day cells of a station table match that station's own forecast on that day. Blocks on the first mismatch.
+
+    Read from the newest panel forecast's full result. A row is a station when its first cell names a series exactly; a
+    day column is a header with one "Day n"; a cell is checked when it holds the point alone or the point with its band.
+    """
+    pack = next(((h, r) for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict) and r.get("n_series")),
+                None)
+    if pack is None:
+        return None
+    h, res = pack
+    full = h.get("full") if isinstance(h.get("full"), dict) else res
+    fc_part = full.get("forecast") if isinstance(full, dict) else None
+    series = fc_part.get("series") if isinstance(fc_part, dict) else None
+    if not isinstance(series, dict) or not series:
+        return None
+    by_name = {str(k).lower(): v for k, v in series.items() if isinstance(v, dict)}
+    checked, wrong = 0, []
+    for table in _tables(text):
+        header = table[0]
+        day_cols, avg_col = {}, None
+        for i, cell in enumerate(header):
+            days = _DAY_HEAD.findall(cell)
+            if _BAND_HEAD.search(cell):
+                continue                       # "Day 14 q10" holds a band edge, not the point
+            if len(days) == 1 and "→" not in cell and "->" not in cell:
+                day_cols[i] = int(days[0])
+            elif _AVG_HEAD.search(cell):
+                avg_col = i
+        if not day_cols and avg_col is None:
+            continue
+        for row in table[1:]:
+            name = re.sub(r"[*_`]", "", row[0]).strip().lower()
+            fc = by_name.get(name)
+            if fc is None:
+                continue
+            point = _numbers(fc.get("point")) or []
+            quant = fc.get("quantiles") if isinstance(fc.get("quantiles"), dict) else {}
+            lo_all, hi_all = _numbers(quant.get("0.1")) or [], _numbers(quant.get("0.9")) or []
+            for i, k in day_cols.items():
+                if i >= len(row) or not (1 <= k <= min(len(point), len(lo_all), len(hi_all))):
+                    continue
+                toks = _NUMBER_TOKEN.findall(row[i])
+                if len(toks) not in (1, 3):
+                    continue
+                expected = (point[k - 1], lo_all[k - 1], hi_all[k - 1])
+                ok = all(_printed_matches(t, e) for t, e in zip(toks, expected))
+                checked += 1
+                if not ok:
+                    wrong.append(f"{row[0].strip(' *')} day {k} is {row[i]}; the forecast gives {expected[0]:.1f} "
+                                 f"({expected[1]:.1f} to {expected[2]:.1f})")
+            if avg_col is not None and avg_col < len(row) and point:
+                toks = _NUMBER_TOKEN.findall(row[avg_col])
+                if len(toks) == 1:
+                    checked += 1
+                    mean = sum(point) / len(point)
+                    if not _printed_matches(toks[0], mean):
+                        wrong.append(f"{row[0].strip(' *')} average is {row[avg_col]}; the forecast averages {mean:.1f}")
+    if not checked:
+        return None
+    if wrong:
+        return _check("answer_table_matches_forecast", False,
+                      f"{len(wrong)} table cell(s) do not match the station's own forecast: {wrong[0][:200]}. Copy each "
+                      "station's figures for each day from the forecast, not from another row")
+    return _check("answer_table_matches_forecast", True, f"{checked} table cell(s) match each station's own forecast")
+
+
 def panel_sentence(history) -> str:
     """The newest panel pack in plain words: which centre line it drew for how many series, and the panel total with both
     bounds named for what they assume.
@@ -1942,4 +2044,6 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(blend)
     if (centre := _centre_named_wrong(text, obs)) is not None:
         checks.append(centre)
+    if (table := _table_matches_panel(text, obs)) is not None:
+        checks.append(table)
     return checks

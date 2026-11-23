@@ -327,6 +327,7 @@ def _run(args: dict, key: str) -> dict[str, Any]:
 
 
 _RULE_TEXT = RULE_TEXT   # every rule a panel centre may name (live electricity rep8: 'seasonal_naive' raised KeyError)
+BY_DAY_MAX = 31      # a horizon up to this many days is printed day by day in the panel view
 PANEL_SHOWN = 30     # series with a line of their own in the observation; the rest are counted, and in the files
 
 
@@ -513,6 +514,10 @@ def _panel_observe(result: dict) -> dict:
                 "point_last_step": p[-1], "q10_last_step": q["0.1"][-1], "q90_last_step": q["0.9"][-1],
                 "centre": rule, "health": health.get("verdict"),
                 "range_vs_centre_pct": range_vs_centre(fc), "centre_line_total": head["total"]}
+        if len(p) <= BY_DAY_MAX:
+            # Every day's figures, so a table copies each station's own day (live Beijing 0137871e, 2026-11-23: the view gave
+            # only the first and last steps, and the table's other days were not in the evidence). Printed to one decimal.
+            line["by_day"] = [f"{a:.1f} ({b:.1f} to {c:.1f})" for a, b, c in zip(p, q["0.1"], q["0.9"])]
         if rule != "timesfm":
             # The health check reads TimesFM's own line; with another centre it is not a verdict on the line drawn
             # (live electricity rep14: flat_expected for all 60 clients under the pooled blend).

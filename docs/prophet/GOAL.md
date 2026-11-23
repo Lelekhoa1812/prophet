@@ -742,3 +742,21 @@ The day-by-day table does not match the stored forecast. The stored forecast_rep
 gives Aotizhongxin day 1 as 40.7, band 4.5 to 114.2; the answer gives 52, band 12 to 132. The figure check passed the table
 anyway, so a number is matched to some figure elsewhere in the history rather than to its own station and day. Open gap: the
 table was not grounded to its forecast, and this answer must not be used as a verified Beijing forecast.
+
+### Table grounding: a station's day figures must be its own (fixed 2026-11-23, build after cf1f0cc)
+
+The figure check matches a number against every number in the evidence, so a table cell is "grounded" by any matching
+figure anywhere. Replaying the stored answers with a per-station, per-day check found the same fault in several runs,
+including two that were marked done_verified:
+
+- **355ea1d1 (Beijing, round 6f, done_verified):** the row for Wanshouxigong carried Tiantan's figures (day 14 75.3, band 21.8 to
+  156.1; the forecast gives Wanshouxigong 67.0 on day 1). The figure check passed it.
+- **0137871e (Beijing, round 6h, partial):** Aotizhongxin day 1 52 (12 to 132); the forecast gives 40.7 (4.5 to 114.2).
+
+Cause: the panel view gave each station only its first and last steps, so the planner had no per-day figures to copy.
+Fixed: the panel view now gives every day of each station as "point (lower to upper)", for horizons up to 31 days
+(`by_day`), and a new block check, answer_table_matches_forecast, reads each table row against its station's own forecast
+and blocks the first mismatch. Replayed on the stored answers: the 6h and 355ea1d1 tables are blocked; the 744a6a8c and
+d1a1d077 tables pass. Blocking mismatches in other stored answers (c69a6e80, 032eea79, 68d70b8d, 82fb34d9, d861b74e) are
+real mismatches, not checked by hand one by one.
+Gate: 1,916 passed, 1 skipped, 4 deselected.
