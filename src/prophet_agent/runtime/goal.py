@@ -325,6 +325,20 @@ def _same_anchors(a: str, b: str) -> bool:
     return len(shared) >= 2 and len(shared) / len(xa | xb) >= ANCHOR_SHARE
 
 
+# Percentages (interval levels and bounds) and time units (horizons, periods) set what a question asks. Dates and plain figures are
+# not included: live run 04 (test_goal_decisions) re-worded a promo question whose end date moved by one day and was the same decision.
+_QUALIFIER = re.compile(r"\d+(?:[.,]\d+)*\s?%|\b(?:day|week|month|quarter|year|hour|minute)s?\b", re.I)
+
+
+def _qualifiers(text: str) -> list[str]:
+    """The percentages and time units a question names, in order-free form.
+
+    Audit round 6m, item 2: "the 80% interval?" and "the 90% interval?" are alike in wording, so the stored answer to the first
+    was replayed for the second ("not asked again"), and "horizon in weeks?" was replayed for "horizon in days?". A question that
+    names other levels or units is a different question, whatever its wording or header."""
+    return sorted(re.sub(r"\s", "", m.group()).lower() for m in _QUALIFIER.finditer(text))
+
+
 def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dict], list[str]]:
     """Split a new question set into the questions still open and the ones already asked and answered before."""
     earlier = [pair for h in history if h.get("kind") in ("ask_user", "evaluator_question") and h.get("answers")
@@ -336,8 +350,10 @@ def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dic
     for q in questions:
         head = str(q.get("header", "")).strip().lower()
         text = " ".join(str(q.get("question", "")).split()).lower()
-        same = any((head and head == eh) or difflib.SequenceMatcher(None, text, et).ratio() >= SAME_QUESTION_RATIO
-                   or _same_anchors(text, et)
+        qual = _qualifiers(text)
+        same = any(_qualifiers(et) == qual
+                   and ((head and head == eh) or difflib.SequenceMatcher(None, text, et).ratio() >= SAME_QUESTION_RATIO
+                        or _same_anchors(text, et))
                    for eh, et in earlier)
         (repeated if same else open_qs).append(q)
     return open_qs, [str(q.get("question", ""))[:160] for q in repeated]
