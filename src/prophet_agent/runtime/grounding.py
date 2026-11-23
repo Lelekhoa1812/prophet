@@ -222,9 +222,13 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
 
 
 # A writer copying a printed 557,051.21 as "557,050", or 352,602 as "352,702", has made a slip, not a claim. When an unmatched
-# figure of 1,000 or more lies within SNAP_TOLERANCE of exactly one printed value that has decimals, it is corrected to that
+# figure of 1,000 or more lies within the snap tolerance of exactly one printed value that has decimals, it is corrected to that
 # value. Printed whole numbers are never snapped: 10,001 rows and 10,000 rows are different facts.
+# The tolerance is the smaller of 0.05% of the figure and SNAP_MAX_ABS units. The relative bound alone let a written 10,000,000
+# become the printed 10,004,900 (4,900 units apart, audit round 6l item 4); the absolute bound stops that at 1,000 units, which
+# still covers a copying slip of a digit in the hundreds (352,602 as 352,702).
 SNAP_TOLERANCE = 0.0005
+SNAP_MAX_ABS = 1000.0
 SNAP_MIN = 1000.0
 
 
@@ -261,7 +265,8 @@ def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, st
             continue
         if v < SNAP_MIN:
             continue
-        near = sorted({p for p in printed if abs(p - v) <= SNAP_TOLERANCE * v})
+        limit = min(SNAP_TOLERANCE * v, SNAP_MAX_ABS)
+        near = sorted({p for p in printed if abs(p - v) <= limit})
         if len(near) != 1:
             continue
         new = f"{near[0]:,.{decimals}f}" if "," in token else f"{near[0]:.{decimals}f}"
