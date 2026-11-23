@@ -705,3 +705,23 @@ Causes of the four partials, read from the stored missions, and the fix for each
 Both fixes in b68ae46 are checked by unit tests and by the replay of the stored answers. The live rerun is in the next section.
 Known open item: the Beijing answer still gives a per-station 14-day total for a level measure (PM2.5), because only the panel
 total is withheld at source.
+
+### Round 6f on b68ae46 and round 6g on 785a42f (measured, 2026-11-23)
+
+Round 6f (build b68ae46) ran Beijing and electricity together, then retail business. Every series is synthetic.
+
+| Round | Scenario | Mission | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|---|
+| 6f (b68ae46) | Beijing panel | 355ea1d1 | completed | done_verified | 1,081 | 83 |
+| 6f (b68ae46) | electricity panel | 14d115d3 | completed | done_verified | 815 | 80 |
+| 6f (b68ae46) | retail business user | e6caf00e | partial | partial_unverified | 389 | 23 |
+| 6g (785a42f) | Beijing panel | d1a1d077 | partial | partial_unverified | 1,350 | 82 |
+
+- **Beijing and electricity (6f)** finished done_verified on b68ae46. The electricity run is the first on the centre check.
+- **Retail business user (e6caf00e, 6f):** the forecast came back with dates null. `_future_dates` returns nothing for an
+  irregular history (sales on some days only), so the forecast window could not be stated, and the run then repeated several
+  failing sandbox steps. Not fixed yet: the forecast does not record the last history date, so the answer cannot give the window.
+- **Beijing panel (d1a1d077, 6g):** the figure check blocked the answer, which is correct. The panel view gave each station's
+  first-step point but no first-step band, so the answer's day-1 and day-14 bands were not the stored ones (Aotizhongxin
+  day-1 band written 8.8 to 131.2; stored 4.5 to 114.2). Fixed in this commit: the view now gives q10_step_1 and q90_step_1.
+  The answer also gave a 14-day average per station and no per-station total, which is the level fix working.

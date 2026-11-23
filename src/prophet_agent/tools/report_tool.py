@@ -507,7 +507,10 @@ def _panel_observe(result: dict) -> dict:
         p, q, health = fc["point"], fc["quantiles"], fc.get("health") or {}
         head = _headline(fc)
         rule = (fc.get("centre") or {}).get("rule", "timesfm")
-        line = {"point_step_1": p[0], "point_last_step": p[-1], "q10_last_step": q["0.1"][-1], "q90_last_step": q["0.9"][-1],
+        # The first step's band is in the view too. Live Beijing d1a1d077 (2026-11-23): the view gave only the last step's band,
+        # and the answer wrote day-1 bands that were another station's (Aotizhongxin 8.8-131.2; the stored band is 4.5-114.2).
+        line = {"point_step_1": p[0], "q10_step_1": q["0.1"][0], "q90_step_1": q["0.9"][0],
+                "point_last_step": p[-1], "q10_last_step": q["0.1"][-1], "q90_last_step": q["0.9"][-1],
                 "centre": rule, "health": health.get("verdict"),
                 "range_vs_centre_pct": range_vs_centre(fc), "centre_line_total": head["total"]}
         if rule != "timesfm":
