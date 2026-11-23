@@ -49,7 +49,11 @@ def _kind_from_dates(dates: Any) -> str | None:
     days = d.astype("datetime64[D]").astype(np.int64)
     if np.all((days + 3) % 7 < 5):          # 1970-01-01 was a Thursday; Monday is 0
         return "business"
-    gaps = np.diff(d).astype(np.int64) / 86400.0
+    # Gaps between distinct timestamps only: a repeated stamp is a zero gap, and a median over those read a daily series with
+    # each date repeated as hourly (probe: 400 daily dates, each twice, gave "hourly" before this).
+    gaps = np.diff(np.unique(d)).astype(np.int64) / 86400.0
+    if gaps.size == 0:
+        return None
     gap = float(np.median(gaps))
     if gap < 1:
         return "hourly"
