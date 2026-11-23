@@ -559,7 +559,7 @@ class NimClient:
                     if checkpoint is not None:
                         checkpoint()
                     try:
-                        key = self._acquire(model, deadline, only=key if reuse else None)
+                        key = self._acquire(model, deadline, only=key if reuse else None, checkpoint=checkpoint)
                     except _AllBusy as busy:
                         last, waitable = str(busy), True      # try the next model, then wait for the soonest key (see _rate_wait)
                         break
@@ -804,8 +804,10 @@ class NimClient:
         window = now if len(w) < self.per_minute else w[0] + 60.0
         return max(self.cool.get((key, model), 0.0), window)
 
-    def _acquire(self, model: str, deadline: float, only: str | None = None) -> str:
-        """Pick a key that has window capacity and no cooldown for this model. Sleeps only if every candidate is busy."""
+    def _acquire(self, model: str, deadline: float, only: str | None = None,
+                 checkpoint: Callable[[], None] | None = None) -> str:
+        """Pick a key that has window capacity and no cooldown for this model. Waits only if every candidate is busy, and
+        the wait calls the checkpoint between slices so a cancel or a spent allowance can stop it (T6a)."""
         while True:
             with self.lock:
                 now = self.clock()
@@ -828,7 +830,7 @@ class NimClient:
                 at = self._ready_at(soonest, model, now)
             if at > deadline:
                 raise _AllBusy("all keys are cooling or paced past the budget")
-            self.sleep(max(0.01, at - now))
+            self._wait(max(0.01, at - now), checkpoint)
 
     def _release(self, key: str) -> None:
         with self.lock:
