@@ -51,8 +51,15 @@ def wis(actual: np.ndarray, q: np.ndarray) -> np.ndarray:
     return total / (len(WIS_LEVELS) + 0.5)
 
 
+NOMINAL_COVERAGE = 0.8      # the share a 10 to 90 percent band is built to contain (quantile indices 0 and 8 of QS)
+
+
 def coverage(actual: np.ndarray, q: np.ndarray, lo: int = 0, hi: int = 8) -> float:
-    """Share of actuals inside the band from quantile index lo to hi (default 10 to 90, nominal 80%)."""
+    """Share of actuals inside the band from quantile index lo to hi (default 10 to 90, nominal NOMINAL_COVERAGE).
+
+    The figure is measured, not assumed: compare it with NOMINAL_COVERAGE, and do not read a band as 80 percent because
+    of its quantile labels. A band built from a sd that is too small covers less (synthetic: a random walk's seasonal naive
+    covered about 47 percent)."""
     return float(((actual >= q[..., lo]) & (actual <= q[..., hi])).mean())
 
 

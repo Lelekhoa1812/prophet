@@ -116,8 +116,13 @@ def run_backtest(load: Callable[[], BacktestData], models: Mapping[str, Predicto
     if not acc[names[0]]["act"]:
         raise ValueError("no series had recent demand at any origin")
 
+    # Every coverage figure below is measured; this is the level it is measured against. The MASE denominator is the mean
+    # absolute one-step change over the last scale_window points, whatever the season (R6m: the rolling backtest uses the
+    # seasonal change instead, so the two MASE figures are different measures).
     out: dict = {"horizon": horizon, "origins": origins, "n_series": n_series,
-                 "head_share_series": int(head.sum()), "models": {}}
+                 "head_share_series": int(head.sum()), "models": {},
+                 "band_nominal_coverage": metrics.NOMINAL_COVERAGE,
+                 "mase_scale": f"mean absolute one-step change over the last {scale_window} points of each series"}
     flat: dict[str, tuple] = {}
     for m in names:
         a = acc[m]
@@ -155,6 +160,7 @@ def run_backtest(load: Callable[[], BacktestData], models: Mapping[str, Predicto
                 "oracle_baseline_head_wape": oracle,
                 "improvement_vs_oracle": _ratio(oracle - tw, oracle),
                 "band_coverage_head": tw_cov,
+                "band_coverage_nominal": metrics.NOMINAL_COVERAGE,
             }
     out["seconds"] = round(time.perf_counter() - t0, 3)
     return out
