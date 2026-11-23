@@ -111,3 +111,17 @@ def test_a_service_write_after_the_lease_lapsed_is_still_allowed(path):
         assert a.mission(mid)["status"] == "cancelled"
     finally:
         a.close()
+
+
+def test_clearing_the_ledger_is_refused_while_a_mission_holds_a_live_lease(path):
+    # settings.clear checks for running work first, then wipes in a separate transaction. A lease taken in between must
+    # still stop the wipe, so the check is repeated inside the wipe's own transaction (round 6m).
+    s = Store(path)
+    try:
+        mid = s.create_mission("forecast", {})
+        s.acquire_lease(mid, "runner", ttl_s=3600)
+        with pytest.raises(RuntimeError):
+            s.wipe_ledger()
+        assert s.mission(mid)["goal"] == "forecast", "the running mission's ledger is intact"
+    finally:
+        s.close()

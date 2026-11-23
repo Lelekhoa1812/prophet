@@ -515,6 +515,12 @@ class Store:
         order = ("events", "steps", "tool_calls", "questions", "agent_notes", "sources", "derived_versions", "derived_tables",
                  "missions", "notebooks")
         with self._tx() as c:
+            # Checked again here, inside the wipe's transaction: a mission that took a lease after the caller's check must
+            # stop the wipe, not lose its ledger under it (round 6m).
+            live = c.execute("SELECT COUNT(*) AS n FROM missions WHERE lease_owner IS NOT NULL AND lease_until>?",
+                             (time.time(),)).fetchone()["n"]
+            if live:
+                raise RuntimeError("a mission is still running; stop it before clearing data")
             present = {r["name"] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()}
             tables = [t for t in order if t in present] + sorted(present - set(order))
