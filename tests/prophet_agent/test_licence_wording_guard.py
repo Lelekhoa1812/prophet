@@ -22,24 +22,10 @@ FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 
-# Dataset licence labels that already sit in code strings in scripts/fetch_datasets.py: the dataset table and the line
-# that the generated README writes. The lock forbids licence wording in code, and where dataset licences should be kept
-# is an owner decision (Bill or Ly). Until it is made, these exact lines are the only allowed hits. Changing one of them,
-# or adding wording on any other line, fails the guard. An entry whose line has gone must be removed from this set.
-KNOWN_CODE_LICENCE_LINES = frozenset({
-    ("scripts/fetch_datasets.py", 'LICENCE_UCI = "CC BY 4.0 (UCI Machine Learning Repository)"'),
-    ("scripts/fetch_datasets.py", 'LICENCE_FRED = "FRED terms of use (St. Louis Fed). Some series carry third-party restrictions; check the series page."'),
-    ("scripts/fetch_datasets.py", 'LICENCE_ECB = "ECB reuse policy: free reuse with source attribution"'),
-    ("scripts/fetch_datasets.py", 'LICENCE_ZENODO_MONASH = "CC BY 4.0 (Monash Time Series Forecasting archive, Zenodo record, as checked)"'),
-    ("scripts/fetch_datasets.py", 'LICENCE_UNVERIFIED = "Not verified: read the source repository or dataset card before any external use"'),
-    ("scripts/fetch_datasets.py", "licence: str"),
-    ("scripts/fetch_datasets.py", 'files=(("owid-covid-data.csv", OWID_CSV),), licence="CC BY 4.0 (Our World in Data; underlying sources vary by country)",'),
-    ("scripts/fetch_datasets.py", 'files=(("data-00000-of-00001.arrow", HF_GIFT.format("hospital")),), licence="Not verified: check the Salesforce/GiftEval dataset card",'),
-    ("scripts/fetch_datasets.py", 'files=(("data-00000-of-00001.arrow", HF_GIFT.format("jena_weather")),), licence="Not verified: check the Salesforce/GiftEval dataset card",'),
-    ("scripts/fetch_datasets.py", 'files=(("data-00000-of-00001.arrow", HF_GIFT.format("covid_deaths")),), licence="Not verified: check the Salesforce/GiftEval dataset card",'),
-    ("scripts/fetch_datasets.py", 'licence="Not verified: check the autogluon/chronos_datasets dataset card",'),
-    ("scripts/fetch_datasets.py", 'f"- Licence: {src.licence}",'),
-})
+# Dataset licence wording now lives in docs/prophet/DATASET_LICENCES.md (owner decision, 2026-11-23). scripts/fetch_datasets.py
+# names each dataset by a key and reads the wording from that table, so no exemption is needed. This set stays empty; add a
+# line here only as a dated, owner-approved exception.
+KNOWN_CODE_LICENCE_LINES: frozenset = frozenset()
 
 
 def _files():

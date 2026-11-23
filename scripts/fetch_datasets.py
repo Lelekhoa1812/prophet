@@ -53,11 +53,18 @@ ZENODO_LONDON = "https://zenodo.org/api/records/4656072/files/london_smart_meter
 HF_GIFT = "https://huggingface.co/datasets/Salesforce/GiftEval/resolve/main/{}/data-00000-of-00001.arrow"
 HF_CHRONOS = "https://huggingface.co/datasets/autogluon/chronos_datasets/resolve/main/{}"
 
-LICENCE_UCI = "CC BY 4.0 (UCI Machine Learning Repository)"
-LICENCE_FRED = "FRED terms of use (St. Louis Fed). Some series carry third-party restrictions; check the series page."
-LICENCE_ECB = "ECB reuse policy: free reuse with source attribution"
-LICENCE_ZENODO_MONASH = "CC BY 4.0 (Monash Time Series Forecasting archive, Zenodo record, as checked)"
-LICENCE_UNVERIFIED = "Not verified: read the source repository or dataset card before any external use"
+# Dataset terms are kept in docs/prophet/DATASET_LICENCES.md (owner decision, 2026-11-23). Sources name a key from that
+# table; licence_text() reads the text when a README is written, and fails if the key is missing.
+LICENCE_DOC = ROOT / "docs" / "prophet" / "DATASET_LICENCES.md"
+_LICENCE_ROW = re.compile(r"^\|\s*`([a-z_]+)`\s*\|\s*(.+?)\s*\|\s*$")
+
+
+def licence_text(key: str) -> str:
+    for line in LICENCE_DOC.read_text(encoding="utf-8").splitlines():
+        row = _LICENCE_ROW.match(line)
+        if row and row.group(1) == key:
+            return row.group(2)
+    raise KeyError(f"no licence entry '{key}' in {LICENCE_DOC.relative_to(ROOT)}")
 
 
 @dataclass(frozen=True)
@@ -65,7 +72,7 @@ class Source:
     name: str
     title: str
     files: tuple  # ((raw file name, url), ...)
-    licence: str
+    licence_key: str
     domain: str
     freq: str | None  # pandas alias of the native step, None if irregular
     entities: str
@@ -337,7 +344,7 @@ def fred(series, name, title, freq, domain, notes=""):
     return Source(
         name=name, title=title,
         files=((f"{series}.csv", FRED_CSV.format(series)),),
-        licence=LICENCE_FRED, domain=domain, freq=freq,
+        licence_key="fred", domain=domain, freq=freq,
         entities=f"1 series ({series})",
         normalise=lambda paths, src, s=series: norm_fred(paths, src, s),
         notes=notes,
@@ -378,7 +385,7 @@ SOURCES: list[Source] = [
 
     Source(
         name="ecb_fx_hist", title="ECB euro foreign exchange reference rates, historical",
-        files=(("eurofxref-hist.zip", ECB_FX_ZIP),), licence=LICENCE_ECB, domain="FX", freq="B",
+        files=(("eurofxref-hist.zip", ECB_FX_ZIP),), licence_key="ecb", domain="FX", freq="B",
         entities="about 40 currencies quoted against EUR",
         normalise=norm_ecb,
         notes="Business-day reference rates. 'N/A' marks non-publication days and is kept as NaN. Data is served newest first; rows are sorted here.",
@@ -386,14 +393,14 @@ SOURCES: list[Source] = [
 
     Source(
         name="uci_electricity_15min", title="UCI Electricity Load Diagrams 2011-2014",
-        files=(("electricityloaddiagrams20112014.zip", UCI_ELEC),), licence=LICENCE_UCI,
+        files=(("electricityloaddiagrams20112014.zip", UCI_ELEC),), licence_key="uci",
         domain="electricity", freq="15min", entities="370 client meters (MT_001 to MT_370)",
         normalise=norm_uci_electricity,
         notes="Kilowatt-hours per 15 minutes, source timezone Portugal (no tz information). Values stored as float32. Many clients have zero runs before they were connected.",
     ),
     Source(
         name="uci_household_power", title="UCI Individual household electric power consumption",
-        files=(("individual+household+electric+power+consumption.zip", UCI_HOUSEHOLD),), licence=LICENCE_UCI,
+        files=(("individual+household+electric+power+consumption.zip", UCI_HOUSEHOLD),), licence_key="uci",
         domain="electricity", freq="min", entities="1 household",
         normalise=norm_household,
         notes="Source marks missing values with '?'. value = Global_active_power (kW); sub-metering and voltage kept as covariates.",
@@ -401,7 +408,7 @@ SOURCES: list[Source] = [
     ),
     Source(
         name="uci_beijing_air_quality", title="UCI Beijing multi-site air quality (12 stations)",
-        files=(("beijing+multi+site+air+quality+data.zip", UCI_BEIJING),), licence=LICENCE_UCI,
+        files=(("beijing+multi+site+air+quality+data.zip", UCI_BEIJING),), licence_key="uci",
         domain="air quality / weather", freq="h", entities="12 monitoring stations",
         normalise=norm_beijing,
         notes="value = PM2.5 (ug/m3). Covariates include meteorology (TEMP, PRES, DEWP, RAIN, WSPM, wd). 'NA' kept as NaN.",
@@ -409,7 +416,7 @@ SOURCES: list[Source] = [
     ),
     Source(
         name="uci_online_retail_ii", title="UCI Online Retail II (transaction lines)",
-        files=(("online+retail+ii.zip", UCI_RETAIL),), licence=LICENCE_UCI,
+        files=(("online+retail+ii.zip", UCI_RETAIL),), licence_key="uci",
         domain="retail", freq=None, regular=False, entities="about 4,600 StockCodes (product lines)",
         normalise=norm_retail,
         notes="One row per invoice line, not a sales series. value = Quantity (negative = returns). Cancelled invoices start with 'C'. Aggregation to daily demand is left to the agent.",
@@ -419,21 +426,21 @@ SOURCES: list[Source] = [
     Source(
         name="monash_car_parts_missing", title="Monash car parts with missing values (monthly)",
         files=(("car_parts_dataset_with_missing_values.zip", ZENODO_CAR_PARTS),),
-        licence=LICENCE_ZENODO_MONASH, domain="retail / intermittent demand", freq="MS",
+        licence_key="zenodo_monash", domain="retail / intermittent demand", freq="MS",
         entities="2,674 part series (as recorded)", normalise=norm_monash_zip,
         notes="Monash .tsf format parsed here. '?' marks missing values, kept as NaN. Very intermittent: many zeros.",
     ),
     Source(
         name="monash_london_smart_meters_missing", title="Monash London smart meters with missing values",
         files=(("london_smart_meters_dataset_with_missing_values.zip", ZENODO_LONDON),),
-        licence=LICENCE_ZENODO_MONASH, domain="electricity (households)", freq="30min",
+        licence_key="zenodo_monash", domain="electricity (households)", freq="30min",
         entities="about 5,560 households (as recorded)", normalise=norm_monash_zip,
         notes="Monash .tsf format parsed here. '?' marks missing values, kept as NaN. Households start and stop at different dates.",
     ),
 
     Source(
         name="ett_etth1", title="ETT transformer, ETTh1 (hourly)",
-        files=(("ETTh1.csv", ETT_RAW.format("ETTh1")),), licence=LICENCE_UNVERIFIED,
+        files=(("ETTh1.csv", ETT_RAW.format("ETTh1")),), licence_key="unverified",
         domain="electricity transformer", freq="h", entities="1 transformer (ETTh1)",
         normalise=lambda paths, src: norm_ett(paths, src, "ETTh1"),
         notes="value = OT (oil temperature, target). Six load covariates kept.",
@@ -441,7 +448,7 @@ SOURCES: list[Source] = [
     ),
     Source(
         name="ett_ettm1", title="ETT transformer, ETTm1 (15-minute)",
-        files=(("ETTm1.csv", ETT_RAW.format("ETTm1")),), licence=LICENCE_UNVERIFIED,
+        files=(("ETTm1.csv", ETT_RAW.format("ETTm1")),), licence_key="unverified",
         domain="electricity transformer", freq="15min", entities="1 transformer (ETTm1)",
         normalise=lambda paths, src: norm_ett(paths, src, "ETTm1"),
         notes="value = OT (oil temperature, target). Six load covariates kept.",
@@ -452,7 +459,7 @@ SOURCES: list[Source] = [
         name="m4_daily", title="M4 competition, Daily subset (train plus 14-step test)",
         files=(("Daily-train.csv", M4_RAW.format("Train", "train")),
                ("Daily-test.csv", M4_RAW.format("Test", "test"))),
-        licence=LICENCE_UNVERIFIED, domain="mixed (competition)", freq="D",
+        licence_key="unverified", domain="mixed (competition)", freq="D",
         entities="4,227 daily series", normalise=norm_m4,
         notes="M4 has no calendar dates: timestamp is an integer step index (test steps continue after each series' train length). Trailing padding is dropped; interior NaN are kept (count in README). split column marks train vs test.",
         covariates="split",
@@ -460,7 +467,7 @@ SOURCES: list[Source] = [
 
     Source(
         name="owid_covid_daily", title="Our World in Data COVID-19 (daily, all locations)",
-        files=(("owid-covid-data.csv", OWID_CSV),), licence="CC BY 4.0 (Our World in Data; underlying sources vary by country)",
+        files=(("owid-covid-data.csv", OWID_CSV),), licence_key="owid",
         domain="epidemiology", freq="D", entities="about 250 locations including aggregates",
         normalise=norm_owid,
         notes="value = new_cases as reported. Reporting artifacts, weekday effects, backfills and negative corrections are in the source.",
@@ -469,21 +476,21 @@ SOURCES: list[Source] = [
 
     Source(
         name="gift_hospital", title="GIFT-Eval hospital (Hugging Face Salesforce/GiftEval arrow)",
-        files=(("data-00000-of-00001.arrow", HF_GIFT.format("hospital")),), licence="Not verified: check the Salesforce/GiftEval dataset card",
+        files=(("data-00000-of-00001.arrow", HF_GIFT.format("hospital")),), licence_key="gift_card",
         domain="healthcare counts", freq="MS", entities="767 series (as recorded)",
         normalise=lambda paths, src: norm_gift_arrow(paths, src, "MS"),
         notes="Arrow IPC file from the Hugging Face repo. Frequency taken from the row freq column.",
     ),
     Source(
         name="gift_jena_weather", title="GIFT-Eval Jena climate (Hugging Face arrow, 10-minute file)",
-        files=(("data-00000-of-00001.arrow", HF_GIFT.format("jena_weather")),), licence="Not verified: check the Salesforce/GiftEval dataset card",
+        files=(("data-00000-of-00001.arrow", HF_GIFT.format("jena_weather")),), licence_key="gift_card",
         domain="weather", freq="10min", entities="weather station series (as recorded)",
         normalise=lambda paths, src: norm_gift_arrow(paths, src, "10min"),
         notes="Top-level arrow file of the jena_weather folder (one row, 21 channels x 52,704 steps, freq 10T). Each channel is exported as its own entity <item_id>:vNN; channel meanings are not labelled in the file.",
     ),
     Source(
         name="gift_covid_deaths", title="GIFT-Eval COVID deaths (Hugging Face arrow)",
-        files=(("data-00000-of-00001.arrow", HF_GIFT.format("covid_deaths")),), licence="Not verified: check the Salesforce/GiftEval dataset card",
+        files=(("data-00000-of-00001.arrow", HF_GIFT.format("covid_deaths")),), licence_key="gift_card",
         domain="epidemiology", freq="D", entities="about 266 countries (as recorded)",
         normalise=lambda paths, src: norm_gift_arrow(paths, src, "D"),
         notes="Cumulative deaths per country in the GIFT copy (confirm). Daily frequency assumed from the GIFT-Eval folder name.",
@@ -491,7 +498,7 @@ SOURCES: list[Source] = [
     Source(
         name="chronos_monash_electricity_hourly", title="Chronos corpus, Monash electricity hourly (Hugging Face parquet)",
         files=(("train-00000-of-00001.parquet", HF_CHRONOS.format("monash_electricity_hourly/train-00000-of-00001.parquet")),),
-        licence="Not verified: check the autogluon/chronos_datasets dataset card",
+        licence_key="chronos_card",
         domain="electricity", freq="h", entities="series as recorded in the Chronos copy",
         normalise=lambda paths, src: norm_chronos_parquet(paths, src, "h"),
         notes="Chronos-style corpus copy. Start timestamps and frequency assumed hourly; confirm against the source Monash file.",
@@ -589,7 +596,7 @@ def download_source(client, src: Source, manifest: dict, max_bytes, force: bool)
         if rec["status"] != "ok":
             status = rec["status"] if status == "ok" else status
     entry.update({
-        "title": src.title, "licence": src.licence, "domain": src.domain,
+        "title": src.title, "licence": licence_text(src.licence_key), "domain": src.domain,
         "native_freq": src.freq, "files": files_out, "download_status": status,
     })
     return entry
@@ -641,7 +648,7 @@ def write_readme(src: Source, out_dir: Path, metrics: dict, files: list, rel_out
         f"- Native frequency: {src.freq or 'irregular (event or transaction log)'}",
         f"- Entities: {src.entities}",
         f"- Covariates: {src.covariates}",
-        f"- Licence: {src.licence}",
+        f"- Licence (see docs/prophet/DATASET_LICENCES.md, key {src.licence_key}): {licence_text(src.licence_key)}",
         f"- Output: `{rel_out}` (Parquet, long format; columns entity, timestamp, value" +
         (f", {src.covariates}" if src.covariates != "none" else "") + ")",
         "", "## Source files", "",
