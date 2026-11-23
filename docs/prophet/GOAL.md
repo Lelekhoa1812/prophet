@@ -638,3 +638,32 @@ error, and it is the next thing to look at.
 The fixes are checked by unit tests and by these runs, one run each, so this is not a rate. Verified across the two
 rounds: retail, WTI and WTI business user in round 6 (build 4b5df07), then retail business user and electricity panel on
 the rerun (build f903603). Beijing panel is still partial.
+
+### Repeat round 6c of the six scenarios on build f84cce2 (measured, 2026-11-23)
+
+Build f84cce2 holds the seeded-analyst fix (5551f4a) and the blend-wording check (f84cce2). One run each. Every series is
+synthetic. Mission ids are from data/prophet.sqlite.
+
+| Scenario | Mission | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| retail | 8cea16c6 | completed | done_verified | 166 | 14 |
+| WTI | c8213ced | completed | done_verified | 555 | 30 |
+| WTI business user | 364a288f | completed | done_verified | 166 | 21 |
+| retail business user | cf7f4aa6 | partial | partial_unverified | 150 | 15 |
+| Beijing panel | 97ab893f | partial | partial_unverified | 976 | 100 |
+| electricity panel | c1154fd1 | partial | partial_unverified | 1,592 | 108 |
+
+Round result: 3 of 6 done_verified. The three partials each stopped on a contract check that the rewrite did not clear.
+Causes, read from each stored answer (not yet fixed; see the next step in this section):
+
+- **retail business user (cf7f4aa6):** `answer_cycle_matches_health` blocked it. The answer claimed a 260-step cycle from
+  the backtest's same-period test (+150.8 %, p = 0.016), but the health record measured 5 steps. The f903603 wording named
+  the number to write, and the rewrite still kept the backtest figure.
+- **Beijing panel (97ab893f):** `answer_total_range_named` blocked it. The answer gave 4,082 to 26,035 as the total's
+  range, which is the bound if every station misses the same way at once. The check asks for both bounds, each with what
+  it assumes.
+- **electricity panel (c1154fd1):** `scan_decisions_recorded` blocked it. The scan had blocker or major findings,
+  censoring.stockout_runs and schema.missing_column, with no ledger decision. The answer was written without recording
+  them.
+
+Build f84cce2 gate: scripts/check.sh 1,877 passed, 1 skipped, 4 deselected.
