@@ -49,7 +49,7 @@ RAW_HALF_BYTES = MAX_STREAM_CHARS * 2
 _CUT_WINDOW = 512
 
 _BOOT = r"""
-import os, runpy, sys, unicodedata
+import os, runpy, sys, unicodedata, urllib.parse
 WD = os.path.realpath(sys.argv[1])
 TARGET = sys.argv[2]
 ROOT = os.path.realpath(sys.argv[3]) if sys.argv[3] else ""
@@ -82,6 +82,18 @@ def _readable(p):
     if _under(rp, WD) or any(_under(rp, s) for s in _PREFIXES):
         return True
     return not any(base and _under(rp, base) for base in (ROOT, REAL_HOME))
+def _check_database_uri(uri):
+    # A database URI is a path plus query options. The path must be in the run folder, and a database in in/ may be
+    # opened only read-only (mode=ro). vfs= would choose another file layer, so it is refused.
+    parts = urllib.parse.urlsplit(uri)
+    query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+    if parts.scheme != "file" or parts.netloc or "vfs" in query:
+        raise PermissionError("database URIs are blocked outside the run folder")
+    rp = os.path.realpath(urllib.parse.unquote(parts.path))
+    if not _under(rp, WD):
+        raise PermissionError("database URIs are blocked outside the run folder")
+    if _under(rp, WD_IN) and query.get("mode") != ["ro"]:
+        raise PermissionError("database URIs are blocked: an input database opens only with mode=ro")
 def _hook(event, args):
     if event == "open":
         path, mode, flags = args[0], args[1], args[2]
@@ -120,9 +132,13 @@ def _hook(event, args):
             db = os.fsdecode(db)
         if isinstance(db, str) and db not in ("", ":memory:"):
             if db.startswith("file:"):
-                raise PermissionError("database URIs are blocked in the sandbox")
-            if not _under(os.path.realpath(db), WD):
+                _check_database_uri(db)
+            elif not _under(os.path.realpath(db), WD):
                 raise PermissionError("opening a database outside the run folder is blocked: " + os.path.basename(db))
+            elif _under(os.path.realpath(db), WD_IN):
+                # in/ is read-only to the program. A plain path opens read-write, so only the read-only URI that
+                # sandbox_connect builds for in/ may reach SQLite there (round 6m).
+                raise PermissionError("input databases are read-only: open them with sqlite3.connect(path) only")
     elif event == "sqlite3.enable_load_extension":
         # An SQLite extension is native code: loading one would be the same as calling C directly.
         if len(args) > 1 and args[1]:
@@ -205,6 +221,15 @@ def sandbox_connect(database, *args, **kwargs):
     # Positional index 4 of the optional arguments is factory (timeout, detect_types, isolation_level, check_same_thread).
     if "factory" not in kwargs and len(args) < 5:
         kwargs["factory"] = _GuardedConnection
+    # An input database is opened read-only, immutable so that no -wal or -shm file is created beside it in in/ (round 6m).
+    # The uri flag is the 8th optional argument; a call that passes it positionally keeps its own flag and is checked by the hook.
+    db = os.fspath(database) if isinstance(database, os.PathLike) else database
+    if isinstance(db, bytes):
+        db = os.fsdecode(db)
+    if isinstance(db, str) and db not in ("", ":memory:") and not db.startswith("file:") \
+            and len(args) < 7 and not kwargs.get("uri") and _under(os.path.realpath(db), WD_IN):
+        database = "file:" + urllib.parse.quote(os.path.realpath(db)) + "?mode=ro&immutable=1"
+        kwargs["uri"] = True
     conn = _SQL_CONNECT(database, *args, **kwargs)
     sqlite3.Connection.set_authorizer(conn, _deny_attach)
     sqlite3.Connection.setlimit(conn, sqlite3.SQLITE_LIMIT_ATTACHED, 0)
