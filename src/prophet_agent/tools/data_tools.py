@@ -37,7 +37,11 @@ def make_inspect(datasets: dict[str, Path]):
         names = sorted(datasets)
         if not names:
             raise ValueError("no files were uploaded for this request")
-        name = args.get("file") or (names[0] if len(names) == 1 else None)
+        raw = args.get("file")
+        if raw is not None and not isinstance(raw, str):
+            # A list or dict is unhashable, so the lookup below raised a bare TypeError (round 6m).
+            raise ValueError(f"file must be one of {names}, given as text")
+        name = raw or (names[0] if len(names) == 1 else None)
         if name not in datasets:
             raise ValueError(f"file must be one of {names}")
         res = run_python(PROFILE_CODE.format(name=name, sheet=args.get("sheet", 0)), timeout_s=60, mem_mb=1536,
