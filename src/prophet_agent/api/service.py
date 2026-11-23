@@ -28,6 +28,7 @@ from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import DELEGATED_CALLS, UNCHARGED, Runtime, Tool
 from prophet_agent.runtime.store import ACTIVE, LeaseHeld, LeaseLost, Store
 from prophet_agent.tools.notebook_tools import NotebookBinding
+from prophet_agent.tools.opendata_tools import OpenDataContext
 from prophet_agent.api.outcome import outcome_for
 from prophet_agent.api.sharing import DEFAULT_SHARING, PolicyRefused, tools_allowed
 from prophet_agent.nim.providers import CATALOG, MODELS, PROVIDERS
@@ -294,7 +295,16 @@ class MissionService:
             mounts = self.notebooks.mounts(nb)
             mounts.update(self.notebooks.derived_mounts(nb))
             return self.tools_factory(mounts, NotebookBinding(self.notebooks, nb, mission["id"]))
-        return self.tools_factory(self.datasets.mount(mission["budget"].get("dataset_ids", [])))
+        opendata = OpenDataContext(self.datasets, lambda did: self._attach_dataset(mission["id"], did))
+        return self.tools_factory(self.datasets.mount(mission["budget"].get("dataset_ids", [])), opendata=opendata)
+
+    def _attach_dataset(self, mission_id: str, dataset_id: str) -> None:
+        """Record a dataset one of the mission's tools downloaded in its dataset_ids, so its tools mount it from the next build."""
+        budget = dict(self.store.mission(mission_id)["budget"])
+        ids = list(budget.get("dataset_ids", []))
+        if dataset_id not in ids:
+            budget["dataset_ids"] = ids + [dataset_id]
+            self._store_budget(mission_id, budget)
 
     # -- per-notebook data sharing (A7-12) -----------------------------------------------------------------------
 
