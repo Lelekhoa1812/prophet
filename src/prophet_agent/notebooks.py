@@ -311,9 +311,9 @@ class Notebooks:
         with self.store.lock:
             row = self.store.conn.execute(
                 "SELECT v.file_path FROM derived_versions v JOIN derived_tables t ON t.id=v.table_id "
-                "WHERE t.notebook_id=? AND t.name=? " + ("AND v.version=?" if version else
+                "WHERE t.notebook_id=? AND t.name=? " + ("AND v.version=?" if version is not None else
                 "AND v.version=(SELECT MAX(version) FROM derived_versions WHERE table_id=t.id)"),
-                (nid, name, version) if version else (nid, name)).fetchone()
+                (nid, name, version) if version is not None else (nid, name)).fetchone()
         if row is None:
             raise KeyError(name)
         return Path(row["file_path"])

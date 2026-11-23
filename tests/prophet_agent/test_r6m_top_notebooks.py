@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from prophet_agent.datasets import DatasetStore
 from prophet_agent.notebooks import CARD_CHARS, Notebooks, make_card
 from prophet_agent.runtime.store import Store
@@ -57,5 +59,28 @@ def test_a_notebook_created_with_a_blank_title_is_named_like_an_untitled_one(tmp
     try:
         assert notebooks.create("   ")["title"] == "New notebook"
         assert notebooks.create(None)["title"] == "New notebook"
+    finally:
+        store.close()
+
+
+def test_table_path_version_zero_is_not_the_latest_version(tmp_path):
+    """Versions start at 1. Version 0 names no version, so it must not quietly return the latest file."""
+    store = Store(tmp_path / "p.sqlite")
+    notebooks = Notebooks(store, DatasetStore(tmp_path / "datasets"), tmp_path / "notebooks")
+    try:
+        nid = notebooks.create("Sales")["id"]
+        tid = "t" * 32
+        with store._tx() as c:
+            c.execute("INSERT INTO derived_tables (id, notebook_id, name, description, created) VALUES (?,?,?,?,?)",
+                      (tid, nid, "forecast", "", 1.0))
+            for version in (1, 2):
+                c.execute("INSERT INTO derived_versions (id, table_id, version, rows, columns_json, sha256, file_path, "
+                          "lineage_json, turn_id, created) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                          (f"v{version}".ljust(32, "0"), tid, version, 1, "[]", "0" * 64,
+                           str(tmp_path / f"v{version}.csv"), "{}", None, 1.0))
+        assert notebooks.table_path(nid, "forecast").name == "v2.csv"
+        assert notebooks.table_path(nid, "forecast", 1).name == "v1.csv"
+        with pytest.raises(KeyError):
+            notebooks.table_path(nid, "forecast", 0)
     finally:
         store.close()
