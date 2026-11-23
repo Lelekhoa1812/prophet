@@ -55,6 +55,7 @@ def _kind_from_dates(dates: Any) -> str | None:
         d = np.asarray(dates).astype("datetime64[s]")
     except (TypeError, ValueError):
         return None
+    d = d[~np.isnat(d)]                     # a missing date says nothing about the calendar
     if d.size < 3:
         return None
     days = d.astype("datetime64[D]").astype(np.int64)
@@ -86,7 +87,10 @@ def _kind(freq_hint: str | None, dates: Any) -> str | None:
 
 
 def _acf(z: np.ndarray, lag: int) -> float:
-    return float(np.mean(z[lag:] * z[:-lag]))
+    """Autocorrelation over the pairs where both points are measured; NaN when no pair is measured."""
+    a, b = z[lag:], z[:-lag]
+    both = np.isfinite(a) & np.isfinite(b)
+    return float(np.mean(a[both] * b[both])) if both.any() else float("nan")
 
 
 def _bar(n_changes: int, n_lags: int, alpha: float) -> float:
@@ -100,21 +104,27 @@ def _bar(n_changes: int, n_lags: int, alpha: float) -> float:
 
 
 def _detrend(x: np.ndarray) -> np.ndarray:
+    """Residual from a linear trend fitted on the measured points. A missing point stays missing (NaN) at its position."""
     t = np.arange(len(x), dtype=float)
-    return x - np.polyval(np.polyfit(t, x, 1), t)
+    obs = np.isfinite(x)
+    return x - np.polyval(np.polyfit(t[obs], x[obs], 1), t)
 
 
 def _level_strength(residual: np.ndarray, lag: int) -> float | None:
-    """Share of the detrended level's variance that the phase means at this lag explain. None when there are fewer than
-    MIN_CYCLES whole cycles or the series is flat."""
+    """Share of the detrended level's variance that the phase means at this lag explain. Missing points are left out of
+    each phase mean and of the variances, and keep their position. None when there are fewer than MIN_CYCLES whole
+    cycles or the series is flat."""
     k = len(residual) // lag
     if k < MIN_CYCLES:
         return None
     m = residual[: k * lag].reshape(k, lag)
-    total = float(m.var())
+    ok = np.isfinite(m)
+    total = float(m[ok].var()) if ok.any() else 0.0
     if total <= 1e-12:
         return None
-    return float(1 - (m - m.mean(axis=0)).var() / total)
+    counts = ok.sum(axis=0)
+    phase_mean = np.where(ok, m, 0.0).sum(axis=0) / np.maximum(counts, 1)
+    return float(1 - (m - phase_mean)[ok].var() / total)
 
 
 def _level_strengths(x: np.ndarray, lags: tuple[int, ...]) -> dict[int, float]:
@@ -147,21 +157,36 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
     """Return {"season": int, "reason": str, "threshold": float, ...}. Season 1 means no season: use one-step changes for
     the MASE scale. The threshold is the bar the strongest candidate had to clear (see ``_bar``)."""
     x = np.asarray(values, dtype=float).reshape(-1)
-    x = x[np.isfinite(x)]
-    n = len(x)
+    n_all = len(x)
+    if dates is not None and len(dates) != n_all:
+        return {"season": 1, "reason": f"the dates ({len(dates)}) do not match the values ({n_all}), so the calendar cannot be "
+                                        "read; no season measured"}
+    # Missing values keep their position: the changes and the level phases are measured on positions, so a gap neither shifts
+    # a cycle nor joins two steps that were not one step apart. Only the dates of measured values are used for the calendar.
+    obs = np.isfinite(x)
+    n = int(obs.sum())
     if n < MIN_POINTS:
-        return {"season": 1, "reason": f"only {n} points: too few to measure a cycle, so no season is assumed"}
-    kind = _kind(freq_hint, dates)
+        return {"season": 1, "reason": f"only {n} finite points: too few to measure a cycle, so no season is assumed"}
+    kind = _kind(freq_hint, np.asarray(dates, dtype=object)[obs] if dates is not None else None)
     d = np.diff(x)
-    sd = float(d.std())
+    d[~np.isfinite(d)] = np.nan                  # a change across a gap, or one that overflows, is not measured
+    dobs = np.isfinite(d)
+    n_ch = int(dobs.sum())
+    if n_ch < 2:
+        return {"season": 1, "reason": "the one-step changes are too large to measure or too few values are consecutive, so no "
+                                        "season is assumed"}
+    sd = float(np.std(d[dobs]))
+    if not np.isfinite(sd):
+        return {"season": 1, "reason": "the values are too large to measure their changes, so no season is assumed"}
     if sd <= 1e-12:
         return {"season": 1, "reason": "the series does not change between steps, so no cycle can be measured"}
-    z = (d - d.mean()) / sd
+    z = (d - float(np.mean(d[dobs]))) / sd
     if kind is not None:
         cands = tuple(l for l in CANDIDATES[kind] if l < len(z) // 2)
         if not cands:
             return {"season": 1, "reason": f"{kind} data with too few points for its candidate cycles; no season assumed"}
-        strengths = {l: round(_acf(z, l), 3) for l in cands}
+        raw = {l: _acf(z, l) for l in cands}
+        strengths = {l: round(v, 3) for l, v in raw.items() if np.isfinite(v)}
         label = f"{kind} data"
     else:
         found = find_season(d)
@@ -169,8 +194,10 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
         label = "data with no frequency hint"
         if not strengths:
             return {"season": 1, "reason": f"{label}: no candidate cycle fits the history; no season assumed"}
+    if not strengths:
+        return {"season": 1, "reason": f"{label}: no candidate cycle has enough measured pairs; no season assumed"}
     best = max(strengths, key=strengths.get)
-    bar = round(_bar(len(z), len(strengths), alpha), 3)
+    bar = round(_bar(n_ch, len(strengths), alpha), 3)
     if strengths[best] > bar:
         return {"season": int(best), "reason": f"{label}: the one-step changes repeat every {best} periods "
                                                 f"(autocorrelation {strengths[best]:.2f}, above {bar})",
@@ -179,7 +206,7 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
     level = _level_strengths(x, tuple(sorted(strengths)))
     if level:
         top = max(level, key=level.get)
-        level_bar = _level_bar(n, tuple(sorted(level)), alpha)
+        level_bar = _level_bar(n_all, tuple(sorted(level)), alpha)
         if level[top] > level_bar:
             return {"season": int(top), "reason": f"{label}: the levels repeat every {top} periods (seasonal strength "
                                                     f"{level[top]:.2f}, above {level_bar}); the one-step changes do not show it, "
