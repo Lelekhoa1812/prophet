@@ -1,0 +1,12 @@
+{
+  "_comment": "SYNTHETIC test fixture: made-up numbers laid out like an Open-Meteo JSON response. Not observed weather. Used only by the tests.",
+  "latitude": 52.0,
+  "longitude": 13.0,
+  "timezone": "Europe/Berlin",
+  "daily_units": {"time": "iso8601", "temperature_2m_max": "degC", "precipitation_sum": "mm"},
+  "daily": {
+    "time": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-06", "2024-01-07"],
+    "temperature_2m_max": [4.5, 5.1, 3.9, 6.0, 6.7, 2.2, 1.8],
+    "precipitation_sum": [0.0, 1.2, 0.4, 0.0, 2.8, 0.0, 0.1]
+  }
+}
