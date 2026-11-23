@@ -10,6 +10,7 @@ from .lab_tool import LAB_TOOL_SPEC
 from .lab_tool import lab_tool as make_lab_tool
 from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_drivers_tool, detect_anomalies_tool)
 from .notebook_tools import SAVE_TABLE_SPEC, NotebookBinding, save_table_tool
+from .opendata_tools import OpenDataContext, open_data_tools
 from .research_tools import tools as research_tool_pairs
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .sandbox_tool import SANDBOX_PYTHON_SPEC, sandbox_python_tool
@@ -23,10 +24,12 @@ def spec_doc(spec: dict) -> str:
     return f"{spec['description']} Arguments (use these names only): {args}."
 
 
-def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBinding | None = None) -> dict:
+def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBinding | None = None, *,
+                  opendata: OpenDataContext | None = None) -> dict:
     """The tool set for one mission. ``datasets`` maps the person's file names to paths; with none, the data tools are
     left out, so the planner is never offered something it cannot use. ``binding`` is set for a notebook turn only,
-    which is the only place ``save_table`` is offered."""
+    which is the only place ``save_table`` is offered. ``opendata`` is the mission's dataset store and attach hook; it
+    enables the download tools and makes the sandbox read files downloaded during the run."""
     specs = {
         "timesfm_forecast": (timesfm_tool(), TIMESFM_TOOL_SPEC),
         "backtest_series": (backtest_tool(), BACKTEST_SPEC),
@@ -46,13 +49,15 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         specs["inspect_data"] = (inspect_data_tool(datasets), INSPECT_DATA_SPEC)
     if binding is not None:
         specs["save_table"] = (save_table_tool(binding), SAVE_TABLE_SPEC)
+    specs.update(open_data_tools(datasets, opendata))
     return {name: replace(tool, doc=spec_doc(spec), title=spec["title"], activity=spec["activity"])
             for name, (tool, spec) in specs.items()}
 
 
 def tool_catalogue() -> dict:
     """Every tool with its spec, for documentation and the /api/tools listing. The listing binding has no notebook."""
-    return default_tools({"example.csv": Path("example.csv")}, binding=NotebookBinding(None, "", ""))
+    return default_tools({"example.csv": Path("example.csv")}, binding=NotebookBinding(None, "", ""),
+                         opendata=OpenDataContext(store=None, attach=None))
 
 
 __all__ = ["ANALYST_SKILL_SPEC", "LAB_TOOL_SPEC", "BACKTEST_SPEC", "BUILD_DRIVERS_SPEC", "DETECT_ANOMALIES_SPEC", "FORECAST_REPORT_SPEC", "INSPECT_DATA_SPEC", "NotebookBinding",
