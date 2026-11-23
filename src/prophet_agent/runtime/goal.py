@@ -1333,16 +1333,18 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
         # the empty report as work done. No written answer is not met, whatever the run status says.
         status, reason = "not_met", "the sub-agent gave no written answer" + (f": {reason}" if reason else "")
     task = str(spec["task"]).strip()
+    # A sub-agent's figures are checked against the tool results it saw, never against its brief: the task is the lead
+    # agent's own words, so a figure repeated from it would pass without any tool having printed it (audit item 3).
     obs = {"kind": "subagent", "agent_id": agent_id, "agent_type": agent.name, "task": task,
            "tools": sorted(sub_tools), "status": status, "answer": answer, "reason": reason,
            "steps": len(sub_history), "files": _files_of(sub_history), "evidence": sub_history,
            "findings": [str(f)[:300] for f in sub.get("findings") or []][:12],
            "figures": [{"name": str(f["name"])[:120], "value": str(f["value"])[:60],
-                        "sourced": not unverified(str(f["value"]), sub_history, task)}
+                        "sourced": not unverified(str(f["value"]), sub_history, "")}
                        for f in sub.get("figures") or [] if isinstance(f, dict) and "name" in f and "value" in f][:20]}
     # A4-14: the sub-agent's own figure list is reconciled too. A figure it marked unsourced reaches the lead even when the
     # answer text leaves it out, so the lead never reads an unsourced figure as checked.
-    bad = unverified(answer, sub_history, str(spec["task"])) if answer else []
+    bad = unverified(answer, sub_history, "") if answer else []
     bad = list(dict.fromkeys(bad + [f["value"] for f in obs["figures"] if not f["sourced"]]))
     if bad:
         obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
