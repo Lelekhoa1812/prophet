@@ -317,10 +317,11 @@ class SandboxResult:
     memory_limit_enforced: bool = False
     limits: dict = field(default_factory=dict)
     output_truncated: bool = False     # true when output between the kept head and tail was dropped or clipped
+    over_disk_limit: bool = False      # true when the run wrote more than its disk quota and was stopped
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
+        return self.returncode == 0 and not self.timed_out and not self.over_disk_limit
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -403,6 +404,43 @@ def _pump(stream, capture: _Capture) -> None:
         capture.feed(chunk)
 
 
+def _writable_bytes(wd: Path) -> int:
+    """Bytes the program can write in the run folder: everything except in/, which holds the copied inputs. Links are not
+    followed, so a link to a large file elsewhere costs nothing."""
+    total = 0
+    stack = [wd]
+    while stack:
+        folder = stack.pop()
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if folder == wd and entry.name == IN_DIR:
+                            continue
+                        stack.append(Path(entry.path))
+                    else:
+                        total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
+def _watch_disk(proc: subprocess.Popen, wd: Path, limit_bytes: int, stop: threading.Event, flagged: list) -> None:
+    """Samples the run folder until the process ends. Past the quota, the whole process group is killed (round 6m). The
+    overshoot is at most what a sample interval can write."""
+    while not stop.wait(0.05):
+        if _writable_bytes(wd) > limit_bytes:
+            flagged.append(True)
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            return
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -439,7 +477,10 @@ def _result_from_manifest(manifest: Path) -> SandboxResult:
     return SandboxResult(outputs=outputs, **kwargs)
 
 
-def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64,
+DISK_MB = 512   # the most a run may write in its folder, in total (round 6m): RLIMIT_FSIZE caps each file, not the sum
+
+
+def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64, disk_mb: int = DISK_MB,
                files: dict[str, bytes] | None = None, inputs: dict[str, Path] | None = None,
                run_id: str | None = None) -> SandboxResult:
     """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data).
@@ -489,7 +530,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     script = wd / "program.py"
     script.write_text(code, encoding="utf-8")
 
-    limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb,
+    limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb, "disk_mb": disk_mb,
               "memory_limit_enforced": memory_limit_enforced()}
     cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home()),
            str(timeout_s), str(mem_mb), str(file_mb)]
@@ -502,6 +543,11 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
                threading.Thread(target=_pump, args=(proc.stderr, err_cap), daemon=True)]
     for reader in readers:
         reader.start()
+    disk_limit = disk_mb * 1024 * 1024
+    over_disk: list = []
+    stop_watch = threading.Event()
+    watcher = threading.Thread(target=_watch_disk, args=(proc, wd, disk_limit, stop_watch, over_disk), daemon=True)
+    watcher.start()
     timed_out = False
     try:
         returncode = proc.wait(timeout=timeout_s)
@@ -512,6 +558,10 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         except ProcessLookupError:
             pass
         returncode = proc.wait()
+    stop_watch.set()
+    watcher.join(timeout=10)
+    if not over_disk and _writable_bytes(wd) > disk_limit:   # a run that ended between two samples is still checked
+        over_disk.append(True)
     for reader in readers:
         reader.join(timeout=10)
 
@@ -530,6 +580,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         outputs=outputs, workdir=str(wd), memory_limit_enforced=memory_limit_enforced(), limits=limits,
         output_truncated=bool(out_cap.dropped or err_cap.dropped or len(out_text) > MAX_STREAM_CHARS
                               or len(err_text) > MAX_STREAM_CHARS),
+        over_disk_limit=bool(over_disk),
     )
     (wd / "manifest.json").write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     return result
