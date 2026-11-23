@@ -2083,12 +2083,22 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                              f"the answer calls {name} the best benchmark, but {why}, so the claim is not verified "
                              f"({sentence[:160]}); run the backtest and name the rule it ranks best, or drop the claim"))
     elif claims:
+        # Audit round 6m: a rule the backtest never ranked (no MASE for it) cannot be verified as the best benchmark, so it blocks.
+        # Before, its MASE read as None and the claim passed as "the one the backtest ranked best".
+        unranked = [(n, s) for n, s in claims
+                    if not isinstance(models.get(n), dict) or _finite(models[n].get("mase")) is None]
         wrong_rules = []
         for name, sentence in claims:
             nm = _finite(models[name].get("mase")) if isinstance(models.get(name), dict) else None
             if name != best and nm is not None and bm is not None and nm > bm * (1 + RULE_TOLERANCE):
                 wrong_rules.append((name, nm, sentence))
-        if wrong_rules:
+        if unranked:
+            name, sentence = unranked[0]
+            checks.append(_check("answer_benchmark_matches", False,
+                                 f"the answer calls {name} the best benchmark, but the stored backtest does not rank {name} "
+                                 f"(no MASE for it), so the claim is not verified ({sentence[:160]}); name the rule the backtest "
+                                 f"ranks best ({best}), or drop the claim"))
+        elif wrong_rules:
             name, nm, sentence = wrong_rules[0]
             checks.append(_check("answer_benchmark_matches", False,
                                  f"the answer calls {name} the best benchmark (MASE {nm:.3f}), but the backtest ranked {best} "
