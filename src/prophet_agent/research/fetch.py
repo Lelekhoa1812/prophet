@@ -241,10 +241,11 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
     robots = robots or (Robots(client=client, resolver=resolver) if client or resolver else DEFAULT_ROBOTS)
     throttle = throttle or DEFAULT_THROTTLE
     try:
-        if not robots.allowed(url):
-            return _failed(url, "disallowed by robots.txt")
         current = url
         for _ in range(MAX_REDIRECTS + 1):
+            # robots.txt is per origin, so every hop is checked against the origin it is about to contact
+            if not robots.allowed(current):
+                return _failed(url, "disallowed by robots.txt", final_url=current)
             try:
                 opened = _get_checked(http, current, resolver=resolver, throttle=throttle, timeout=timeout)
             except UnsafeURL as exc:   # a redirect hop to a forbidden address is refused, not followed
