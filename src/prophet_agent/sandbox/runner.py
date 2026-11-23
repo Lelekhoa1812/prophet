@@ -97,8 +97,23 @@ def _hook(event, args):
     elif event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork",
                    "_posixsubprocess.fork_exec"):
         raise PermissionError("starting processes is blocked in the sandbox")
-    elif event in ("socket.connect", "socket.bind", "socket.sendto"):
+    elif event in ("socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg", "socket.getaddrinfo",
+                   "socket.gethostbyname", "socket.gethostbyname_ex", "socket.gethostbyaddr", "socket.getnameinfo"):
+        # Name lookups are refused too: a lookup of "<data>.example.com" hands the data to a DNS server (round 6l, item 3).
         raise PermissionError("network access is blocked in the sandbox")
+    elif event == "sqlite3.connect":
+        # SQLite opens files itself, so the open() check above never sees them: a database outside the run folder could
+        # be created or read. A database must be in the run folder; URIs and other locations are refused (round 6l, item 3).
+        db = args[0] if args else ""
+        if isinstance(db, os.PathLike):
+            db = os.fspath(db)
+        if isinstance(db, bytes):
+            db = os.fsdecode(db)
+        if isinstance(db, str) and db not in ("", ":memory:"):
+            if db.startswith("file:"):
+                raise PermissionError("database URIs are blocked in the sandbox")
+            if not _under(os.path.realpath(db), WD):
+                raise PermissionError("opening a database outside the run folder is blocked: " + os.path.basename(db))
 sys.addaudithook(_hook)
 # A relative path given with dir_fd is resolved against the folder the descriptor opens, not the working directory. The hook
 # above checks the relative name, so os.remove("f.txt", dir_fd=fd) with fd on a folder outside the run deleted that file
