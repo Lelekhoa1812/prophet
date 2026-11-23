@@ -869,12 +869,16 @@ class NimClient:
         parts: list[str] = []
         live = opts.schema is None and not opts.tools        # release text as it arrives only when nothing is buffered
         body = build_body(model, messages, opts, shape, self.provider)
+        remaining = max(0.1, deadline - self.clock())
+        # The read limit is the smaller of the silence limit and what the budget has left. When the budget is the smaller,
+        # a read cut short says nothing about the model or the key, so it must not be penalised (NIM.md 4.2).
+        budget_bound = remaining < (self.provider.silence_s or STREAM_IDLE_S)
         try:
             with self.http.stream("POST", "/chat/completions",
                                   headers={"authorization": f"Bearer {key}", "accept": "text/event-stream",
                                           **dict(self.provider.extra_headers)},
                                   json=body,
-                                  timeout=_timeout(max(0.1, deadline - self.clock()), self.provider.silence_s)) as r:
+                                  timeout=_timeout(remaining, self.provider.silence_s)) as r:
                 status = r.status_code
                 if status >= 400:
                     raw = r.read().decode("utf-8", "replace")
@@ -929,6 +933,8 @@ class NimClient:
         except httpx.ReadTimeout as exc:
             if emitted:
                 return _Outcome("cut", f"{model}: stream interrupted ({type(exc).__name__})", partial="".join(parts))
+            if budget_bound:
+                return _Outcome("budget", f"{model}: budget spent while reading")
             if self.provider.silence_s:
                 # Silence is a slow or hung model, not a bad key: rotating keys on the same model would repeat the wait.
                 self._demote(model, SILENCE_DEMOTE_S)
