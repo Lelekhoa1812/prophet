@@ -42,6 +42,7 @@ READ_RULE = ("Reading rule: open files with pl.load(path, sheet), which returns 
 BLANK_RULE = ("Blank rule (applies to every question): a blank cell is missing, not zero. Leave blanks out of averages "
               "and counts of values, do not count them as zeros in totals, and say how many were left out.")
 CARD_CHARS = 3200            # per source
+ISSUE_CHARS = 300            # one issue or layout hint, as stored on the card
 CONTEXT_CHARS = 14000        # whole notebook context
 RECENT_TURNS = 6
 MAX_COLUMNS = 200
@@ -81,16 +82,22 @@ def make_card(profile: dict) -> dict:
         sheets.append({
             "sheet": sh.get("name"), "rows": sh.get("rows", 0), "read_as": _read_as(read),
             "header_row": read.get("header_row"), "columns": [_col_line(c) for c in sh.get("columns", [])[:40]],
-            "columns_omitted": sh.get("columns_omitted", 0), "issues": sh.get("issues", [])[:6],
-            "layout_hints": sh.get("layout_hints", [])[:3],
+            "columns_omitted": sh.get("columns_omitted", 0),
+            "issues": [str(i)[:ISSUE_CHARS] for i in sh.get("issues", [])[:6]],
+            "layout_hints": [str(h)[:ISSUE_CHARS] for h in sh.get("layout_hints", [])[:3]],
         })
     card: dict[str, Any] = {"sheets": sheets}
     for k in ("hidden_sheets", "sheets_not_profiled"):
         if profile.get(k):
             card[k] = profile[k]
-    while len(json.dumps(card)) > CARD_CHARS and any(s["columns"] for s in sheets):
-        widest = max(sheets, key=lambda s: len(s["columns"]))
-        cut = max(1, len(widest["columns"]) // 2)
+    # Halve the widest sheet that has more than one column until the card fits. Every step removes at least one column,
+    # and a sheet keeps its first column, so the loop always ends.
+    while len(json.dumps(card)) > CARD_CHARS:
+        wide = [s for s in sheets if len(s["columns"]) > 1]
+        if not wide:
+            break
+        widest = max(wide, key=lambda s: len(s["columns"]))
+        cut = len(widest["columns"]) // 2
         widest["columns_omitted"] += len(widest["columns"]) - cut
         widest["columns"] = widest["columns"][:cut]
     return card
@@ -109,7 +116,7 @@ class Notebooks:
         nid, now = uuid.uuid4().hex, time.time()
         with self.store._tx() as c:
             c.execute("INSERT INTO notebooks (id, title, created, updated) VALUES (?,?,?,?)",
-                      (nid, (title or "New notebook").strip()[:120], now, now))
+                      (nid, (title or "").strip()[:120] or "New notebook", now, now))
         return self.get(nid)
 
     def _row(self, nid: str):
