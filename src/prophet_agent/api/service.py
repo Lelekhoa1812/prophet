@@ -654,14 +654,18 @@ class MissionService:
             return False
 
     def archive(self, mission_id: str, archived: bool = True) -> None:
-        """Hide a finished quick forecast from the sidebar. Nothing is deleted; a running one cannot be hidden."""
-        with self.store.lock:
-            row = self.store.conn.execute("SELECT status FROM missions WHERE id=? AND notebook_id IS NULL", (mission_id,)).fetchone()
+        """Hide a finished quick forecast from the sidebar. Nothing is deleted; a running one cannot be hidden. As cancel
+        does, a live lease held by a runtime refuses the change even when the status is final (the runtime is still writing)."""
+        with self.store._tx() as c:
+            row = c.execute("SELECT status, lease_owner, lease_until FROM missions WHERE id=? AND notebook_id IS NULL",
+                            (mission_id,)).fetchone()
             if row is None:
                 raise KeyError(mission_id)
             if row["status"] in ("created", "running", "waiting_user"):
                 raise ValueError("this forecast is still running; stop it first")
-            self.store.conn.execute("UPDATE missions SET archived=? WHERE id=?", (1 if archived else 0, mission_id))
+            if row["lease_owner"] is not None and row["lease_until"] > time.time():
+                raise ValueError("this forecast is still running; stop it first")
+            c.execute("UPDATE missions SET archived=? WHERE id=?", (1 if archived else 0, mission_id))
 
     def list(self, limit: int = 20) -> list[dict]:
         with self.store.lock:
