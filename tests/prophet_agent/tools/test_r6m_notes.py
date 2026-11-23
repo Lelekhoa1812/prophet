@@ -71,6 +71,23 @@ def test_a_write_may_still_replace_a_long_note_up_to_the_limit():
     assert len(store.notes[("main", "log")]) == MAX_NOTE
 
 
+def test_writing_the_same_text_again_is_reported_as_unchanged():
+    store, tool = _tool()
+    first = tool.fn({"action": "write", "name": "plan", "text": "Use the 80 percent band"}, "k1")
+    again = tool.fn({"action": "write", "name": "plan", "text": "Use the 80 percent band"}, "k2")
+    assert "unchanged" not in first
+    assert again.get("unchanged") is True
+    assert store.notes[("main", "plan")] == "Use the 80 percent band"
+
+
+def test_a_write_with_new_text_is_not_reported_as_unchanged():
+    store, tool = _tool()
+    tool.fn({"action": "write", "name": "plan", "text": "first"}, "k1")
+    out = tool.fn({"action": "write", "name": "plan", "text": "second"}, "k2")
+    assert "unchanged" not in out
+    assert store.notes[("main", "plan")] == "second"
+
+
 def test_a_misspelt_action_is_named_as_the_problem():
     _, tool = _tool()
     with pytest.raises(ValueError, match="action must be one of"):
