@@ -27,3 +27,13 @@ def test_impossible_dates_do_not_become_events():
                 "passages": [{"text": "The release is set for 31 February 2026. The next one is 10 March 2026."}]}]
     events = dated_events(sources)
     assert [e["date"] for e in events] == ["2026-03-10"]
+
+
+def test_long_digit_runs_are_checked_without_raising():
+    long_number = "1" + "2" * 5000
+    missing = verify_figures(f"The reserve was {long_number} barrels.", [{"text": "The reserve was reported."}])
+    assert missing == [long_number]
+
+
+def test_a_figure_in_the_evidence_is_not_reported():
+    assert verify_figures("Brent averaged 78.5 dollars.", [{"text": "Brent averaged 78.50 dollars in October."}]) == []

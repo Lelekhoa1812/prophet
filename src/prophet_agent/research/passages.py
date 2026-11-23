@@ -197,7 +197,10 @@ def _checkable(token: str) -> bool:
     """Years 1900 to 2100 and whole numbers under 10 are left out: they are dates and counts, not claims to check."""
     if "." in token or "," in token:
         return True
-    value = int(token)
+    digits = token.lstrip("0")
+    if len(digits) > 4:   # at least 10000: never a year or a small count, and too long for int() to be safe
+        return True
+    value = int(digits or "0")
     return not (1900 <= value <= 2100 or value < 10)
 
 
