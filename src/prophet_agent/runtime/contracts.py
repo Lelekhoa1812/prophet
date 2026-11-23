@@ -1361,6 +1361,11 @@ LEVEL_MEASURE = re.compile(r"price|spot|\brate\b|_rate|pm2|pm10|pm_|concentratio
 FLOW_MEASURE = re.compile(r"_sum\b|\bsum\b|total|sales|revenue|units|count|volume|kwh|orders|demand|quantity|qty", re.I)
 
 
+def is_level_name(text: str) -> bool:
+    """True when a measure's name reads as a level (a price, rate, concentration), and not as a flow that sums over time."""
+    return bool(LEVEL_MEASURE.search(text or "")) and not FLOW_MEASURE.search(text or "")
+
+
 def measure_is_level(history) -> bool:
     """True when the forecast measure is a level whose total over the horizon means nothing (live WTI rep9: "80% range for the
     20-day total is $1,644-$1,987" of an oil price; Beijing: a 14-day panel total of PM2.5 concentrations, 12,222 ug/m3). A
@@ -1379,8 +1384,7 @@ def measure_is_level(history) -> bool:
                     names.append(str(col.get("name")))
                 elif isinstance(col, str) and ": number" in col:
                     names.append(col.split(":", 1)[0])
-    text = " ".join(names)
-    return bool(LEVEL_MEASURE.search(text)) and not FLOW_MEASURE.search(text)
+    return is_level_name(" ".join(names))
 
 
 PANEL_VERDICTS_LISTED = 20     # up to this many series get one line each; beyond it, counts and the exceptions
@@ -1470,6 +1474,38 @@ def check_panel_centre(history) -> dict | None:
                   f"the panel pack draws {rule} for every series, but panel_backtest scored it {overall[scored]:.3g} overall "
                   f"against {overall[best]:.3g} for {best}, {pct:.0f}% worse; rebuild the pack with centre "
                   f"'{ {'blend': 'global_blend'}.get(best, best) }', or set rules per series from the per-entity scores")
+
+
+GLOBAL_RULES = ("global_gbm", "global_blend")
+# A sentence that says which rule is the centre line, as opposed to ranking the methods ("TimesFM wins on 21 clients, global_gbm on 17").
+_CENTRE_CLAIM = re.compile(r"centre|center|\bpack\b|delivered|\bdraws?\b|\bassigns?\b|forecast (?:uses|used|was|is)\b", re.I)
+
+
+def _centre_named_wrong(text: str, obs: list) -> dict | None:
+    """The answer says the centre line is one global rule while the newest panel pack drew the other for every series. Blocks.
+
+    Live electricity 29acb1c0 (2026-11-23): the last forecast_report drew global_blend for all 60 clients, but a ledger written
+    earlier said global_gbm, and the answer stated "the panel pack assigns global_gbm as the centre for every client". The
+    check reads the pack's own rules; a sentence that names both rules, or negates the claim, is not read as a claim."""
+    pack = next(((h, r) for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict) and r.get("n_series")),
+                None)
+    if pack is None:
+        return None
+    rules = set(_panel_rules(*pack))
+    if len(rules) != 1 or next(iter(rules)) not in GLOBAL_RULES:
+        return None
+    drawn = next(iter(rules))
+    for unit in grounding.sentences(text):
+        low = unit.lower()
+        named = [r for r in GLOBAL_RULES if r in low]
+        if not named or drawn in named or not _CENTRE_CLAIM.search(low):
+            continue
+        if re.search(r"\bnot\b|\bnor\b|rather than|instead of|requested", low):
+            continue
+        return _check("answer_centre_named_right", False,
+                      f"the answer says the centre is {named[0]} ({unit.strip()[:160]}), but the newest forecast pack draws "
+                      f"{drawn} for every series; name {drawn}, and take the other rule out")
+    return None
 
 
 def panel_sentence(history) -> str:
@@ -1904,4 +1940,6 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                              "run the treatment, or take the claim out", "warn"))
     if (blend := _blend_misdescribed(text, obs)) is not None:
         checks.append(blend)
+    if (centre := _centre_named_wrong(text, obs)) is not None:
+        checks.append(centre)
     return checks

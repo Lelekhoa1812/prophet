@@ -13,6 +13,7 @@ from typing import Any
 from prophet_agent.artifacts import MAX_PANEL, build_forecast_pack, build_panel_pack
 from prophet_agent.forecast.combine import equal_blend
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP
+from prophet_agent.runtime.contracts import is_level_name
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, run_dates, source_covariates
 from prophet_agent.tools.timesfm_tool import _run as timesfm_run
@@ -493,7 +494,9 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
         "run_id": pack.run_id,
         "manifest": f"{pack.workdir}/manifest.json",
         "files": [{"path": o.path, "sha256": o.sha256, "bytes": o.bytes} for o in pack.outputs],
-        "panel_total": _panel_total(out_fc, horizon, withheld),
+        # A level (PM2.5, a price) has no total over series or days: the pack withholds it at source, as the contracts do for
+        # the answer. Live Beijing d861b74e (2026-11-23): the planner took this total, 12,222, and wrote 873 as a daily average.
+        "panel_total": None if is_level_name(title) else _panel_total(out_fc, horizon, withheld),
     }
 
 
