@@ -26,8 +26,9 @@ from prophet_agent.research.netguard import Resolver, UnsafeURL, open_pinned, re
 USER_AGENT = "ProphetOpenData/1.0"
 DEFAULT_MAX_BYTES = 25 * 1024 * 1024
 TEXT_TYPES = ("text/csv", "text/plain", "application/json")
-# Generic and SDMX CSV types are accepted only when the body parses as CSV or JSON.
-SNIFF_TYPES = ("application/octet-stream", "application/vnd.sdmx.data+csv")
+# A generic binary type is accepted only when the body parses as CSV or JSON. The ECB SDMX csvdata endpoint was checked
+# live on 2026-11-24 and answers text/csv, so no SDMX-specific type is listed.
+SNIFF_TYPES = ("application/octet-stream",)
 
 
 class DownloadError(ValueError):

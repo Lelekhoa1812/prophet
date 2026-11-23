@@ -66,6 +66,13 @@ def test_octet_stream_is_accepted_when_the_body_parses_as_csv(serve):
     assert got["content_type"] == "application/octet-stream" and got["bytes"] == CSV_BYTES
 
 
+def test_an_sdmx_specific_type_is_not_on_the_list_since_the_live_endpoint_sends_text_csv(serve):
+    # Checked live 2026-11-24: the ECB csvdata endpoint answers text/csv, so the unverified SDMX type is refused.
+    serve(lambda request: ok(CSV_BYTES, content_type="application/vnd.sdmx.data+csv"))
+    with pytest.raises(fetch.DownloadError):
+        fetch.download(API, resolver=public_resolver)
+
+
 def test_octet_stream_is_accepted_when_the_body_parses_as_json(serve):
     serve(lambda request: ok(JSON_BYTES, content_type="application/octet-stream"))
     assert fetch.download(API, resolver=public_resolver)["bytes"] == JSON_BYTES
