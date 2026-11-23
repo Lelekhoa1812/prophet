@@ -94,6 +94,11 @@ def observe(result: dict) -> dict:
         out["stdout_note"] = (f"{len(result['stdout'])} characters printed; the middle is cut. Do not re-run this cell to see "
                               "it: save the figures to a file under out/ (csv or json) and print only the lines the next "
                               "decision needs, one per entity")
+    if result["ok"] and not result["stdout"].strip() and not result["outputs"]:
+        # Live Beijing 0137871e (2026-11-23): two silent cells with the same code gave the planner nothing to act on, and the
+        # run stopped as a stall. Say so, and say what to do instead of running the cell again.
+        out["note"] = ("the cell printed nothing and wrote no file, so it gave you nothing to act on: print the figures the next "
+                       "decision needs, or save them under out/, in the next cell")
     if result.get("carried_as"):
         out["carried_as"] = result["carried_as"]      # where a file with a repeated name was mounted
     if result["stderr"]:

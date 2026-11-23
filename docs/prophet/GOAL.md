@@ -725,3 +725,19 @@ Round 6f (build b68ae46) ran Beijing and electricity together, then retail busin
   first-step point but no first-step band, so the answer's day-1 and day-14 bands were not the stored ones (Aotizhongxin
   day-1 band written 8.8 to 131.2; stored 4.5 to 114.2). Fixed in this commit: the view now gives q10_step_1 and q90_step_1.
   The answer also gave a 14-day average per station and no per-station total, which is the level fix working.
+
+### Round 6h: Beijing rerun on cf1f0cc (measured, 2026-11-23)
+
+| Scenario | Mission | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|
+| Beijing panel | 0137871e | partial | partial_unverified | 4,242 | 103 |
+
+The answer was written: a 14-day table per station with the centre line and an 80 % range for each day, and no station total.
+The run still stopped as a stall, "the analysis kept repeating the same step". After the forecast, the planner read pages 1 to 8
+of step 21's observation, read pages 2 to 8 again, and then ran two sandbox cells with the same code that printed nothing and
+wrote no file. The stall rule saw two identical outcomes and stopped. Fixed in this commit: a cell that prints nothing and
+writes no file now carries a note that says so and asks for the figures to be printed or saved in the next cell.
+
+Not yet checked against the stored tables: the per-day figures in this answer differ from the 6g answer for Aotizhongxin
+(day 1 52 against 40.7), so one of the two runs used a different forecast. Needs a look before any figure from Beijing is
+treated as verified.
