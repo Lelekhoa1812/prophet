@@ -733,6 +733,10 @@ class NimClient:
                     next(gen)
                 except StopIteration as stop:
                     out = stop.value
+        except NimError as exc:
+            # A stream that ends with no answer after text began raises inside _attempt. The check reports it as failed:
+            # verify_models must get one row per model and reach the next one (T4).
+            return {"model": model, "status": "failed", "http_status": None, "error": redact(str(exc), limit=200)}
         finally:
             self._release(key)
         if out is not None and out.kind == "ok" and out.reply is not None:
