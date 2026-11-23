@@ -44,24 +44,32 @@ LIB_DIR = Path(__file__).parent
 MAX_STREAM_CHARS = 20_000
 
 _BOOT = r"""
-import os, runpy, sys
+import os, runpy, sys, unicodedata
 WD = os.path.realpath(sys.argv[1])
 TARGET = sys.argv[2]
 ROOT = os.path.realpath(sys.argv[3]) if sys.argv[3] else ""
 REAL_HOME = os.path.realpath(sys.argv[4]) if sys.argv[4] else ""
 _WRITE = ("w", "a", "x", "+")
-IN = os.path.join(WD, "in") + os.sep
+WD_IN = os.path.join(WD, "in")
 _PREFIXES = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix) if p}
 # Mutating calls that change the file system. Each entry lists which argument positions are paths that must stay inside.
 _MUTATE = {"os.remove": (0,), "os.rmdir": (0,), "os.mkdir": (0,), "os.chmod": (0,), "os.truncate": (0,),
            "os.utime": (0,), "os.chown": (0,), "os.rename": (0, 1), "os.replace": (0, 1), "os.link": (0, 1),
            "os.symlink": (1,)}
+def _fold(p):
+    # macOS and Windows file systems ignore case, and realpath keeps the case the caller typed. Without folding, /Users/LIAMLE
+    # or in/ written as IN/ got past the prefix checks (round 6l, audit item 2: probed, the project file was read and in/ was
+    # overwritten). Folding is applied only where the file system ignores case; the file is opened under its real name.
+    if sys.platform in ("darwin", "win32"):
+        return unicodedata.normalize("NFD", p).casefold()
+    return p
 def _under(p, base):
+    p, base = _fold(p), _fold(base)
     return p == base or p.startswith(base + os.sep)
 def _inside(p):
     rp = os.path.realpath(p)
     # The run folder is writable except in/, which holds the person's files and is read-only to the program.
-    return _under(rp, WD) and not (rp + os.sep).startswith(IN)
+    return _under(rp, WD) and not _under(rp, WD_IN)
 def _readable(p):
     # Reads are allowed in the run folder, in the Python installation, and anywhere outside the project and the home
     # folder. The project holds the API keys (.env) and the notebooks; the home folder holds credentials.
