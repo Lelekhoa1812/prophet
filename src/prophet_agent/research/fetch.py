@@ -83,6 +83,12 @@ def _media_and_charset(content_type: str) -> tuple[str, str | None]:
     return media, (match.group(1) if match else None)
 
 
+def _is_wide_text(body: bytes, charset: str | None) -> bool:
+    """UTF-16 and UTF-32 text has NUL bytes by design; it is text when declared or marked by a byte order mark."""
+    declared = (charset or "").lower().replace("_", "-")
+    return declared.startswith(("utf-16", "utf-32")) or body[:2] in (b"\xff\xfe", b"\xfe\xff")
+
+
 def _decode(body: bytes, charset: str | None) -> str:
     for name in (charset, "utf-8"):
         if not name:
@@ -274,7 +280,7 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
 def _read_response(url: str, final_url: str, response: httpx.Response, *, max_bytes: int, use_cache: bool,
                    path, deadline: float | None = None, total_seconds: float = TOTAL_SECONDS) -> Page:
     status = response.status_code
-    if status >= 400:
+    if status >= 300:   # a redirect with a location was followed by the caller; anything else is not content
         return _failed(url, f"HTTP {status}", final_url=final_url, status=status)
     media, charset = _media_and_charset(response.headers.get("content-type", ""))
     if media == "application/pdf":
@@ -289,6 +295,12 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
         notes.append(f"response cut at {max_bytes} bytes")
     elif stopped == "time":
         notes.append(f"response stopped after {total_seconds:g} seconds")
+    if body.startswith(b"%PDF-"):
+        return _failed(url, "PDF files are not read; look for the HTML version or a text source",
+                       final_url=final_url, status=status)
+    if b"\x00" in body[:4096] and not _is_wide_text(body, charset):
+        return _failed(url, "the body is binary, not text; only HTML, plain text and JSON are read",
+                       final_url=final_url, status=status)
     decoded = _decode(body, charset)
     text, title, extracted, method = extract(decoded, media or "text/html")
     if method == "bs4":
