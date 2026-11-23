@@ -203,6 +203,15 @@ class Runtime:
         self.lease_s: float = 300.0
 
     def run(self, mission_id: str, program: Callable[[Ctx], Any], *, lease_s: float = 300.0) -> dict:
+        # A takeover can be detected by any write, including the ones after the program (the answer, the final status) and
+        # the handlers below. Each of those would escape run() unless it is caught here, so a lost lease always ends as
+        # lease_lost: this runtime writes nothing more and the new owner decides (store._fence).
+        try:
+            return self._run(mission_id, program, lease_s=lease_s)
+        except LeaseLost:
+            return {"status": "lease_lost"}
+
+    def _run(self, mission_id: str, program: Callable[[Ctx], Any], *, lease_s: float = 300.0) -> dict:
         mission = self.store.mission(mission_id)
         self.budget = dict(mission["budget"])
         self.budget.setdefault("max_delegated_calls", DELEGATED_CALLS)

@@ -191,6 +191,8 @@ class Store:
         self.conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        # Leases this process holds, by mission: the owner each mission's writes must still match (see _fence).
+        self._owned: dict[str, str] = {}
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -293,6 +295,7 @@ class Store:
 
     def close_open_questions(self, mission_id: str) -> None:
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("UPDATE questions SET status='cancelled' WHERE mission_id=? AND status='open'", (mission_id,))
 
     def mission(self, mission_id: str) -> dict:
@@ -307,18 +310,42 @@ class Store:
 
     def set_status(self, mission_id: str, status: str) -> None:
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("UPDATE missions SET status=?, updated=? WHERE id=?", (status, time.time(), mission_id))
         self.append_event(mission_id, "mission.status", {"status": status})
 
     def set_budget(self, mission_id: str, budget: dict) -> None:
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("UPDATE missions SET budget_json=?, updated=? WHERE id=?",
                       (canonical(budget), time.time(), mission_id))
 
     def set_answer(self, mission_id: str, answer: Any) -> None:
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("UPDATE missions SET answer_json=?, updated=? WHERE id=?",
                       (canonical(answer), time.time(), mission_id))
+
+    def _fence(self, c: sqlite3.Connection, mission_id: str) -> None:
+        """Refuse a write to a mission this process leased when the lease now belongs to someone else.
+
+        Motivation (audit: runtime store.py:409-437, HIGH): writes did not check the lease owner, so a runtime whose lease
+        had been taken over kept writing events, steps and tool results beside the new owner.
+        Logic: only for a mission this process holds (``_owned``). The owner is read in the same transaction as the write,
+        so a takeover cannot slip between the check and the write. Writes from elsewhere (the service, a cancel) are unchanged.
+        """
+        owner = self._owned.get(mission_id)
+        if owner is None:
+            return
+        row = c.execute("SELECT lease_owner FROM missions WHERE id=?", (mission_id,)).fetchone()
+        if row is None or row["lease_owner"] != owner:
+            raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
+
+    def _fence_key(self, c: sqlite3.Connection, key: str) -> None:
+        """The fence for a write keyed by a tool call: the mission is the one the call belongs to."""
+        row = c.execute("SELECT mission_id FROM tool_calls WHERE idem_key=?", (key,)).fetchone()
+        if row is not None:
+            self._fence(c, row["mission_id"])
 
     def acquire_lease(self, mission_id: str, owner: str, ttl_s: float) -> None:
         now = time.time()
@@ -329,6 +356,7 @@ class Store:
                 (owner, now + ttl_s, mission_id, owner, now))
             if cur.rowcount != 1:
                 raise LeaseHeld(f"mission {mission_id} is leased by another runtime")
+        self._owned[mission_id] = owner
 
     def renew_lease(self, mission_id: str, owner: str, ttl_s: float) -> None:
         """Extend the lease. Raises LeaseLost when this runtime no longer holds it (it expired and another runtime
@@ -353,6 +381,8 @@ class Store:
                 c.execute("UPDATE missions SET status='interrupted', lease_owner=NULL, lease_until=0, updated=? "
                           "WHERE id=?", (now, mid))
         for mid in ids:
+            self._owned.pop(mid, None)      # the lease lapsed, so this process no longer holds it (see _fence)
+        for mid in ids:
             self.append_event(mid, "mission.status", {"status": "interrupted",
                                                       "reason": "the runtime stopped before this mission finished"})
         return ids
@@ -361,11 +391,14 @@ class Store:
         with self._tx() as c:
             c.execute("UPDATE missions SET lease_owner=NULL, lease_until=0 WHERE id=? AND lease_owner=?",
                       (mission_id, owner))
+        if self._owned.get(mission_id) == owner:
+            del self._owned[mission_id]
 
     # -- event log ---------------------------------------------------------------------------------------------
 
     def append_event(self, mission_id: str, kind: str, payload: dict) -> int:
         with self._tx() as c:
+            self._fence(c, mission_id)
             cur = c.execute("INSERT INTO events (mission_id, kind, payload_json, ts) VALUES (?,?,?,?)",
                             (mission_id, kind, canonical(payload), time.time()))
             return int(cur.lastrowid)
@@ -408,6 +441,7 @@ class Store:
 
     def finish_step(self, mission_id: str, idx: int, name: str, output: Any) -> None:
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("INSERT INTO steps (mission_id, idx, name, status, output_json, attempts, updated) "
                       "VALUES (?,?,?,?,?,?,?) ON CONFLICT(mission_id, idx) DO UPDATE SET "
                       "status='done', output_json=excluded.output_json, updated=excluded.updated",
@@ -427,12 +461,14 @@ class Store:
         """Record that a call is starting. Never downgrades a call that already has a result (DO NOTHING on conflict).
         ``lane`` is "lead" for the lead agent's call and "delegated" for a sub-agent's (each has its own allowance)."""
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("INSERT INTO tool_calls (idem_key, mission_id, step_idx, tool, args_json, status, updated, lane) "
                       "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(idem_key) DO NOTHING",
                       (key, mission_id, step_idx, tool, canonical(args), "started", time.time(), lane))
 
     def tool_set(self, key: str, status: str, result: Any = None, error: str | None = None) -> None:
         with self._tx() as c:
+            self._fence_key(c, key)
             c.execute("UPDATE tool_calls SET status=?, result_json=?, error=?, updated=? WHERE idem_key=?",
                       (status, canonical(result) if result is not None else None, error, time.time(), key))
 
@@ -455,6 +491,7 @@ class Store:
     def note_put(self, mission_id: str, scope: str, name: str, text: str, append: bool = False) -> int:
         """Write a note (or append to it). Returns the note's length in characters."""
         with self._tx() as c:
+            self._fence(c, mission_id)
             row = c.execute("SELECT text FROM agent_notes WHERE mission_id=? AND scope=? AND name=?",
                             (mission_id, scope, name)).fetchone()
             body = (row["text"] + "\n" + text) if (append and row) else text
@@ -533,6 +570,7 @@ class Store:
     def open_question(self, mission_id: str, tool_key: str, payload: dict) -> str:
         qid = uuid.uuid4().hex
         with self._tx() as c:
+            self._fence(c, mission_id)
             c.execute("INSERT INTO questions (id, mission_id, tool_key, payload_json, status, created) "
                       "VALUES (?,?,?,?,?,?)", (qid, mission_id, tool_key, canonical(payload), "open", time.time()))
         return qid
@@ -561,6 +599,7 @@ class Store:
                 raise KeyError(f"no question {question_id}")
             if row["status"] != "open":
                 raise ValueError("question already answered")
+            self._fence(c, row["mission_id"])
             c.execute("UPDATE questions SET status='answered', answers_json=?, answered=? WHERE id=?",
                       (canonical(answers), time.time(), question_id))
             c.execute("UPDATE tool_calls SET status='done', result_json=?, updated=? WHERE idem_key=?",
