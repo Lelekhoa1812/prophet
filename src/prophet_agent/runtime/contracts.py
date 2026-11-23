@@ -1519,20 +1519,52 @@ _BAND_HEAD = re.compile(r"\bq\s*\d|\d\s*%|\bband|\brange\b|\blow|\bhigh|\blower\
 _NUMBER_TOKEN = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
 
+_SEP_ROW = re.compile(r"\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?")
+
+
+def _row_cells(line: str) -> list[str]:
+    """A table row's cells, with or without its outer pipes ("| a | b |" and "a | b" are both two cells)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return s.split("|")
+
+
+def _table_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    """(start, stop) of each markdown table in the lines.
+
+    A run of pipe-bounded lines is a table, as before. Audit round 6m: a run with a separator row is a table too, even without
+    outer pipes ("Station | Day 1" over "--- | ---"); its header is the line above the separator, so a pipe in the prose above
+    does not join it."""
+    out, i = [], 0
+    while i < len(lines):
+        if "|" not in lines[i] or not lines[i].strip():
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and "|" in lines[j] and lines[j].strip():
+            j += 1
+        block = lines[i:j]
+        if all(_is_table_line(l) for l in block):
+            out.append((i, j))
+        else:
+            seps = [k for k, l in enumerate(block) if _SEP_ROW.fullmatch(l.strip())]
+            if seps:
+                out.append((i + max(seps[0] - 1, 0), j))
+        i = j
+    return out
+
+
 def _tables(text: str) -> list[list[list[str]]]:
     """The markdown tables in a text, each as its rows of cells, separator rows dropped."""
-    tables, cur = [], []
-    for line in list(text.splitlines()) + [""]:
-        s = line.strip()
-        if s.startswith("|") and s.endswith("|") and len(s) > 1:
-            cur.append(s)
-            continue
-        if cur:
-            rows = [[c.strip() for c in r[1:-1].split("|")] for r in cur]
-            rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r if c)]
-            if rows:
-                tables.append(rows)
-            cur = []
+    lines, tables = text.splitlines(), []
+    for start, stop in _table_blocks(lines):
+        rows = [[c.strip() for c in _row_cells(l)] for l in lines[start:stop]]
+        rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r if c)]
+        if rows:
+            tables.append(rows)
     return tables
 
 
@@ -1660,7 +1692,7 @@ def _restate(cell: str, values: list[float]) -> str:
 
 def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: list[tuple[str, str]]) -> None:
     """Corrects one markdown table's station day and average cells in place, recording each (old, new) cell."""
-    rows = [lines[k].strip().split("|")[1:-1] for k in range(start, stop)]
+    rows = [_row_cells(lines[k]) for k in range(start, stop)]
     day_cols, avg_col = _day_columns([c.strip() for c in rows[0]])
     if not day_cols and avg_col is None:
         return
@@ -1695,7 +1727,10 @@ def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: l
         if changed:
             line = lines[start + k]
             lead, trail = line[: len(line) - len(line.lstrip())], line[len(line.rstrip()):]
-            lines[start + k] = lead + "|" + "|".join(cells) + "|" + trail
+            s = line.strip()
+            body = "|".join(cells)
+            # The row keeps its own form: a row written without outer pipes is rewritten without them (audit round 6m).
+            lines[start + k] = lead + ("|" if s.startswith("|") else "") + body + ("|" if s.endswith("|") else "") + trail
 
 
 def snap_tables(text: str, obs: list) -> tuple[str, list[tuple[str, str]]]:
@@ -1712,16 +1747,8 @@ def snap_tables(text: str, obs: list) -> tuple[str, list[tuple[str, str]]]:
         return text, []
     lines = text.split("\n")
     fixed: list[tuple[str, str]] = []
-    i = 0
-    while i < len(lines):
-        if not _is_table_line(lines[i]):
-            i += 1
-            continue
-        j = i
-        while j < len(lines) and _is_table_line(lines[j]):
-            j += 1
-        _snap_block(lines, i, j, by_name, fixed)
-        i = j
+    for start, stop in _table_blocks(lines):
+        _snap_block(lines, start, stop, by_name, fixed)
     return "\n".join(lines), fixed
 
 
