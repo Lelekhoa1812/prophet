@@ -112,8 +112,16 @@ def _hook(event, args):
                 if not _inside(p):
                     raise PermissionError("changing files outside the run folder is blocked: " + os.path.basename(p))
     elif event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork",
-                   "_posixsubprocess.fork_exec"):
+                   "os.forkpty", "_posixsubprocess.fork_exec"):
+        # os.forkpty was missing (round 6m): it forks a child in a new session, outside the process group the timeout kills.
         raise PermissionError("starting processes is blocked in the sandbox")
+    elif event in ("os.kill", "os.killpg"):
+        # Signals reach any process of the same user, the parent included (round 6m). A program may signal itself and its
+        # own process group only.
+        target = args[0] if args else None
+        mine = os.getpgrp() if event == "os.killpg" else os.getpid()
+        if isinstance(target, int) and target not in (0, mine):
+            raise PermissionError("signalling other processes is blocked in the sandbox")
     elif event in ("socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg", "socket.getaddrinfo",
                    "socket.gethostbyname", "socket.gethostbyname_ex", "socket.gethostbyaddr", "socket.getnameinfo"):
         # Name lookups are refused too: a lookup of "<data>.example.com" hands the data to a DNS server (round 6l, item 3).
