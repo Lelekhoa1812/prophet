@@ -143,6 +143,14 @@ def _hook(event, args):
         # An SQLite extension is native code: loading one would be the same as calling C directly.
         if len(args) > 1 and args[1]:
             raise PermissionError("loading SQLite extensions is blocked in the sandbox")
+    elif event in ("ctypes.dlsym", "ctypes.dlsym/handle"):
+        # ctypes calls any C function it can name, and the calls themselves are not audited (round 6m: ctypes.CDLL(None)
+        # .system() ran a shell command). Names are looked up only in the process's own symbols, which ctypes needs on import.
+        raise PermissionError("looking up native functions by name is blocked in the sandbox")
+    elif event == "ctypes.dlopen":
+        # None is the process's own symbols (CDLL(None), and ctypes.pythonapi on import). Any named library is refused.
+        if args and args[0] is not None:
+            raise PermissionError("loading native libraries by name is blocked in the sandbox")
 sys.addaudithook(_hook)
 # A relative path given with dir_fd is resolved against the folder the descriptor opens, not the working directory. The hook
 # above checks the relative name, so os.remove("f.txt", dir_fd=fd) with fd on a folder outside the run deleted that file
