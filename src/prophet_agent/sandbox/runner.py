@@ -28,6 +28,7 @@ import signal
 import subprocess
 import shutil
 import sys
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -42,6 +43,10 @@ LIB_SOURCE = Path(__file__).with_name("prophet_lib.py")
 # Every prophet_*.py next to this file is importable in the sandbox (prophet_lib, prophet_stats, ...).
 LIB_DIR = Path(__file__).parent
 MAX_STREAM_CHARS = 20_000
+# Raw output kept per stream before redaction: the first and the last RAW_HALF_BYTES bytes. The middle is dropped, so a
+# program that prints gigabytes cannot exhaust the parent's memory (round 6l, audit item 5).
+RAW_HALF_BYTES = MAX_STREAM_CHARS * 2
+_CUT_WINDOW = 512
 
 _BOOT = r"""
 import os, runpy, sys, unicodedata
@@ -197,6 +202,7 @@ class SandboxResult:
     workdir: str = ""
     memory_limit_enforced: bool = False
     limits: dict = field(default_factory=dict)
+    output_truncated: bool = False     # true when output between the kept head and tail was dropped or clipped
 
     @property
     def ok(self) -> bool:
@@ -210,8 +216,9 @@ class SandboxResult:
 
 def _clip(text: str) -> str:
     """Head and tail. A traceback and a summary table print last, so keeping only the head drops the error the planner needs
-    (audit: a 31,581-character stderr lost its KeyError line)."""
-    text = redact(text, limit=MAX_STREAM_CHARS * 2)
+    (audit: a 31,581-character stderr lost its KeyError line). The whole text is redacted first: redact() cuts its result at
+    ``limit``, so a limit smaller than the text would drop the real end of long output (round 6l, audit item 4)."""
+    text = redact(text, limit=len(text) + 1)
     if len(text) <= MAX_STREAM_CHARS:
         return text
     half = MAX_STREAM_CHARS // 2
@@ -222,6 +229,64 @@ def _really_inside(path: Path, root: Path) -> bool:
     """True when the real location of ``path`` (symlinks followed) is ``root`` or lies under it."""
     real = os.path.realpath(path)
     return real == str(root) or real.startswith(str(root) + os.sep)
+
+
+def _cut_head(text: str) -> str:
+    """Drop the end of a kept head back to a whitespace, so a key that the middle cut through is not shown in part. API keys
+    contain no whitespace, so whatever follows the last space in the window belongs to the dropped middle."""
+    window = text[-_CUT_WINDOW:]
+    i = max(window.rfind(c) for c in " \t\r\n")
+    base = len(text) - len(window)
+    return text[: base + i + 1] if i >= 0 else text[:base]
+
+
+def _cut_tail(text: str) -> str:
+    """Drop the start of a kept tail up to its first whitespace: the rest of a key that began in the dropped middle."""
+    window = text[:_CUT_WINDOW]
+    found = [i for i in (window.find(c) for c in " \t\r\n") if i >= 0]
+    return text[min(found) + 1:] if found else text[len(window):]
+
+
+class _Capture:
+    """Keeps the first and the last RAW_HALF_BYTES of one output stream and counts the bytes dropped between them."""
+
+    def __init__(self) -> None:
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.dropped = 0
+
+    def feed(self, chunk: bytes) -> None:
+        room = RAW_HALF_BYTES - len(self.head)
+        if room > 0:
+            self.head += chunk[:room]
+            chunk = chunk[room:]
+        if chunk:
+            self.tail += chunk
+            extra = len(self.tail) - RAW_HALF_BYTES
+            if extra > 0:
+                self.dropped += extra
+                del self.tail[:extra]
+
+    def text(self) -> str:
+        head = bytes(self.head).decode("utf-8", "replace")
+        tail = bytes(self.tail).decode("utf-8", "replace")
+        if not self.dropped:
+            return head + tail
+        return (_cut_head(head) + f"\n...[{self.dropped} bytes dropped from the middle of the output]...\n"
+                + _cut_tail(tail))
+
+
+def _pump(stream, capture: _Capture) -> None:
+    """Read a child's pipe to its end, so the child never blocks on a full pipe, while keeping only what the capture holds."""
+    fd = stream.fileno()
+    while True:
+        try:
+            chunk = os.read(fd, 1 << 16)
+        except OSError:
+            break
+        if not chunk:
+            break
+        capture.feed(chunk)
 
 
 def _sha256(path: Path) -> str:
@@ -329,18 +394,23 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home())]
     proc = subprocess.Popen(cmd, cwd=str(wd), env=_scrubbed_env(home), stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, preexec_fn=_limits_preexec(timeout_s, mem_mb, file_mb))
+    out_cap, err_cap = _Capture(), _Capture()
+    readers = [threading.Thread(target=_pump, args=(proc.stdout, out_cap), daemon=True),
+               threading.Thread(target=_pump, args=(proc.stderr, err_cap), daemon=True)]
+    for reader in readers:
+        reader.start()
     timed_out = False
     try:
-        out_b, err_b = proc.communicate(timeout=timeout_s)
-        returncode = proc.returncode
+        returncode = proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        out_b, err_b = proc.communicate()
-        returncode = proc.returncode
+        returncode = proc.wait()
+    for reader in readers:
+        reader.join(timeout=10)
 
     outputs: list[OutputFile] = []
     out_root = wd / OUT_DIR
@@ -350,10 +420,13 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         # the run folder are listed (round 6l, audit item 1).
         if p.is_file() and _really_inside(p, wd):
             outputs.append(OutputFile(path=str(p.relative_to(wd)), sha256=_sha256(p), bytes=p.stat().st_size))
+    out_text, err_text = out_cap.text(), err_cap.text()
     result = SandboxResult(
         run_id=run_id, returncode=returncode, timed_out=timed_out,
-        stdout=_clip(out_b.decode("utf-8", "replace")), stderr=_clip(err_b.decode("utf-8", "replace")),
+        stdout=_clip(out_text), stderr=_clip(err_text),
         outputs=outputs, workdir=str(wd), memory_limit_enforced=memory_limit_enforced(), limits=limits,
+        output_truncated=bool(out_cap.dropped or err_cap.dropped or len(out_text) > MAX_STREAM_CHARS
+                              or len(err_text) > MAX_STREAM_CHARS),
     )
     (wd / "manifest.json").write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     return result
