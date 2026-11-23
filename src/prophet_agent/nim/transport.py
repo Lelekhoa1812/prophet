@@ -540,7 +540,11 @@ class NimClient:
                 chain = [m for m in chain if verdicts[m] is None]
                 if not chain:
                     raise Exhausted("token budget used up: " + "; ".join(reasons))
-        deadline = self.clock() + budget_s
+        call_started = self.clock()
+        deadline = call_started + budget_s
+        # Without a caller checkpoint nothing else can stop a call that keeps waiting, so it gets one hard end: the work
+        # budget plus RATE_WAIT_LIMIT_S. Every wait, including pacing sleeps inside key selection, is capped by it (T6b).
+        hard_end = float("inf") if checkpoint is not None else call_started + budget_s + RATE_WAIT_LIMIT_S
         opts = _Opts(thinking, max_tokens, schema, schema_name, [dict(t) for t in tools] if tools else None)
         last, last_invalid = "no attempt", False
         base = list(messages)
@@ -548,6 +552,8 @@ class NimClient:
         waited = 0.0                      # seconds spent waiting out rate limits and overloads, across passes
 
         while True:
+            if self.clock() >= hard_end:
+                break
             dispatched, waitable, dead = 0, False, set()
             for model in chain:
                 shape = _Shape("strict")
@@ -652,7 +658,7 @@ class NimClient:
             wait = self._rate_wait(chain)
             if wait is None:
                 break                                  # every key is rejected: the provider is depleted
-            wait = min(wait, ceiling - waited)
+            wait = min(wait, ceiling - waited, max(0.0, hard_end - self.clock()))
             log.warning("nim: rate limited or overloaded on every usable model; waiting %.0fs then trying again (%s)",
                         wait, last)
             if on_wait is not None:
@@ -663,10 +669,10 @@ class NimClient:
                     log.debug("on_wait failed", exc_info=True)
             waited += wait
             self._wait(wait, checkpoint)
-            deadline = max(deadline, self.clock() + budget_s)   # waiting for a rate limit does not spend the work budget
+            deadline = max(deadline, min(self.clock() + budget_s, hard_end))   # waiting does not spend the work budget
 
-        if checkpoint is None and waited >= RATE_WAIT_LIMIT_S:
-            message = f"nim-rate-limited: still refused after {waited:.0f}s of waiting; last: {last}"
+        if checkpoint is None and (waited >= RATE_WAIT_LIMIT_S or self.clock() >= hard_end):
+            message = f"nim-rate-limited: still refused after {self.clock() - call_started:.0f}s; last: {last}"
         else:
             message = f"nim-exhausted: {last}"
         if last_invalid:
