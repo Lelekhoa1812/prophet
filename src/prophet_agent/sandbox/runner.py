@@ -195,6 +195,12 @@ def _clip(text: str) -> str:
     return text[:half] + f"\n...[{len(text) - 2 * half} characters cut from the middle]...\n" + text[-half:]
 
 
+def _really_inside(path: Path, root: Path) -> bool:
+    """True when the real location of ``path`` (symlinks followed) is ``root`` or lies under it."""
+    real = os.path.realpath(path)
+    return real == str(root) or real.startswith(str(root) + os.sep)
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -316,7 +322,10 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     outputs: list[OutputFile] = []
     out_root = wd / OUT_DIR
     for p in sorted(out_root.rglob("*")):
-        if p.is_file():
+        # A symlink in out/ (or out/ itself, once replaced by a symlink) can point at a file outside the run. The program
+        # cannot write through it, but the manifest would hash and size that file, so only files that really lie inside
+        # the run folder are listed (round 6l, audit item 1).
+        if p.is_file() and _really_inside(p, wd):
             outputs.append(OutputFile(path=str(p.relative_to(wd)), sha256=_sha256(p), bytes=p.stat().st_size))
     result = SandboxResult(
         run_id=run_id, returncode=returncode, timed_out=timed_out,
