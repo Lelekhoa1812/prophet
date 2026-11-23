@@ -24,7 +24,7 @@
 
 - **Answers show their working.** Every answer keeps the steps, the code that ran and what it printed. Nothing is a bare number.
 - **Forecasts earn their place.** Each forecast is backtested against simple baselines on your own history, so you can see whether the model beats a naive guess.
-- **Runs on your machine.** The server listens on loopback only. Your files stay local; the only outbound calls are planner requests to NVIDIA NIM.
+- **Runs on your machine.** The server listens on loopback only, and your uploaded files stay local. Outbound calls go to the model provider you configure (NVIDIA NIM by default), to the web when the agent runs a search or fetches a page, and to Hugging Face to download the TimesFM 3 weights the first time they load.
 
 ## Real questions, real answers
 
