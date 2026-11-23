@@ -33,6 +33,8 @@ METADATA_ADDRESSES = {"169.254.169.254", "fd00:ec2::254", "100.100.100.200"}
 BLOCKED_HOSTNAMES = {"localhost", "metadata", "metadata.google.internal", "metadata.azure.internal"}
 BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa", ".lan")
 ROBOTS_MAX_BYTES = 500_000
+NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")        # RFC 6052 well-known prefix: IPv4 in the last 32 bits
+NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")   # RFC 8215 local-use NAT64: not a fixed mapping, never fetched
 
 Resolver = Callable[[str, int], list[str]]
 
@@ -57,14 +59,29 @@ def _default_resolver(host: str, port: int) -> list[str]:
     return [info[4][0] for info in infos]
 
 
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 address carries, for the mapped, NAT64 and IPv4-compatible forms. A NAT64 gateway or a
+    dual-stack host connects to that IPv4 address, so it is the address that must be checked."""
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    value = int(ip)
+    if ip in NAT64_PREFIX or 1 < value < 2 ** 32:   # ::a.b.c.d is IPv4-compatible; ::0 and ::1 are not
+        return ipaddress.IPv4Address(value & 0xFFFFFFFF)
+    return None
+
+
 def blocked_reason(address: str) -> str | None:
     """Why an address may not be contacted, or None when it is a public, globally routable address."""
     try:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
         return "malformed"
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in NAT64_LOCAL_USE:
+            return "non-public"
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None:
+            ip = embedded
     if str(ip) in METADATA_ADDRESSES:
         return "metadata"
     if ip.is_loopback:
