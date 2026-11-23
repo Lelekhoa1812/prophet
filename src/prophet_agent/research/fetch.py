@@ -41,7 +41,8 @@ ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "applicatio
 HTML_MEDIA = ("text/html", "application/xhtml+xml")
 REDIRECT_CODES = (301, 302, 303, 307, 308)
 HEADERS = {"User-Agent": USER_AGENT,
-           "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8"}
+           "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8",
+           "Accept-Encoding": "gzip, deflate"}   # only the codings read_capped decodes, so no brotli or zstd arrives
 _CHARSET = re.compile(r"charset=([\w.:-]+)", re.I)
 INDEX_PATH = re.compile(r"calendar|schedule|archive", re.I)
 INDEX_FILE = re.compile(r"^(index|default)\.[a-z]{3,4}$", re.I)
@@ -301,6 +302,9 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
                        final_url=final_url, status=status)
     body, stopped = read_capped(response, max_bytes, deadline)
     notes = []
+    if stopped == "encoding":
+        return _failed(url, "the body uses a content encoding this reader does not decode, or is damaged; "
+                            "only plain, gzip and deflate bodies are read", final_url=final_url, status=status)
     if stopped == "size":
         notes.append(f"response cut at {max_bytes} bytes")
     elif stopped == "time":

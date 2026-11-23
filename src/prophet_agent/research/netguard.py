@@ -19,6 +19,7 @@ import socket
 import threading
 import time
 import urllib.robotparser
+import zlib
 from collections.abc import Callable
 from typing import NamedTuple
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -251,19 +252,72 @@ def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, he
     raise failure
 
 
-def read_capped(response: httpx.Response, limit: int, deadline: float | None = None) -> tuple[bytes, str]:
-    """Read at most ``limit`` bytes of a streamed body, stopping early once the deadline (a time.monotonic value) has
-    passed. Returns (body, stop): stop is "" when the whole body was read, "size" when the byte cap cut it and "time"
-    when the deadline did."""
+READ_CODINGS = ("gzip", "x-gzip", "deflate")
+
+
+class _Inflater:
+    """Decodes a gzip or deflate body piece by piece. ``feed`` returns at most ``room`` decoded bytes, so the decoded size
+    is capped at the point of decoding and a decompression bomb is never expanded whole. A deflate body without the zlib
+    header (some servers send raw deflate) is read as raw deflate."""
+
+    def __init__(self, coding: str):
+        self._gzip = coding in ("gzip", "x-gzip")
+        self._raw_deflate_ok = not self._gzip
+        self._z = zlib.decompressobj(16 + zlib.MAX_WBITS if self._gzip else zlib.MAX_WBITS)
+        self._fed = False
+
+    def feed(self, data: bytes, room: int) -> bytes:
+        try:
+            out = self._z.decompress(data, room)
+        except zlib.error:
+            if self._fed or not self._raw_deflate_ok:
+                raise
+            self._raw_deflate_ok = False
+            self._z = zlib.decompressobj(-zlib.MAX_WBITS)
+            out = self._z.decompress(data, room)
+        self._fed = True
+        return out
+
+
+def _inflater_for(content_encoding: str) -> _Inflater | None:
+    """None for an identity body. Raises ValueError for a coding this reader does not decode (br, zstd, stacked codings)."""
+    codings = [c.strip().lower() for c in content_encoding.split(",") if c.strip() and c.strip() != "identity"]
+    if not codings:
+        return None
+    if len(codings) == 1 and codings[0] in READ_CODINGS:
+        return _Inflater(codings[0])
+    raise ValueError(content_encoding)
+
+
+def read_capped(response, limit: int, deadline: float | None = None) -> tuple[bytes, str]:
+    """Read at most ``limit`` decoded bytes of a streamed body, stopping early once the deadline (a time.monotonic value)
+    has passed. Returns (body, stop): stop is "" when the whole body was read, "size" when the byte cap cut it, "time"
+    when the deadline did, and "encoding" when the body uses a Content-Encoding other than gzip or deflate, or a compressed
+    body is damaged (the body is then empty). A gzip or deflate body is decoded while it is read, and each step produces
+    no more than the room left under the cap."""
+    if isinstance(response, httpx.Response) and not response.is_stream_consumed:
+        try:
+            inflater = _inflater_for(response.headers.get("content-encoding", ""))
+        except ValueError:
+            return b"", "encoding"
+        pieces = response.iter_raw()
+    else:   # a body httpx has already read (a mocked response, say) or a test double: httpx decodes it as before
+        inflater = None
+        pieces = response.iter_bytes()
     body = bytearray()
-    for chunk in response.iter_bytes():
+    for piece in pieces:
         if deadline is not None and time.monotonic() >= deadline:
             return bytes(body), "time"
+        if inflater is not None:
+            try:
+                piece = inflater.feed(piece, limit - len(body) + 1)   # one more than the room: tells "exactly full" from "cut"
+            except zlib.error:
+                return b"", "encoding"
         room = limit - len(body)
-        if len(chunk) > room:
-            body.extend(chunk[:max(room, 0)])
+        if len(piece) > room:
+            body.extend(piece[:max(room, 0)])
             return bytes(body), "size"
-        body.extend(chunk)
+        body.extend(piece)
     return bytes(body), ""
 
 
@@ -338,7 +392,8 @@ class Robots:
         owned = self._client is None
         client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=False)
         try:
-            response = open_pinned(client, robots_url, resolver=self._resolver, headers={"User-Agent": self._agent},
+            response = open_pinned(client, robots_url, resolver=self._resolver,
+                                   headers={"User-Agent": self._agent, "Accept-Encoding": "gzip, deflate"},
                                    timeout=self._timeout, deadline=deadline)
             try:
                 if response.status_code != 200:
