@@ -341,9 +341,9 @@ def create_app(service: MissionService) -> FastAPI:
         return {"id": mission_id}
 
     @app.get("/api/missions/{mission_id}")
-    def get_mission(mission_id: str, after: int = 0) -> dict:
+    def get_mission(mission_id: str, after: int = 0, after_step: int | None = None) -> dict:
         try:
-            return service.snapshot(mission_id, after)
+            return service.snapshot(mission_id, after, after_step)
         except KeyError:
             raise HTTPException(404, "no such mission")
 
