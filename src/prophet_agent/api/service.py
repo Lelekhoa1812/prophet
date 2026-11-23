@@ -598,9 +598,25 @@ class MissionService:
         if t is not None:
             t.join(timeout)
 
-    def snapshot(self, mission_id: str, after_seq: int = 0) -> dict:
+    def snapshot(self, mission_id: str, after_seq: int = 0, after_step: int | None = None) -> dict:
+        """The mission as the console shows it. ``after_seq`` returns only the events newer than that seq. ``after_step``,
+        when given, returns only the steps with a larger index; without it every step is returned, as before. Progress and
+        the outcome read only the checkpoint and progress events, so a poll does not load the rest of the log."""
         mission = self.store.mission(mission_id)
-        all_events = self.store.events(mission_id)
+        with self.store.lock:
+            marks = self.store.conn.execute(
+                "SELECT seq, kind, payload_json, ts FROM events WHERE mission_id=? AND kind IN (?,?) ORDER BY seq",
+                (mission_id, "mission.progress", "mission.checkpoint")).fetchall()
+        marked = [{"seq": r["seq"], "kind": r["kind"], "payload": json.loads(r["payload_json"]), "ts": r["ts"]} for r in marks]
+        if after_step is None:
+            steps = self.store.steps(mission_id)
+        else:
+            with self.store.lock:
+                rows = self.store.conn.execute(
+                    "SELECT idx, name, status, output_json FROM steps WHERE mission_id=? AND idx>? ORDER BY idx",
+                    (mission_id, int(after_step))).fetchall()
+            steps = [{"idx": r["idx"], "name": r["name"], "status": r["status"],
+                      "output": (json.loads(r["output_json"]) or {}).get("v") if r["output_json"] else None} for r in rows]
         return {
             "id": mission_id,
             "goal": mission["goal"],
@@ -611,11 +627,11 @@ class MissionService:
             "datasets": [self.datasets.get(d) for d in mission["budget"].get("dataset_ids", []) if self._has(d)],
             "answer": mission["answer"],
             # Named reasons a mission stopped short (plain words), with the planner's own text under developer.
-            "outcome": outcome_for(mission["status"], mission["answer"], mission["budget"], all_events),
+            "outcome": outcome_for(mission["status"], mission["answer"], mission["budget"], marked),
             # The latest status line the runtime wrote: where the work stands, for the console's progress line.
-            "progress": next((e["payload"] for e in reversed(all_events) if e["kind"] == "mission.progress"), None),
+            "progress": next((e["payload"] for e in reversed(marked) if e["kind"] == "mission.progress"), None),
             "events": self.store.events(mission_id, after_seq),
-            "steps": self.store.steps(mission_id),
+            "steps": steps,
             "questions": self.store.open_questions(mission_id),
             "answered_questions": self.store.answered_questions(mission_id),
         }

@@ -26,8 +26,10 @@ RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 KEY_SHAPED = re.compile(r"nvapi-[A-Za-z0-9_\-]{4,}")
 PACKAGES = ("timesfm", "numpy", "pandas", "scipy", "lightgbm", "statsmodels")
 MAX_INPUT_BYTES = 200 * 1024 * 1024        # inputs beyond this are listed by hash and not copied
-RERUN_NOTE = ("Rerunning the same code on the same input should give the same figures. Each file's sha256 is in hashes.json; "
-              "check the input and program hashes before comparing figures. Package versions are in configuration.json.")
+RERUN_NOTE = ("Rerunning the same code on the same input should give the same figures. Each file's sha256 is in hashes.json. "
+              "To check an input against your original file, compare your file's hash with sha256_original. Where hashes.json "
+              "also gives sha256_scrubbed, that is the copy in this bundle, with key-shaped text removed. "
+              "Package versions are in configuration.json.")
 BUDGET_SECRET_WORDS = ("key", "token", "secret", "password")
 
 
@@ -112,15 +114,17 @@ def build_bundle(store, mission_id: str, sandbox_root: Path, prompts: dict | Non
         name: {"version": load(version).version, "sha256": load(version).sha256} for name, version in CURRENT.items()}
 
     entries: dict[str, bytes] = {}
-    hashes: dict[str, str] = {}
+    # A file that was not changed has its sha256 as a string. A file that held key-shaped text has both hashes: the bytes as
+    # they were read (what the person can check against their own file) and the scrubbed copy stored in the bundle.
+    hashes: dict[str, Any] = {}
     missing: list[str] = []
     input_bytes = 0
     skipped_inputs: list[str] = []
 
     def add(name: str, data: bytes) -> None:
-        data = _scrub(data)
-        entries[name] = data
-        hashes[name] = _sha(data)
+        stored = _scrub(data)
+        entries[name] = stored
+        hashes[name] = _sha(data) if stored == data else {"sha256_original": _sha(data), "sha256_scrubbed": _sha(stored)}
 
     for run_id in _run_ids(tool_rows):
         run_dir = sandbox_root / run_id

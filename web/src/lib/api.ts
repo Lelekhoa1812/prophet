@@ -429,8 +429,10 @@ function readCatalog(raw: unknown): ModelCatalog {
   };
 }
 
+// Each path segment is encoded on its own, so a space, "#", "?" or "%" in a file name reaches the file as written.
 export function artifactUrl(runId: string, path: string): string {
-  return `/api/artifacts/${runId}/${path.replace(/^out\//, "")}`;
+  const file = path.replace(/^out\//, "").split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  return `/api/artifacts/${encodeURIComponent(runId)}/${file}`;
 }
 
 export function tableDownloadUrl(notebookId: string, name: string, version?: number): string {
