@@ -822,3 +822,32 @@ infer it from the table's first and last rows.
 Tests: `tests/prophet_agent/test_r6j_report_window.py` (2) and `tests/prophet_agent/test_r6j_timesfm_window.py` (5), with the
 retail date tests (8). Commits 1c0882c and e147381. Gate: 1,950 passed, 1 skipped, 4 deselected. A live rerun on this build
 has not been done; it is the open check for the next round.
+
+### Round 6k triage: the high-severity audit items (2026-11-23)
+
+Five high-severity items from the audit were checked against the code before any change. Each was reproduced first.
+
+- **Repeated dates read as hourly** (`forecast/season.py`). A daily series with each date repeated was classified as hourly,
+  because zero-length gaps pulled the median below one day. Gaps are now taken between distinct dates. Commit e811fdd.
+- **Delivered seasonal line not the scored one** (`tools/report_tool.py`). The delivered seasonal rule measured its season on
+  the whole history; the backtest measures it before its first test window. The two disagreed in 40 of 40 probes (season 7
+  delivered, season 1 scored). The rule now asks `backtest_season`. Commit 444f5eb.
+- **Measured counts hidden as identifiers** (`runtime/grounding.py`, verified). "Customers 1,200" and "Orders 3,000" were
+  blanked whole, so the figure was never checked. A list separator now needs a space, and a number that runs into a decimal
+  or thousands group is a value. Commit 373c888.
+- **Lost lease recorded as a tool error** (`runtime/goal.py:1177`). The lease is renewed inside `Ctx.call`, and `_act`
+  caught every exception as tool evidence, so the loop kept writing after another runtime took the mission. `LeaseLost` now
+  propagates. Commit 9dd443c.
+- **dir_fd bypass of the sandbox guard** (`sandbox/runner.py:83`). The audit hook checked a relative name against the run
+  folder, but the kernel resolves it against the descriptor's folder: `os.remove("keep.txt", dir_fd=fd)` removed a file
+  outside the run (reproduced). Each `dir_fd` call now resolves its real folder first. Commit 5c2e12c.
+
+Tests: `test_r6k_season_duplicate_dates.py` (4), `test_r6k_delivered_season.py` (3), `test_r6k_identifier_values.py` (8),
+`test_r6k_lease_lost_propagates.py` (2), `sandbox/test_r6k_dir_fd.py` (4). Three of the dir_fd tests fail on the old runner.
+
+Not done in this round: the lease fence on store writes (`store.py:409-437`, writes do not check the owner, so a takeover
+between renewal and write is unfenced), the contract gaps (benchmark passes without `best_baseline`, `contracts.py:2063`; table
+cells under numeric headers unchecked, `contracts.py:1561`), the remaining sandbox hardening items, and the medium and low items
+in the forecast, API and docs audits.
+
+Gate: 1,971 passed, 1 skipped, 4 deselected.
