@@ -1,0 +1,11 @@
+# SYNTHETIC test fixture: made-up numbers laid out like an Open-Meteo CSV response. Not observed weather. Used only by the tests.
+latitude,longitude,elevation,utc_offset_seconds,timezone,timezone_abbreviation
+52.0,13.0,40.0,3600,Europe/Berlin,CET
+time,temperature_2m_max,precipitation_sum
+2024-01-01,4.5,0.0
+2024-01-02,5.1,1.2
+2024-01-03,3.9,0.4
+2024-01-04,6.0,0.0
+2024-01-05,6.7,2.8
+2024-01-06,2.2,0.0
+2024-01-07,1.8,0.1

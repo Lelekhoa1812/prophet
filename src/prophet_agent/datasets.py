@@ -4,7 +4,7 @@ Motivation vs Logic
 Motivation: forecasting starts from the person's own file. It must reach the analysis code unchanged, be traceable by
 hash, and never be executed or served back from a path the client chose.
 Logic: each upload gets a random id and its own folder under the datasets root, holds one file under a cleaned name,
-and has a small ``meta.json`` (name, size, sha256, time). Names are reduced to a safe basename. Size is capped. The
+and has a small ``meta.json`` (name, size, sha256, time, and the provenance dict when one is given). Names are reduced to a safe basename. Size is capped. The
 store never opens or parses the file: reading is the sandbox's job (see sandbox/prophet_lib.py).
 """
 from __future__ import annotations
@@ -30,17 +30,22 @@ class DatasetStore:
     def __init__(self, root: str | Path):
         self.root = Path(root)
 
-    def add(self, name: str, data: bytes) -> dict:
+    def add(self, name: str, data: bytes, provenance: dict | None = None) -> dict:
         if not data:
             raise ValueError("the file is empty")
         if len(data) > MAX_BYTES:
             raise ValueError(f"the file is {len(data) // (1024 * 1024)} MB; the limit is {MAX_BYTES // (1024 * 1024)} MB")
+        # Checked before any folder is created, so a provenance that cannot be written as JSON leaves nothing behind.
+        if provenance is not None:
+            provenance = json.loads(json.dumps(provenance))
         did, fname = uuid.uuid4().hex, clean_name(name)
         folder = self.root / did
         folder.mkdir(parents=True)
         (folder / fname).write_bytes(data)
         meta = {"id": did, "name": fname, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                 "created": time.time()}
+        if provenance is not None:
+            meta["provenance"] = provenance
         # Written under a temp name and renamed, so meta.json is either absent or complete.
         tmp = folder / "meta.json.tmp"
         tmp.write_text(json.dumps(meta), encoding="utf-8")
