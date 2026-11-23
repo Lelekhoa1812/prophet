@@ -109,6 +109,10 @@ def _hook(event, args):
     elif event == "sqlite3.connect":
         # SQLite opens files itself, so the open() check above never sees them: a database outside the run folder could
         # be created or read. A database must be in the run folder; URIs and other locations are refused (round 6l, item 3).
+        # Round 6m: the check runs only on connections made by sandbox_connect below. A raw _sqlite3.connect() or a subclass
+        # of the connection type would skip the authorizer that denies ATTACH, which is where the escape was (see below).
+        if sys._getframe(1).f_code is not _CONNECT_CODE:
+            raise PermissionError("open databases with sqlite3.connect, which the sandbox checks")
         db = args[0] if args else ""
         if isinstance(db, os.PathLike):
             db = os.fspath(db)
@@ -119,6 +123,10 @@ def _hook(event, args):
                 raise PermissionError("database URIs are blocked in the sandbox")
             if not _under(os.path.realpath(db), WD):
                 raise PermissionError("opening a database outside the run folder is blocked: " + os.path.basename(db))
+    elif event == "sqlite3.enable_load_extension":
+        # An SQLite extension is native code: loading one would be the same as calling C directly.
+        if len(args) > 1 and args[1]:
+            raise PermissionError("loading SQLite extensions is blocked in the sandbox")
 sys.addaudithook(_hook)
 # A relative path given with dir_fd is resolved against the folder the descriptor opens, not the working directory. The hook
 # above checks the relative name, so os.remove("f.txt", dir_fd=fd) with fd on a folder outside the run deleted that file
@@ -178,6 +186,31 @@ def _open(file, mode="r", *a, **k):
     return _OPEN(file, mode, *a, **k)
 builtins.open = _open
 io.open = _open
+import sqlite3, sqlite3.dbapi2
+# Round 6m: SQL statements can open files without any audit event. ATTACH and VACUUM INTO create or read a database
+# anywhere (probe: a database outside the run folder was created, and a project database was read). So every connection
+# is made here, with an authorizer that denies ATTACH and DETACH (it also refuses VACUUM INTO) and an attachment limit of 0.
+# A subclass whose set_authorizer and setlimit refuse, so the program cannot switch those off by calling them.
+class _GuardedConnection(sqlite3.Connection):
+    def set_authorizer(self, *a, **k):
+        raise PermissionError("changing the SQLite authorizer is blocked in the sandbox")
+    def setlimit(self, *a, **k):
+        raise PermissionError("changing SQLite limits is blocked in the sandbox")
+def _deny_attach(action, a1, a2, db, source):
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+_SQL_CONNECT = sqlite3.connect
+def sandbox_connect(database, *args, **kwargs):
+    # Positional index 4 of the optional arguments is factory (timeout, detect_types, isolation_level, check_same_thread).
+    if "factory" not in kwargs and len(args) < 5:
+        kwargs["factory"] = _GuardedConnection
+    conn = _SQL_CONNECT(database, *args, **kwargs)
+    sqlite3.Connection.set_authorizer(conn, _deny_attach)
+    sqlite3.Connection.setlimit(conn, sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+    return conn
+_CONNECT_CODE = sandbox_connect.__code__
+sqlite3.connect = sqlite3.dbapi2.connect = sandbox_connect
 sys.path.insert(0, os.path.join(WD, "lib"))   # prophet_lib: loaders and profiling helpers
 sys.argv = [TARGET]
 runpy.run_path(TARGET, run_name="__main__")
