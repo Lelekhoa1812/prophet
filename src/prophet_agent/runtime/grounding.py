@@ -21,14 +21,16 @@ _NUM = re.compile(r"(?<![A-Za-z_\d.])-?\d[\d,]*(?:\.\d+)?(?:[  ]?%|(?:[kKmM]|bn
 _SCALES = {"k": 1e3, "m": 1e6, "bn": 1e9}
 # A date is a label, not a figure: "2026-01-19", "Jan 2026" and "3 June 2027" are dropped whole.
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
-_DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_MONTH}\s+\d{{4}}\b|\b(\d{{4}})-\d{{1,2}}(?:-\d{{1,2}})?\b|\b\d{{1,2}}/\d{{1,2}}/(\d{{2,4}})\b|\b\d{{1,2}}:\d{{2}}(?::\d{{2}})?\b")
+_DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_MONTH}\s+\d{{4}}\b|\b\d{{4}}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?\b|\b\d{{1,2}}/\d{{1,2}}/(\d{{2,4}})\b|\b\d{{1,2}}:\d{{2}}(?::\d{{2}})?\b")
 
 
 # A day or a range of days beside a real month name ("16-19 January", "Jan 16", "March 3-5") is a date label as well. Only true
 # month names count, so "Mark 15" or "Decision 12" are not swallowed.
 _REAL_MONTH = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
                r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)")
-_DAYS = r"\d{1,2}(?:(?:st|nd|rd|th)\b)?(?:\s*-\s*\d{1,2}(?:(?:st|nd|rd|th)\b)?)?"
+# A day is 1 to 31: "May 40 cases" is a month beside a count, not a date (audit round 6m).
+_DAY = r"(?:0?[1-9]|[12]\d|3[01])"
+_DAYS = rf"{_DAY}(?:(?:st|nd|rd|th)\b)?(?:\s*-\s*{_DAY}(?:(?:st|nd|rd|th)\b)?)?"
 _DAY_MONTH = re.compile(rf"\b{_DAYS}\s+(?:of\s+)?{_REAL_MONTH}\b|\b{_REAL_MONTH}\.?\s+{_DAYS}(?![\d%,.]*\d)(?!%)")
 
 # Models write dates and minus signs with non-breaking hyphens, en dashes and the true minus sign.
@@ -79,7 +81,8 @@ _LEVEL = re.compile(
     r"|\b\d{1,2}(?:st|nd|rd|th)?\s*(?:-|\u2013|to|and)\s*\d{1,2}(?:st|nd|rd|th)?\s+(?:percentile|quantile)s?\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)\s+(?:percentile|quantile)s?\b"
     r"|\b[Pp]\d{1,2}\b", re.I)
-_P_THRESHOLD = re.compile(r"\bp\s*[<>=\u2264\u2265]\s*(0?\.\d+)", re.I)
+# An inequality states a decision rule. "p = 0.05" is a measured p-value and is checked like any figure (audit round 6m).
+_P_THRESHOLD = re.compile(r"\bp\s*[<>\u2264\u2265]\s*(0?\.\d+)", re.I)
 _CONVENTIONAL_P = {0.1, 0.05, 0.01, 0.001}
 _LABEL_NOUN = (r"(?:week|day|month|quarter|promo|store|region|product|sku|row|item|customer|rank|step|run|batch|origin|"
                r"horizon|period|model|window|fold|series|id|order|invoice|sheet)")
@@ -95,7 +98,10 @@ _IDENTIFIER = re.compile(
 # range, such as an invented width "\u00b115\u201320%", is a claim the evidence has to support.
 _LEVEL_PAIR = re.compile(r"(?<![\w.])(\d{1,2}(?:\.\d+)?)\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2}(?:\.\d+)?)")
 _LEVEL_PAIRS = {(10.0, 90.0), (5.0, 95.0), (2.5, 97.5), (25.0, 75.0), (20.0, 80.0)}
-_BAND_WORD = re.compile(r"\s*%|\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b", re.I)
+# A "%" makes a pair a band label only when a band word follows it ("10-90% interval", "(10-90%) range"). A bare "growth of
+# 10-90%" is a measured range and keeps its figures (audit round 6m).
+_BAND_WORD = re.compile(r"\s*%(?=\)?\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b)|"
+                        r"\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b", re.I)
 
 
 def _blank(text: str, span: tuple[int, int]) -> str:
@@ -563,9 +569,16 @@ def bound_misnamed(answer: str, lo: float, hi: float, together: bool) -> str | N
     if not (lo and hi) or hi <= lo:
         return None
     need = _TOGETHER_WORDS if together else _INDEPENDENT_WORDS
+    prev = ""
     for s in sentences(answer):
         vals = _sentence_values(s)
         hit = lambda t: any(abs(v - t) <= 0.01 * abs(t) for v in vals)
-        if hit(lo) and hit(hi) and not need.search(s):
+        # "under that assumption" refers back to the assumption named in the sentence directly before it (stored 139db236).
+        names = need.search(s) or (_ASSUMPTION_BACK.search(s) and need.search(prev))
+        if hit(lo) and hit(hi) and not names:
             return s
+        prev = s
     return None
+
+
+_ASSUMPTION_BACK = re.compile(r"\b(?:that|this) assumption\b", re.I)

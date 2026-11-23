@@ -1519,20 +1519,52 @@ _BAND_HEAD = re.compile(r"\bq\s*\d|\d\s*%|\bband|\brange\b|\blow|\bhigh|\blower\
 _NUMBER_TOKEN = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
 
+_SEP_ROW = re.compile(r"\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?")
+
+
+def _row_cells(line: str) -> list[str]:
+    """A table row's cells, with or without its outer pipes ("| a | b |" and "a | b" are both two cells)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return s.split("|")
+
+
+def _table_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    """(start, stop) of each markdown table in the lines.
+
+    A run of pipe-bounded lines is a table, as before. Audit round 6m: a run with a separator row is a table too, even without
+    outer pipes ("Station | Day 1" over "--- | ---"); its header is the line above the separator, so a pipe in the prose above
+    does not join it."""
+    out, i = [], 0
+    while i < len(lines):
+        if "|" not in lines[i] or not lines[i].strip():
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and "|" in lines[j] and lines[j].strip():
+            j += 1
+        block = lines[i:j]
+        if all(_is_table_line(l) for l in block):
+            out.append((i, j))
+        else:
+            seps = [k for k, l in enumerate(block) if _SEP_ROW.fullmatch(l.strip())]
+            if seps:
+                out.append((i + max(seps[0] - 1, 0), j))
+        i = j
+    return out
+
+
 def _tables(text: str) -> list[list[list[str]]]:
     """The markdown tables in a text, each as its rows of cells, separator rows dropped."""
-    tables, cur = [], []
-    for line in list(text.splitlines()) + [""]:
-        s = line.strip()
-        if s.startswith("|") and s.endswith("|") and len(s) > 1:
-            cur.append(s)
-            continue
-        if cur:
-            rows = [[c.strip() for c in r[1:-1].split("|")] for r in cur]
-            rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r if c)]
-            if rows:
-                tables.append(rows)
-            cur = []
+    lines, tables = text.splitlines(), []
+    for start, stop in _table_blocks(lines):
+        rows = [[c.strip() for c in _row_cells(l)] for l in lines[start:stop]]
+        rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r if c)]
+        if rows:
+            tables.append(rows)
     return tables
 
 
@@ -1578,6 +1610,32 @@ def _day_columns(header: list[str]) -> tuple[dict[int, int], int | None]:
     return day_cols, avg_col
 
 
+def _station_series(cell: str, by_name: dict) -> dict | None:
+    """The series a table's first cell names: the exact name, or the name with a suffix in brackets or after a dash.
+
+    Audit round 6m: "Aotizhongxin (north)" and "Aotizhongxin - north" named a station, but an exact match alone left their wrong
+    figures unchecked. A suffix must follow a space and a separator, so "Dingling Annex" is not read as "Dingling"."""
+    name = re.sub(r"[*_`]", "", cell).strip().lower()
+    if name in by_name:
+        return by_name[name]
+    m = re.match(r"^(.+?)\s*(?:\([^)]*\)|\s[-–—:,]\s.*)$", name)
+    return by_name.get(m.group(1).strip()) if m else None
+
+
+_TOTAL_HEAD = re.compile(r"^(?:total|sum)\b", re.I)
+
+
+def _total_column(header: list[str]) -> int | None:
+    """The column named Total or Sum: the horizon total of the station's point forecast. A band or day header is never one.
+
+    Audit round 6m: a "Total" column had no day and no average name, so its figures were never checked."""
+    for i, cell in enumerate(header):
+        c = re.sub(r"[*_`]", "", cell).strip()
+        if _TOTAL_HEAD.match(c) and not _BAND_HEAD.search(c) and not _DAY_HEAD.search(c):
+            return i
+    return None
+
+
 def _table_matches_panel(text: str, obs: list) -> dict | None:
     """The day-by-day cells of a station table match that station's own forecast on that day. Blocks on the first mismatch.
 
@@ -1590,11 +1648,11 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
     checked, wrong = 0, []
     for table in _tables(text):
         day_cols, avg_col = _day_columns(table[0])
-        if not day_cols and avg_col is None:
+        total_col = _total_column(table[0])
+        if not day_cols and avg_col is None and total_col is None:
             continue
         for row in table[1:]:
-            name = re.sub(r"[*_`]", "", row[0]).strip().lower()
-            fc = by_name.get(name)
+            fc = _station_series(row[0], by_name)
             if fc is None:
                 continue
             point = _numbers(fc.get("point")) or []
@@ -1622,6 +1680,13 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
                     mean = sum(point) / len(point)
                     if not _printed_matches(toks[0], mean):
                         wrong.append(f"{row[0].strip(' *')} average is {row[avg_col]}; the forecast averages {mean:.1f}")
+            if total_col is not None and total_col < len(row) and point:
+                toks = _NUMBER_TOKEN.findall(row[total_col])
+                if toks:                   # the leading figure is the horizon total of the point forecast (audit round 6m)
+                    checked += 1
+                    total = sum(point)
+                    if not _printed_matches(toks[0], total):
+                        wrong.append(f"{row[0].strip(' *')} total is {row[total_col]}; the forecast sums to {total:.1f}")
     if not checked:
         return None
     if wrong:
@@ -1649,15 +1714,16 @@ def _restate(cell: str, values: list[float]) -> str:
 
 def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: list[tuple[str, str]]) -> None:
     """Corrects one markdown table's station day and average cells in place, recording each (old, new) cell."""
-    rows = [lines[k].strip().split("|")[1:-1] for k in range(start, stop)]
+    rows = [_row_cells(lines[k]) for k in range(start, stop)]
     day_cols, avg_col = _day_columns([c.strip() for c in rows[0]])
-    if not day_cols and avg_col is None:
+    total_col = _total_column([c.strip() for c in rows[0]])
+    if not day_cols and avg_col is None and total_col is None:
         return
     for k in range(1, len(rows)):
         cells = rows[k]
         if all(re.fullmatch(r":?-{2,}:?", c.strip()) for c in cells if c.strip()):
             continue                                   # the separator row
-        fc = by_name.get(re.sub(r"[*_`]", "", cells[0]).strip().lower())
+        fc = _station_series(cells[0], by_name)
         if fc is None:
             continue
         point = _numbers(fc.get("point")) or []
@@ -1667,6 +1733,8 @@ def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: l
                    if 1 <= d <= min(len(point), len(lo_all), len(hi_all))]
         if avg_col is not None and point:
             targets.append((avg_col, (sum(point) / len(point),)))
+        if total_col is not None and point:
+            targets.append((total_col, (sum(point),)))
         changed = False
         for i, expected in targets:
             if i >= len(cells) or "," in cells[i]:
@@ -1684,7 +1752,10 @@ def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: l
         if changed:
             line = lines[start + k]
             lead, trail = line[: len(line) - len(line.lstrip())], line[len(line.rstrip()):]
-            lines[start + k] = lead + "|" + "|".join(cells) + "|" + trail
+            s = line.strip()
+            body = "|".join(cells)
+            # The row keeps its own form: a row written without outer pipes is rewritten without them (audit round 6m).
+            lines[start + k] = lead + ("|" if s.startswith("|") else "") + body + ("|" if s.endswith("|") else "") + trail
 
 
 def snap_tables(text: str, obs: list) -> tuple[str, list[tuple[str, str]]]:
@@ -1701,16 +1772,8 @@ def snap_tables(text: str, obs: list) -> tuple[str, list[tuple[str, str]]]:
         return text, []
     lines = text.split("\n")
     fixed: list[tuple[str, str]] = []
-    i = 0
-    while i < len(lines):
-        if not _is_table_line(lines[i]):
-            i += 1
-            continue
-        j = i
-        while j < len(lines) and _is_table_line(lines[j]):
-            j += 1
-        _snap_block(lines, i, j, by_name, fixed)
-        i = j
+    for start, stop in _table_blocks(lines):
+        _snap_block(lines, start, stop, by_name, fixed)
     return "\n".join(lines), fixed
 
 
@@ -2083,12 +2146,22 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                              f"the answer calls {name} the best benchmark, but {why}, so the claim is not verified "
                              f"({sentence[:160]}); run the backtest and name the rule it ranks best, or drop the claim"))
     elif claims:
+        # Audit round 6m: a rule the backtest never ranked (no MASE for it) cannot be verified as the best benchmark, so it blocks.
+        # Before, its MASE read as None and the claim passed as "the one the backtest ranked best".
+        unranked = [(n, s) for n, s in claims
+                    if not isinstance(models.get(n), dict) or _finite(models[n].get("mase")) is None]
         wrong_rules = []
         for name, sentence in claims:
             nm = _finite(models[name].get("mase")) if isinstance(models.get(name), dict) else None
             if name != best and nm is not None and bm is not None and nm > bm * (1 + RULE_TOLERANCE):
                 wrong_rules.append((name, nm, sentence))
-        if wrong_rules:
+        if unranked:
+            name, sentence = unranked[0]
+            checks.append(_check("answer_benchmark_matches", False,
+                                 f"the answer calls {name} the best benchmark, but the stored backtest does not rank {name} "
+                                 f"(no MASE for it), so the claim is not verified ({sentence[:160]}); name the rule the backtest "
+                                 f"ranks best ({best}), or drop the claim"))
+        elif wrong_rules:
             name, nm, sentence = wrong_rules[0]
             checks.append(_check("answer_benchmark_matches", False,
                                  f"the answer calls {name} the best benchmark (MASE {nm:.3f}), but the backtest ranked {best} "
