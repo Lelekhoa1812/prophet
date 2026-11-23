@@ -563,9 +563,16 @@ def bound_misnamed(answer: str, lo: float, hi: float, together: bool) -> str | N
     if not (lo and hi) or hi <= lo:
         return None
     need = _TOGETHER_WORDS if together else _INDEPENDENT_WORDS
+    prev = ""
     for s in sentences(answer):
         vals = _sentence_values(s)
         hit = lambda t: any(abs(v - t) <= 0.01 * abs(t) for v in vals)
-        if hit(lo) and hit(hi) and not need.search(s):
+        # "under that assumption" refers back to the assumption named in the sentence directly before it (stored 139db236).
+        names = need.search(s) or (_ASSUMPTION_BACK.search(s) and need.search(prev))
+        if hit(lo) and hit(hi) and not names:
             return s
+        prev = s
     return None
+
+
+_ASSUMPTION_BACK = re.compile(r"\b(?:that|this) assumption\b", re.I)
