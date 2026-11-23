@@ -642,6 +642,8 @@ def create_app(service: MissionService) -> FastAPI:
         for entry in (providers or {}).values():
             _check_key_lengths(entry.get("keys"))
         try:
+            # Dry run of the whole save (limits, llm, keys). A refused key after a valid limit must not leave the limit saved.
+            service.settings.check_save(body)
             service.settings.update(patch)
             if nim is not None and "keys" in nim:
                 service.settings.set_keys(nim["keys"])
