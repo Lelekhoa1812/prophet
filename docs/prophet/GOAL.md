@@ -948,3 +948,52 @@ Known and not fixed in this round. Owner decisions are marked.
   are locked by the Claude Code app process (PID 35675). All four branches are merged. Removal awaits the owner's go-ahead.
 - **Shutdown**: `MissionService.close()` stops the sweeper; the owner of the `Store` still closes the database, which the
   service does not do. That is the next step.
+
+## Round 7: open-data path and one measured weather run (2026-11-23 to 2026-11-24, main 201b490)
+
+Round 7 had two parts: review the whole system for gaps, and let the deep-research path fetch, store and check open data
+directly. Each change was reproduced or measured before it changed code, committed on its own, and the full gate was run on
+the final head.
+
+- **Open-data store** (`opendata/store.py`, `opendata/sources.py`, dd7e016 and e625848). The default request now asks for CSV.
+  Open-Meteo answers JSON when no format is given, and the store used to accept that JSON as a one-column table. A body that
+  starts like JSON is now refused as CSV. The stored file is the table alone; the location block Open-Meteo prints before it
+  is kept as text in provenance, with `raw_sha256` and `raw_bytes` for the body as fetched.
+- **Unverified SDMX type refused** (`opendata/fetch.py`, f3ab917). The `application/vnd.sdmx.data+csv` type was on the sniff
+  list before any live check. The live ECB endpoint answers `text/csv`, so the unverified type is removed and a test pins it.
+- **Bundle hashes have one shape** (`api/bundle.py`, ab81f8a). Every `hashes.json` entry is an object with `sha256`. A copy
+  that differs from the bytes read also carries `sha256_original`. Three test files were updated to the shape.
+- **Settings export is capped** (`settings.py`, 4c9da47). Each table is limited to 50,000 rows and the export names every table
+  it cut, including `events`, which each mission also writes. `test_settings.py` covers it.
+- **Measured weather run** (`scripts/weather_open_data_check.py`, `docs/prophet/WEATHER_OPEN_DATA_RUN.md`, 201b490). Berlin
+  daily maximum temperature, 1,780 points from the Open-Meteo archive, retrieved 2026-11-23, with no missing values. The
+  check refuses gaps. Results with the annual season set to 365, which is the fair comparison: TimesFM 3 MASE 0.752 against
+  0.951 for seasonal naive, a 20.9% gain (90% interval 9.2% to 33.2%), better in 10 of 12 origins, sign-flip p = 0.0095. The
+  tool's error-correlation check gives a variance ratio of 5.2, so the origins are not independent and p is indicative only.
+  The forecast health check returned `check`, not `ok`, and the report says so.
+- **The automatic-season result is not quoted.** The tool found no season and used 1, because its search tests lags up to 14
+  only. That gives a weak simple rule and an inflated headline (MASE 1.50 against 2.14). The report states this and uses the
+  annual-season figures.
+- **Licence wording** sits only in `docs/prophet/` (the report and `DATASET_LICENCES.md`, key `open_meteo`). The script and the
+  source code refer to the source by key. The licence guard passes.
+
+Gate on 201b490: 2,692 passed, 1 skipped, 4 deselected, exit 0 (315 s). The gate on dd7e016 earlier passed with 2,688.
+
+Owner decisions in this round:
+
+- Stock: proceed to automatic extraction without asking again. No compliant open stock source has been wired in yet, so stock
+  series still come from a user upload.
+- Download: automatic download from any source where the tool can, without asking permission each time.
+- Open-Meteo: research use, labelled in the Markdown documents only. Not in agent prompts, contracts, tools or the UI.
+
+Known and not fixed in this round:
+
+- **Automatic season detection** tests lags up to 14 only, so daily series with an annual cycle get season 1, a weak simple
+  rule and an inflated gain. The weather report records it. The fix is a wider lag search with a guard for short series.
+- **Planner transcription** (`tools/series_io.py`, about lines 93 to 98): numbers the planner copies from web sources into
+  `values` have no provenance check. A value can reach a backtest with no link to the page it came from.
+- **Research crawl** (`research/fetch.py`, the same items as Round 6m): the DNS lookup is not bounded by the deadline; gzip
+  and brotli expand before the byte cap; a robots.txt 5xx fails open; robots is not paced; the throttle sleep sits outside the
+  deadline.
+- **Web typecheck** was not run. There are no `node_modules`, and installing them was not authorised.
+- **Round 6m leftovers** stand as listed above. The worktrees still locked by the Claude Code app are unchanged.
