@@ -234,6 +234,41 @@ for _name in ("mkfifo", "mknod"):
     setattr(os, _name, _guarded)
     setattr(_posix, _name, _guarded)
 del _name, _guarded
+# os.stat and os.lstat raise no audit event (round 7, item 1), so a probe of a path outside the run folder was never seen.
+# They apply the read rule of open(): a path that _readable refuses raises PermissionError. os.path.exists and isfile call
+# os.stat, so a refused path reports False there, the same answer as a missing one. A relative path given with dir_fd is
+# resolved against the descriptor's folder first. _BUSY stops recursion: realpath inside _readable calls lstat.
+_BUSY = [False]
+def _stat_guard(fn):
+    def guarded(*a, **k):
+        if _BUSY[0] or not (a or "path" in k):
+            return fn(*a, **k)
+        path = a[0] if a else k["path"]
+        if isinstance(path, int):          # an open descriptor, not a path
+            return fn(*a, **k)
+        _BUSY[0] = True
+        try:
+            p = os.fspath(path)
+            if isinstance(p, bytes):
+                p = os.fsdecode(p)
+            dir_fd = k.get("dir_fd")
+            if dir_fd is not None and not os.path.isabs(p):
+                base = _fd_dir(dir_fd)
+                if base is None:
+                    raise PermissionError("cannot tell which folder this descriptor opens in the sandbox")
+                p = os.path.join(base, p)
+            if not _readable(p):
+                raise PermissionError("reading this location is blocked in the sandbox: " + os.path.basename(p))
+        finally:
+            _BUSY[0] = False
+        return fn(*a, **k)
+    guarded.__name__ = fn.__name__
+    return guarded
+for _name in ("stat", "lstat"):
+    _guarded = _stat_guard(getattr(os, _name))
+    setattr(os, _name, _guarded)
+    setattr(_posix, _name, _guarded)
+del _name, _guarded
 import builtins, io
 _OPEN = builtins.open
 CARRIED = os.path.join(WD, "in", "carried")
