@@ -69,18 +69,28 @@ def _run_ids(tool_rows: list[dict]) -> list[str]:
     return seen
 
 
+def _contained_file(path: Path, root: Path) -> bool:
+    """True for a regular file whose real location is inside the run folder. Analysis code writes into the folder, so an
+    entry may be a symlink; one that leads outside the folder is not a file of the run and is never read."""
+    try:
+        return path.is_file() and path.resolve(strict=True).is_relative_to(root)
+    except OSError:
+        return False
+
+
 def _run_files(run_dir: Path) -> list[tuple[str, Path]]:
     """The files of one run folder that a rerun needs: program, lib, inputs, the manifest and the numeric outputs."""
+    root = run_dir.resolve()
     picked: list[tuple[str, Path]] = []
     for rel in ("program.py", "manifest.json"):
-        if (run_dir / rel).is_file():
+        if _contained_file(run_dir / rel, root):
             picked.append((rel, run_dir / rel))
     for sub, exts in (("lib", (".py",)), ("in", None), ("out", (".json", ".csv"))):
         base = run_dir / sub
         if not base.is_dir():
             continue
         for p in sorted(base.rglob("*")):
-            if p.is_file() and (exts is None or p.suffix.lower() in exts):
+            if (exts is None or p.suffix.lower() in exts) and _contained_file(p, root):
                 picked.append((p.relative_to(run_dir).as_posix(), p))
     return picked
 
