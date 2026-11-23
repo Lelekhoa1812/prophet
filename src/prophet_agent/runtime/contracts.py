@@ -2062,9 +2062,18 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
 
     claims = grounding.claimed_best_baselines(text)
     bt = _newest_backtest(obs)
-    if claims and bt is not None:
-        models, best = bt["models"], bt.get("best_baseline")
-        bm = _finite(models[best].get("mase")) if isinstance(best, str) and isinstance(models.get(best), dict) else None
+    models = bt["models"] if bt is not None else {}
+    best = bt.get("best_baseline") if bt is not None else None
+    bm = _finite(models[best].get("mase")) if isinstance(best, str) and isinstance(models.get(best), dict) else None
+    if claims and bm is None:
+        # Audit round 6l: with no backtest, or a backtest that names no usable best baseline, nothing verifies the claim,
+        # so it must not pass. The check blocks and asks for the backtest's best rule, or for the claim to be dropped.
+        name, sentence = claims[0]
+        why = "no backtest is stored" if bt is None else "the stored backtest records no usable best baseline"
+        checks.append(_check("answer_benchmark_matches", False,
+                             f"the answer calls {name} the best benchmark, but {why}, so the claim is not verified "
+                             f"({sentence[:160]}); run the backtest and name the rule it ranks best, or drop the claim"))
+    elif claims:
         wrong_rules = []
         for name, sentence in claims:
             nm = _finite(models[name].get("mase")) if isinstance(models.get(name), dict) else None
