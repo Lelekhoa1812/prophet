@@ -17,3 +17,12 @@ this table stops the script with an error rather than writing a blank licence.
 | `gift_card` | Not verified: check the Salesforce/GiftEval dataset card |
 | `chronos_card` | Not verified: check the autogluon/chronos_datasets dataset card |
 | `unverified` | Not verified: read the source repository or dataset card before any external use |
+| `open_meteo` | CC BY 4.0 for the data (Open-Meteo terms, checked 2026-11-23). The free API is for non-commercial use only; a paid plan and key are needed for commercial use. Research use only in this project. |
+
+Research-use labelling (owner decision, Liam, 2026-11-23): this project is research use. Outputs built from a dataset whose
+key is `open_meteo` carry the research-use label and its attribution in documents and reports only. The label is never
+written into agent prompts, contracts, tools or the UI, and the code refers to the dataset by its key alone.
+
+Stock data (owner decision, 2026-11-23): no stock source with a no-key download and clear terms was found. Yahoo Finance and
+FRED terms prohibit automated extraction, and Stooq's terms could not be verified, so none of them is downloaded automatically.
+Stock series come from a user upload until a source with a verified licence is added as a row above.
