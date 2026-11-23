@@ -11,9 +11,17 @@ rather than on its levels: a random walk has large level autocorrelation at ever
 only a repeating pattern survives. The candidate with the strongest autocorrelation wins if it clears the threshold;
 otherwise the season is 1, meaning none. Without a frequency hint or dates, the candidates are the general lags used by
 the existing find_season, measured the same way. The reason names what was measured so the caller can quote it.
+
+A second measure covers the case the changes miss: a cycle that is small against day-to-day noise. Daily temperature has an
+annual cycle of about 10 degrees under weather noise of about 3 degrees; the one-step changes carry that cycle at about a
+thousandth of the noise, so their autocorrelation at lag 365 is near zero (measured on the Berlin series: -0.02). The levels
+show it plainly. So a candidate is also scored on the seasonal strength of the detrended levels: the share of variance the
+phase means explain, 1 - Var(residual) / Var(series). A random walk has no fixed phase, so its strength is small; its null
+distribution is simulated at the same length and the bar is the larger of THRESHOLD and the (1 - alpha) quantile of that null.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from statistics import NormalDist
 from typing import Any
 
@@ -24,6 +32,9 @@ from prophet_agent.sandbox.prophet_lib import find_season
 THRESHOLD = 0.3             # the same bar the existing season picker used: above about 0.3 suggests a repeating pattern
 ALPHA = 0.05                # family-wise false-season rate the bar is set for (A2-11)
 MIN_POINTS = 24             # below this a cycle cannot be told from noise
+MIN_CYCLES = 3              # a level test needs at least this many whole cycles to compare phases
+LEVEL_REPS = 300            # random walks simulated for the level null at each length
+LEVEL_SEED = 0              # fixed, so the same series always gets the same answer
 CANDIDATES: dict[str, tuple[int, ...]] = {
     "business": (5, 21),    # a trading week and a trading month
     "daily": (7, 365),
@@ -88,6 +99,50 @@ def _bar(n_changes: int, n_lags: int, alpha: float) -> float:
     return max(THRESHOLD, z / np.sqrt(max(1, n_changes)))
 
 
+def _detrend(x: np.ndarray) -> np.ndarray:
+    t = np.arange(len(x), dtype=float)
+    return x - np.polyval(np.polyfit(t, x, 1), t)
+
+
+def _level_strength(residual: np.ndarray, lag: int) -> float | None:
+    """Share of the detrended level's variance that the phase means at this lag explain. None when there are fewer than
+    MIN_CYCLES whole cycles or the series is flat."""
+    k = len(residual) // lag
+    if k < MIN_CYCLES:
+        return None
+    m = residual[: k * lag].reshape(k, lag)
+    total = float(m.var())
+    if total <= 1e-12:
+        return None
+    return float(1 - (m - m.mean(axis=0)).var() / total)
+
+
+def _level_strengths(x: np.ndarray, lags: tuple[int, ...]) -> dict[int, float]:
+    residual = _detrend(x)
+    out = {}
+    for lag in lags:
+        s = _level_strength(residual, lag)
+        if s is not None:
+            out[int(lag)] = round(s, 3)
+    return out
+
+
+@lru_cache(maxsize=512)
+def _level_bar(n: int, lags: tuple[int, ...], alpha: float) -> float:
+    """The bar a level strength must clear: the (1 - alpha) quantile of the strongest lag on simulated random walks of the
+    same length, floored at THRESHOLD. Random walks are the null because they are what the changes test guards against."""
+    rng = np.random.default_rng(LEVEL_SEED)
+    tops = []
+    for _ in range(LEVEL_REPS):
+        residual = _detrend(np.cumsum(rng.normal(size=n)))
+        vals = [s for s in (_level_strength(residual, lag) for lag in lags) if s is not None]
+        if vals:
+            tops.append(max(vals))
+    if not tops:
+        return float("inf")
+    return max(THRESHOLD, round(float(np.quantile(tops, 1 - alpha)), 3))
+
+
 def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, alpha: float = ALPHA) -> dict[str, Any]:
     """Return {"season": int, "reason": str, "threshold": float, ...}. Season 1 means no season: use one-step changes for
     the MASE scale. The threshold is the bar the strongest candidate had to clear (see ``_bar``)."""
@@ -120,6 +175,17 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
         return {"season": int(best), "reason": f"{label}: the one-step changes repeat every {best} periods "
                                                 f"(autocorrelation {strengths[best]:.2f}, above {bar})",
                 "strengths": strengths, "kind": kind, "threshold": bar}
+    # The changes test found nothing. A cycle can still be in the levels when it is small against the day-to-day noise.
+    level = _level_strengths(x, tuple(sorted(strengths)))
+    if level:
+        top = max(level, key=level.get)
+        level_bar = _level_bar(n, tuple(sorted(level)), alpha)
+        if level[top] > level_bar:
+            return {"season": int(top), "reason": f"{label}: the levels repeat every {top} periods (seasonal strength "
+                                                    f"{level[top]:.2f}, above {level_bar}); the one-step changes do not show it, "
+                                                    f"because the cycle is small against the day-to-day noise",
+                    "strengths": strengths, "level_strengths": level, "kind": kind, "threshold": bar,
+                    "level_threshold": level_bar, "method": "levels"}
     if kind == "business":
         why = "no weekly or monthly cycle is measured in the one-step changes, so the price-like series has no season"
     else:

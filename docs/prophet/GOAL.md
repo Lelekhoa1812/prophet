@@ -997,3 +997,20 @@ Known and not fixed in this round:
   deadline.
 - **Web typecheck** was not run. There are no `node_modules`, and installing them was not authorised.
 - **Round 6m leftovers** stand as listed above. The worktrees still locked by the Claude Code app are unchanged.
+
+## Round 7 follow-up: automatic season detection (fixed 2026-11-24)
+
+- **Cause.** The season rule scored one-step changes only. The search did test lag 365 (an earlier report said it tested
+  lags up to 14, which was wrong). The annual cycle in daily temperature is about a thousandth of the day-to-day noise in
+  the changes, so the lag-365 autocorrelation was -0.02, and the rule returned season 1.
+- **Fix** (`forecast/season.py`). When the changes test finds nothing, the detrended levels are scored by the share of
+  variance that phase means explain at each candidate lag. The bar is the 95% quantile of the same score on random walks of
+  the same length, floored at 0.3, so price-like random walks stay at season 1.
+- **Measured.** Berlin, no season given: season 365, level strength 0.84 against a bar of 0.30. False-season rate on random
+  walks: 3% at n = 60 (the existing test allows 5%), 0% at n = 600 and n = 1612. Annual cycle at noise 3: found in 20 of 20.
+- **Weather run.** The automatic backtest now reproduces the hand-set annual run: TimesFM MASE 0.752 against 0.951 for
+  seasonal naive, a 20.9% gain, 10 of 12 origins. The earlier automatic headline (1.50 against 2.14) is withdrawn.
+- **Tests.** `tests/prophet_agent/forecast/test_season_levels.py` (6 tests, including the backtest default on an annual
+  series). The gate on the change: 2,698 passed, 1 skipped, 4 deselected, exit 0.
+- **Open.** The health check picks its period with `dominant_period` (sandbox library), which gives 356 for the same series
+  against 365 for the backtest. It is not reconciled, because the sandbox uses that function too.

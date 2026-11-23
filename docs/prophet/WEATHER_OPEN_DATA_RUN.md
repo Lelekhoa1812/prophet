@@ -37,7 +37,8 @@ The script writes `weather_check.json` (every number here) into the store folder
 MASE is the mean absolute error scaled by the average seasonal change, so 1.0 means the error equals the average change.
 WAPE is the total absolute error as a share of the total actual. Lower is better for both.
 
-**Fair comparison: annual season set to 365 (the correct cycle for daily temperature).**
+**Season 365, measured by the tool from the history before the first test window (no season was given).** The same figures
+come from setting 365 by hand, which is the check that the detection is right.
 
 | Method | MASE | WAPE |
 |---|---|---|
@@ -53,11 +54,12 @@ WAPE is the total absolute error as a share of the total actual. Lower is better
 - Gain over the best rule: 20.9% in MASE, 90% interval 9.2% to 33.2%. One-sided sign-flip test, p = 0.0095 that TimesFM is better.
 - The 80% band covered 76.8% of actual values (target about 80%).
 
-**Automatic season (what the tool chose without being told): not a fair comparison.**
-
-The tool found no season and used 1. Its search tests lags up to 14 only, so the annual cycle was missed. The "best
-simple rule" then became a 4-point mean, which is much weaker. Its headline (MASE 1.50 against 2.14, a 29.8% gain) overstates
-the advantage and must not be quoted. The annual-season result above is the one to use.
+**Earlier automatic run, superseded.** Before the level measure was added to `forecast/season.py`, the tool found no season
+and used 1. Its headline (MASE 1.50 against 2.14, a 29.8% gain) was a comparison against a weak 4-point mean and must not be
+quoted. The cause was the measure, not a short search: the search did test lag 365, but it scored one-step changes, and the
+annual cycle is about a thousandth of the day-to-day noise in changes (autocorrelation -0.02 at lag 365). The rule now also
+scores the detrended levels, and the bar is the 95% quantile of the same statistic on random walks of the same length. On
+this series the level strength at 365 is 0.84 against a bar of 0.30, and the automatic run now gives the figures above.
 
 ## Forecast
 
@@ -72,12 +74,17 @@ The tool's own health check gave **check**, not ok. Its reasons: the median stay
 last value, so it carries little directional view, and the shape of the annual cycle is too short a window to judge at a
 14-day horizon. Present this as a range with the direction uncertain, not as a confident call.
 
+The health check finds its own period with `dominant_period` (a separate detector from the backtest's season): 356 steps,
+strength 0.76, against 365 for the backtest. The difference is 2.5% of a cycle. It is recorded here, not reconciled; see the
+limits below.
+
 ## Limits of this run
 
 - One city, one variable, one 14-day horizon, 12 origins. The tool's error-correlation check gives a variance ratio of 5.2,
   so the errors move together and the 12 origins are far from 12 independent checks; the p-value is indicative only.
-- The annual season had to be set by hand. Automatic season detection tests short lags only, so daily series with an
-  annual cycle get weak simple rules and an inflated apparent gain. This is a known gap in the tool, recorded here, not fixed
-  in this run.
+- The backtest's season detection and the health check's period detection are two detectors. They agree within 2.5% on
+  this series (365 and 356). Unifying them is open: the health check's `dominant_period` is also used inside the sandbox.
+- Season detection was fixed in this round (see above). It is measured on one series and one simulated null, so the
+  false-season rate is a check on random walks, not a proof for every series.
 - Open-Meteo data is for research use in this project. Any use outside research needs a paid plan and its own terms.
 - TimesFM weights are non-commercial. Do not use these outputs for commercial decisions, client deliverables or paid services.
