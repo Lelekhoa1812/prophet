@@ -539,6 +539,12 @@ class MissionService:
 
     def answer(self, question_id: str, answers: dict) -> str:
         """Record the answer and resume the mission it belongs to. Returns the mission id."""
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT mission_id FROM questions WHERE id=?", (question_id,)).fetchone()
+        if row is not None:
+            # The notebook's provider rule is checked before the answer is recorded. A resume refused after the commit would
+            # leave the answered mission waiting with nothing to resume it. Raises PolicyRefused, and nothing is written.
+            self._sharing_budget(self.store.mission(row["mission_id"]))
         try:
             info = self.store.answer_question(question_id, answers)
         except LeaseLost:

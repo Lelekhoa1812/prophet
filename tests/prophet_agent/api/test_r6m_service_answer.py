@@ -13,6 +13,7 @@ import time
 import pytest
 
 from prophet_agent.api.service import MissionService
+from prophet_agent.api.sharing import PolicyRefused
 from prophet_agent.nim.errors import NotConfigured
 from prophet_agent.runtime.store import LeaseHeld
 
@@ -81,6 +82,29 @@ def test_an_answer_through_a_second_service_resumes_the_mission(tmp_path):
     first.wait(mid, 10)
     assert first.store.mission(mid)["status"] == "completed"
     assert [e for e in first.store.events(mid) if e["kind"] == "service.error"] == []
+
+
+def test_an_answer_the_notebook_no_longer_allows_is_refused_before_it_is_recorded(tmp_path):
+    """A notebook's provider rule can change while a turn waits for an answer. The rule is checked before the answer is
+    recorded: a resume refused after the commit would leave the answered mission waiting, with nothing to resume it."""
+    svc = _service(tmp_path / "policy.sqlite")
+    paused, gate = threading.Event(), threading.Event()
+    _held_after_pause(svc, paused, gate)
+    nb = svc.notebooks.create("policy")
+    mid = svc.store.create_mission("which model", {"max_tool_calls": 5, "max_seconds": 60}, notebook_id=nb["id"])
+    svc.start(mid)
+    assert paused.wait(10)
+    gate.set()
+    svc.wait(mid, 10)
+    qid = svc.store.open_questions(mid)[0]["id"]
+    svc.set_sharing(nb["id"], {"providers": []})
+    with pytest.raises(PolicyRefused):
+        svc.answer(qid, {"Model": "a"})
+    assert [q["id"] for q in svc.store.open_questions(mid)] == [qid]
+    svc.set_sharing(nb["id"], {"providers": None})
+    svc.answer(qid, {"Model": "a"})
+    svc.wait(mid, 10)
+    assert svc.store.mission(mid)["status"] == "completed"
 
 
 def test_an_answer_refused_by_a_lease_another_process_holds_is_a_conflict(tmp_path):
