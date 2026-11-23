@@ -33,6 +33,21 @@ def _panel_file(root, run_id, doc):
     (root / run_id / "out" / "series.json").write_text(json.dumps(doc))
 
 
+def test_values_must_be_one_flat_list_of_numbers():
+    from prophet_agent.tools import series_io
+    with pytest.raises(ValueError, match="one flat list of numbers"):
+        series_io._clean("series", [[1, 2], [3, 4]])
+    with pytest.raises(ValueError, match="one flat list of numbers"):
+        series_io._clean("series", [{"v": 1}, 2])
+    with pytest.raises(ValueError, match="not numbers"):
+        series_io._clean("series", ["1", "2"])
+    with pytest.raises(ValueError, match="not numbers"):
+        series_io._clean("series", [1, True, 3])
+    assert series_io._clean("series", [1, 2.5, None][:2]).tolist() == [1.0, 2.5]
+    with pytest.raises(ValueError, match="missing or non-finite"):
+        series_io._clean("series", [1, None, 3])
+
+
 def test_a_series_name_that_is_not_text_is_refused_with_the_fix(sandbox):
     from prophet_agent.tools import series_io
     rid = "2" * 32

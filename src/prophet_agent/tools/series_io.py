@@ -33,6 +33,12 @@ def _clean(name: str, raw: Any) -> np.ndarray:
         raise ValueError(f"series {name!r} must be a non-empty list of numbers")
     if len(raw) > MAX_SERIES:
         raise ValueError(f"series {name!r} has {len(raw)} points; the limit is {MAX_SERIES}")
+    # Round 6m: numpy turned a nested list into a two-dimensional array and text such as "1" into a number without a word.
+    # Both are refused here, with the form the values must take.
+    if any(isinstance(v, (list, tuple, dict)) for v in raw):
+        raise ValueError(f"series {name!r} must be one flat list of numbers, not a list of lists or objects")
+    if any(isinstance(v, (str, bool)) for v in raw):
+        raise ValueError(f"series {name!r} contains values that are not numbers (text or true/false); give numbers only")
     try:
         arr = np.asarray(raw, dtype=np.float64)
     except (TypeError, ValueError):
