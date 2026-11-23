@@ -122,7 +122,11 @@ def draws(n: int = 1000, periods: int = 8, rho: float = 0.1, seed: int = 11) -> 
 def quantile_points(q: np.ndarray, lower: float = 0.6, upper: float = 0.6) -> tuple[np.ndarray, np.ndarray]:
     """Levels and values of a piecewise-linear quantile function from nine quantiles, with tapered tails."""
     q = np.sort(np.asarray(q, dtype=float))
-    lo = max(0.0, q[0] - lower * (q[4] - q[0]))
+    lo = q[0] - lower * (q[4] - q[0])
+    # A demand quantile function is floored at zero; one that is negative throughout (a balance, a margin) is not clipped.
+    # Clipping it made the tail interpolate from 0 down to the 10th percentile, so the lower tail was cut off (R6m probe).
+    if q[0] >= 0:
+        lo = max(0.0, lo)
     hi = q[8] + upper * (q[8] - q[4])
     us = np.concatenate([[0.0], LEVELS, [1.0]])
     vals = np.concatenate([[lo], q, [hi]])
