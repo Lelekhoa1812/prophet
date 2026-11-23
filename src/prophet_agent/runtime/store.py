@@ -149,6 +149,9 @@ _MISSION_COLUMNS_V2 = {
     "archived": "INTEGER NOT NULL DEFAULT 0",
 }
 ACTIVE = ("created", "running", "waiting_user")
+# A turn that is "created" with no lease has not been started yet. The sweep leaves it alone until it has waited this long
+# (round 6m): a fresh turn is about to start, and freeing its notebook would let a second turn begin beside it.
+STARTUP_GRACE_S = 300.0
 
 
 def canonical(obj: Any) -> str:
@@ -191,8 +194,10 @@ class Store:
         self.conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
-        # Leases this process holds, by mission: the owner each mission's writes must still match (see _fence).
+        # Leases this process holds, by mission: the owner that last acquired each mission through this store (see _fence).
         self._owned: dict[str, str] = {}
+        # The runtime on whose behalf the current call runs. Set only by LeaseBound, under the lock, for the length of one call.
+        self._caller: str | None = None
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -278,7 +283,7 @@ class Store:
             c.execute("INSERT INTO missions (id, goal, status, budget_json, created, updated, notebook_id, seq, "
                       "parent_turn_id) VALUES (?,?,?,?,?,?,?,?,?)",
                       (mission_id, goal, "created", canonical(budget), now, now, notebook_id, seq, parent_turn_id))
-        self.append_event(mission_id, "mission.created", {"goal": goal, "budget": budget, "notebook_id": notebook_id})
+            self._emit(c, mission_id, "mission.created", {"goal": goal, "budget": budget, "notebook_id": notebook_id})
         return mission_id
 
     def request_cancel(self, mission_id: str) -> bool:
@@ -312,7 +317,7 @@ class Store:
         with self._tx() as c:
             self._fence(c, mission_id)
             c.execute("UPDATE missions SET status=?, updated=? WHERE id=?", (status, time.time(), mission_id))
-        self.append_event(mission_id, "mission.status", {"status": status})
+            self._emit(c, mission_id, "mission.status", {"status": status})
 
     def set_budget(self, mission_id: str, budget: dict) -> None:
         with self._tx() as c:
@@ -327,18 +332,33 @@ class Store:
                       (canonical(answer), time.time(), mission_id))
 
     def _fence(self, c: sqlite3.Connection, mission_id: str) -> None:
-        """Refuse a write to a mission this process leased when the lease now belongs to someone else.
+        """Refuse a write to a mission whose lease this runtime no longer holds.
 
         Motivation (audit: runtime store.py:409-437, HIGH): writes did not check the lease owner, so a runtime whose lease
         had been taken over kept writing events, steps and tool results beside the new owner.
-        Logic: only for a mission this process holds (``_owned``). The owner is read in the same transaction as the write,
-        so a takeover cannot slip between the check and the write. Writes from elsewhere (the service, a cancel) are unchanged.
+        Round 6m: the check compared the database owner with the owner that last acquired the mission through this store,
+        which says nothing about who is writing. A stalled runtime on the same store passed once another runtime had
+        taken the mission over; and a sweep that dropped the record unfenced a lapsed runtime altogether.
+        Logic: ``_owned`` names the owner that holds the mission on this store. A write made by a runtime (``_caller`` set
+        by LeaseBound) must come from that owner, and the database must still name it, both read in the write's own
+        transaction. A write from outside the runner (the service's cancel, a clear) is refused only while a different
+        runtime holds the lease; with no lease, or none held by anyone, it goes through as before.
         """
-        owner = self._owned.get(mission_id)
-        if owner is None:
-            return
+        expected = self._owned.get(mission_id)
+        caller = self._caller
+        if expected is None:
+            if caller is None:
+                return                                   # not leased through this store: an outside write, unchanged
+            raise LeaseLost(f"mission {mission_id} is not leased to this runtime")
         row = c.execute("SELECT lease_owner FROM missions WHERE id=?", (mission_id,)).fetchone()
-        if row is None or row["lease_owner"] != owner:
+        if row is None:
+            raise LeaseLost(f"mission {mission_id} no longer exists")
+        holder = row["lease_owner"]
+        if caller is None:
+            if holder is not None and holder != expected:
+                raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
+            return
+        if caller != expected or holder != expected:
             raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
 
     def _fence_key(self, c: sqlite3.Connection, key: str) -> None:
@@ -356,7 +376,7 @@ class Store:
                 (owner, now + ttl_s, mission_id, owner, now))
             if cur.rowcount != 1:
                 raise LeaseHeld(f"mission {mission_id} is leased by another runtime")
-        self._owned[mission_id] = owner
+            self._owned[mission_id] = owner
 
     def renew_lease(self, mission_id: str, owner: str, ttl_s: float) -> None:
         """Extend the lease. Raises LeaseLost when this runtime no longer holds it (it expired and another runtime
@@ -374,34 +394,42 @@ class Store:
         ``exclude`` names missions a live worker in this process is running, which are never touched."""
         now = time.time()
         with self._tx() as c:
-            ids = [r["id"] for r in c.execute(
-                "SELECT id FROM missions WHERE status IN ('created','running') "
-                "AND (lease_owner IS NULL OR lease_until<?)", (now,)).fetchall() if r["id"] not in exclude]
+            # Running with a lapsed or missing lease: its runtime died. Created: a lease that lapsed (a start that died after
+            # taking it), or no lease and older than the startup grace (a turn whose start never came).
+            rows = c.execute(
+                "SELECT id FROM missions WHERE (status='running' AND (lease_owner IS NULL OR lease_until<?)) "
+                "OR (status='created' AND ((lease_owner IS NULL AND updated<?) OR (lease_owner IS NOT NULL AND lease_until<?)))",
+                (now, now - STARTUP_GRACE_S, now)).fetchall()
+            ids = [r["id"] for r in rows if r["id"] not in exclude]
             for mid in ids:
                 c.execute("UPDATE missions SET status='interrupted', lease_owner=NULL, lease_until=0, updated=? "
                           "WHERE id=?", (now, mid))
-        for mid in ids:
-            self._owned.pop(mid, None)      # the lease lapsed, so this process no longer holds it (see _fence)
-        for mid in ids:
-            self.append_event(mid, "mission.status", {"status": "interrupted",
+                self._emit(c, mid, "mission.status", {"status": "interrupted",
                                                       "reason": "the runtime stopped before this mission finished"})
+        # The record of who held the lease is kept: a runtime that stalled past its lease is still fenced by the database
+        # check in _fence, and must not regain the mission's writes because a sweep ran on this store (round 6m).
         return ids
 
     def release_lease(self, mission_id: str, owner: str) -> None:
         with self._tx() as c:
             c.execute("UPDATE missions SET lease_owner=NULL, lease_until=0 WHERE id=? AND lease_owner=?",
                       (mission_id, owner))
-        if self._owned.get(mission_id) == owner:
-            del self._owned[mission_id]
+            if self._owned.get(mission_id) == owner:
+                del self._owned[mission_id]
 
     # -- event log ---------------------------------------------------------------------------------------------
 
     def append_event(self, mission_id: str, kind: str, payload: dict) -> int:
         with self._tx() as c:
             self._fence(c, mission_id)
-            cur = c.execute("INSERT INTO events (mission_id, kind, payload_json, ts) VALUES (?,?,?,?)",
-                            (mission_id, kind, canonical(payload), time.time()))
-            return int(cur.lastrowid)
+            return self._emit(c, mission_id, kind, payload)
+
+    def _emit(self, c: sqlite3.Connection, mission_id: str, kind: str, payload: dict) -> int:
+        """Write an event inside the caller's transaction, so a state change and its event commit or fail together (round
+        6m). A crash between the two used to leave a finished step with no event, or a waiting mission with no record."""
+        cur = c.execute("INSERT INTO events (mission_id, kind, payload_json, ts) VALUES (?,?,?,?)",
+                        (mission_id, kind, canonical(payload), time.time()))
+        return int(cur.lastrowid)
 
     def events(self, mission_id: str, after_seq: int = 0) -> list[dict]:
         with self.lock:
@@ -439,13 +467,19 @@ class Store:
                  "output": (json.loads(r["output_json"]) or {}).get("v") if r["output_json"] else None}
                 for r in rows]
 
-    def finish_step(self, mission_id: str, idx: int, name: str, output: Any) -> None:
+    def finish_step(self, mission_id: str, idx: int, name: str, output: Any) -> bool:
+        """Record a finished step with its event, in one transaction. The first finished result at a position is the one
+        kept: a later write there does not replace it (round 6m), so every replay returns what the ledger holds. Returns
+        True when this call recorded the step, False when the position was already finished."""
         with self._tx() as c:
             self._fence(c, mission_id)
-            c.execute("INSERT INTO steps (mission_id, idx, name, status, output_json, attempts, updated) "
-                      "VALUES (?,?,?,?,?,?,?) ON CONFLICT(mission_id, idx) DO UPDATE SET "
-                      "status='done', output_json=excluded.output_json, updated=excluded.updated",
-                      (mission_id, idx, name, "done", canonical(output), 1, time.time()))
+            cur = c.execute("INSERT INTO steps (mission_id, idx, name, status, output_json, attempts, updated) "
+                            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(mission_id, idx) DO NOTHING",
+                            (mission_id, idx, name, "done", canonical(output), 1, time.time()))
+            if cur.rowcount != 1:
+                return False
+            self._emit(c, mission_id, "step.done", {"idx": idx, "name": name})
+            return True
 
     # -- tool calls --------------------------------------------------------------------------------------------
 
@@ -467,9 +501,12 @@ class Store:
                       (key, mission_id, step_idx, tool, canonical(args), "started", time.time(), lane))
 
     def tool_set(self, key: str, status: str, result: Any = None, error: str | None = None) -> None:
+        """Record a call's outcome. A call marked done is final: a later write cannot downgrade it to failed or replace its
+        result (round 6m), so a replay always returns the first result the tool gave."""
         with self._tx() as c:
             self._fence_key(c, key)
-            c.execute("UPDATE tool_calls SET status=?, result_json=?, error=?, updated=? WHERE idem_key=?",
+            c.execute("UPDATE tool_calls SET status=?, result_json=?, error=?, updated=? "
+                      "WHERE idem_key=? AND status!='done'",
                       (status, canonical(result) if result is not None else None, error, time.time(), key))
 
     def wipe_ledger(self) -> dict[str, int]:
@@ -478,6 +515,12 @@ class Store:
         order = ("events", "steps", "tool_calls", "questions", "agent_notes", "sources", "derived_versions", "derived_tables",
                  "missions", "notebooks")
         with self._tx() as c:
+            # Checked again here, inside the wipe's transaction: a mission that took a lease after the caller's check must
+            # stop the wipe, not lose its ledger under it (round 6m).
+            live = c.execute("SELECT COUNT(*) AS n FROM missions WHERE lease_owner IS NOT NULL AND lease_until>?",
+                             (time.time(),)).fetchone()["n"]
+            if live:
+                raise RuntimeError("a mission is still running; stop it before clearing data")
             present = {r["name"] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()}
             tables = [t for t in order if t in present] + sorted(present - set(order))
@@ -567,13 +610,46 @@ class Store:
 
     # -- questions ---------------------------------------------------------------------------------------------
 
-    def open_question(self, mission_id: str, tool_key: str, payload: dict) -> str:
+    def open_question(self, mission_id: str, tool_key: str, payload: dict) -> str | None:
+        """Open the question for a waiting call, or find the one already open for it. Returns None when the call was
+        already answered, in which case the caller reads the stored answers. The check and the open are one transaction, so
+        an answer cannot land between them and be lost or asked again (round 6m)."""
         qid = uuid.uuid4().hex
         with self._tx() as c:
             self._fence(c, mission_id)
+            call = c.execute("SELECT status FROM tool_calls WHERE idem_key=?", (tool_key,)).fetchone()
+            if call is not None and call["status"] == "done":
+                return None
+            c.execute("UPDATE tool_calls SET status='waiting', updated=? WHERE idem_key=? AND status!='done'",
+                      (time.time(), tool_key))
+            open_row = c.execute("SELECT id FROM questions WHERE mission_id=? AND tool_key=? AND status='open'",
+                                 (mission_id, tool_key)).fetchone()
+            if open_row is not None:
+                return open_row["id"]
             c.execute("INSERT INTO questions (id, mission_id, tool_key, payload_json, status, created) "
                       "VALUES (?,?,?,?,?,?)", (qid, mission_id, tool_key, canonical(payload), "open", time.time()))
+            self._emit(c, mission_id, "question.opened", {"question": qid})
         return qid
+
+    def mark_waiting(self, mission_id: str, question_id: str) -> str:
+        """A run that asked a question is about to pause. In one transaction: if the question is still open, the mission
+        becomes waiting_user and its lease is released; if it was answered meanwhile, nothing changes and the run must go
+        on; otherwise it was cancelled. Returns "waiting", "answered" or "cancelled" (round 6m: an answer that landed
+        during the pause used to leave a waiting mission with nothing open to resume it)."""
+        with self._tx() as c:
+            self._fence(c, mission_id)
+            row = c.execute("SELECT status FROM questions WHERE id=? AND mission_id=?",
+                            (question_id, mission_id)).fetchone()
+            if row is None:
+                raise KeyError(f"no question {question_id} in mission {mission_id}")
+            if row["status"] == "answered":
+                return "answered"
+            if row["status"] != "open":
+                return "cancelled"
+            c.execute("UPDATE missions SET status='waiting_user', updated=?, lease_owner=NULL, lease_until=0 WHERE id=?",
+                      (time.time(), mission_id))
+            self._emit(c, mission_id, "mission.status", {"status": "waiting_user"})
+            return "waiting"
 
     def open_questions(self, mission_id: str) -> list[dict]:
         with self.lock:
@@ -597,12 +673,44 @@ class Store:
                             (question_id,)).fetchone()
             if row is None:
                 raise KeyError(f"no question {question_id}")
-            if row["status"] != "open":
+            if row["status"] == "answered":
                 raise ValueError("question already answered")
+            if row["status"] != "open":
+                raise ValueError("question is no longer open")
             self._fence(c, row["mission_id"])
+            now = time.time()
             c.execute("UPDATE questions SET status='answered', answers_json=?, answered=? WHERE id=?",
-                      (canonical(answers), time.time(), question_id))
+                      (canonical(answers), now, question_id))
             c.execute("UPDATE tool_calls SET status='done', result_json=?, updated=? WHERE idem_key=?",
-                      (canonical({"answers": answers}), time.time(), row["tool_key"]))
-        self.append_event(row["mission_id"], "question.answered", {"question": question_id})
+                      (canonical({"answers": answers}), now, row["tool_key"]))
+            self._emit(c, row["mission_id"], "question.answered", {"question": question_id})
         return {"mission_id": row["mission_id"]}
+
+
+class LeaseBound:
+    """One runtime's view of a Store. Every call made through it runs with that runtime as the caller, so the write fence
+    checks that this runtime, and not another that has used the same Store, still holds the lease (round 6m, Store._fence).
+    Methods are called as on the Store; only the caller differs. The lock is held for the whole call, so a call from
+    another thread never sees this caller."""
+
+    def __init__(self, store: Store, owner: str):
+        self._store = store
+        self._owner = owner
+
+    def __getattr__(self, name: str):
+        if name in ("_store", "_owner"):            # not yet set (copy or pickle): never look these up on the store
+            raise AttributeError(name)
+        attr = getattr(self._store, name)
+        if not callable(attr):
+            return attr
+        store, owner = self._store, self._owner
+
+        def bound(*args, **kwargs):
+            with store.lock:
+                previous = store._caller
+                store._caller = owner
+                try:
+                    return attr(*args, **kwargs)
+                finally:
+                    store._caller = previous
+        return bound
