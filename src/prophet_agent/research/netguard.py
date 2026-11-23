@@ -296,8 +296,7 @@ class Robots:
             try:
                 if response.status_code != 200:
                     return None
-                response.read()
-                text = response.text[:ROBOTS_MAX_BYTES]
+                body, _ = read_capped(response, ROBOTS_MAX_BYTES, time.monotonic() + self._timeout)
             finally:
                 response.close()
         except Exception:
@@ -306,7 +305,7 @@ class Robots:
             if owned:
                 client.close()
         parser = urllib.robotparser.RobotFileParser()
-        parser.parse(text.splitlines())
+        parser.parse(body.decode("utf-8", errors="replace").splitlines())
         return parser
 
 

@@ -80,6 +80,24 @@ def test_redirects_share_one_time_budget(monkeypatch):
     assert page.ok is False and "within 30 seconds" in page.note
 
 
+def test_robots_txt_is_read_only_up_to_the_size_cap():
+    total = {"bytes": 0}
+
+    def trickle_robots():
+        for _ in range(200):                      # 200 pieces of 64 KB: 12.8 MB if read whole
+            piece = b"# " + b"x" * (64 * 1024 - 2)
+            total["bytes"] += len(piece)
+            yield piece
+
+    def handler(request):
+        return httpx.Response(200, content=trickle_robots())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    robots = Robots(client=client, resolver=public_resolver)
+    assert robots.allowed("https://news.example.com/anything") is True
+    assert total["bytes"] <= ROBOTS_MAX_BYTES + 64 * 1024
+
+
 def test_read_capped_reports_why_it_stopped():
     class Body:
         def __init__(self, pieces):
