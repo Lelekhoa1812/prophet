@@ -272,18 +272,36 @@ def _tool_calls(acc: Mapping[int, dict]) -> tuple[dict, ...]:
     return tuple(out)
 
 
-def _accumulate(acc: dict[int, dict], deltas: Sequence[Mapping[str, Any]] | None) -> None:
-    for tc in deltas or []:
-        idx = int(tc.get("index") or 0)
+def _accumulate(acc: dict[int, dict], deltas: Any) -> None:
+    """Joins tool-call deltas by index. A delta of the wrong shape is unreadable, like broken JSON: it raises ValueError,
+    which the caller treats as a failed attempt (the key cools and the next one is tried), never as a crash."""
+    if deltas is None:
+        return
+    if not isinstance(deltas, list):
+        raise ValueError("tool_calls is not a list")
+    for tc in deltas:
+        if not isinstance(tc, dict):
+            raise ValueError("tool call delta is not an object")
+        try:
+            idx = int(tc.get("index") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tool call index is not a number") from exc
         item = acc.setdefault(idx, {"id": None, "name": "", "args": ""})
         if tc.get("id"):
             item["id"] = tc["id"]
         fn = tc.get("function") or {}
-        if fn.get("name") and not item["name"]:
-            item["name"] = fn["name"]
+        if not isinstance(fn, dict):
+            raise ValueError("tool call function is not an object")
+        name = fn.get("name")
+        if name and not isinstance(name, str):
+            raise ValueError("tool call name is not text")
+        if name and not item["name"]:
+            item["name"] = name
         args = fn.get("arguments")
         if isinstance(args, dict):
             args = json.dumps(args)
+        if args is not None and not isinstance(args, str):
+            raise ValueError("tool call arguments are not text")
         item["args"] += args or ""
 
 
@@ -877,14 +895,23 @@ class NimClient:
                     if data == "[DONE]":
                         break
                     ev = json.loads(data)
-                    if isinstance(ev, dict) and ev.get("error") is not None:
+                    if not isinstance(ev, dict):
+                        raise ValueError("stream event is not a JSON object")     # unreadable: fails over like broken JSON
+                    if ev.get("error") is not None:
                         # A gateway can fail after HTTP 200 (FreeRouter sends an error frame and no [DONE]). It is
                         # classified as the HTTP status its code stands for, so a refusal is never read as an empty reply.
                         return self._stream_error(key, model, slot, ev["error"], emitted, parts, opts, shape, started)
                     usage = ev.get("usage") or usage
-                    for ch in ev.get("choices") or []:
+                    choices = ev.get("choices") or []
+                    if not isinstance(choices, list):
+                        raise ValueError("stream choices is not a list")
+                    for ch in choices:
+                        if not isinstance(ch, dict):
+                            raise ValueError("stream choice is not an object")
                         finish = ch.get("finish_reason") or finish
                         delta = ch.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            raise ValueError("stream delta is not an object")
                         piece = _content_text(delta.get("content"))
                         if piece:
                             parts.append(piece)
