@@ -544,6 +544,8 @@ def _panel_observe(result: dict) -> dict:
             # The health check reads TimesFM's own line; with another centre it is not a verdict on the line drawn
             # (live electricity rep14: flat_expected for all 60 clients under the pooled blend).
             line["health_of"] = "TimesFM's line, not the drawn centre"
+        if _window(fc):
+            line["window"] = _window(fc)
         if head["withheld"]:
             line["total_withheld"] = head["withheld"]
         if health.get("verdict") in ("check", "flat_unexpected") and health.get("causes"):
@@ -592,6 +594,20 @@ def _table(fc: dict) -> dict:
     return out
 
 
+def _window(fc: dict) -> dict | None:
+    """The first and last forecast dates and the step count, so the answer can state the period it covers.
+
+    Motivation vs Logic
+    Motivation (live retail e6caf00e, rep9, 2026-11-23): the forecast had its dates, and the table carried them, but no line
+    named the window, so the answer stated the total without its period. The window is now a field of its own.
+    Logic: the first and last of ``future_dates``; None when the forecast has no dates.
+    """
+    ahead = fc.get("future_dates")
+    if not ahead:
+        return None
+    return {"first": ahead[0], "last": ahead[-1], "steps": len(ahead)}
+
+
 def observe(result: dict) -> dict:
     from prophet_agent.tools.timesfm_tool import _compact
     if "n_series" in result:
@@ -606,6 +622,8 @@ def observe(result: dict) -> dict:
            "total_range_80": total_range(result["forecast"]),
            "table": _table(result["forecast"]),
            "deliverables": "built and listed in the manifest; no further build is needed"}
+    if _window(result["forecast"]):
+        out["window"] = _window(result["forecast"])
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
     if isinstance(result["forecast"].get("centre"), dict):
