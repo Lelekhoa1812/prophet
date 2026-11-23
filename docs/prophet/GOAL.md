@@ -889,3 +889,62 @@ bodies; the widened `redact()` also masks name=value text in sandbox output; the
 backtest; the untested modules `nim/probe.py`, `api/panels.py`, `api/sharing.py`, `api/bundle.py` and `api/__main__.py`.
 
 Gate on the combined tree: 2,112 passed, 1 skipped, 4 deselected, 0 failed (372 s).
+
+### Round 6m: merged sub-agent branches, API write atomicity, lease fence and shutdown (fixed 2026-11-23, main 3989713)
+
+Each branch was reproduced before it changed code, tested on its own worktree, merged to main and pushed. The full gate was
+re-run on the combined tree after the last code change.
+
+- **Top-level modules** (`settings.py`, `notebooks.py`, `mcp_server.py`, `config.py`, `datasets.py`, `mentions.py`, merged as
+  85edb9d). MCP errors, timeouts and argument checks are explicit; settings keys are masked and written atomically; a stored
+  `.env` value keeps no trailing note; a damaged dataset metadata file no longer breaks the upload list; `make_card` no longer
+  loops forever on a blank title; a notebook version of 0 names version 0 (it was treated as "no version"); a mention always
+  stays a readable link. Six test files, `test_r6m_top_*.py`.
+- **Redaction false positives** (`nim/errors.py`, merged as c6025d9). A bare `token=` masks only in a URL query, as `key=` already
+  does; `api_key`, `access_token`, `auth_token`, `secret` and `password` mask everywhere. Real key shapes still mask. The 7
+  strict-xfail tests in `test_r6m_redaction_false_positives.py` now pass with no xfail marker.
+  **Trade-off for the owner:** a `Bearer` or `sk-` value with no digit (for example `Bearer abcdefgh`) now prints unmasked.
+- **PUT /api/settings is all-or-nothing** (`api/app.py`, a93ae9b). The route dry-runs the whole save with `settings.check_save`
+  before any write. A valid limit sent with a malformed key was saved before the key was refused; a regression test fails
+  without the change and passes with it.
+- **Answer and cancel paths under the lease fence** (`api/service.py`, merged as edce96a). `answer()` resumes an answer that
+  lands while its run is pausing, and treats `LeaseHeld` as "being run". `cancel()` closes a mission only when no live lease
+  is held, in one IMMEDIATE transaction. A notebook's provider rule is checked before an answer is recorded. Eleven tests in
+  `test_r6m_service_{answer,cancel,leases}.py`.
+- **Outside writes and stale owners** (`runtime/store.py`, f847276). `_fence` refused an outside write (cancel, budget) whenever
+  the database named another runtime as lease owner, even after that lease had lapsed. It now refuses only while a foreign
+  lease is live. `test_r6m_fence_stale_owner.py` (2 tests) fails under the old condition.
+- **Shutdown stops the orphan sweeper** (`api/service.py`, `api/app.py`, 3989713). The sweeper was a daemon thread with no
+  stop path, so it kept reading a store its owner had finished with; tests logged `orphan sweep failed: ProgrammingError`.
+  `MissionService.close()` stops and joins it, and the app lifespan calls `close()` on shutdown. `test_r6m_service_close.py`
+  (2 tests).
+
+Gate on the combined tree at 3989713: 2,483 passed, 1 skipped, 4 deselected, exit 0 (307 s). No orphan-sweep warnings.
+
+Known and not fixed in this round. Owner decisions are marked.
+
+- **Research** (`research/fetch.py`): the DNS lookup is not bounded by the deadline; gzip and brotli expand before the byte cap;
+  a robots.txt 5xx fails open; robots is not paced; the throttle sleep sits outside the deadline.
+- **Forecast**: seasonal naive under-covers random walks (synthetic, about 0.47); `choose_season` returns NaN and misaligns
+  dates; baselines propagate NaN; the DOCX shows small values as 0.00; "8 in 10" is hard-coded in `report_tool.py` and
+  `contracts.py`. Stored backtest, lab and TSB figures for the moving-average, seasonal-year and seasonal-naive bands are stale
+  and need regenerating.
+- **Runtime**: tool started, done and failed events are written in separate writes; argument-refusal classification is loose.
+  `archive()` does not check the lease. A provider rule that changes between `answer()`'s pre-check and `start()` can still
+  strand an answer.
+- **Tools**: consecutive identical appends are dropped silently; `goal.py` `_ARG_REFUSAL` charges refusals; `read_observation`
+  cannot page past 200k; `research_tools.py` has an undefined `Page` annotation.
+- **NIM** (NIM.md): the AWS Secrets Manager key source (§8) is not built; §5 rule 7 is not built; a 413 does not demote (pinned
+  by a test, to be reviewed).
+- **Sandbox**: the darwin memory cap is absent; `os.stat` and `os.path.exists` raise no audit event; `shm_open` and
+  `RLIMIT_NPROC` are not restricted.
+- **Goal loop and grounding**: 409 identical-output sandbox cells with different code; count nouns are blanked as identifiers;
+  a date-only question changes the replay; the no-backtest block is wider than its audit item; `_drop_row_indexes` ignores rows
+  without outer pipes; `sandbox_tool` stderr run paths.
+- **Synthetic generator** (top-level audit): `synth/generator.py` crashes when `n_items` is under 8; `synth/censor.py` mishandles
+  a non-integer latent; synthetic source labelling is incomplete; usage behaviour lacks tests. `.gitignore` lacks `.env.*`.
+- **Owner decision needed**: the redaction trade-off above.
+- **Worktrees**: `agent-a20d6af35060836c5`, `agent-a8a099c3eda9246a3`, `agent-a7cf04b87537a34d9` and `agent-a36045868ea93098d`
+  are locked by the Claude Code app process (PID 35675). All four branches are merged. Removal awaits the owner's go-ahead.
+- **Shutdown**: `MissionService.close()` stops the sweeper; the owner of the `Store` still closes the database, which the
+  service does not do. That is the next step.
