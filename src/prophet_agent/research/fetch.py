@@ -259,7 +259,8 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
             if reason:
                 return _failed(url, reason, final_url=current)
             crawl_delay = robots.crawl_delay(current) if isinstance(robots, Robots) else None
-            throttle.wait(urlsplit(current).netloc.lower(), min_interval=crawl_delay)
+            if throttle.wait(urlsplit(current).netloc.lower(), min_interval=crawl_delay, deadline=deadline) is None:
+                return _failed(url, f"no complete response within {total_seconds:g} seconds", final_url=current)
             try:
                 response = open_pinned(http, current, resolver=resolver, headers=HEADERS,
                                        timeout=min(timeout, max(deadline - time.monotonic(), 0.001)),

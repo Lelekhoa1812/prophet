@@ -325,21 +325,26 @@ class HostThrottle:
     """Spaces requests to the same host at least ``min_interval`` seconds apart. Safe across threads: each caller
     reserves its own slot under the lock and then sleeps outside it."""
 
-    def __init__(self, min_interval: float = 1.0, *, clock: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], None] = time.sleep):
+    def __init__(self, min_interval: float = 1.0, *, clock: Callable[[], float] | None = None,
+                 sleep: Callable[[float], None] | None = None):
+        # The defaults look up time at call time, so the deadlines a fetch passes in are on the same clock as the slots.
         self.min_interval = float(min_interval)
-        self._clock = clock
-        self._sleep = sleep
+        self._clock = clock or (lambda: time.monotonic())
+        self._sleep = sleep or (lambda seconds: time.sleep(seconds))
         self._next: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def wait(self, host: str, min_interval: float | None = None) -> float:
+    def wait(self, host: str, min_interval: float | None = None, deadline: float | None = None) -> float | None:
         """Reserve the host's next slot and sleep until it comes. ``min_interval`` (robots.txt Crawl-delay) lengthens the
-        gap after this request when it is longer than the throttle's own interval."""
+        gap after this request when it is longer than the throttle's own interval. When the slot would come at or after
+        ``deadline`` (a time.monotonic value on this throttle's clock), nothing is reserved or slept and None is returned,
+        so a throttled request never outlasts its deadline."""
         gap = max(self.min_interval, float(min_interval or 0.0))
         with self._lock:
             now = self._clock()
             slot = max(now, self._next.get(host, now))
+            if deadline is not None and slot >= deadline:
+                return None
             self._next[host] = slot + gap
         delay = slot - now
         if delay > 0:
@@ -421,8 +426,8 @@ class Robots:
         robots_url = f"{origin}/robots.txt"
         owned = self._client is None
         client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=False)
-        if throttle is not None:
-            throttle.wait(urlsplit(origin).netloc.lower())
+        if throttle is not None and throttle.wait(urlsplit(origin).netloc.lower(), deadline=deadline) is None:
+            return False, _Entry(None)   # no slot before the deadline: the answer is not known, so it is not cached
         try:
             response = open_pinned(client, robots_url, resolver=self._resolver,
                                    headers={"User-Agent": self._agent, "Accept-Encoding": "gzip, deflate"},
