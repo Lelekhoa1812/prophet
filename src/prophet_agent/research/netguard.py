@@ -333,11 +333,14 @@ class HostThrottle:
         self._next: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def wait(self, host: str) -> float:
+    def wait(self, host: str, min_interval: float | None = None) -> float:
+        """Reserve the host's next slot and sleep until it comes. ``min_interval`` (robots.txt Crawl-delay) lengthens the
+        gap after this request when it is longer than the throttle's own interval."""
+        gap = max(self.min_interval, float(min_interval or 0.0))
         with self._lock:
             now = self._clock()
             slot = max(now, self._next.get(host, now))
-            self._next[host] = slot + self.min_interval
+            self._next[host] = slot + gap
         delay = slot - now
         if delay > 0:
             self._sleep(delay)
@@ -377,10 +380,11 @@ class Robots:
         self._cache: dict[str, _Entry] = {}
         self._lock = threading.Lock()
 
-    def check(self, url: str, *, deadline: float | None = None) -> str | None:
-        """The reason robots.txt refuses ``url``, or None when it allows it. The robots.txt lookup and request are
-        bounded by ``deadline`` (a time.monotonic value); a lookup cut short by it is not cached, so it is asked again."""
-        entry = self._entry(origin_of(urlsplit(url)), deadline)
+    def check(self, url: str, *, deadline: float | None = None, throttle: HostThrottle | None = None) -> str | None:
+        """The reason robots.txt refuses ``url``, or None when it allows it. The robots.txt request takes a slot on
+        ``throttle`` like any other request to that host. The lookup and request are bounded by ``deadline`` (a
+        time.monotonic value); a lookup cut short by it is not cached, so it is asked again."""
+        entry = self._entry(origin_of(urlsplit(url)), deadline, throttle)
         if entry is None:
             return None
         if entry.closed:
@@ -389,25 +393,36 @@ class Robots:
             return None
         return None if entry.parser.can_fetch(self._agent, url) else "disallowed by robots.txt"
 
-    def allowed(self, url: str, *, deadline: float | None = None) -> bool:
-        return self.check(url, deadline=deadline) is None
+    def allowed(self, url: str, *, deadline: float | None = None, throttle: HostThrottle | None = None) -> bool:
+        return self.check(url, deadline=deadline, throttle=throttle) is None
 
-    def _entry(self, origin: str, deadline: float | None) -> _Entry | None:
+    def crawl_delay(self, url: str) -> float | None:
+        """The Crawl-delay robots.txt gives this agent for the origin of ``url``, once that origin's answer is cached."""
+        with self._lock:
+            entry = self._cache.get(origin_of(urlsplit(url)))
+        if entry is None or entry.parser is None:
+            return None
+        delay = entry.parser.crawl_delay(self._agent)
+        return float(delay) if delay is not None else None
+
+    def _entry(self, origin: str, deadline: float | None, throttle: HostThrottle | None) -> _Entry | None:
         """The cached answer for ``origin``; None when the answer is not known yet (the deadline cut it short)."""
         with self._lock:
             if origin in self._cache:
                 return self._cache[origin]
-        cacheable, entry = self._load(origin, deadline)
+        cacheable, entry = self._load(origin, deadline, throttle)
         if not cacheable:
             return None
         with self._lock:
             return self._cache.setdefault(origin, entry)
 
-    def _load(self, origin: str, deadline: float | None) -> tuple[bool, _Entry]:
+    def _load(self, origin: str, deadline: float | None, throttle: HostThrottle | None) -> tuple[bool, _Entry]:
         """(cacheable, entry). See the class docstring for each status."""
         robots_url = f"{origin}/robots.txt"
         owned = self._client is None
         client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=False)
+        if throttle is not None:
+            throttle.wait(urlsplit(origin).netloc.lower())
         try:
             response = open_pinned(client, robots_url, resolver=self._resolver,
                                    headers={"User-Agent": self._agent, "Accept-Encoding": "gzip, deflate"},

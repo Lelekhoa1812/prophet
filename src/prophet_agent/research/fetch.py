@@ -255,10 +255,11 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
             except UnsafeURL as exc:
                 return _failed(url, f"refused: {exc}", final_url=current)
             # robots.txt is per origin, so every hop is checked against the origin it is about to contact
-            reason = _robots_reason(robots, current, deadline)
+            reason = _robots_reason(robots, current, deadline, throttle)
             if reason:
                 return _failed(url, reason, final_url=current)
-            throttle.wait(urlsplit(current).netloc.lower())
+            crawl_delay = robots.crawl_delay(current) if isinstance(robots, Robots) else None
+            throttle.wait(urlsplit(current).netloc.lower(), min_interval=crawl_delay)
             try:
                 response = open_pinned(http, current, resolver=resolver, headers=HEADERS,
                                        timeout=min(timeout, max(deadline - time.monotonic(), 0.001)),
@@ -281,10 +282,10 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
             http.close()
 
 
-def _robots_reason(robots, url: str, deadline: float) -> str | None:
+def _robots_reason(robots, url: str, deadline: float, throttle: HostThrottle) -> str | None:
     """Why robots.txt refuses ``url``, or None. A caller's own robots object with only ``allowed(url)`` is honoured too."""
     if isinstance(robots, Robots):
-        return robots.check(url, deadline=deadline)
+        return robots.check(url, deadline=deadline, throttle=throttle)
     return None if robots.allowed(url) else "disallowed by robots.txt"
 
 
