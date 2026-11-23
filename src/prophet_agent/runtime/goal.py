@@ -1303,7 +1303,10 @@ def _stalled(history: list[dict], window: int) -> bool:
     """Stalled when the newest ``window`` tool calls are the same call with the same outcome (run ids aside), or when the newest
     ERROR_STALL calls failed the same way even with different code: the planner is not converging. Two calls taking turns
     (A, B, A with a window of 3; A, B, A, B with 4) are a loop too when each returns the same outcome it returned before:
-    a call that changed nothing it reads back is not progress."""
+    a call that changed nothing it reads back is not progress.
+    A refused argument list ("rejected") is not a call: it is not charged, and it is not counted here either (GOAL.md
+    defect 5). Before, the same invalid call sent again reached ERROR_STALL and stopped the mission as stalled."""
+    history = [h for h in history if not h.get("rejected")]
     if _error_run(history) >= ERROR_STALL:
         return True
     tool_obs = [h for h in history if h.get("kind") == "tool"]
