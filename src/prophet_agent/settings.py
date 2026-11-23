@@ -452,7 +452,8 @@ class Settings:
         if keys:
             kept.append(f"{spec.key_list_var}={','.join(keys)}")
         body = "\n".join(kept).rstrip() + "\n"
-        self._write_text(self.dotenv, body, mode=0o600)
+        # The temp file holds the keys until the swap, so it goes in the git-ignored data folder, not beside .env.
+        self._write_text(self.dotenv, body, mode=0o600, temp_dir=self.data_root)
 
     # -- data utilities ----------------------------------------------------------------------------------------
 
@@ -501,12 +502,19 @@ class Settings:
         Settings._write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
     @staticmethod
-    def _write_text(path: Path, text: str, mode: int = 0o644) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    def _write_text(path: Path, text: str, mode: int = 0o644, temp_dir: Path | None = None) -> None:
+        """Replace ``path`` in one step: the new bytes are flushed to disk in a temp file, then swapped in, so a reader or
+        a crash sees the old file or the new one, never a part. ``temp_dir`` is where the temp file is made; it must be
+        on the same filesystem as ``path``. A temp file that a crash leaves behind is not removed, so keep it somewhere
+        git ignores."""
+        folder = temp_dir or path.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=f".{path.name}.")
         try:
             with os.fdopen(fd, "w") as fh:
                 fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
             os.chmod(tmp, mode)
             os.replace(tmp, path)
         except BaseException:

@@ -1,6 +1,10 @@
 """Round 6m: key storage in Settings. Every test uses a temporary .env and data folder; the repo .env is never read or written."""
 from __future__ import annotations
 
+import os
+import stat
+from pathlib import Path
+
 import pytest
 
 from prophet_agent import config
@@ -47,3 +51,44 @@ def test_keys_are_read_from_the_settings_own_dotenv_not_the_repo_file(settings, 
     assert settings.key_slots() == [], "a key in another file must not be used by this Settings"
     settings.set_keys(["nvapi-OWNKEYOWNKEY1234"])
     assert settings.key_slots() == ["nvapi-OWNKEYOWNKEY1234"]
+
+
+def test_the_env_file_is_replaced_from_a_temp_file_in_data_and_flushed_first(settings, monkeypatch):
+    events: list[tuple[str, str]] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        events.append(("fsync", ""))
+        return real_fsync(fd)
+
+    def replace(src, dst, *args, **kwargs):
+        events.append(("replace", str(src)))
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    settings.set_keys(["nvapi-ATOMICKEY12345678"])
+    kinds = [kind for kind, _ in events]
+    assert "fsync" in kinds and kinds.index("fsync") < kinds.index("replace"), "the key bytes reach disk before the swap"
+    temp = Path(events[kinds.index("replace")][1])
+    assert temp.parent == settings.data_root, "a temp file that a crash can leave behind must sit in the git-ignored data folder"
+    assert temp.parent != settings.dotenv.parent
+
+
+def test_a_failed_swap_leaves_the_old_env_intact_and_no_temp_file_behind(settings, monkeypatch):
+    settings.set_keys(["nvapi-ORIGINALKEY1234"])
+    before = settings.dotenv.read_text()
+
+    def refuse(src, dst, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError):
+        settings.set_keys(["nvapi-REPLACEMENT5678"])
+    assert settings.dotenv.read_text() == before
+    assert settings.key_slots() == ["nvapi-ORIGINALKEY1234"]
+    stray = [p.name for p in settings.dotenv.parent.iterdir() if p.name.startswith(".env")]
+    if settings.data_root.exists():
+        stray += [p.name for p in settings.data_root.iterdir() if p.name.startswith(".")]
+    assert stray == [".env"], "no temp file may keep a key outside the owner-only .env"
+    assert stat.S_IMODE(os.stat(settings.dotenv).st_mode) == 0o600
