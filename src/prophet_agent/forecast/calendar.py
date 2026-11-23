@@ -50,13 +50,15 @@ def infer_calendar(observed: Iterable[date]) -> dict:
     return {"calendar": best[0], "absent_share": round(best[1], 3), "holidays_checked": best[2], "scores": scores}
 
 
-def next_trading_days(last: date, n: int, calendar: str | None) -> list[date]:
-    """The ``n`` weekdays after ``last`` that are not holidays of ``calendar`` (plain weekdays when it is None)."""
+def next_trading_days(last: date, n: int, calendar: str | None,
+                      closed_weekdays: frozenset[int] = frozenset({5, 6})) -> list[date]:
+    """The ``n`` days after ``last`` on which the series trades: not a closed weekday (Saturday and Sunday by default; Monday
+    is 0, Sunday is 6) and not a holiday of ``calendar`` when one is given."""
     years = range(last.year, last.year + 3 + n // 200)
     skip = _weekday_holidays(calendar, years) if calendar else set()
     out, d = [], last
     while len(out) < n:
         d += timedelta(days=1)
-        if d.weekday() < 5 and d not in skip:
+        if d.weekday() not in closed_weekdays and d not in skip:
             out.append(d)
     return out

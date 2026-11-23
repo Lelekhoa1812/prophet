@@ -35,11 +35,14 @@ def _future_dates(dates: list[str], n: int) -> list[str] | None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")            # pandas is changing the return type of infer_freq; the string is what is used here
         freq = pd.infer_freq(idx[-min(len(idx), 90):])
-    if freq in ("B", "C") or (freq is None and _weekdays_only(idx)):
-        # A trading-day series: skip the holidays of the exchange calendar its history follows, not just weekends.
+    closed = _closed_weekdays(idx)
+    if freq in ("B", "C") or (freq is None and closed is not None):
+        # A trading-day series: skip the days it is shut (weekends, or one shut day such as a Saturday) and the holidays of
+        # the exchange calendar its history follows, when the history shows any.
         from prophet_agent.forecast.calendar import infer_calendar, next_trading_days
         cal = infer_calendar(t.date() for t in idx)
-        nxt = pd.DatetimeIndex([pd.Timestamp(d) for d in next_trading_days(idx[-1].date(), n, cal["calendar"])])
+        shut = closed if closed is not None else frozenset({5, 6})
+        nxt = pd.DatetimeIndex([pd.Timestamp(d) for d in next_trading_days(idx[-1].date(), n, cal["calendar"], shut)])
     elif freq:
         nxt = pd.date_range(idx[-1], periods=n + 1, freq=freq)[1:]
     else:
@@ -51,12 +54,22 @@ def _future_dates(dates: list[str], n: int) -> list[str] | None:
     return [t.strftime("%Y-%m-%d %H:%M") if (t.hour or t.minute) else t.strftime("%Y-%m-%d") for t in nxt]
 
 
-def _weekdays_only(idx) -> bool:
-    """True when a daily history has no weekend dates and its steps are one to four days (weekends and holidays)."""
+def _closed_weekdays(idx) -> frozenset[int] | None:
+    """The weekdays a daily history never trades on: the weekend, or one shut day such as a Saturday. None when the history
+    is not a daily calendar of whole days, or no weekday is missing from it (then the median step decides).
+
+    Live retail e6caf00e (2026-11-23): 633 days of a shop open Monday to Sunday and shut on Saturdays. The old rule wanted
+    Monday to Friday only, so the next dates were None and the answer stated no forecast window. The median-step fallback
+    also refused the series: its 105 Saturday gaps were 16.6% of the steps, over the 10% cap.
+    """
     if len(idx) < 20 or (idx.hour != 0).any():
-        return False
+        return None
     gaps = idx.to_series().diff().dropna().dt.days
-    return bool((idx.day_of_week < 5).all() and gaps.between(1, 4).all())
+    if not gaps.between(1, 4).all():
+        return None
+    open_days = {int(d) for d in idx.day_of_week}
+    closed = frozenset(set(range(7)) - open_days)
+    return closed if closed and len(open_days) >= 5 else None
 
 
 def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
