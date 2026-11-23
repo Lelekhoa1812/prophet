@@ -47,8 +47,10 @@ hosted block size and TTL are unverified [V-docs]. We will not depend on caching
 
 **Decision.** Use the NIM.md §4 contract, with four fixes over the reference client: a wall-clock budget bounds every
 HTTP request (F1); acquisition is non-blocking across keys (F2); Retry-After is honoured and capped at 120 s (F3); 401/403
-retire a key for 10 minutes rather than forever (F4); a model is demoted only on 404/410/413/503 or on an empty answer
-that did not stop for length (F5); usage is kept (F6).
+retire a key for 10 minutes rather than forever (F4); a model is demoted on 404 or 410, on 503 (an overload rests the model
+30 s, doubling on each repeat up to 300 s), on a model that sends nothing within the provider's silence limit (it then rests
+600 s), on an empty answer that did not stop for length, and when a schema reshape runs out. A 413 moves to the next model
+without demotion (F5); usage is kept (F6).
 
 **Live results (2026-11-20).**
 
@@ -166,8 +168,8 @@ session; the reverse-engineering (REA) tools were not connected, so no shipped b
 
 Decisions, with the evidence that forced each. Full reasoning: `reports/Principal analyst agent harness design.md`.
 
-1. **Skills are read on demand, not pasted into the planner.** Eleven playbooks in `src/prophet_agent/skills/` are served by the
-   `analyst_skill` tool (list, then read one). The planner prompt stays at rules 1 to 57; detail loads when a step needs it.
+1. **Skills are read on demand, not pasted into the planner.** Eighteen playbooks in `src/prophet_agent/skills/` are served by the
+   `analyst_skill` tool (list, then read one). The planner prompt (`planner.v25`, the current version, has 32 numbered rules) stays short; detail loads when a step needs it.
 2. **`ps` (prophet_stats) sits beside `pl` in the sandbox.** Every `prophet_*.py` module is copied into each run. `ps` is causal
    by default (trailing windows, one-sided imputers) and reports every change it makes. A cleaning step is kept only if
    `ps.backtest_treatment` says it helped on origins that never saw the data it was judged on.
@@ -269,7 +271,7 @@ contained (EUR/JPY "IMF 162.34", the agent's own segment mean), and delivered Ti
    no fetched page are removed and the removal is said. The composer sees both before it writes.
 4. **A state card** (newest file of each kind with its run id, backtest so far, sub-agent reports) is computed every step, so
    compaction cannot lose where the work stands.
-5. **One operating procedure** (`planner.v20`, 32 rules from 70): frame the decision, read the series' own clock, scan, hypotheses,
+5. **One operating procedure** (`planner.v20`, 32 rules numbered 1 to 32 in the file; the current `planner.v25` also has 32): frame the decision, read the series' own clock, scan, hypotheses,
    funnel, prepare, outside context, baselines, one treatment gate (control_lab), forecast, range, deliver. `composer.v6` writes in
    decision order.
 6. **The simple rule can be the centre line.** `backtest_series` reports wins, a paired bootstrap interval and a verdict over 12
