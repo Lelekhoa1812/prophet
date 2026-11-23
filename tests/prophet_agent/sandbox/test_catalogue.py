@@ -54,7 +54,7 @@ def test_the_planner_names_appear_with_their_real_keywords():
     text = catalogue.build_catalogue()
     assert "ps.hampel(x, window=7, n_sigmas=3.0, causal=True) -> (ndarray,dict)" in text
     assert "sc.scan(df, time_col, value_col, entity_cols=None, freq=None, max_entities=200) -> dict" in text
-    assert "pl.save_series(series, path='out/series.json', *, freq=None, covariates=None, name=None) -> str" in text
+    assert "pl.save_series(series, path='out/series.json', *, freq=None, covariates=None, name=None, provenance=None) -> str" in text
     assert "ps.Ledger()" in text and "entries" in text
 
 

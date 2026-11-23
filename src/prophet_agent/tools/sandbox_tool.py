@@ -10,6 +10,7 @@ stderr (the tail, where Python puts the error), and the list of output files; th
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from prophet_agent.runtime.runner import Tool
@@ -24,6 +25,34 @@ SEEN_STDERR = 1_500
 
 
 MAX_CARRY = 40          # a 12-entity panel saves a series and a scan per entity (live: 8 refused 7 calls)
+
+# Provenance guard (SciRes Mauna Loa run, steps 36 to 39): a cell that builds numbers and names an external source, and reads no
+# file from in/, would present invented numbers as that source. Detection is by text, so it is a guard, not a proof.
+GENERATES_NUMBERS = re.compile(
+    r"np\.random\.|numpy\.random\.|\brandom\.(?:seed|random|normal|uniform|randint|choice|gauss|shuffle|sample)\b"
+    r"|default_rng\(|\brng\.\w+\(|\.standard_normal\(|\.poisson\(|\.binomial\(|\.lognormal\(")
+TYPED_NUMBERS = re.compile(r"\[\s*-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){19,}\s*,?\s*\]")
+NAMED_SOURCE_ACRONYM = re.compile(r"\b(?:NOAA|GML|NASA|ABS|FRED|ECB|OECD|IMF|BLS|EIA|USGS|WMO|ONS|BoM|Eurostat)\b")  # case-sensitive
+NAMED_SOURCE = re.compile(
+    r"https?://|mauna\s+loa|bureau of (?:statistics|meteorology)|world bank|stats nz|statistics canada|census bureau",
+    re.IGNORECASE)
+READS_INPUT = re.compile(r"""['"]in/|['"]in['"]|\bread_(?:csv|excel|parquet|json|table)\(|\bload_series\(|\bpl\.(?:query|size_report|profile)\(""")
+
+
+def invented_source_reason(code: str) -> str | None:
+    """Why this cell must not run, or None. Refused: it builds numbers (a random generator or a typed list of 20 or more
+    numbers), its comments or prints name an external source, and it reads no file from in/. Plain random numbers, and a
+    bootstrap of an uploaded file, are allowed."""
+    if not (GENERATES_NUMBERS.search(code) or TYPED_NUMBERS.search(code)):
+        return None
+    named = NAMED_SOURCE_ACRONYM.search(code) or NAMED_SOURCE.search(code)
+    if named is None or READS_INPUT.search(code):
+        return None
+    return (f"refused: this cell builds numbers (a random generator or a typed list of numbers) and names the source "
+            f"{named.group(0)!r}, and it reads no file from in/. Numbers built here would be presented as that source. Read the "
+            "source's own file from in/ or a carried run, or retrieve it with web research and record its id and URL. If the "
+            "source was not retrieved, say so in the answer and build no stand-in values. Numbers that are only for a test or a "
+            "labelled synthetic replay must not name the source: label them synthetic.")
 
 
 def carried_inputs(carry) -> dict[str, Path]:
@@ -67,6 +96,9 @@ def make_run(datasets: dict[str, Path] | None = None):
             raise ValueError("code must be a non-empty string")
         if len(code) > MAX_CODE_CHARS:
             raise ValueError(f"code is longer than {MAX_CODE_CHARS} characters")
+        reason = invented_source_reason(code)
+        if reason:
+            raise ValueError(reason)
         # Round 4, A5-10: the idempotency key seeds the run id, so a re-run after a crash returns the finished run.
         run_id = _key[:32] if isinstance(_key, str) and len(_key) >= 32 else None
         carried = carried_inputs(args.get("carry"))
@@ -175,7 +207,7 @@ _SPEC_TEXT = (
     "carry=[{run_id, file: 'out/scan.json'}] and open it at in/carried/<file name>. "
     "Output you do not print, you do not see. A series written with pl.save_series or "
     "pl.save_panel can be forecast by passing source {run_id, file}. "
-    "Signatures (generated from the code; a keyword not listed is refused with the real signature):\n"
+    "Signatures (generated from the code; other keywords are refused):\n"
 )
 
 SANDBOX_PYTHON_SPEC = {

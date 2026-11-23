@@ -7,6 +7,9 @@ over by reference.
 Logic: ``values`` is a list of numbers. ``source`` names a sandbox run and a file in its ``out/`` folder (written with
 ``prophet_lib.save_series``), and optionally one series inside it. The run id must be a hex id and the file must stay
 inside ``out/``. Anything that is not a finite number is refused with a message that says what to fix.
+Provenance: a series file may carry a ``provenance`` block (origin retrieved, user or synthetic). ``resolve_series`` refuses a
+retrieved claim with no research fetch record, and a synthetic series that names a source. Motivation: SciRes run (2026-11-24)
+generated numbers with numpy and labelled them as NOAA data.
 """
 from __future__ import annotations
 
@@ -90,6 +93,95 @@ def source_path(args: dict) -> Path:
     return target
 
 
+PROVENANCE_ORIGINS = ("retrieved", "user", "synthetic")
+SOURCE_ID = re.compile(r"^S\d+$")          # the id web research gives each source it reads: S1, S2, ...
+HTTP_URL = re.compile(r"^https?://\S+$")
+
+
+def _fetch_record_exists(url: str) -> bool:
+    """True when the research cache holds a fetch record for this URL with ok set: the entry research/fetch.py writes after it
+    reads a page. A page the research never read has no record, so a claim to it is refused."""
+    from prophet_agent.research.search import cache_key, cache_root
+    try:
+        doc = json.loads((cache_root() / "pages" / f"{cache_key('page', url)}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and doc.get("ok") is True
+
+
+def check_provenance(raw: Any, name: str = "series") -> dict | None:
+    """The provenance block a series file or call carries, checked. None when nothing is recorded. Raises ValueError with the fix.
+
+    origin "retrieved": numbers copied from pages the research read. It names the source (source_name) and each page (sources:
+    [{id: 'S2', url}]), and each URL must have a research fetch record. origin "user": the person's own file. origin
+    "synthetic": generated for a test or a stand-in; it can never name a source, so it can never be read as one.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"provenance of {name!r} must be an object with origin, source_name and sources")
+    origin = raw.get("origin")
+    if origin not in PROVENANCE_ORIGINS:
+        raise ValueError(f"provenance of {name!r} needs origin: one of {', '.join(PROVENANCE_ORIGINS)}")
+    source_name = raw.get("source_name")
+    if source_name is not None and (not isinstance(source_name, str) or not source_name.strip()):
+        raise ValueError(f"provenance of {name!r}: source_name is the source's name, as text")
+    name_text = source_name.strip() if isinstance(source_name, str) else ""
+    if origin == "synthetic":
+        if name_text:
+            raise ValueError(f"series {name!r} is synthetic, so it cannot be labelled with the source {name_text!r}. Label it "
+                             "synthetic, or retrieve the source with web research and record its id and URL")
+        return {"origin": "synthetic"}
+    if origin == "user":
+        return {"origin": "user", **({"source_name": name_text} if name_text else {})}
+    sources = raw.get("sources")
+    if not name_text or not isinstance(sources, list) or not sources:
+        raise ValueError(f"series {name!r} claims a retrieved source, so it needs source_name and sources: a list of "
+                         "{id: 'S<n>', url} taken from the research record")
+    clean = []
+    for src in sources:
+        if not isinstance(src, dict):
+            raise ValueError(f"each source of {name!r} is an object with id and url")
+        sid, url = src.get("id"), src.get("url")
+        if not isinstance(sid, str) or not SOURCE_ID.match(sid):
+            raise ValueError(f"a source of {name!r} needs id: the research id, such as 'S2'")
+        if not isinstance(url, str) or not HTTP_URL.match(url.strip()):
+            raise ValueError(f"source {sid} of {name!r} needs a url that starts with http:// or https://")
+        if not _fetch_record_exists(url.strip()):
+            raise ValueError(f"source {sid} ({url.strip()}) has no fetch record, so the research did not read it. Fetch the page "
+                             "with web research first, or label the series synthetic or user-supplied")
+        clean.append({"id": sid, "url": url.strip()})
+    return {"origin": "retrieved", "source_name": name_text, "sources": clean}
+
+
+def series_provenance(args: dict) -> dict | None:
+    """The checked provenance of the series a call names: the block in the source file, or one passed with values. Raises
+    ValueError when the block is inconsistent (see check_provenance)."""
+    source = args.get("source")
+    if isinstance(source, dict) and RUN_ID.match(str(source.get("run_id", ""))):
+        rel = str(source.get("file", f"{OUT_DIR}/series.json"))
+        target = source_path(args)                        # a missing file or run raises, with the fix
+        try:
+            doc = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError:
+            return None
+        return check_provenance(doc.get("provenance") if isinstance(doc, dict) else None, rel)
+    return check_provenance(args.get("provenance"), "series")
+
+
+def provenance_label(prov: dict | None) -> str:
+    """How an answer names where a series came from: the named source with its research ids and URLs, "user-supplied",
+    "synthetic (generated, not observed)", or "source not recorded". Only a retrieved origin ever carries a source name."""
+    if not prov or prov.get("origin") not in PROVENANCE_ORIGINS:
+        return "source not recorded"
+    if prov["origin"] == "synthetic":
+        return "synthetic (generated, not observed)"
+    if prov["origin"] == "user":
+        return "user-supplied" + (f" ({prov['source_name']})" if prov.get("source_name") else "")
+    refs = "; ".join(f"{s['id']} {s['url']}" for s in prov["sources"])
+    return f"{prov['source_name']} ({refs})"
+
+
 def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     values, source = args.get("values"), args.get("source")
     if (values is None) == (source is None):
@@ -106,6 +198,8 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
         doc = json.loads(target.read_text(encoding="utf-8"))
     except ValueError:
         raise ValueError(f"{rel} is not valid JSON; write it with prophet_lib.save_series")
+    if isinstance(doc, dict):
+        check_provenance(doc.get("provenance"), rel)      # a retrieved claim with no fetch record, or a synthetic one naming a source
     body = doc.get("series") if isinstance(doc, dict) else doc
     if isinstance(body, list):
         named = {"series": body}

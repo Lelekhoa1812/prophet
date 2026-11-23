@@ -1140,7 +1140,8 @@ def time_policy(df: pd.DataFrame, time: str, value: str, *, timezone: str | None
 
 
 def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None,
-                covariates: dict[str, Any] | None = None, name: str | None = None) -> str:
+                covariates: dict[str, Any] | None = None, name: str | None = None,
+                provenance: dict[str, Any] | None = None) -> str:
     """Write series for the forecast tools: a list, a Series (its dates are kept for charts) or a dict of named ones.
 
     ``name`` labels one series (a list or a Series); load_series returns it with that name. It cannot be combined with a
@@ -1168,6 +1169,10 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
                 raise ValueError(f"covariate {cname!r} has missing or non-finite values; fill them before saving")
             clean[str(cname)] = arr.tolist()
         out["covariates"] = clean
+    if provenance is not None:
+        # origin "retrieved" (numbers from a page web research read, with its source id and URL), "user" or "synthetic". The
+        # forecast tools check it when they read the file: a synthetic series cannot name a source.
+        out["provenance"] = dict(provenance)
     if freq:
         out["freq"] = freq
     step_val = freq
