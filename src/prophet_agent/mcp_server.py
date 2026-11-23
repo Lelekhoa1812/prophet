@@ -12,6 +12,7 @@ import mimetypes
 import os
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -261,6 +262,9 @@ def handle(msg: dict) -> dict | None:
             text, err = str(exc), True
         except KeyError as exc:
             text, err = f"missing argument {exc}", True
+        except Exception as exc:  # any other failure is this call's error result; the session and the request id survive
+            traceback.print_exc(file=sys.stderr)
+            text, err = f"{name} could not be completed ({type(exc).__name__}: {exc})", True
         return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": text}], "isError": err}}
     if mid is None:
         return None
@@ -272,10 +276,14 @@ def main() -> None:
         line = line.strip()
         if not line:
             continue
+        msg: Any = None
         try:
-            reply = handle(json.loads(line))
-        except Exception as exc:  # a bad message must not end the session
-            reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": str(exc)}}
+            msg = json.loads(line)
+            reply = handle(msg)
+        except Exception:  # a bad message must not end the session; a request still gets an answer with its own id
+            traceback.print_exc(file=sys.stderr)
+            mid = msg.get("id") if isinstance(msg, dict) else None
+            reply = None if mid is None else {"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": "internal error"}}
         if reply is not None:
             sys.stdout.write(json.dumps(reply) + "\n")
             sys.stdout.flush()
