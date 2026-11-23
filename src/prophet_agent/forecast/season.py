@@ -137,6 +137,25 @@ def _level_strengths(x: np.ndarray, lags: tuple[int, ...]) -> dict[int, float]:
     return out
 
 
+SHORTER_TOLERANCE = 0.1     # the tolerance find_season uses for the same tie-break (SEASON_TOLERANCE in sandbox prophet_lib)
+
+
+def _shortest_repeat(scores: dict[int, float], bar: float) -> int:
+    """The lag to report: the shortest lag that clears the bar and scores within SHORTER_TOLERANCE of the best, else the best.
+
+    Motivation vs Logic
+    Motivation (measured, synthetic): a clean 24-step sine gave 48, 96 or 168 from the largest of its multiples, which score
+    within a few thousandths of each other, so the reported cycle was a multiple of the real one.
+    Logic: the same tie-break find_season applies. Whether a season is found is still decided by the best lag against the bar,
+    so this changes only which of equal lags is reported.
+    """
+    best = max(scores, key=scores.get)
+    for lag in sorted(scores):
+        if lag < best and scores[lag] >= scores[best] - SHORTER_TOLERANCE and scores[lag] > bar:
+            return int(lag)
+    return int(best)
+
+
 @lru_cache(maxsize=512)
 def _level_bar(n: int, lags: tuple[int, ...], alpha: float) -> float:
     """The bar a level strength must clear: the (1 - alpha) quantile of the strongest lag on simulated random walks of the
@@ -196,8 +215,8 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
             return {"season": 1, "reason": f"{label}: no candidate cycle fits the history; no season assumed"}
     if not strengths:
         return {"season": 1, "reason": f"{label}: no candidate cycle has enough measured pairs; no season assumed"}
-    best = max(strengths, key=strengths.get)
     bar = round(_bar(n_ch, len(strengths), alpha), 3)
+    best = _shortest_repeat(strengths, bar)
     if strengths[best] > bar:
         return {"season": int(best), "reason": f"{label}: the one-step changes repeat every {best} periods "
                                                 f"(autocorrelation {strengths[best]:.2f}, above {bar})",
@@ -205,8 +224,8 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
     # The changes test found nothing. A cycle can still be in the levels when it is small against the day-to-day noise.
     level = _level_strengths(x, tuple(sorted(strengths)))
     if level:
-        top = max(level, key=level.get)
         level_bar = _level_bar(n_all, tuple(sorted(level)), alpha)
+        top = _shortest_repeat(level, level_bar)
         if level[top] > level_bar:
             return {"season": int(top), "reason": f"{label}: the levels repeat every {top} periods (seasonal strength "
                                                     f"{level[top]:.2f}, above {level_bar}); the one-step changes do not show it, "
