@@ -35,6 +35,9 @@ MAX_RANGES_SHOWN = 40
 
 
 def _date(raw: Any, what: str) -> str:
+    # A number is not a date: pandas reads 2026 as 2026 nanoseconds after 1970, so the window fell in 1970 without a word.
+    if isinstance(raw, (bool, int, float)):
+        raise ValueError(f"{what} must be a date such as 2026-03-14 (text), got {raw!r}")
     try:
         ts = pd.Timestamp(raw)
     except (TypeError, ValueError):

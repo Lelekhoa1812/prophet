@@ -33,6 +33,14 @@ def _panel_file(root, run_id, doc):
     (root / run_id / "out" / "series.json").write_text(json.dumps(doc))
 
 
+def test_a_driver_date_given_as_a_number_is_refused_not_read_as_1970():
+    from prophet_agent.tools import drivers_tool
+    for bad in (2026, 2026.0, True):
+        with pytest.raises(ValueError, match="must be a date such as 2026-03-14"):
+            drivers_tool._date(bad, "events[0].start")
+    assert drivers_tool._date("2026-03-14", "events[0].start") == "2026-03-14"
+
+
 def test_values_must_be_one_flat_list_of_numbers():
     from prophet_agent.tools import series_io
     with pytest.raises(ValueError, match="one flat list of numbers"):
