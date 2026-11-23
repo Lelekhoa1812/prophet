@@ -26,7 +26,7 @@ from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import DELEGATED_CALLS, UNCHARGED, Runtime, Tool
-from prophet_agent.runtime.store import LeaseHeld, LeaseLost, Store
+from prophet_agent.runtime.store import ACTIVE, LeaseHeld, LeaseLost, Store
 from prophet_agent.tools.notebook_tools import NotebookBinding
 from prophet_agent.api.outcome import outcome_for
 from prophet_agent.api.sharing import DEFAULT_SHARING, PolicyRefused, tools_allowed
@@ -405,7 +405,10 @@ class MissionService:
         me = threading.current_thread()
         with self._lock:
             mission = self.store.mission(mission_id)
-            if mission["status"] == "waiting_user" and not self.store.open_questions(mission_id):
+            if mission["status"] == "waiting_user" and mission["cancel_requested"]:
+                # A cancel arrived while the run was pausing. Nothing else will act on it, so it is closed here.
+                self._close_unleased(mission_id)
+            elif mission["status"] == "waiting_user" and not self.store.open_questions(mission_id):
                 try:
                     return self._resume_program(mission)
                 except PolicyRefused as exc:
@@ -474,19 +477,35 @@ class MissionService:
         return done
 
     def cancel(self, mission_id: str) -> str:
-        """Ask a mission to stop. A running mission stops at its next step; one with no live runner (waiting for an
-        answer, or never started) is closed here. Returns the resulting state: cancelled, cancelling, or the status of
-        a mission that is no longer active."""
+        """Ask a mission to stop. A run that holds the mission (here, or in another process) stops at its next step and
+        records the cancel itself; a mission that nothing holds (waiting for an answer, or never started) is closed here.
+        Returns the resulting state: cancelled, cancelling, or the status of a mission that is no longer active."""
         mission = self.store.mission(mission_id)
         if not self.store.request_cancel(mission_id):
             return mission["status"]
         with self._lock:
             t = self._threads.get(mission_id)
-            live = t is not None and t.is_alive()
-        if live:
-            return "cancelling"
-        self.store.close_open_questions(mission_id)
-        self.store.set_status(mission_id, "cancelled")
+            if t is not None and t.is_alive() and mission_id not in self._exiting:
+                return "cancelling"
+        return self._close_unleased(mission_id)
+
+    def _close_unleased(self, mission_id: str) -> str:
+        """Close an active mission that no runtime holds: its open questions and its status are cancelled in one transaction,
+        so a runtime that takes the lease concurrently either comes before this write (and it is left alone) or after it.
+        A lease held now, in any process, is left alone: its holder records the cancel at its next step. Never raises
+        LeaseLost, because the write does not go through the lease fence."""
+        now = time.time()
+        with self.store._tx() as c:
+            row = c.execute("SELECT status, lease_owner, lease_until FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if row is None:
+                raise KeyError(mission_id)
+            if row["status"] not in ACTIVE:
+                return row["status"]
+            if row["lease_owner"] is not None and row["lease_until"] > now:
+                return "cancelling"
+            c.execute("UPDATE questions SET status='cancelled' WHERE mission_id=? AND status='open'", (mission_id,))
+            c.execute("UPDATE missions SET status='cancelled', updated=? WHERE id=?", (now, mission_id))
+            self.store._emit(c, mission_id, "mission.status", {"status": "cancelled"})
         return "cancelled"
 
     def answer(self, question_id: str, answers: dict) -> str:
