@@ -359,11 +359,16 @@ def check_ledger_kept(history, run_root) -> dict | None:
 
 
 def _saved_scan_findings(history, run_root) -> list[dict] | None:
-    """The findings of every scan the mission saved (out/scan*.json in each run that listed it). None when no scan was saved
-    or the files cannot be read."""
+    """The findings of the latest scan the mission saved (out/scan*.json in the last run that wrote one and can be read).
+    None when no scan was saved or the files cannot be read.
+
+    Live electricity c1154fd1 (2026-11-23): the check read every scan the mission had ever saved, 838 findings from several
+    scans, so an earlier 15-entity scan's censoring.stockout_runs and schema.missing_column blocked a 60-client answer. The
+    decision API reads only the current scan, so those ids could never be decided. A later scan replaces an earlier one.
+    """
     if run_root is None:
         return None
-    found: list[dict] = []
+    latest: list[dict] | None = None
     seen = False
     for h in with_delegated(history):
         res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
@@ -379,8 +384,8 @@ def _saved_scan_findings(history, run_root) -> list[dict] | None:
             except (OSError, ValueError):
                 continue
             if isinstance(doc, dict) and isinstance(doc.get("findings"), list):
-                found.extend(f for f in doc["findings"] if isinstance(f, dict))
-    return found if seen else None
+                latest = [f for f in doc["findings"] if isinstance(f, dict)]
+    return latest if seen and latest is not None else None
 
 
 def check_scan_decisions(history, run_root) -> dict | None:
@@ -1733,6 +1738,11 @@ def _misnamed_bound(text: str, obs: list) -> dict | None:
     if not isinstance(tr, dict):
         return None
     measured = measured_total_range(obs) if not pack.get("n_series") else None
+    # Both bounds, each with its assumption, in the words the answer must use. Live Beijing 97ab893f (2026-11-23): the rewrite
+    # was told only "give both bounds", kept the wide bound under "if stations vary independently", and was blocked twice.
+    words = (f"if every one of the {what} misses the same way at once", f"if the {what} miss independently")
+    both = "; ".join(f"{w}: {b['q10']:,.0f} to {b['q90']:,.0f}" for w, k in zip(words, keys)
+                     if isinstance(b := tr.get(k), dict) and all(isinstance(b.get(x), (int, float)) for x in ("q10", "q90")))
     for key, together in zip(keys, (True, False)):
         b = tr.get(key)
         if not isinstance(b, dict) or not all(isinstance(b.get(k), (int, float)) for k in ("q10", "q90")):
@@ -1741,7 +1751,7 @@ def _misnamed_bound(text: str, obs: list) -> dict | None:
         if s:
             assumes = f"every one of the {what} misses the same way at once" if together else f"the {what} miss independently"
             fix = (f"; the measured 80% range is {measured['q10']:,.0f} to {measured['q90']:,.0f}: give that as the range"
-                   if measured else "; give both bounds, each with what it assumes")
+                   if measured else f"; give both bounds, each with its own assumption: {both}")
             return _check("answer_total_range_named", False,
                           f"the answer gives {b['q10']:,.0f} to {b['q90']:,.0f} as the total's range ({s[:160]}), but that is the "
                           f"bound if {assumes}{fix}")

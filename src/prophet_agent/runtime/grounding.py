@@ -312,14 +312,26 @@ _CYCLE_CLAIMS = (
 )
 
 
+# A lag comparison, not a cycle: "the same period 260 days earlier" (live retail business user cf7f4aa6, 2026-11-23) is a
+# year-over-year change test, and its 260 is a number of steps back, not the length of a repeating pattern.
+_LAG_AFTER = re.compile(r"\s{0,2}(?:trading |business )?(?:days?|steps?|periods?|weeks?|points?)?\s{0,2}(?:earlier|ago|before|prior)\b",
+                        re.I)
+_SAME_BEFORE = re.compile(r"\bsame\s$", re.I)
+
+
+def _is_lag(unit: str, m: re.Match) -> bool:
+    return bool(_LAG_AFTER.match(unit, m.end())) or bool(_SAME_BEFORE.search(unit[max(0, m.start() - 12):m.start()]))
+
+
 def claimed_periods(answer: str) -> list[tuple[int, str]]:
-    """The cycle lengths, in steps, that the answer states: "weekly (7-day) cycle" gives 7. Negated statements are left out."""
+    """The cycle lengths, in steps, that the answer states: "weekly (7-day) cycle" gives 7. Negated statements and lag
+    comparisons ("the same period 260 days earlier") are left out."""
     out: list[tuple[int, str]] = []
     for unit in sentences(answer):
         for pat in _CYCLE_CLAIMS:
             for m in pat.finditer(unit):
                 n = int(m.group(1))
-                if n >= 2 and not negated(unit, m.start()):
+                if n >= 2 and not negated(unit, m.start()) and not _is_lag(unit, m):
                     out.append((n, unit.strip()))
     return out
 
