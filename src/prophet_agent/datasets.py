@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -40,7 +41,10 @@ class DatasetStore:
         (folder / fname).write_bytes(data)
         meta = {"id": did, "name": fname, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                 "created": time.time()}
-        (folder / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        # Written under a temp name and renamed, so meta.json is either absent or complete.
+        tmp = folder / "meta.json.tmp"
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        os.replace(tmp, folder / "meta.json")
         return meta
 
     def get(self, dataset_id: str) -> dict:
@@ -48,7 +52,7 @@ class DatasetStore:
             raise KeyError(dataset_id)
         try:
             return json.loads((self.root / dataset_id / "meta.json").read_text(encoding="utf-8"))
-        except OSError:
+        except (OSError, ValueError):            # a missing or half-written metadata file is an unknown dataset
             raise KeyError(dataset_id)
 
     def path(self, dataset_id: str) -> Path:

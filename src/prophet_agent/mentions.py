@@ -54,7 +54,9 @@ def link(kind: str, id_: str, label: str) -> str:
     """The stored form of one pick. Brackets and line breaks cannot sit in a label, so they are dropped."""
     if kind not in KINDS:
         raise ValueError(f"unknown mention kind {kind!r}")
-    clean = re.sub(r"[\[\]\n\r]+", " ", label).strip()[:120]
+    clean = re.sub(r"[\[\]\n\r]+", " ", label or "").strip()[:120]
+    if not clean:    # a label must hold at least one character, or the link cannot be read back
+        clean = "Attached file" if kind == "file" else humanise(id_)
     return f"[{clean}](prophet:{kind}/{id_})"
 
 
@@ -65,10 +67,14 @@ def humanise(name: str) -> str:
 
 
 def _cut(text: str, limit: int) -> str:
+    """The text up to ``limit`` characters, ending at a line break where there is one, with a visible note that it was cut."""
     if len(text) <= limit:
         return text
     head = text[:limit]
-    return head[: head.rfind("\n")] + "\n...[playbook cut]" if "\n" in head else head
+    at = head.rfind("\n")
+    if at > 0:
+        head = head[:at]
+    return head + "\n...[playbook cut]"
 
 
 def context_block(text: str, *, skill_body: Callable[[str], tuple[str, str] | None],

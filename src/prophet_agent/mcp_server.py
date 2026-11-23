@@ -12,6 +12,7 @@ import mimetypes
 import os
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,6 +49,8 @@ def _call(method: str, path: str, body: Any = None, raw: bytes | None = None, he
         raise ProphetError(f"Prophet said {exc.code}: {detail or exc.reason}")
     except urllib.error.URLError:
         raise ProphetError(f"Prophet is not running at {BASE}. Start it with: python -m prophet_agent.api")
+    except (TimeoutError, ConnectionError):   # a read that times out after the connection was made is not a URLError
+        raise ProphetError(f"Prophet did not answer at {BASE} in time. Try again, or check that it is still running.")
 
 
 def _reasons(mission: dict) -> list[dict]:
@@ -254,13 +257,22 @@ def handle(msg: dict) -> dict | None:
         name = params.get("name")
         if name not in TOOLS:
             return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
+        args = params.get("arguments") or {}
+        if not isinstance(args, dict):
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": "arguments must be an object"}}
+        # Checked against the declared schema, so a KeyError raised later (for example by an unexpected API reply) is never
+        # mistaken for a missing argument.
+        missing = [k for k in TOOLS[name][1]["required"] if k not in args]
         try:
-            result = TOOLS[name][2](params.get("arguments") or {})
+            if missing:
+                raise ProphetError(f"missing argument {missing[0]!r}")
+            result = TOOLS[name][2](args)
             text, err = json.dumps(result, indent=2, default=str), False
         except ProphetError as exc:
             text, err = str(exc), True
-        except KeyError as exc:
-            text, err = f"missing argument {exc}", True
+        except Exception as exc:  # any other failure is this call's error result; the session and the request id survive
+            traceback.print_exc(file=sys.stderr)
+            text, err = f"{name} could not be completed ({type(exc).__name__}: {exc})", True
         return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": text}], "isError": err}}
     if mid is None:
         return None
@@ -273,9 +285,16 @@ def main() -> None:
         if not line:
             continue
         try:
-            reply = handle(json.loads(line))
-        except Exception as exc:  # a bad message must not end the session
-            reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": str(exc)}}
+            msg = json.loads(line)
+        except ValueError:
+            reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error: the line is not JSON"}}
+        else:
+            try:
+                reply = handle(msg)
+            except Exception:  # a bad message must not end the session; a request still gets an answer with its own id
+                traceback.print_exc(file=sys.stderr)
+                mid = msg.get("id") if isinstance(msg, dict) else None
+                reply = None if mid is None else {"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": "internal error"}}
         if reply is not None:
             sys.stdout.write(json.dumps(reply) + "\n")
             sys.stdout.flush()

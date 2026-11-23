@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from prophet_agent.config import DATA, DOTENV, TIMESFM_CHECKPOINT
+from prophet_agent.config import DATA, DOTENV, TIMESFM_CHECKPOINT, load_dotenv_values
 from prophet_agent.nim.errors import NotConfigured
 from prophet_agent.nim.model_checks import MODEL_CHECK_FILE, model_check, read_model_checks
 from prophet_agent.nim.providers import CATALOG, DEFAULT_PROVIDER, MODELS, PROVIDERS, Provider, get_provider
@@ -87,8 +87,12 @@ KEPT_ON_CLEAR = ("settings.json", MODEL_CHECK_FILE)
 
 
 def mask(key: str) -> str:
-    """A key as a person may see it: the prefix and the last four characters. Never the whole value."""
-    return f"{key[:6]}...{key[-4:]}" if len(key) > 12 else "nvapi-..."
+    """A key as a person may see it: up to six leading and four trailing characters, and never more than a quarter of
+    the key together. A full NIM key (about 64 characters) shows the familiar "nvapi-...abcd" form; a short key shows less."""
+    edge = len(key) // 8
+    if edge == 0:
+        return "..."
+    return f"{key[:min(6, edge)]}...{key[-min(4, edge):]}"
 
 
 def key_status(http_status: int | None) -> str:
@@ -133,6 +137,40 @@ class Settings:
 
     def update(self, patch: dict[str, Any]) -> dict[str, dict[str, int]]:
         """Validate and persist a partial update. Raises ValueError naming the first problem; nothing is written then."""
+        current, llm_patch = self._check_patch(patch)
+        with self._lock:
+            stored = self._raw()                     # keep sections this method does not own, such as key_checks
+            if llm_patch is not None:
+                stored[LLM_SECTION] = self._llm_after(stored, llm_patch)
+            stored.update(current)
+            self._write_json(self.path, stored)
+        if llm_patch is not None:
+            reset_shared_client()
+        return current
+
+    def check_save(self, body: dict[str, Any]) -> None:
+        """Dry run of one settings save: limits, llm choices and keys together, in the shape the settings API takes
+        (``nim: {keys}``, ``providers: {name: {keys}}``). Raises ValueError for the first problem and writes nothing,
+        so a caller can refuse the whole save before update() or set_keys() touches disk."""
+        if not isinstance(body, dict):
+            raise ValueError("settings must be an object")
+        nim = body.get("nim")
+        providers = body.get("providers")
+        if nim is not None and (not isinstance(nim, dict) or set(nim) - {"keys"}):
+            raise ValueError("nim accepts only keys")
+        if providers is not None and not isinstance(providers, dict):
+            raise ValueError("providers must map a provider name to {keys: [...]}")
+        self._check_patch(body)                      # KEY_SECTIONS are skipped there, as in update()
+        if isinstance(nim, dict) and "keys" in nim:
+            self._resolve_keys(nim["keys"], DEFAULT_PROVIDER)
+        for name, entry in (providers or {}).items():
+            if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
+                raise ValueError(f"providers.{name} accepts only keys for a known provider")
+            if "keys" in entry:
+                self._resolve_keys(entry["keys"], name)
+
+    def _check_patch(self, patch: dict[str, Any]) -> tuple[dict[str, dict[str, int]], dict[str, Any] | None]:
+        """Every check update() needs, with no write. Returns the merged numeric settings and the llm patch, if any."""
         if not isinstance(patch, dict):
             raise ValueError("settings must be an object")
         current = self.values()
@@ -154,15 +192,9 @@ class Settings:
                 if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                     raise ValueError(f"{section}.{name} must be a whole number from {low} to {high}")
                 current[section][name] = value
-        with self._lock:
-            stored = self._raw()                     # keep sections this method does not own, such as key_checks
-            if llm_patch is not None:
-                stored[LLM_SECTION] = self._llm_after(stored, llm_patch)   # validates before anything is written
-            stored.update(current)
-            self._write_json(self.path, stored)
         if llm_patch is not None:
-            reset_shared_client()
-        return current
+            self._llm_after(self._raw(), llm_patch)  # raises for a bad llm choice; the result is not kept here
+        return current, llm_patch
 
     def _raw(self) -> dict[str, Any]:
         try:
@@ -334,7 +366,11 @@ class Settings:
     # -- NIM and provider keys ---------------------------------------------------------------------------------
 
     def key_slots(self, environ: dict[str, str] | None = None, provider: str = DEFAULT_PROVIDER) -> list[str]:
+        """The provider's keys as stored. Keys are read from this Settings' own .env, as set_keys writes them; the
+        process environment still wins over the file, as everywhere else."""
         from prophet_agent.nim.transport import load_keys
+        if environ is None:
+            environ = {**load_dotenv_values(self.dotenv), **os.environ}
         return load_keys(environ, provider)
 
     def _checks_by_slot(self, provider: str) -> dict[int, dict]:
@@ -392,28 +428,7 @@ class Settings:
         that echoes masked values back cannot erase a key. Writes .env (owner-only) and the process environment. The
         provider's key checks are cleared, because the slots now mean different keys."""
         spec = get_provider(provider)
-        if not isinstance(keys, list) or len(keys) > MAX_KEYS:
-            raise ValueError(f"keys must be a list of at most {MAX_KEYS} entries")
-        existing = self.key_slots(None, provider)
-        pattern = KEY_PATTERN if provider == DEFAULT_PROVIDER else GENERIC_KEY_PATTERN
-        resolved: list[str] = []
-        for item in keys:
-            if not isinstance(item, str):
-                raise ValueError("each key must be a string")
-            value = item.strip()
-            if "..." in value:
-                match = [k for k in existing if mask(k) == value]
-                if not match:
-                    raise ValueError("a masked key does not match any stored key; paste the full key")
-                value = match[0]
-            if not pattern.match(value):
-                if provider == DEFAULT_PROVIDER:
-                    raise ValueError("a NIM key starts with nvapi- and contains only letters, digits, '-' and '_'")
-                raise ValueError(f"a {spec.label} key contains only letters, digits, '-', '_' and '.' (8 or more)")
-            if value not in resolved:
-                resolved.append(value)
-        if not spec.multi_key and len(resolved) > 1:
-            raise ValueError(f"{spec.label} takes one key")
+        resolved = self._resolve_keys(keys, provider)
         self._write_dotenv(spec, resolved)
         os.environ[spec.key_list_var] = ",".join(resolved)
         for alias in spec.key_aliases:
@@ -425,6 +440,35 @@ class Settings:
                     os.environ[f"{alias}_{i}"] = ""
         self._drop_key_checks(provider)
         reset_shared_client(provider)
+        return resolved
+
+    def _resolve_keys(self, keys: Any, provider: str) -> list[str]:
+        """Every check set_keys needs, with no write: the full key list it would store."""
+        spec = get_provider(provider)
+        if not isinstance(keys, list) or len(keys) > MAX_KEYS:
+            raise ValueError(f"keys must be a list of at most {MAX_KEYS} entries")
+        existing = self.key_slots(None, provider)
+        pattern = KEY_PATTERN if provider == DEFAULT_PROVIDER else GENERIC_KEY_PATTERN
+        resolved: list[str] = []
+        claimed: set[str] = set()                # each masked entry stands for a different stored key
+        for item in keys:
+            if not isinstance(item, str):
+                raise ValueError("each key must be a string")
+            value = item.strip()
+            if "..." in value:
+                match = [k for k in existing if mask(k) == value and k not in claimed]
+                if not match:
+                    raise ValueError("a masked key does not match any stored key; paste the full key")
+                value = match[0]
+                claimed.add(value)
+            if not pattern.match(value):
+                if provider == DEFAULT_PROVIDER:
+                    raise ValueError("a NIM key starts with nvapi- and contains only letters, digits, '-' and '_'")
+                raise ValueError(f"a {spec.label} key contains only letters, digits, '-', '_' and '.' (8 or more)")
+            if value not in resolved:
+                resolved.append(value)
+        if not spec.multi_key and len(resolved) > 1:
+            raise ValueError(f"{spec.label} takes one key")
         return resolved
 
     def _write_dotenv(self, spec: Provider, keys: list[str]) -> None:
@@ -442,7 +486,8 @@ class Settings:
         if keys:
             kept.append(f"{spec.key_list_var}={','.join(keys)}")
         body = "\n".join(kept).rstrip() + "\n"
-        self._write_text(self.dotenv, body, mode=0o600)
+        # The temp file holds the keys until the swap, so it goes in the git-ignored data folder, not beside .env.
+        self._write_text(self.dotenv, body, mode=0o600, temp_dir=self.data_root)
 
     # -- data utilities ----------------------------------------------------------------------------------------
 
@@ -491,12 +536,19 @@ class Settings:
         Settings._write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
     @staticmethod
-    def _write_text(path: Path, text: str, mode: int = 0o644) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    def _write_text(path: Path, text: str, mode: int = 0o644, temp_dir: Path | None = None) -> None:
+        """Replace ``path`` in one step: the new bytes are flushed to disk in a temp file, then swapped in, so a reader or
+        a crash sees the old file or the new one, never a part. ``temp_dir`` is where the temp file is made; it must be
+        on the same filesystem as ``path``. A temp file that a crash leaves behind is not removed, so keep it somewhere
+        git ignores."""
+        folder = temp_dir or path.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=f".{path.name}.")
         try:
             with os.fdopen(fd, "w") as fh:
                 fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
             os.chmod(tmp, mode)
             os.replace(tmp, path)
         except BaseException:

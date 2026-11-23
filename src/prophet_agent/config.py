@@ -10,6 +10,7 @@ returned, not exported into `os.environ`.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(os.environ.get("PROPHET_HOME") or Path(__file__).resolve().parents[2])
@@ -40,8 +41,15 @@ def load_dotenv_values(path: Path | None = None) -> dict[str, str]:
             continue
         k, v = line.split("=", 1)
         k = k.strip().removeprefix("export ").strip()
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-            v = v[1:-1]
-        out[k] = v
+        out[k] = _value(v.strip())
     return out
+
+
+def _value(raw: str) -> str:
+    """A quoted value is what is between its quotes. An unquoted value ends at a space and "#", as in python-dotenv, so a
+    trailing note is not read as part of a key."""
+    if raw[:1] in ("'", '"'):
+        end = raw.find(raw[0], 1)
+        if end != -1:
+            return raw[1:end]
+    return re.split(r"\s+#", raw, maxsplit=1)[0].rstrip()
