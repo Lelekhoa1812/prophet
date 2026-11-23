@@ -7,6 +7,7 @@ Standard library only: newline-delimited JSON-RPC 2.0 on stdin and stdout, MCP p
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import mimetypes
 import os
@@ -24,10 +25,44 @@ PROTOCOL = "2024-11-05"
 FINAL = {"completed", "met", "partial", "failed", "stalled", "impossible", "outcome_unknown", "cancelled"}
 CHECKPOINT = "checkpoint"                # not final: the person continues from here
 WORKING = {"created", "running"}
+# A local file is read and sent to the configured model provider, so credentials and keys are refused before any byte is read.
+SECRET_FILE_NAMES = (".env", ".env.*", "id_rsa*", "*.pem", "*.key", "*.p12", "*.pfx")
+KEYCHAIN_SUFFIXES = (".keychain", ".keychain-db")
 
 
 class ProphetError(Exception):
     pass
+
+
+def _refusal(real: Path) -> str | None:
+    """The rule a resolved local path breaks, or None. Called on Path.resolve() output, so a symlink into a protected
+    folder is judged by where it leads."""
+    name = real.name.lower()
+    for pattern in SECRET_FILE_NAMES:
+        if fnmatch.fnmatchcase(name, pattern):
+            return f"a credential or key file (matches {pattern})"
+    if any(part.lower() == "keychains" or part.lower().endswith(KEYCHAIN_SUFFIXES) for part in real.parts):
+        return "inside a keychain folder"
+    try:
+        inside = real.relative_to(Path.home().resolve()).parts
+    except ValueError:
+        return None
+    if any(part.startswith(".") for part in inside):
+        return "a dot-prefixed folder or file under your home directory"
+    return None
+
+
+def _local_file(raw: Any) -> tuple[Path, Path]:
+    """The path as given, and its resolved location. The bytes are read from the resolved path, the one the rules were
+    checked on. The error names the rule and the file's own name, never the rest of the path or its contents."""
+    given = Path(str(raw)).expanduser()
+    real = given.resolve()
+    rule = _refusal(real)
+    if rule:
+        raise ProphetError(f"Refused: {given.name!r} is {rule}. Copy the data to a folder outside protected locations and try again.")
+    if not real.is_file():
+        raise ProphetError(f"No file at {given}")
+    return given, real
 
 
 def _call(method: str, path: str, body: Any = None, raw: bytes | None = None, headers: dict | None = None,
@@ -114,12 +149,10 @@ def t_create_notebook(a: dict) -> Any:
 
 
 def t_add_file(a: dict) -> Any:
-    path = Path(str(a["path"])).expanduser()
-    if not path.is_file():
-        raise ProphetError(f"No file at {path}")
-    src = _call("POST", f"/api/notebooks/{a['notebook_id']}/sources", raw=path.read_bytes(),
-                headers={"X-File-Name": urllib.parse.quote(path.name),
-                         "content-type": mimetypes.guess_type(path.name)[0] or "application/octet-stream"}, timeout=120)
+    given, real = _local_file(a["path"])
+    src = _call("POST", f"/api/notebooks/{a['notebook_id']}/sources", raw=real.read_bytes(),
+                headers={"X-File-Name": urllib.parse.quote(given.name),
+                         "content-type": mimetypes.guess_type(given.name)[0] or "application/octet-stream"}, timeout=120)
     deadline = time.time() + float(a.get("wait_seconds", 60))
     while src.get("status") == "profiling" and time.time() < deadline:
         time.sleep(1.5)
@@ -189,10 +222,8 @@ def t_files(a: dict) -> Any:
 def t_quick_forecast(a: dict) -> Any:
     ids = []
     if a.get("path"):
-        path = Path(str(a["path"])).expanduser()
-        if not path.is_file():
-            raise ProphetError(f"No file at {path}")
-        ds = _call("POST", "/api/datasets?name=" + urllib.parse.quote(path.name), raw=path.read_bytes(), timeout=120)
+        given, real = _local_file(a["path"])
+        ds = _call("POST", "/api/datasets?name=" + urllib.parse.quote(given.name), raw=real.read_bytes(), timeout=120)
         ids.append(ds["id"])
     m = _call("POST", "/api/missions", {"goal": a["goal"], "dataset_ids": ids})
     return _answer_text(_wait(m["id"], float(a.get("wait_seconds", 240))))
