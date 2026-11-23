@@ -23,7 +23,6 @@ import json
 import os
 import platform
 import re
-import resource
 import signal
 import subprocess
 import shutil
@@ -49,7 +48,7 @@ RAW_HALF_BYTES = MAX_STREAM_CHARS * 2
 _CUT_WINDOW = 512
 
 _BOOT = r"""
-import os, runpy, sys, unicodedata
+import os, platform, resource, runpy, sys, unicodedata, urllib.parse
 WD = os.path.realpath(sys.argv[1])
 TARGET = sys.argv[2]
 ROOT = os.path.realpath(sys.argv[3]) if sys.argv[3] else ""
@@ -60,7 +59,7 @@ _PREFIXES = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec
 # Mutating calls that change the file system. Each entry lists which argument positions are paths that must stay inside.
 _MUTATE = {"os.remove": (0,), "os.rmdir": (0,), "os.mkdir": (0,), "os.chmod": (0,), "os.truncate": (0,),
            "os.utime": (0,), "os.chown": (0,), "os.rename": (0, 1), "os.replace": (0, 1), "os.link": (0, 1),
-           "os.symlink": (1,)}
+           "os.symlink": (1,), "os.chflags": (0,), "os.setxattr": (0,), "os.removexattr": (0,)}
 def _fold(p):
     # macOS and Windows file systems ignore case, and realpath keeps the case the caller typed. Without folding, /Users/LIAMLE
     # or in/ written as IN/ got past the prefix checks (round 6l, audit item 2: probed, the project file was read and in/ was
@@ -82,6 +81,18 @@ def _readable(p):
     if _under(rp, WD) or any(_under(rp, s) for s in _PREFIXES):
         return True
     return not any(base and _under(rp, base) for base in (ROOT, REAL_HOME))
+def _check_database_uri(uri):
+    # A database URI is a path plus query options. The path must be in the run folder, and a database in in/ may be
+    # opened only read-only (mode=ro). vfs= would choose another file layer, so it is refused.
+    parts = urllib.parse.urlsplit(uri)
+    query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+    if parts.scheme != "file" or parts.netloc or "vfs" in query:
+        raise PermissionError("database URIs are blocked outside the run folder")
+    rp = os.path.realpath(urllib.parse.unquote(parts.path))
+    if not _under(rp, WD):
+        raise PermissionError("database URIs are blocked outside the run folder")
+    if _under(rp, WD_IN) and query.get("mode") != ["ro"]:
+        raise PermissionError("database URIs are blocked: an input database opens only with mode=ro")
 def _hook(event, args):
     if event == "open":
         path, mode, flags = args[0], args[1], args[2]
@@ -100,8 +111,25 @@ def _hook(event, args):
                 if not _inside(p):
                     raise PermissionError("changing files outside the run folder is blocked: " + os.path.basename(p))
     elif event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork",
-                   "_posixsubprocess.fork_exec"):
+                   "os.forkpty", "_posixsubprocess.fork_exec"):
+        # os.forkpty was missing (round 6m): it forks a child in a new session, outside the process group the timeout kills.
         raise PermissionError("starting processes is blocked in the sandbox")
+    elif event in ("os.listdir", "os.scandir"):
+        # Listing the project or home folder shows which keys and notes exist, though their contents are blocked (round 6m).
+        p = args[0] if args else None
+        if isinstance(p, os.PathLike):
+            p = os.fspath(p)
+        if isinstance(p, bytes):
+            p = os.fsdecode(p)
+        if isinstance(p, str) and not _readable(p):
+            raise PermissionError("reading this location is blocked in the sandbox: " + os.path.basename(p))
+    elif event in ("os.kill", "os.killpg"):
+        # Signals reach any process of the same user, the parent included (round 6m). A program may signal itself and its
+        # own process group only.
+        target = args[0] if args else None
+        mine = os.getpgrp() if event == "os.killpg" else os.getpid()
+        if isinstance(target, int) and target not in (0, mine):
+            raise PermissionError("signalling other processes is blocked in the sandbox")
     elif event in ("socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg", "socket.getaddrinfo",
                    "socket.gethostbyname", "socket.gethostbyname_ex", "socket.gethostbyaddr", "socket.getnameinfo"):
         # Name lookups are refused too: a lookup of "<data>.example.com" hands the data to a DNS server (round 6l, item 3).
@@ -109,6 +137,10 @@ def _hook(event, args):
     elif event == "sqlite3.connect":
         # SQLite opens files itself, so the open() check above never sees them: a database outside the run folder could
         # be created or read. A database must be in the run folder; URIs and other locations are refused (round 6l, item 3).
+        # Round 6m: the check runs only on connections made by sandbox_connect below. A raw _sqlite3.connect() or a subclass
+        # of the connection type would skip the authorizer that denies ATTACH, which is where the escape was (see below).
+        if sys._getframe(1).f_code is not _CONNECT_CODE:
+            raise PermissionError("open databases with sqlite3.connect, which the sandbox checks")
         db = args[0] if args else ""
         if isinstance(db, os.PathLike):
             db = os.fspath(db)
@@ -116,9 +148,25 @@ def _hook(event, args):
             db = os.fsdecode(db)
         if isinstance(db, str) and db not in ("", ":memory:"):
             if db.startswith("file:"):
-                raise PermissionError("database URIs are blocked in the sandbox")
-            if not _under(os.path.realpath(db), WD):
+                _check_database_uri(db)
+            elif not _under(os.path.realpath(db), WD):
                 raise PermissionError("opening a database outside the run folder is blocked: " + os.path.basename(db))
+            elif _under(os.path.realpath(db), WD_IN):
+                # in/ is read-only to the program. A plain path opens read-write, so only the read-only URI that
+                # sandbox_connect builds for in/ may reach SQLite there (round 6m).
+                raise PermissionError("input databases are read-only: open them with sqlite3.connect(path) only")
+    elif event == "sqlite3.enable_load_extension":
+        # An SQLite extension is native code: loading one would be the same as calling C directly.
+        if len(args) > 1 and args[1]:
+            raise PermissionError("loading SQLite extensions is blocked in the sandbox")
+    elif event in ("ctypes.dlsym", "ctypes.dlsym/handle"):
+        # ctypes calls any C function it can name, and the calls themselves are not audited (round 6m: ctypes.CDLL(None)
+        # .system() ran a shell command). Names are looked up only in the process's own symbols, which ctypes needs on import.
+        raise PermissionError("looking up native functions by name is blocked in the sandbox")
+    elif event == "ctypes.dlopen":
+        # None is the process's own symbols (CDLL(None), and ctypes.pythonapi on import). Any named library is refused.
+        if args and args[0] is not None:
+            raise PermissionError("loading native libraries by name is blocked in the sandbox")
 sys.addaudithook(_hook)
 # A relative path given with dir_fd is resolved against the folder the descriptor opens, not the working directory. The hook
 # above checks the relative name, so os.remove("f.txt", dir_fd=fd) with fd on a folder outside the run deleted that file
@@ -165,6 +213,27 @@ for _name, _positions, _ro in (
     if hasattr(os, _name):
         setattr(os, _name, _dir_fd_guard(getattr(os, _name), _positions, _ro))
 del _name, _positions, _ro
+# A FIFO or device node is created without any audit event (round 6m), so the path itself is checked here. The same function
+# is reachable as os.mkfifo and posix.mkfifo, so both names are wrapped.
+def _path_guard(fn):
+    def guarded(*a, **k):
+        if k.get("dir_fd") is None and a:
+            p = a[0]
+            if isinstance(p, os.PathLike):
+                p = os.fspath(p)
+            if isinstance(p, bytes):
+                p = os.fsdecode(p)
+            if isinstance(p, str) and not _inside(p):
+                raise PermissionError("changing files outside the run folder is blocked: " + os.path.basename(p))
+        return fn(*a, **k)
+    guarded.__name__ = fn.__name__
+    return guarded
+import posix as _posix
+for _name in ("mkfifo", "mknod"):
+    _guarded = _path_guard(_dir_fd_guard(getattr(os, _name), {"dir_fd": 0}))
+    setattr(os, _name, _guarded)
+    setattr(_posix, _name, _guarded)
+del _name, _guarded
 import builtins, io
 _OPEN = builtins.open
 CARRIED = os.path.join(WD, "in", "carried")
@@ -178,7 +247,52 @@ def _open(file, mode="r", *a, **k):
     return _OPEN(file, mode, *a, **k)
 builtins.open = _open
 io.open = _open
+import sqlite3, sqlite3.dbapi2
+# Round 6m: SQL statements can open files without any audit event. ATTACH and VACUUM INTO create or read a database
+# anywhere (probe: a database outside the run folder was created, and a project database was read). So every connection
+# is made here, with an authorizer that denies ATTACH and DETACH (it also refuses VACUUM INTO) and an attachment limit of 0.
+# A subclass whose set_authorizer and setlimit refuse, so the program cannot switch those off by calling them.
+class _GuardedConnection(sqlite3.Connection):
+    def set_authorizer(self, *a, **k):
+        raise PermissionError("changing the SQLite authorizer is blocked in the sandbox")
+    def setlimit(self, *a, **k):
+        raise PermissionError("changing SQLite limits is blocked in the sandbox")
+def _deny_attach(action, a1, a2, db, source):
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+_SQL_CONNECT = sqlite3.connect
+def sandbox_connect(database, *args, **kwargs):
+    # Positional index 4 of the optional arguments is factory (timeout, detect_types, isolation_level, check_same_thread).
+    if "factory" not in kwargs and len(args) < 5:
+        kwargs["factory"] = _GuardedConnection
+    # An input database is opened read-only, immutable so that no -wal or -shm file is created beside it in in/ (round 6m).
+    # The uri flag is the 8th optional argument; a call that passes it positionally keeps its own flag and is checked by the hook.
+    db = os.fspath(database) if isinstance(database, os.PathLike) else database
+    if isinstance(db, bytes):
+        db = os.fsdecode(db)
+    if isinstance(db, str) and db not in ("", ":memory:") and not db.startswith("file:") \
+            and len(args) < 7 and not kwargs.get("uri") and _under(os.path.realpath(db), WD_IN):
+        database = "file:" + urllib.parse.quote(os.path.realpath(db)) + "?mode=ro&immutable=1"
+        kwargs["uri"] = True
+    conn = _SQL_CONNECT(database, *args, **kwargs)
+    sqlite3.Connection.set_authorizer(conn, _deny_attach)
+    sqlite3.Connection.setlimit(conn, sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+    return conn
+_CONNECT_CODE = sandbox_connect.__code__
+sqlite3.connect = sqlite3.dbapi2.connect = sandbox_connect
 sys.path.insert(0, os.path.join(WD, "lib"))   # prophet_lib: loaders and profiling helpers
+# Round 6m: the limits are set here, in the child, before the program's code runs (they used to be set by preexec_fn, which
+# is unsafe in a multi-threaded parent). Both soft and hard values are set, so the program cannot raise them again.
+TIMEOUT_S, MEM_MB, FILE_MB = (int(v) for v in sys.argv[5:8])
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_S + 2, TIMEOUT_S + 2))
+_FBYTES = FILE_MB * 1024 * 1024
+resource.setrlimit(resource.RLIMIT_FSIZE, (_FBYTES, _FBYTES))
+resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+if platform.system() == "Linux":        # macOS does not enforce RLIMIT_AS, so the memory cap is reported as not enforced there
+    _MBYTES = MEM_MB * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (_MBYTES, _MBYTES))
 sys.argv = [TARGET]
 runpy.run_path(TARGET, run_name="__main__")
 """
@@ -203,10 +317,11 @@ class SandboxResult:
     memory_limit_enforced: bool = False
     limits: dict = field(default_factory=dict)
     output_truncated: bool = False     # true when output between the kept head and tail was dropped or clipped
+    over_disk_limit: bool = False      # true when the run wrote more than its disk quota and was stopped
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
+        return self.returncode == 0 and not self.timed_out and not self.over_disk_limit
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -289,6 +404,43 @@ def _pump(stream, capture: _Capture) -> None:
         capture.feed(chunk)
 
 
+def _writable_bytes(wd: Path) -> int:
+    """Bytes the program can write in the run folder: everything except in/, which holds the copied inputs. Links are not
+    followed, so a link to a large file elsewhere costs nothing."""
+    total = 0
+    stack = [wd]
+    while stack:
+        folder = stack.pop()
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if folder == wd and entry.name == IN_DIR:
+                            continue
+                        stack.append(Path(entry.path))
+                    else:
+                        total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
+def _watch_disk(proc: subprocess.Popen, wd: Path, limit_bytes: int, stop: threading.Event, flagged: list) -> None:
+    """Samples the run folder until the process ends. Past the quota, the whole process group is killed (round 6m). The
+    overshoot is at most what a sample interval can write."""
+    while not stop.wait(0.05):
+        if _writable_bytes(wd) > limit_bytes:
+            flagged.append(True)
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            return
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -309,20 +461,6 @@ def _scrubbed_env(home: Path) -> dict[str, str]:
     }
 
 
-def _limits_preexec(timeout_s: int, mem_mb: int, file_mb: int):
-    def apply() -> None:
-        os.setsid()
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_CPU, (timeout_s + 2, timeout_s + 2))
-        fbytes = file_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_FSIZE, (fbytes, fbytes))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-        if platform.system() == "Linux":
-            mbytes = mem_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (mbytes, mbytes))
-    return apply
-
-
 def memory_limit_enforced() -> bool:
     return platform.system() == "Linux"
 
@@ -339,7 +477,10 @@ def _result_from_manifest(manifest: Path) -> SandboxResult:
     return SandboxResult(outputs=outputs, **kwargs)
 
 
-def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64,
+DISK_MB = 512   # the most a run may write in its folder, in total (round 6m): RLIMIT_FSIZE caps each file, not the sum
+
+
+def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: int = 64, disk_mb: int = DISK_MB,
                files: dict[str, bytes] | None = None, inputs: dict[str, Path] | None = None,
                run_id: str | None = None) -> SandboxResult:
     """Run ``code`` in a fresh run folder. ``files`` are written into the folder first (for example input data).
@@ -389,16 +530,24 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     script = wd / "program.py"
     script.write_text(code, encoding="utf-8")
 
-    limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb,
+    limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb, "disk_mb": disk_mb,
               "memory_limit_enforced": memory_limit_enforced()}
-    cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home())]
+    cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home()),
+           str(timeout_s), str(mem_mb), str(file_mb)]
+    # start_new_session makes the child a session and process-group leader, so the timeout can kill its whole group. The
+    # limits are applied by _BOOT in the child (no preexec_fn: it is unsafe in a multi-threaded parent).
     proc = subprocess.Popen(cmd, cwd=str(wd), env=_scrubbed_env(home), stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, preexec_fn=_limits_preexec(timeout_s, mem_mb, file_mb))
+                            stderr=subprocess.PIPE, start_new_session=True)
     out_cap, err_cap = _Capture(), _Capture()
     readers = [threading.Thread(target=_pump, args=(proc.stdout, out_cap), daemon=True),
                threading.Thread(target=_pump, args=(proc.stderr, err_cap), daemon=True)]
     for reader in readers:
         reader.start()
+    disk_limit = disk_mb * 1024 * 1024
+    over_disk: list = []
+    stop_watch = threading.Event()
+    watcher = threading.Thread(target=_watch_disk, args=(proc, wd, disk_limit, stop_watch, over_disk), daemon=True)
+    watcher.start()
     timed_out = False
     try:
         returncode = proc.wait(timeout=timeout_s)
@@ -409,6 +558,10 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         except ProcessLookupError:
             pass
         returncode = proc.wait()
+    stop_watch.set()
+    watcher.join(timeout=10)
+    if not over_disk and _writable_bytes(wd) > disk_limit:   # a run that ended between two samples is still checked
+        over_disk.append(True)
     for reader in readers:
         reader.join(timeout=10)
 
@@ -427,6 +580,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         outputs=outputs, workdir=str(wd), memory_limit_enforced=memory_limit_enforced(), limits=limits,
         output_truncated=bool(out_cap.dropped or err_cap.dropped or len(out_text) > MAX_STREAM_CHARS
                               or len(err_text) > MAX_STREAM_CHARS),
+        over_disk_limit=bool(over_disk),
     )
     (wd / "manifest.json").write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     return result
