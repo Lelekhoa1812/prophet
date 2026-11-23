@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from prophet_agent.research.events import dated_events, iso_day
-from prophet_agent.research.fetch import fetch_page
+from prophet_agent.research.fetch import Page, fetch_page
 from prophet_agent.research.passages import best_passages, select_passages, stated_date
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
                                             is_us_region, registry_pages, resolve_family)
