@@ -16,11 +16,14 @@ kill: the lease and the status stay as they were, and a later runtime must wait 
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
+
+import numpy as np
 
 from prophet_agent.nim.errors import redact
 
@@ -80,6 +83,51 @@ class Tool:
     observe: Callable[[Any], Any] | None = None   # compact view of a result for the planner; the ledger keeps the full one
 
 
+def _json_key(key: Any, path: str) -> str:
+    """A dict key as JSON writes it: a string stays; int, float, bool and None become the text json.dumps gives them."""
+    if isinstance(key, np.generic):
+        key = key.item()
+    if isinstance(key, str):
+        return str(key)
+    if key is None or isinstance(key, (bool, int, float)):
+        return json.dumps(key)
+    raise TypeError(f"{path} has a {type(key).__name__} key, which cannot be stored as JSON; use strings or numbers")
+
+
+def to_json_value(obj: Any, path: str = "result") -> Any:
+    """The canonical form of a step or tool result, as the plain Python value a replay will read back (round 6n).
+
+    Rules: numpy scalars become Python scalars (.item()); numpy arrays become lists (.tolist()); tuples become lists; dict
+    keys become strings (as JSON writes them), and two keys that become the same string are refused; dict keys are sorted.
+    Any other value, such as a date, an object or a DataFrame, is refused with a TypeError naming its path, rather than being
+    stored as its str() and returned as a different value on replay. The result is stored and returned, so the first run
+    and a replay see identical data."""
+    if obj is None or isinstance(obj, bool):
+        return obj
+    if isinstance(obj, np.generic):
+        return to_json_value(obj.item(), path)
+    if isinstance(obj, str):
+        return str(obj)
+    if isinstance(obj, int):
+        return int(obj)
+    if isinstance(obj, float):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return to_json_value(obj.tolist(), path)
+    if isinstance(obj, (list, tuple)):
+        return [to_json_value(v, f"{path}[{i}]") for i, v in enumerate(obj)]
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for key, value in obj.items():
+            text = _json_key(key, path)
+            if text in out:
+                raise TypeError(f"{path} has two keys that become the same JSON key {text!r}")
+            out[text] = to_json_value(value, f"{path}[{text!r}]")
+        return {k: out[k] for k in sorted(out)}
+    raise TypeError(f"{path} is a {type(obj).__name__}, which cannot be stored as JSON; return numbers, strings, booleans, "
+                    "None, lists, tuples or dicts")
+
+
 class Ctx:
     def __init__(self, runtime: "Runtime", mission_id: str):
         self.rt = runtime
@@ -136,7 +184,7 @@ class Ctx:
                                    f"for {name!r}")
             return rec["v"]
         self._guard_time()
-        out = fn(self)
+        out = to_json_value(fn(self), f"step {name!r}")     # canonical before the first return, so a replay matches it
         # The step's event is written with the step. If the position was finished meanwhile, the ledger's result is the one
         # returned, so the program never acts on a value the ledger does not hold (round 6m).
         if not self.store.finish_step(self.mission_id, idx, name, {"v": out}):
@@ -163,7 +211,7 @@ class Ctx:
         self.store.tool_start(self.mission_id, self.step_idx, tool.name, args, key, lane=self.lane)
         self.store.append_event(self.mission_id, "tool.started", {"tool": tool.name, "key": key})
         try:
-            result = tool.fn(args, key)
+            result = to_json_value(tool.fn(args, key), f"tool {tool.name!r} result")
         except Exception as exc:
             msg = redact(str(exc))
             if is_argument_refusal(exc):

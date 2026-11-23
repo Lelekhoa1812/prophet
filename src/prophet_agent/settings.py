@@ -109,7 +109,9 @@ def _now() -> str:
 
 
 def _valid_budget(value: Any) -> bool:
-    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+    """A budget is null (no limit) or a positive whole number of tokens. Zero is refused: the gate in nim/transport.py
+    reads a falsy budget as no limit, so a 0 would silently leave the model unblocked (round 6n)."""
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 1)
 
 
 class Settings:
@@ -271,7 +273,7 @@ class Settings:
                     raise ValueError(f"budgets for {model} accept only 1d, 7d and 30d")
                 for window, value in entry.items():
                     if not _valid_budget(value):
-                        raise ValueError(f"budget {model} {window} must be null or a whole number of tokens, 0 or more")
+                        raise ValueError(f"budget {model} {window} must be null (no limit) or a whole number of tokens, 1 or more")
                 llm["budgets"][model] = {**llm["budgets"].get(model, {}), **entry}
         return llm
 
