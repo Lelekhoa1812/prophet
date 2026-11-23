@@ -5,7 +5,8 @@ Motivation: search snippets are too thin to quote from. The agent needs the body
 fingerprint of the exact text it read, so that a quotation can be checked later. Pages are also the riskiest input the
 agent touches, so they are fetched in the most restricted way possible.
 Logic: a plain GET with httpx, never JavaScript, never a form, never a file:// URL. Each redirect hop is checked by
-netguard and paced per host; robots.txt is honoured; only text, HTML and JSON are read (a PDF is refused with a note).
+netguard and paced per host; robots.txt is honoured; only text, CSV, HTML and JSON are read (a PDF is refused with a note).
+CSV is text: its body is kept as written, so a daily price file reaches the planner line by line.
 The body is read up to a byte cap. Text is extracted with trafilatura, and BeautifulSoup takes over when trafilatura
 returns nothing. The stored text is clipped and fingerprinted with SHA-256, so the citation can be verified against it.
 Dates need care: an index or calendar page carries template dates (a year start, a "last updated" stamp), so its date is
@@ -37,11 +38,12 @@ MAX_REDIRECTS = 4
 TOTAL_SECONDS = 45.0   # the whole fetch: every redirect hop and the body. Each socket wait is also bounded by timeout.
 MAX_TEXT_CHARS = 60_000
 CACHE_TTL_S = 24 * 3600
-ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "application/json")
+ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "text/csv", "application/csv", "application/json")
 HTML_MEDIA = ("text/html", "application/xhtml+xml")
+PLAIN_MEDIA = ("text/plain", "text/csv", "application/csv")   # kept as written, never run through the article extractor
 REDIRECT_CODES = (301, 302, 303, 307, 308)
 HEADERS = {"User-Agent": USER_AGENT,
-           "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8",
+           "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,text/csv;q=0.8,application/json;q=0.8",
            "Accept-Encoding": "gzip, deflate"}   # only the codings read_capped decodes, so no brotli or zstd arrives
 _CHARSET = re.compile(r"charset=([\w.:-]+)", re.I)
 INDEX_PATH = re.compile(r"calendar|schedule|archive", re.I)
@@ -191,7 +193,7 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
             return json.dumps(json.loads(body), indent=1, ensure_ascii=False), "", None, "json"
         except (ValueError, RecursionError):   # too deeply nested to pretty-print: keep the raw text
             return body, "", None, "raw"
-    if media == "text/plain":
+    if media in PLAIN_MEDIA:
         return body, "", None, "plain"
     text = trafilatura.extract(body, include_comments=False, include_tables=True, favor_recall=True,
                                with_metadata=False) or ""
@@ -300,7 +302,7 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
         return _failed(url, "PDF files are not read; look for the HTML version or a text source",
                        final_url=final_url, status=status)
     if media and media not in ALLOWED_MEDIA:
-        return _failed(url, f"content type {media} is not text; only HTML, plain text and JSON are read",
+        return _failed(url, f"content type {media} is not text; only HTML, plain text, CSV and JSON are read",
                        final_url=final_url, status=status)
     body, stopped = read_capped(response, max_bytes, deadline)
     notes = []
