@@ -1622,6 +1622,20 @@ def _station_series(cell: str, by_name: dict) -> dict | None:
     return by_name.get(m.group(1).strip()) if m else None
 
 
+_TOTAL_HEAD = re.compile(r"^(?:total|sum)\b", re.I)
+
+
+def _total_column(header: list[str]) -> int | None:
+    """The column named Total or Sum: the horizon total of the station's point forecast. A band or day header is never one.
+
+    Audit round 6m: a "Total" column had no day and no average name, so its figures were never checked."""
+    for i, cell in enumerate(header):
+        c = re.sub(r"[*_`]", "", cell).strip()
+        if _TOTAL_HEAD.match(c) and not _BAND_HEAD.search(c) and not _DAY_HEAD.search(c):
+            return i
+    return None
+
+
 def _table_matches_panel(text: str, obs: list) -> dict | None:
     """The day-by-day cells of a station table match that station's own forecast on that day. Blocks on the first mismatch.
 
@@ -1634,7 +1648,8 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
     checked, wrong = 0, []
     for table in _tables(text):
         day_cols, avg_col = _day_columns(table[0])
-        if not day_cols and avg_col is None:
+        total_col = _total_column(table[0])
+        if not day_cols and avg_col is None and total_col is None:
             continue
         for row in table[1:]:
             fc = _station_series(row[0], by_name)
@@ -1665,6 +1680,13 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
                     mean = sum(point) / len(point)
                     if not _printed_matches(toks[0], mean):
                         wrong.append(f"{row[0].strip(' *')} average is {row[avg_col]}; the forecast averages {mean:.1f}")
+            if total_col is not None and total_col < len(row) and point:
+                toks = _NUMBER_TOKEN.findall(row[total_col])
+                if toks:                   # the leading figure is the horizon total of the point forecast (audit round 6m)
+                    checked += 1
+                    total = sum(point)
+                    if not _printed_matches(toks[0], total):
+                        wrong.append(f"{row[0].strip(' *')} total is {row[total_col]}; the forecast sums to {total:.1f}")
     if not checked:
         return None
     if wrong:
@@ -1694,7 +1716,8 @@ def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: l
     """Corrects one markdown table's station day and average cells in place, recording each (old, new) cell."""
     rows = [_row_cells(lines[k]) for k in range(start, stop)]
     day_cols, avg_col = _day_columns([c.strip() for c in rows[0]])
-    if not day_cols and avg_col is None:
+    total_col = _total_column([c.strip() for c in rows[0]])
+    if not day_cols and avg_col is None and total_col is None:
         return
     for k in range(1, len(rows)):
         cells = rows[k]
@@ -1710,6 +1733,8 @@ def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: l
                    if 1 <= d <= min(len(point), len(lo_all), len(hi_all))]
         if avg_col is not None and point:
             targets.append((avg_col, (sum(point) / len(point),)))
+        if total_col is not None and point:
+            targets.append((total_col, (sum(point),)))
         changed = False
         for i, expected in targets:
             if i >= len(cells) or "," in cells[i]:
