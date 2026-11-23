@@ -15,6 +15,7 @@ from typing import Any
 from prophet_agent.runtime.runner import Tool
 
 SEEN_COLUMNS = 30
+MAX_DESCRIPTION = 300      # the notebook store keeps this many characters of a table's description
 
 
 @dataclass(frozen=True)
@@ -48,9 +49,13 @@ def make_save(binding: NotebookBinding | None):
         extra = sorted(set(args) - _ARGS)
         if extra:
             raise ValueError(f"unknown arguments {extra}; allowed: {sorted(_ARGS)}")
+        description = str(args.get("description") or "")
+        if len(description) > MAX_DESCRIPTION:
+            # Round 6m: promote cut the text to 300 characters without a word, so the saved description ended mid-sentence.
+            raise ValueError(f"description must be at most {MAX_DESCRIPTION} characters, given {len(description)}; "
+                             "shorten it to one line saying what the table is")
         return binding.notebooks.promote(binding.notebook_id, str(args.get("run_id", "")), str(args.get("file", "")),
-                                         str(args.get("name", "")), str(args.get("description") or ""),
-                                         turn_id=binding.turn_id)
+                                         str(args.get("name", "")), description, turn_id=binding.turn_id)
     return _save
 
 
