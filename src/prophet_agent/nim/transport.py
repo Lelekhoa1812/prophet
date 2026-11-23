@@ -738,6 +738,10 @@ class NimClient:
         if out is not None and out.kind == "ok" and out.reply is not None:
             self._record(out.reply)
             return {"model": model, "status": "verified", "http_status": out.status or 200, "error": None}
+        if out is not None and out.kind == "cut" and out.status == 200 and clean_text(out.partial or "").strip():
+            # A 200 with text that the 64-token allowance cut short: the model answered, so the check verified it. Only the
+            # allowance cut carries a status; a stream error or a dropped read carries none and stays failed.
+            return {"model": model, "status": "verified", "http_status": 200, "error": None}
         error = out.detail or out.reason if out is not None else "no answer"
         return {"model": model, "status": "failed", "http_status": out.status if out is not None else None,
                 "error": redact(error, limit=200)}
