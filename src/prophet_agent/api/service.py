@@ -161,18 +161,20 @@ class MissionService:
 
     def delete(self, mission_id: str) -> None:
         """Permanently remove a quick forecast and its run history. A running one must be stopped first."""
-        with self.store.lock:
-            row = self.store.conn.execute("SELECT status, budget_json FROM missions WHERE id=? AND notebook_id IS NULL",
-                                          (mission_id,)).fetchone()
+        # The status and the lease are read in the same transaction as the purge, so a run that starts in another process
+        # between a check and the delete cannot lose its ledger under it.
+        with self.store._tx() as c:
+            row = c.execute("SELECT status, lease_owner, lease_until, budget_json FROM missions "
+                            "WHERE id=? AND notebook_id IS NULL", (mission_id,)).fetchone()
             if row is None:
                 raise KeyError(mission_id)
-            if row["status"] in ("created", "running", "waiting_user"):
+            held = row["lease_owner"] is not None and row["lease_until"] > time.time()
+            if row["status"] in ACTIVE or held:
                 raise ValueError("this forecast is still running; stop it first")
             dataset_ids = json.loads(row["budget_json"]).get("dataset_ids", [])
-            with self.store._tx() as c:
-                run_ids = mission_run_ids(c, [mission_id])
-                _purge_missions(c, [mission_id])
-                orphans = unreferenced_datasets(c, dataset_ids)
+            run_ids = mission_run_ids(c, [mission_id])
+            _purge_missions(c, [mission_id])
+            orphans = unreferenced_datasets(c, dataset_ids)
         # Files go after the commit: the run folder (outputs, copies of inputs) and any attached file nothing else uses.
         remove_runs(run_ids)
         remove_datasets(self.datasets.root, orphans)
@@ -363,8 +365,7 @@ class MissionService:
     def start(self, mission_id: str) -> None:
         """Run (or resume) the mission on a background thread. Raises LeaseHeld if it is already running."""
         with self._lock:
-            live = self._threads.get(mission_id)
-            if live is not None and live.is_alive() and mission_id not in self._exiting:
+            if self._busy(mission_id):
                 raise LeaseHeld(f"mission {mission_id} is already running")
             program = self._resume_program(self.store.mission(mission_id))
             self._exiting.discard(mission_id)
@@ -379,9 +380,34 @@ class MissionService:
         and is checked before a thread exists. Raises PolicyRefused."""
         budget = self._sharing_budget(mission)
         if budget != mission["budget"]:
-            self.store.set_budget(mission["id"], budget)
+            self._store_budget(mission["id"], budget)
             mission = self.store.mission(mission["id"])
         return self._build_program(mission)
+
+    def _busy(self, mission_id: str) -> bool:
+        """True when this service's worker is running the mission, or a runtime in any process holds its lease now. The
+        database answers the second part, because another process's runtime is invisible to this service's thread list.
+        Caller holds self._lock."""
+        t = self._threads.get(mission_id)
+        if t is not None and t.is_alive() and mission_id not in self._exiting:
+            return True
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT lease_owner, lease_until FROM missions WHERE id=?", (mission_id,)).fetchone()
+        return row is not None and row["lease_owner"] is not None and row["lease_until"] > time.time()
+
+    def _refuse_if_running(self, mission_id: str) -> None:
+        """Raise LeaseHeld before anything is written, when the mission is running here or in another process."""
+        with self._lock:
+            if self._busy(mission_id):
+                raise LeaseHeld(f"mission {mission_id} is already running")
+
+    def _store_budget(self, mission_id: str, budget: dict) -> None:
+        """Write the budget through the lease fence. A lease another runtime holds is a conflict for the caller (LeaseHeld),
+        not LeaseLost, which the API does not map."""
+        try:
+            self.store.set_budget(mission_id, budget)
+        except LeaseLost:
+            raise LeaseHeld(f"mission {mission_id} is being run by another runtime") from None
 
     def _run(self, runtime: Runtime, mission_id: str, program: Callable) -> None:
         try:
@@ -391,10 +417,13 @@ class MissionService:
                 if program is None:
                     return
                 runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
-        except LeaseHeld:
-            return
+        except (LeaseHeld, LeaseLost):
+            return      # another runtime holds the mission now; it decides what happens next
         except Exception as exc:  # the runtime records its own failures; this guards against bugs in the service
-            self.store.append_event(mission_id, "service.error", {"error": type(exc).__name__})
+            try:
+                self.store.append_event(mission_id, "service.error", {"error": type(exc).__name__})
+            except (LeaseHeld, LeaseLost):
+                pass
 
     def _after_pause(self, mission_id: str) -> Callable | None:
         """Called by a worker whose run has stopped, just before it exits. A run that paused on a question releases the lease
@@ -446,7 +475,7 @@ class MissionService:
         budget["segment"] = int(budget.get("segment", 0)) + 1
         self._top_up(mission_id, budget)
         budget["finish_now"] = False
-        self.store.set_budget(mission_id, budget)
+        self._store_budget(mission_id, budget)
         self.store.append_event(mission_id, "mission.auto_continue", {"part": budget["segment"] + 1,
                                                                       "automatic_parts_used": used + 1})
         return self._build_program(self.store.mission(mission_id))
@@ -531,11 +560,12 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can continue")
+        self._refuse_if_running(mission_id)
         budget = self._sharing_budget(mission)
         budget["segment"] = int(budget.get("segment", 0)) + 1
         self._top_up(mission_id, budget)
         budget["finish_now"] = False
-        self.store.set_budget(mission_id, budget)
+        self._store_budget(mission_id, budget)
         self.start(mission_id)
 
     def answer_now(self, mission_id: str) -> None:
@@ -543,9 +573,10 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can be answered now")
+        self._refuse_if_running(mission_id)
         budget = self._sharing_budget(mission)
         budget["finish_now"] = True
-        self.store.set_budget(mission_id, budget)
+        self._store_budget(mission_id, budget)
         self.start(mission_id)
 
     def wait(self, mission_id: str, timeout: float | None = None) -> None:
