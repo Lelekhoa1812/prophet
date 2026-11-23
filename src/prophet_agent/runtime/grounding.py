@@ -81,7 +81,8 @@ _LEVEL = re.compile(
     r"|\b\d{1,2}(?:st|nd|rd|th)?\s*(?:-|\u2013|to|and)\s*\d{1,2}(?:st|nd|rd|th)?\s+(?:percentile|quantile)s?\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)\s+(?:percentile|quantile)s?\b"
     r"|\b[Pp]\d{1,2}\b", re.I)
-_P_THRESHOLD = re.compile(r"\bp\s*[<>=\u2264\u2265]\s*(0?\.\d+)", re.I)
+# An inequality states a decision rule. "p = 0.05" is a measured p-value and is checked like any figure (audit round 6m).
+_P_THRESHOLD = re.compile(r"\bp\s*[<>\u2264\u2265]\s*(0?\.\d+)", re.I)
 _CONVENTIONAL_P = {0.1, 0.05, 0.01, 0.001}
 _LABEL_NOUN = (r"(?:week|day|month|quarter|promo|store|region|product|sku|row|item|customer|rank|step|run|batch|origin|"
                r"horizon|period|model|window|fold|series|id|order|invoice|sheet)")
