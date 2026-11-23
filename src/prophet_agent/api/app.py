@@ -53,6 +53,22 @@ GOAL_VISIBLE_MAX = 2000
 GOAL_STORED_MAX = 6000
 
 
+async def _capped_body(request: Request) -> bytes:
+    """The raw request body, refused with 413 past MAX_BYTES. A declared Content-Length is checked before any byte is read.
+    The streamed bytes are counted as they arrive too: a chunked request has no Content-Length, and reading it whole
+    would let any size of upload fill memory before the dataset store's own check ran."""
+    too_large = f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB"
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BYTES:
+        raise HTTPException(413, too_large)
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > MAX_BYTES:
+            raise HTTPException(413, too_large)
+    return bytes(buf)
+
+
 def _checked_goal(goal: str) -> str:
     text = goal.strip()
     shown = mentions.plain(text).strip()
@@ -159,10 +175,7 @@ def create_app(service: MissionService) -> FastAPI:
         from urllib.parse import unquote
         if request.headers.get("x-file-name"):
             name = unquote(request.headers["x-file-name"])
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > MAX_BYTES:
-            raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
-        data = await request.body()
+        data = await _capped_body(request)
         try:
             return service.datasets.add(name, data)
         except ValueError as exc:
@@ -378,10 +391,7 @@ def create_app(service: MissionService) -> FastAPI:
     async def add_source(nid: str, request: Request, name: str = "data") -> dict:
         """Raw file bytes in the body; the name in the X-File-Name header (or ?name= for scripts). Profiling runs in the
         background; poll the source."""
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > MAX_BYTES:
-            raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
-        data = await request.body()
+        data = await _capped_body(request)
         header_name = request.headers.get("x-file-name")
         if header_name:
             name = unquote(header_name)
