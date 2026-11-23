@@ -28,7 +28,7 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, Resolver,
-                                             Robots, UnsafeURL, check_url)
+                                             Robots, UnsafeURL, check_syntax, open_pinned)
 from prophet_agent.research.rank import parse_date
 from prophet_agent.research.search import cache_key, cache_root, read_cache, write_cache
 
@@ -202,14 +202,6 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
     return text, title or fallback_title, date, method
 
 
-def _get_checked(client: httpx.Client, url: str, *, resolver: Resolver | None, throttle: HostThrottle,
-                 timeout: float):
-    """One GET hop after the address check and pacing. Returns a streaming response; the caller reads it."""
-    parts = check_url(url, resolver=resolver)
-    throttle.wait(parts.netloc.lower())
-    return client.stream("GET", url, headers=HEADERS, timeout=timeout, follow_redirects=False)
-
-
 def fetch_page(url: str, *, max_bytes: int = 2_000_000, timeout: float = 15.0, use_cache: bool = True,
                cache_dir=None, client: httpx.Client | None = None, resolver: Resolver | None = None,
                robots: Robots | None = None, throttle: HostThrottle | None = None) -> Page:
@@ -226,7 +218,7 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
         return _failed(url or "", "the URL is empty")
     url = url.strip()
     try:
-        check_url(url, resolver=resolver)
+        check_syntax(url)   # no lookup here: each hop resolves and checks its host once, right before it connects
     except UnsafeURL as exc:
         return _failed(url, f"refused: {exc}")
 
@@ -243,18 +235,25 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
     try:
         current = url
         for _ in range(MAX_REDIRECTS + 1):
+            try:
+                check_syntax(current)
+            except UnsafeURL as exc:
+                return _failed(url, f"refused: {exc}", final_url=current)
             # robots.txt is per origin, so every hop is checked against the origin it is about to contact
             if not robots.allowed(current):
                 return _failed(url, "disallowed by robots.txt", final_url=current)
+            throttle.wait(urlsplit(current).netloc.lower())
             try:
-                opened = _get_checked(http, current, resolver=resolver, throttle=throttle, timeout=timeout)
+                response = open_pinned(http, current, resolver=resolver, headers=HEADERS, timeout=timeout)
             except UnsafeURL as exc:   # a redirect hop to a forbidden address is refused, not followed
                 return _failed(url, f"refused: {exc}", final_url=current)
-            with opened as response:
+            try:
                 if response.status_code in REDIRECT_CODES and response.headers.get("location"):
                     current = urljoin(current, response.headers["location"])
                     continue
                 return _read_response(url, current, response, max_bytes=max_bytes, use_cache=use_cache, path=path)
+            finally:
+                response.close()
         return _failed(url, f"more than {MAX_REDIRECTS} redirects", final_url=current)
     finally:
         if own_client:

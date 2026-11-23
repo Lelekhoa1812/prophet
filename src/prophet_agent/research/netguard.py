@@ -4,12 +4,13 @@ Motivation vs Logic
 Motivation: a research tool that follows whatever link a search result or page contains can be pointed at the company's
 own network (a router admin page, a cloud metadata service that hands out credentials) or at a file on disk. Search
 results and redirects are data from the internet, so they must never decide where the agent connects.
-Logic: only http and https on the default ports are accepted, with no credentials in the URL. The host must resolve,
-and every address it resolves to must be globally routable and not a metadata address; a single bad address rejects the
-host. Redirects are followed by hand so each hop is checked again (the caller does that loop). Robots.txt is fetched once
-per origin and honoured; a network failure there fails open, as the brief asks. A per-host lock spaces requests at least
-one second apart. The address check happens at request time and does not pin the connection to the address, so a DNS
-rebinding attack that changes the answer between the check and the connect is not fully closed.
+Logic: only http and https on the default ports are accepted, with no credentials in the URL. The host is resolved once
+per request, and every address it resolves to must be globally routable and not a metadata address; a single bad address
+rejects the host. The connection is then made to one of the checked addresses itself, written into the URL as a literal,
+with the original name kept in the Host header and the TLS server name. So a DNS answer that changes after the check
+(DNS rebinding) cannot move the connection. Redirects are followed by hand so each hop is checked again (the caller does
+that loop). Robots.txt is fetched once per origin and honoured; a network failure there fails open, as the brief asks.
+A per-host lock spaces requests at least one second apart.
 """
 from __future__ import annotations
 
@@ -19,7 +20,8 @@ import threading
 import time
 import urllib.robotparser
 from collections.abc import Callable
-from urllib.parse import SplitResult, urlsplit
+from typing import NamedTuple
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import httpx
 
@@ -37,6 +39,14 @@ Resolver = Callable[[str, int], list[str]]
 
 class UnsafeURL(ValueError):
     """Raised when a URL or the address it resolves to is not allowed. The message is safe to show the planner."""
+
+
+class Pinned(NamedTuple):
+    """One connection target. ``url`` has the checked address literal in place of the name; ``host`` is the Host header
+    and ``sni`` the TLS server name (None when the URL names an address, or the scheme is not https)."""
+    url: str
+    host: str
+    sni: str | None
 
 
 def _default_resolver(host: str, port: int) -> list[str]:
@@ -74,9 +84,26 @@ def blocked_reason(address: str) -> str | None:
     return None
 
 
-def check_url(url: str, *, resolver: Resolver | None = None) -> SplitResult:
-    """Return the parsed URL if it may be fetched; raise UnsafeURL otherwise. ``resolver(host, port) -> [ip, ...]`` is
-    injectable so tests never touch the network."""
+def _is_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _host_and_port(parts: SplitResult) -> tuple[str, int | None, bool]:
+    host = (parts.hostname or "").rstrip(".")
+    try:
+        port = parts.port
+    except ValueError:
+        raise UnsafeURL("the URL has an invalid port") from None
+    return host, port, _is_literal(host)
+
+
+def check_syntax(url: str) -> SplitResult:
+    """The syntax rules (length, scheme, credentials, host, port, internal names) without any DNS lookup. Returns the
+    parsed URL; raises UnsafeURL otherwise."""
     if not isinstance(url, str) or not url.strip():
         raise UnsafeURL("the URL is empty")
     url = url.strip()
@@ -87,33 +114,83 @@ def check_url(url: str, *, resolver: Resolver | None = None) -> SplitResult:
         raise UnsafeURL(f"scheme {parts.scheme or '(none)'!r} is not allowed; use http or https")
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:
         raise UnsafeURL("credentials in the URL are not allowed")
-    host = (parts.hostname or "").rstrip(".")
+    host, port, literal = _host_and_port(parts)
     if not host:
         raise UnsafeURL("the URL has no host")
-    try:
-        port = parts.port
-    except ValueError:
-        raise UnsafeURL("the URL has an invalid port") from None
     if port not in ALLOWED_PORTS:
         raise UnsafeURL(f"port {port} is not allowed; use the default ports 80 or 443")
     if host in BLOCKED_HOSTNAMES or host.endswith(BLOCKED_SUFFIXES):
         raise UnsafeURL(f"host {host!r} is an internal name")
-    try:
-        ipaddress.ip_address(host)
-        literal = True
-    except ValueError:
-        literal = False
+    if not literal:
+        try:
+            host.encode("idna")
+        except UnicodeError:
+            raise UnsafeURL(f"host {host!r} is not a valid name") from None
+    return parts
+
+
+def resolve_checked(url: str, *, resolver: Resolver | None = None) -> tuple[SplitResult, list[str]]:
+    """Check the URL and resolve its host once. Returns the parsed URL and the checked addresses, in the order given;
+    raises UnsafeURL when any address is not public. ``resolver(host, port) -> [ip, ...]`` is injectable so tests never
+    touch the network."""
+    parts = check_syntax(url)
+    host, port, literal = _host_and_port(parts)
     if literal:
         addresses = [host]
     else:
-        addresses = (resolver or _default_resolver)(host, port or (443 if parts.scheme == "https" else 80))
+        addresses = (resolver or _default_resolver)(host, port or (443 if parts.scheme.lower() == "https" else 80))
     if not addresses:
         raise UnsafeURL(f"host {host!r} has no addresses")
+    checked: list[str] = []
     for address in addresses:
         reason = blocked_reason(address)
         if reason:
             raise UnsafeURL(f"host {host!r} resolves to a {reason} address, which is not fetched")
-    return parts
+        ip = str(ipaddress.ip_address(address.split("%", 1)[0]))
+        if ip not in checked:
+            checked.append(ip)
+    return parts, checked
+
+
+def check_url(url: str, *, resolver: Resolver | None = None) -> SplitResult:
+    """Return the parsed URL if it may be fetched; raise UnsafeURL otherwise."""
+    return resolve_checked(url, resolver=resolver)[0]
+
+
+def pinned(parts: SplitResult, address: str) -> Pinned:
+    """The connection target that reaches ``address`` for the URL ``parts``: the address literal in the URL, the
+    original name in the Host header, and the name as the TLS server name."""
+    host, port, literal = _host_and_port(parts)
+    scheme = parts.scheme.lower()
+    ip = str(ipaddress.ip_address(address.split("%", 1)[0]))
+    netloc = f"[{ip}]" if ":" in ip else ip
+    if port is not None:
+        netloc += f":{port}"
+    url = urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
+    if literal:
+        return Pinned(url, parts.netloc, None)
+    name = host.encode("idna").decode("ascii")
+    return Pinned(url, name if port is None else f"{name}:{port}", name if scheme == "https" else None)
+
+
+def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, headers: dict[str, str] | None,
+                timeout: float) -> httpx.Response:
+    """Send one GET whose connection goes to a checked address. The name is resolved once, every address is checked,
+    and each checked address is tried in order until one connects. Redirects are never followed here. The caller must
+    close the returned response. Raises UnsafeURL for a refused address, or the last connect error."""
+    parts, addresses = resolve_checked(url, resolver=resolver)
+    failure: Exception | None = None
+    for address in addresses:
+        target = pinned(parts, address)
+        request = client.build_request("GET", target.url, headers={**(headers or {}), "Host": target.host},
+                                       timeout=timeout,
+                                       extensions={"sni_hostname": target.sni} if target.sni else None)
+        try:
+            return client.send(request, stream=True, follow_redirects=False)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            failure = exc
+    assert failure is not None   # resolve_checked never returns an empty list
+    raise failure
 
 
 class HostThrottle:
@@ -175,20 +252,25 @@ class Robots:
 
     def _load(self, origin: str) -> urllib.robotparser.RobotFileParser | None:
         robots_url = f"{origin}/robots.txt"
+        owned = self._client is None
+        client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=False)
         try:
-            check_url(robots_url, resolver=self._resolver)
-            if self._client is not None:
-                response = self._client.get(robots_url, timeout=self._timeout, follow_redirects=False)
-            else:
-                with httpx.Client(timeout=self._timeout, follow_redirects=False,
-                                  headers={"User-Agent": self._agent}) as client:
-                    response = client.get(robots_url, follow_redirects=False)
+            response = open_pinned(client, robots_url, resolver=self._resolver, headers={"User-Agent": self._agent},
+                                   timeout=self._timeout)
+            try:
+                if response.status_code != 200:
+                    return None
+                response.read()
+                text = response.text[:ROBOTS_MAX_BYTES]
+            finally:
+                response.close()
         except Exception:
             return None
-        if response.status_code != 200:
-            return None
+        finally:
+            if owned:
+                client.close()
         parser = urllib.robotparser.RobotFileParser()
-        parser.parse(response.text[:ROBOTS_MAX_BYTES].splitlines())
+        parser.parse(text.splitlines())
         return parser
 
 
