@@ -15,3 +15,33 @@ def test_coverage_leaves_out_missing_actuals_instead_of_counting_them_as_misses(
     q = np.array([[[0.0, 1, 2, 3, 4, 5, 6, 7, 8], [0.0, 1, 2, 3, 4, 5, 6, 7, 8]]])
     assert metrics.coverage(actual, q) == 1.0                       # the one finite actual is inside 0 to 8
     assert np.isnan(metrics.coverage(np.array([[np.nan]]), q[:, :1]))  # nothing to measure
+
+
+# ------------------------------------------------------------------------------------------ TSB: missing periods --
+
+from prophet_agent.forecast import tsb  # noqa: E402
+
+LUMPY = np.array([0.0, 3.0, 0.0, 0.0, 5.0, 2.0, 0.0, 4.0, 0.0, 0.0, 6.0, 1.0, 0.0, 0.0, 0.0, 3.0] * 3)
+
+
+def test_tsb_volume_ignores_a_missing_period_instead_of_reading_it_as_no_sale():
+    with_gap = LUMPY.copy()
+    with_gap[5] = np.nan
+    without_gap = np.delete(LUMPY, 5)
+    assert np.allclose(tsb.expected_volume(with_gap, 3), tsb.expected_volume(without_gap, 3))
+
+
+def test_tsb_sampler_ignores_a_missing_period_too():
+    # A frequent-demand series, so the sampled quantiles depend on the chance of demand and would move if the gap read as zero.
+    dense = np.tile(np.array([2.0, 0.0, 4.0, 3.0]), 12)
+    with_gap = dense.copy()
+    with_gap[5] = np.nan
+    without_gap = np.delete(dense, 5)
+    q_gap = tsb.TSB().predict([with_gap], 3).q
+    q_clean = tsb.TSB().predict([without_gap], 3).q
+    assert np.allclose(q_gap, q_clean)
+
+
+def test_intermittence_is_judged_on_the_observed_periods_only():
+    with_gap = np.concatenate([LUMPY, [np.nan] * 10])
+    assert tsb.is_intermittent(with_gap) == tsb.is_intermittent(LUMPY)

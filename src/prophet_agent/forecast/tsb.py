@@ -18,17 +18,32 @@ from .metrics import QS
 from .types import Forecast
 
 
+def _chance(s: np.ndarray, alpha: float) -> float:
+    """TSB's smoothed chance of demand. A missing (non-finite) period carries no information, so it does not move the chance.
+
+    Motivation vs Logic
+    Motivation: the NaN was read as a period with no sale, which pulled the chance down (synthetic: a gap in a dense series
+    lowered the expected volume). A gap is unknown, not zero demand.
+    Logic: non-finite periods are skipped in the smoothing and in the sizes, the same as if they were not in the series.
+    """
+    p = 0.5
+    for v in s:
+        if not np.isfinite(v):
+            continue
+        p = p + alpha * ((1.0 if v > 0 else 0.0) - p)
+    return p
+
+
 def expected_volume(context: Sequence[float] | np.ndarray, horizon: int, alpha: float = 0.15) -> np.ndarray:
     """The expected demand per period under TSB: chance of demand times the mean of the last 52 non-zero sizes.
 
     This is the mean, not the median. For lumpy demand the median is zero, so a point forecast taken from a median can
     understate the volume the business will actually need by most of its amount. The expectation is exact (the sampler in
     ``TSB.predict`` draws sizes uniformly from the same window), and it is constant over the horizon, as TSB is."""
-    s = np.nan_to_num(np.asarray(context, dtype=float))
-    p = 0.5
-    for v in s:
-        p = p + alpha * ((1.0 if v > 0 else 0.0) - p)
-    sizes = s[s > 0][-52:]
+    s = np.asarray(context, dtype=float)
+    p = _chance(s, alpha)
+    fin = s[np.isfinite(s)]
+    sizes = fin[fin > 0][-52:]
     level = float(p * sizes.mean()) if len(sizes) else 0.0
     return np.full(horizon, level)
 
@@ -45,7 +60,8 @@ def is_intermittent(series: Sequence[float] | np.ndarray) -> bool:
     Logic: the count of periods with demand against the length of the series (the inverse of the demand interval). Only a
     series that never goes below zero can be demand; a series with negative values is never called intermittent.
     """
-    s = np.nan_to_num(np.asarray(series, dtype=float))
+    s = np.asarray(series, dtype=float)
+    s = s[np.isfinite(s)]   # a missing period is not a period without demand, so it is not counted in the interval
     if (s < 0).any():
         return False            # a series that goes below zero is not demand (a price, a balance): zeros there are not "no sale"
     sold = int(np.count_nonzero(s > 0))
@@ -85,11 +101,10 @@ class TSB:
         pick = rng.random((self.n, horizon))
         qs = np.empty((len(contexts), horizon, len(QS)))
         for i, c in enumerate(contexts):
-            s = np.nan_to_num(np.asarray(c, dtype=float))
-            p = 0.5
-            for v in s:
-                p = p + self.alpha * ((1.0 if v > 0 else 0.0) - p)
-            sizes = s[s > 0][-52:]
+            s = np.asarray(c, dtype=float)
+            p = _chance(s, self.alpha)
+            fin = s[np.isfinite(s)]
+            sizes = fin[fin > 0][-52:]
             if len(sizes) == 0:
                 qs[i] = 0.0
                 continue
