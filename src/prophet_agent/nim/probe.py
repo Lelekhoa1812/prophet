@@ -15,7 +15,12 @@ from .errors import NimError, SchemaViolation
 from .transport import DEFAULT_CHAIN, NimClient
 from .schema import validate
 
+PROBE_BUDGET_S = 240.0            # per model, per probe run: a probe never waits out the provider's half-hour rate limit
 KEY_OK_STATUSES = (200, 429)      # 429 means the key is valid and cooling, not refused
+
+
+class ProbeTimeout(NimError):
+    """A model probe used up its own budget while waiting for an answer."""
 
 CLAIM_PROMPT = [
     {"role": "system", "content": "Extract factual claims from the text. Use only what the text says."},
@@ -42,6 +47,17 @@ def keys_ok(rows: list[dict]) -> bool:
     return all(row["error"] is None and row["status"] in KEY_OK_STATUSES for row in rows)
 
 
+def _budget_checkpoint(client: NimClient, limit: float):
+    """A checkpoint the transport calls while it waits. It stops the probe once its own budget is spent, on the client's
+    clock, so a rate-limit wait cannot hold the probe for longer than ``limit``."""
+    deadline = client.clock() + limit
+
+    def checkpoint() -> None:
+        if client.clock() >= deadline:
+            raise ProbeTimeout(f"no answer within {limit:.0f}s")
+    return checkpoint
+
+
 def probe_models(client: NimClient, *, thinking: bool) -> list[dict]:
     rows = []
     for model in DEFAULT_CHAIN:
@@ -50,7 +66,7 @@ def probe_models(client: NimClient, *, thinking: bool) -> list[dict]:
         try:
             reply = client.complete([model], CLAIM_PROMPT, thinking=thinking, schema=CLAIM_SCHEMA,
                                     schema_name="claim_probe_v1", max_tokens=8192 if thinking else 1024,
-                                    budget_s=240.0)
+                                    budget_s=PROBE_BUDGET_S, checkpoint=_budget_checkpoint(client, PROBE_BUDGET_S))
             row.update(ok=True, finish=reply.finish_reason, key_slot=reply.key_slot,
                        schema_valid=validate(json.loads(reply.text), CLAIM_SCHEMA) is None,
                        text_chars=len(reply.text), usage=reply.usage)
