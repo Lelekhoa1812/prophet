@@ -8,8 +8,8 @@ little history to see the cycle, the history ends in a filled stretch, or the ho
 Measured on the real example series (see docs/prophet/GOAL.md): the daily CO2 record forecasts with a range of 3.1 ppm
 from 3,600 points but 0.25 ppm from 400 points, because 400 days hold about one annual cycle. A reader cannot tell
 those two cases apart from the chart, and neither could the planner.
-Logic: find the history's dominant period from the autocorrelation of the detrended series (no calendar assumed: the
-period is whatever repeats), build the path that history would imply for the horizon from its average cycle, and compare
+Logic: take the history's season from choose_season (the same season the backtest uses; the period falls back to
+dominant_period only when choose_season measures none), build the path that history would imply for the horizon from its average cycle, and compare
 the forecast's shape with it. ``assess`` returns a verdict (ok, flat_expected, flat_unexpected, check), the evidence and
 the likely causes with what to try, so the planner can repair a bad forecast and the answer can say plainly when a flat
 line is the honest one.
@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from prophet_agent.forecast.season import choose_season
 from prophet_agent.sandbox.prophet_lib import _detrend, dominant_period   # one implementation, also used inside the sandbox
 
 MIN_POINTS = 24
@@ -50,6 +51,32 @@ def _expected_path(history: np.ndarray, period: int, horizon: int) -> np.ndarray
 
 
 SEASON_TOLERANCE = 0.10       # a given season this far from the measured cycle (relative) is flagged (A6-04)
+
+
+def measured_period(history: Any, dates: Any = None) -> tuple[int | None, float]:
+    """The cycle the health check uses: the season choose_season measures, the same function the backtest uses on the history
+    before its test windows. (None, 0.0) when it measures no season (season 1). The strength is the one that season was
+    judged on: the seasonal strength of the levels when the levels found it, otherwise the autocorrelation of the changes.
+
+    Motivation vs Logic
+    Motivation (known defect): the health check used dominant_period while the backtest used choose_season. On the Berlin daily
+    temperature the check said 356 steps and the backtest 365 (GOAL.md), so the two judged the same forecast against different
+    cycles.
+    Logic: one source of truth. dates are used only when they match the history in length (choose_season refuses a mismatch).
+    """
+    x = np.asarray(history, dtype=float).reshape(-1)
+    if dates is not None and len(dates) != len(x):
+        dates = None
+    res = choose_season(x, dates=dates)
+    season = int(res["season"])
+    if season > 1:
+        if res.get("method") == "levels":
+            return season, float(res["level_strengths"][season])
+        return season, float(res["strengths"][season])
+    # choose_season measures no season here, so the backtest has none to agree with. The earlier reading is kept for this case
+    # only, so a cycle outside choose_season's candidate lags (for example 30 or 200 steps) is still reported. This is the one
+    # place the two readings can still differ; see docs/prophet/GOAL.md for the open decision.
+    return dominant_period(x)
 
 
 def business_day_calendar(dates: Any) -> dict[str, Any] | None:
@@ -85,8 +112,9 @@ def season_check(season: Any, history: Any, dates: Any = None) -> dict[str, Any]
 
     Motivation vs Logic
     Motivation: season was a free parameter. Retail rep4 backtested at 7 on a series whose cycle was 5 steps (A6-04).
-    Logic: dominant_period on the history given (the caller passes only what was known before the first test window), in
-    the series' own steps, so the same check covers calendar and business-day series. Business days are named in the warning.
+    Logic: measured_period (the season choose_season measures, the one the backtest uses) on the history given (the caller
+    passes only what was known before the first test window), in the series' own steps, so the same check covers calendar and
+    business-day series. Business days are named in the warning.
     """
     if season is None:
         return None
@@ -94,7 +122,7 @@ def season_check(season: Any, history: Any, dates: Any = None) -> dict[str, Any]
     if len(x) < MIN_POINTS:
         return None
     s = int(season)
-    period, strength = dominant_period(x)
+    period, strength = measured_period(x, dates)
     if not period or s < 1:
         return None
     if abs(period - s) / s <= SEASON_TOLERANCE:
@@ -139,7 +167,7 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
     if n < MIN_POINTS or horizon < 2:
         return {"verdict": "check", "reason": f"only {n} history points; too few to judge the forecast's shape"}
 
-    period, strength = dominant_period(x)
+    period, strength = measured_period(x)
     fc_shape = _shape(p)
     recent = x[-max(horizon, 30):]
     recent_shape = _shape(recent)

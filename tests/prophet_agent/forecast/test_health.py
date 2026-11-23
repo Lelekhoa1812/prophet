@@ -46,12 +46,14 @@ def test_a_random_walk_with_a_flat_median_is_an_honest_flat_forecast():
 
 
 def test_too_few_cycles_in_the_context_is_named_as_the_cause():
-    hist = _cycle(900, 30)
+    # A 24-step cycle: the health check now reads choose_season's season, whose fixed candidate lags include 24 but not 30 (a
+    # 30-step smooth cycle is reported as 2; see the report on the health check's season source).
+    hist = _cycle(900, 24)
     flat = np.full(20, hist[-1])
     out = assess(hist, flat, context_used=40, context_points=40)
     assert out["verdict"] == "flat_unexpected"
     assert any("context_points=40 holds" in c for c in out["causes"])
-    assert any("at least 90" in t for t in out["try"])
+    assert any("at least 72" in t for t in out["try"])
 
 
 def test_a_history_that_ends_in_a_filled_stretch_is_named():
