@@ -259,6 +259,15 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.patch("/api/missions/{mission_id}")
     def patch_mission(mission_id: str, body: MissionPatch) -> dict:
+        # Checked before anything is written: an unknown or notebook mission is 404 even when the patch changes nothing, and
+        # a blank name is refused before the archive step, so a refused patch never leaves a field half applied.
+        try:
+            if service.store.mission(mission_id).get("notebook_id") is not None:
+                raise KeyError(mission_id)
+        except KeyError:
+            raise HTTPException(404, "no such quick forecast")
+        if body.title is not None and not " ".join(body.title.split()):
+            raise HTTPException(409, "a name cannot be empty")          # the status the service's own check has always given
         try:
             if body.archived is not None:
                 service.archive(mission_id, body.archived)
