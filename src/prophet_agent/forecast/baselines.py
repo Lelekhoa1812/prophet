@@ -109,6 +109,9 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
     period-4 series with noise 2, measured, synthetic).
     Logic: band_mode "phase" (the default) uses the residual sd of the lag-season difference for the forecast's own phase,
     with no growth in h. band_mode "sqrt" keeps the earlier random-walk band for callers that need it.
+    A history shorter than one season has no same-phase value to repeat, so it returns moving_average(series, h, season)
+    instead (the mean of the whole history when it is shorter than the season). That is the documented fallback; check the
+    length first if the seasonal rule is wanted.
     """
     if band_mode not in ("phase", "sqrt"):
         raise ValueError("band_mode must be 'phase' or 'sqrt'")
@@ -117,10 +120,12 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
         return moving_average(s, h, season)
     p = np.zeros(h)
     for i in range(h):
-        idx = len(s) + i - season * np.arange(1, k + 1)
+        # The k most recent observed values with this step's phase. Step i's same-phase values sit at len(s) + i - season * j,
+        # and the smallest j that lies in the history is i // season + 1, so every step averages k values however far ahead.
+        j0 = i // season + 1
+        idx = len(s) + i - season * np.arange(j0, j0 + k)
         idx = idx[idx >= 0]
-        idx = idx[idx < len(s)]
-        p[i] = s[idx].mean() if len(idx) else s[-season:].mean()
+        p[i] = s[idx].mean()
     if band_mode == "sqrt":
         resid = s[season:] - s[:-season]
         sd = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
