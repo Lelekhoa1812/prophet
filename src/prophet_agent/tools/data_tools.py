@@ -9,6 +9,7 @@ baselines on one series and reports the measured difference.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,13 @@ from prophet_agent.sandbox.runner import run_python
 from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_series, source_covariates
 
 PROFILE_CODE = '''
-import json, sys
+import json
 import prophet_lib as pl
 out = pl.profile("in/" + {name!r}, sheet={sheet!r})
-print(json.dumps(out))
+with open("out/profile.json", "w", encoding="utf-8") as f:
+    json.dump(out, f)
 '''
+PROFILE_FILE = "out/profile.json"
 
 
 def make_inspect(datasets: dict[str, Path]):
@@ -41,8 +44,12 @@ def make_inspect(datasets: dict[str, Path]):
                          inputs={name: datasets[name]})
         if not res.ok:
             raise RuntimeError("the file could not be profiled: " + (res.stderr[-400:] or "timed out"))
-        import json
-        return {"file": name, "profile": json.loads(res.stdout), "run_id": res.run_id}
+        # The profile is read from its file, not from stdout: stdout is clipped to a head and a tail, and a clipped JSON
+        # text failed with a parser error that did not name the cause (round 6l, item 8).
+        path = Path(res.workdir) / PROFILE_FILE
+        if not path.is_file():
+            raise RuntimeError("the file was profiled but the profile was not written; check the file and try again")
+        return {"file": name, "profile": json.loads(path.read_text(encoding="utf-8")), "run_id": res.run_id}
     return _run
 
 
