@@ -88,6 +88,11 @@ def _call(method: str, path: str, body: Any = None, raw: bytes | None = None, he
         raise ProphetError(f"Prophet did not answer at {BASE} in time. Try again, or check that it is still running.")
 
 
+def _seg(value: Any) -> str:
+    """An ID as one URL path segment: "/", "?" and "#" in it are encoded, so it cannot change the route it reaches."""
+    return urllib.parse.quote(str(value), safe="")
+
+
 def _reasons(mission: dict) -> list[dict]:
     """The named reasons from the API's outcome: plain words and a next step. The planner's own text is not sent."""
     rows = []
@@ -129,7 +134,7 @@ def _answer_text(mission: dict) -> dict:
 def _wait(mission_id: str, seconds: float) -> dict:
     deadline = time.time() + max(1.0, seconds)
     while True:
-        m = _call("GET", f"/api/missions/{mission_id}")
+        m = _call("GET", f"/api/missions/{_seg(mission_id)}")
         if m["status"] in FINAL or m["status"] in (CHECKPOINT, "waiting_user") or time.time() >= deadline:
             return m
         time.sleep(2.0)
@@ -144,29 +149,29 @@ def t_list_notebooks(_: dict) -> Any:
 def t_create_notebook(a: dict) -> Any:
     nb = _call("POST", "/api/notebooks", {"title": a.get("title") or "New notebook"})
     if a.get("instructions"):
-        _call("PATCH", f"/api/notebooks/{nb['id']}", {"instructions": a["instructions"]})
+        _call("PATCH", f"/api/notebooks/{_seg(nb['id'])}", {"instructions": a["instructions"]})
     return nb
 
 
 def t_add_file(a: dict) -> Any:
     given, real = _local_file(a["path"])
-    src = _call("POST", f"/api/notebooks/{a['notebook_id']}/sources", raw=real.read_bytes(),
+    src = _call("POST", f"/api/notebooks/{_seg(a['notebook_id'])}/sources", raw=real.read_bytes(),
                 headers={"X-File-Name": urllib.parse.quote(given.name),
                          "content-type": mimetypes.guess_type(given.name)[0] or "application/octet-stream"}, timeout=120)
     deadline = time.time() + float(a.get("wait_seconds", 60))
     while src.get("status") == "profiling" and time.time() < deadline:
         time.sleep(1.5)
-        nb = _call("GET", f"/api/notebooks/{a['notebook_id']}")
+        nb = _call("GET", f"/api/notebooks/{_seg(a['notebook_id'])}")
         src = next((s for s in nb["sources"] if s["id"] == src["id"]), src)
     return src
 
 
 def t_notebook(a: dict) -> Any:
-    return _call("GET", f"/api/notebooks/{a['notebook_id']}")
+    return _call("GET", f"/api/notebooks/{_seg(a['notebook_id'])}")
 
 
 def t_ask(a: dict) -> Any:
-    turn = _call("POST", f"/api/notebooks/{a['notebook_id']}/turns", {"goal": a["question"]})
+    turn = _call("POST", f"/api/notebooks/{_seg(a['notebook_id'])}/turns", {"goal": a["question"]})
     m = _wait(turn["id"], float(a.get("wait_seconds", 240)))
     out = _answer_text(m)
     if m["status"] in WORKING:
@@ -185,9 +190,9 @@ def t_status(a: dict) -> Any:
 def _resume(a: dict, action: str) -> Any:
     """Continue a checkpointed mission, or write its answer now, as the console does; then wait for the next stop."""
     turn_id = a["turn_id"]
-    _call("POST", f"/api/missions/{turn_id}/{action}")
+    _call("POST", f"/api/missions/{_seg(turn_id)}/{action}")
     wait = float(a.get("wait_seconds", 240))
-    m = _wait(turn_id, wait) if wait > 0 else _call("GET", f"/api/missions/{turn_id}")
+    m = _wait(turn_id, wait) if wait > 0 else _call("GET", f"/api/missions/{_seg(turn_id)}")
     out = _answer_text(m)
     if m["status"] in WORKING:
         out["next"] = "Still working. Call prophet_status with this turn_id to continue waiting."
@@ -203,19 +208,22 @@ def t_answer_now(a: dict) -> Any:
 
 
 def t_answer(a: dict) -> Any:
-    r = _call("POST", f"/api/questions/{a['question_id']}/answer", {"answers": a["answers"]})
+    r = _call("POST", f"/api/questions/{_seg(a['question_id'])}/answer", {"answers": a["answers"]})
     m = _wait(r["mission_id"], float(a.get("wait_seconds", 240)))
     return _answer_text(m)
 
 
 def t_cancel(a: dict) -> Any:
-    return _call("POST", f"/api/missions/{a['turn_id']}/cancel")
+    return _call("POST", f"/api/missions/{_seg(a['turn_id'])}/cancel")
 
 
 def t_files(a: dict) -> Any:
-    runs = _call("GET", f"/api/missions/{a['turn_id']}/artifacts")
-    return [{"run_id": r["run_id"], "files": [{"name": f["path"], "bytes": f["bytes"], "sha256": f["sha256"],
-                                               "url": f"{BASE}/api/artifacts/{r['run_id']}/{f['path']}"} for f in r["files"]]}
+    runs = _call("GET", f"/api/missions/{_seg(a['turn_id'])}/artifacts")
+    # The run id is one URL segment; a file path keeps its "/" so the route still names the folder inside the run.
+    return [{"run_id": r["run_id"], "files": [
+                {"name": f["path"], "bytes": f["bytes"], "sha256": f["sha256"],
+                 "url": f"{BASE}/api/artifacts/{_seg(r['run_id'])}/{urllib.parse.quote(f['path'], safe='/')}"}
+                for f in r["files"]]}
             for r in runs]
 
 
