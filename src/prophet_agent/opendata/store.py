@@ -77,6 +77,19 @@ def _csv_table(text: str) -> tuple[list, int, list]:
     return columns, len(data), [list(row) for row in data[:PREVIEW_ROWS]]
 
 
+def split_csv(text: str) -> tuple[str, str]:
+    """Split a CSV text into (preamble, table). Open-Meteo puts a 'latitude' location block before its table; the table
+    starts at the first 'time' or 'date' row. A text without that block is returned whole, with an empty preamble."""
+    lines = text.splitlines(keepends=True)
+    first = next((line for line in lines if line.strip() and not line.startswith("#")), None)
+    if first is None or first.split(",")[0].strip().lower() != "latitude":
+        return "", text
+    for index, line in enumerate(lines):
+        if not line.startswith("#") and line.split(",")[0].strip().lower() in ("time", "date"):
+            return "".join(lines[:index]), "".join(lines[index:])
+    raise ValueError("no time or date header follows the location block")
+
+
 def preview(body: bytes, fmt: str) -> dict:
     """columns, the first five rows and the total row count of a CSV or JSON body. Raises ValueError if it is not a table."""
     try:
@@ -119,8 +132,14 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
         body = datasets.path(existing["id"]).read_bytes()
         return dict(existing, preview=preview(body, fmt))
     fetched = fetch.download(url)
-    body = fetched["bytes"]
-    table = preview(body, fmt)     # nothing is stored unless the body parses as the table it claims to be
+    raw = fetched["bytes"]
+    table = preview(raw, fmt)     # nothing is stored unless the body parses as the table it claims to be
+    # The stored file is the table alone, so a reader of the file sees the header first. The location block that came
+    # before it is kept as text in provenance, and the hash of the raw download is kept too.
+    preamble, body = "", raw
+    if fmt == "csv":
+        preamble, table_text = split_csv(raw.decode("utf-8-sig"))
+        body = table_text.encode("utf-8")
     provenance = {
         "source": source_key,
         "url": url,
@@ -131,6 +150,9 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
         "content_type": fetched["content_type"],
         "sha256": hashlib.sha256(body).hexdigest(),
         "bytes": len(body),
+        "raw_sha256": hashlib.sha256(raw).hexdigest(),
+        "raw_bytes": len(raw),
+        "preamble": preamble,
         "licence_key": sources.get(source_key).licence_key,
     }
     meta = datasets.add(name or f"{source_key}.{fmt}", body, provenance=provenance)

@@ -200,12 +200,15 @@ def test_a_downloaded_file_is_read_by_sandbox_python_in_the_same_run(served, mis
     tools = default_tools(opendata=mission.context())
     got = tools["download_open_data"].fn({"source": "open_meteo_forecast", "params": FORECAST}, "k1")
     code = (f"import os\nprint(sorted(os.listdir('in')))\n"
+            f"print(open({got['sandbox_file']!r}).readline().strip())\n"
             f"print(len(open({got['sandbox_file']!r}).read().splitlines()))\n")
     out = tools["sandbox_python"].fn({"code": code}, "run-key-" + "0" * 22)
     assert out["ok"], out["stderr"]
     lines = out["stdout"].splitlines()
     assert got["name"] in lines[0]
-    assert lines[1] == str(len(CSV_BYTES.decode().splitlines()))
+    # The stored file is the table alone: the sandbox reads the time header first, then the seven data rows.
+    assert lines[1] == "time,temperature_2m_max,precipitation_sum"
+    assert lines[2] == "8"
 
 
 def test_the_mission_records_the_download_and_a_rebuilt_tool_set_mounts_it(served, tmp_path):

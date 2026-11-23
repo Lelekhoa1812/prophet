@@ -14,12 +14,15 @@ from prophet_agent.research import netguard
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 CSV_BYTES = (FIXTURES / "open_meteo_daily.csv").read_bytes()
+CSV_TABLE = CSV_BYTES[CSV_BYTES.index(b"\ntime,") + 1:]        # the table alone: what the store keeps on disk
 JSON_BYTES = (FIXTURES / "open_meteo_daily.json").read_bytes()
+# A real capture of the Open-Meteo CSV response shape, taken live on 2026-11-23 (location block, blank line, table).
+LIVE_BYTES = (FIXTURES / "open_meteo_daily_live.csv").read_bytes()
 PUBLIC = "93.184.216.34"
 FORECAST = {"latitude": 52.52, "longitude": 13.41, "daily": "temperature_2m_max,precipitation_sum",
             "timezone": "Europe/Berlin", "forecast_days": 7}
 PROVENANCE_FIELDS = {"source", "url", "params", "params_sha256", "retrieved_at", "final_url", "content_type", "sha256",
-                     "bytes", "licence_key"}
+                     "bytes", "raw_sha256", "raw_bytes", "preamble", "licence_key"}
 
 
 @pytest.fixture
@@ -98,14 +101,17 @@ def test_download_stores_the_bytes_with_full_provenance_and_returns_the_preview(
     assert provenance["params"] == sources.normalise("open_meteo_forecast", FORECAST)
     assert provenance["final_url"] == url
     assert provenance["content_type"] == "text/csv"
-    assert provenance["sha256"] == hashlib.sha256(CSV_BYTES).hexdigest() == meta["sha256"]
-    assert provenance["bytes"] == len(CSV_BYTES) == meta["bytes"]
+    assert provenance["sha256"] == hashlib.sha256(CSV_TABLE).hexdigest() == meta["sha256"]
+    assert provenance["bytes"] == len(CSV_TABLE) == meta["bytes"]
+    assert provenance["raw_sha256"] == hashlib.sha256(CSV_BYTES).hexdigest()
+    assert provenance["raw_bytes"] == len(CSV_BYTES)
+    assert provenance["preamble"].startswith("# SYNTHETIC") and "latitude" in provenance["preamble"]
     assert provenance["licence_key"] == "open_meteo"
     assert provenance["retrieved_at"].endswith("+00:00")
 
     assert meta["name"] == "open_meteo_forecast.csv"
     assert meta["preview"]["row_count"] == 7
-    assert datasets.path(meta["id"]).read_bytes() == CSV_BYTES
+    assert datasets.path(meta["id"]).read_bytes() == CSV_TABLE
     on_disk = json.loads((datasets.root / meta["id"] / "meta.json").read_text(encoding="utf-8"))
     assert on_disk["provenance"] == provenance
     assert served["calls"] == 1
@@ -124,6 +130,45 @@ def test_a_name_can_be_given(served, tmp_path):
     assert meta["name"] == "usd_eur.csv"
     assert meta["provenance"]["url"] == "https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?format=csvdata"
     assert meta["provenance"]["licence_key"] == "ecb"
+
+
+def test_the_live_capture_is_stored_as_the_table_alone(served, tmp_path):
+    """The location block that Open-Meteo prints before its table is kept in provenance, not in the stored file, so a
+    reader of the file (the sandbox) sees the time header on its first line."""
+    served.update(body=LIVE_BYTES, content_type="text/csv")
+    datasets = store_at(tmp_path)
+    meta = store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    stored = datasets.path(meta["id"]).read_bytes()
+
+    assert stored.decode("utf-8").splitlines()[0] == "time,temperature_2m_max (°C),temperature_2m_min (°C),precipitation_sum (mm)"
+    assert b"latitude" not in stored
+    assert meta["provenance"]["preamble"].splitlines()[0].startswith("latitude,longitude")
+    assert meta["provenance"]["raw_sha256"] == hashlib.sha256(LIVE_BYTES).hexdigest()
+    assert meta["preview"]["columns"] == ["time", "temperature_2m_max (°C)", "temperature_2m_min (°C)",
+                                          "precipitation_sum (mm)"]
+    assert meta["preview"]["row_count"] == 3 and meta["preview"]["rows"][0] == ["2026-11-23", "31.3", "22.6", "1.30"]
+
+
+def test_the_stored_table_previews_the_same_as_the_raw_body():
+    preamble, table = store.split_csv(LIVE_BYTES.decode("utf-8"))
+    assert store.preview(table.encode("utf-8"), "csv") == store.preview(LIVE_BYTES, "csv")
+    assert preamble.endswith("\n\n")                       # the blank line between the block and the table stays there
+
+
+def test_a_csv_without_a_location_block_is_stored_unchanged(served, tmp_path):
+    plain = b"week,units\n1,2\n3,4\n"
+    served.update(body=plain, content_type="text/csv")
+    meta = store.download_to_dataset("ecb_sdmx", {"flow": "EXR", "key": "D.USD.EUR.SP00.A"}, store_at(tmp_path))
+    assert meta["provenance"]["preamble"] == ""
+    assert meta["provenance"]["sha256"] == meta["provenance"]["raw_sha256"] == hashlib.sha256(plain).hexdigest()
+
+
+def test_a_location_block_with_no_table_header_is_refused_and_not_stored(served, tmp_path):
+    served.update(body=b"latitude,longitude\n52,13\n", content_type="text/csv")
+    datasets = store_at(tmp_path)
+    with pytest.raises(ValueError, match="no time or date header"):
+        store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    assert not datasets.root.exists() or list(datasets.root.iterdir()) == []
 
 
 # --- idempotency ------------------------------------------------------------------------------------------------------

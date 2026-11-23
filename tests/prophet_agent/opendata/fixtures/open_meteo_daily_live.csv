@@ -1,0 +1,7 @@
+latitude,longitude,elevation,utc_offset_seconds,timezone,timezone_abbreviation
+-33.848858,151.19551,69.0,39600,Australia/Sydney,GMT+11
+
+time,temperature_2m_max (°C),temperature_2m_min (°C),precipitation_sum (mm)
+2026-11-23,31.3,22.6,1.30
+2026-11-24,23.8,18.2,3.20
+2026-11-25,21.2,18.0,0.30
