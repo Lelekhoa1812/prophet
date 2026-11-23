@@ -55,21 +55,30 @@ def _future_dates(dates: list[str], n: int) -> list[str] | None:
 
 
 def _closed_weekdays(idx) -> frozenset[int] | None:
-    """The weekdays a daily history never trades on: the weekend, or one shut day such as a Saturday. None when the history
-    is not a daily calendar of whole days, or no weekday is missing from it (then the median step decides).
+    """The weekdays a daily history almost never trades on: the weekend, or one shut day such as a Saturday. None when the
+    history is not a daily calendar of whole days, or no weekday is shut (then the median step decides).
 
     Live retail e6caf00e (2026-11-23): 633 days of a shop open Monday to Sunday and shut on Saturdays. The old rule wanted
     Monday to Friday only, so the next dates were None and the answer stated no forecast window. The median-step fallback
-    also refused the series: its 105 Saturday gaps were 16.6% of the steps, over the 10% cap.
+    also refused the series: its 105 Saturday gaps were 16.6% of the steps, over the 10% cap. A later run of the same shop
+    had 603 days with a London holiday calendar and two shutdowns of 5 and 12 days; the first version still refused it.
     """
+    import pandas as pd
     if len(idx) < 20 or (idx.hour != 0).any():
         return None
-    gaps = idx.to_series().diff().dropna().dt.days
-    if not gaps.between(1, 4).all():
+    # A weekday is shut when it is almost never traded: one stray Saturday in a Saturday-shut year does not reopen it.
+    expected = len(idx) / 7
+    closed = frozenset(d for d in range(7) if (idx.day_of_week == d).sum() < 0.05 * expected)
+    if not closed or 7 - len(closed) < 5:
         return None
-    open_days = {int(d) for d in idx.day_of_week}
-    closed = frozenset(set(range(7)) - open_days)
-    return closed if closed and len(open_days) >= 5 else None
+    # Every gap may skip shut weekdays and holidays or shutdowns (which skip open days too). Gaps that skip an open weekday
+    # are the unexplained ones; too many of them means random missing days, and no calendar is invented from those.
+    days = idx.normalize()
+    unexplained = sum(
+        1 for a, b in zip(days[:-1], days[1:])
+        if any(int(x.day_of_week) not in closed for x in pd.date_range(a + pd.Timedelta(days=1), b - pd.Timedelta(days=1)))
+    )
+    return closed if unexplained <= 0.1 * (len(idx) - 1) else None
 
 
 def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:

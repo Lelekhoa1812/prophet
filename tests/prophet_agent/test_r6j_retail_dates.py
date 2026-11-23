@@ -54,8 +54,24 @@ def test_an_intraday_history_names_no_shut_day():
     assert R._closed_weekdays(hist) is None
 
 
-def test_a_shut_day_history_with_a_long_gap_still_gets_no_dates():
-    # A ten-day closure is not a holiday run: no calendar is invented from it, so the dates stay None.
+def test_a_shut_day_history_with_holiday_and_shutdown_gaps_still_gets_its_dates():
+    # Two shutdowns (five and twelve days) and a holiday skip the open days too. These are known gaps, so the rhythm holds.
     days = _days(date(2011, 1, 3), 170, {5})
-    holed = days[:80] + days[90:]
-    assert R._future_dates(holed, 5) is None
+    shut_for_a_week = days[:60] + days[65:90] + days[102:]
+    ahead = R._future_dates(shut_for_a_week, 10)
+    assert ahead is not None and len(ahead) == 10
+    assert all(date.fromisoformat(d).weekday() != 5 for d in ahead)
+
+
+def test_scattered_missing_open_days_get_no_dates():
+    # Random missing days are not a calendar: more than a tenth of the gaps skip an open day, so no dates are invented.
+    days = _days(date(2011, 1, 3), 170, {5})
+    scattered = [d for i, d in enumerate(days) if i % 7 not in (0, 1)]
+    assert R._future_dates(scattered, 5) is None
+
+
+def test_one_stray_saturday_does_not_reopen_a_shut_saturday_shop():
+    days = _days(date(2011, 1, 3), 170, {5})
+    days = sorted(set(days) | {"2011-02-05"})         # a Saturday traded once
+    hist = pd.DatetimeIndex(pd.to_datetime(days))
+    assert R._closed_weekdays(hist) == frozenset({5})
