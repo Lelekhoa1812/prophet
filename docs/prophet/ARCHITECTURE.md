@@ -119,7 +119,7 @@ gate.
    that they have full right to use the official TimesFM 3 model. Recorded as their decision. The licence's research-use
    terms still bind any commercial, client or paid use, so the gate in §5 stays. *Open:* confirm in writing (Bill or Ly)
    before any client use.
-4. **`NIM.md` and `.env`.** `NIM.md` stays uncommitted; the whole-tree scan found no key-shaped string in it. `.env` is
+4. **`NIM.md` and `.env`.** `NIM.md` is tracked in the repo (owner decision: keep it tracked); the whole-tree scan found no key-shaped string in it. `.env` is
    git-ignored and was never committed, but it is mode 644. *Open:* the user decides whether to tighten it to 600.
 5. **Commit and push: authorised.** The user's instruction to keep going until everything is shipped and pushed end to
    end is the approval. Commits are local and then pushed to `origin/main`.

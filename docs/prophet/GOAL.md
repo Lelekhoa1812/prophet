@@ -234,7 +234,7 @@ smooth, impute, derivative_features and the new helpers only.
 ### Evidence for G14 (whole-tree scan, 2026-11-20)
 
 - No value from the git-ignored `.env` appears in any file to be committed (count 0).
-- `NIM.md` (kept out of the commit) contains no key-shaped string.
+- `NIM.md` is tracked in the repo (owner decision: keep it tracked) and contains no key-shaped string.
 - Seven test files contain key-shaped placeholders such as `nvapi-LEAKED…` and `nvapi-AAAA…`, used to prove redaction.
   They are not live keys.
 
@@ -852,3 +852,40 @@ cells under numeric headers unchecked, `contracts.py:1561`), the remaining sandb
 in the forecast, API and docs audits.
 
 Gate: 1,971 passed, 1 skipped, 4 deselected.
+
+### Round 6l: lease fence, contracts, API, sandbox, goal loop, forecast and docs (fixed 2026-11-23, merged to main b2d9249)
+
+Work was split across parallel worktrees, each reproduced before it changed code, and merged to main with the gate re-run
+on the combined tree.
+
+- **Lease fence on store writes** (`runtime/store.py`, `runtime/runner.py`, commit 6ddbe8f). Writes now check the lease owner
+  inside the write transaction, so a runtime whose lease was taken over is refused. `run()` returns `lease_lost` instead of
+  letting `LeaseLost` escape. Eleven tests in `test_r6l_lease_fence.py`.
+- **Contracts** (`runtime/contracts.py`, commits 85df180, 551b73e, 1127637). A benchmark claim with no backtest best baseline
+  is blocked; a table day cell and a bare day-number header are checked.
+- **API** (`api/app.py`, commits aa122cc, c8ee863, bdc986a, 4233fe6, 5faea06). Streamed upload bodies are capped; key strings
+  are bounded at 256 characters; a failed mission start is marked failed; redaction covers Bearer tokens and common key shapes.
+  The licence-wording guard is widened and baselines 13 dataset labels in `scripts/fetch_datasets.py` pending an owner decision.
+- **Sandbox** (`sandbox/runner.py`, commits 6a54362 to d6210e9). Manifest and listing stay inside the run folder; path checks
+  fold case; SQLite databases must sit in the run folder and URIs are refused; name lookups are blocked; captured output keeps
+  its first and last 40,000 bytes; `source_covariates` and `run_dates` stay inside `out/`; a repeated identical append is a
+  no-op; the profile is read from `out/profile.json`. Repeated appends are now a no-op by design.
+- **Goal loop** (`runtime/goal.py`, `runtime/grounding.py`, commits 1dbf6ea to 3e0e604). A two-call A, B, A loop with unchanged
+  outcomes is a stall; sub-agent figures are checked against their own tool results, not the brief; the snap tolerance is
+  capped at 1,000 units; method-claim markers match by word, so "asymmetric" is not "symmetric"; claims are re-checked after
+  the repair pass.
+- **Forecast** (`forecast/baselines`, `artifacts`, commits 5271158, a5862e2, ec0fbfd). Seasonal naive averages the last k
+  same-phase values, so its band widens by sqrt(1 + 1/k) and it no longer runs out past k seasons. Coverage on a synthetic
+  period-4 probe at the 80% nominal rose from 0.70 to about 0.78 (synthetic; the residual gap is sigma estimated from 48 points).
+  A cut PDF note now says so. Any stored backtest figures for seasonal naive are stale and need regenerating. The season bar
+  was checked and is already a Bonferroni bound with a 0.3 floor; no change.
+- **Docs** (`README.md`, `docs/prophet/ARCHITECTURE.md`, `docs/prophet/GOAL.md`, commits d006699, d9879bd, 4ddf3a3, 2cc5ce8).
+  README outbound-call claim corrected; demotion codes, playbook count (18) and planner version corrected; stale counts
+  re-collected; 15% bar locked by a regression test. NIM.md is tracked (owner decision: keep it tracked).
+
+Not done in this round: DNS rebinding in `research/fetch.py` (the host is resolved three times and the connection is not pinned
+to the validated address; the fix sits outside the sandbox agent's files); other JSON routes still read unbounded chunked
+bodies; the widened `redact()` also masks name=value text in sandbox output; the baseline band is still labelled 80% in
+backtest; the untested modules `nim/probe.py`, `api/panels.py`, `api/sharing.py`, `api/bundle.py` and `api/__main__.py`.
+
+Gate on the combined tree: 2,112 passed, 1 skipped, 4 deselected, 0 failed (372 s).
