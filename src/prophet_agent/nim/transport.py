@@ -81,8 +81,10 @@ TRUNCATION_TOKEN_CAP = 32768
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
 # Error codes a gateway puts in an in-stream error frame, mapped to the HTTP status they stand for (FreeRouter's
 # envelope: free-router src/lib/http.ts). An unknown code is treated as a 502: the key cools briefly and the call moves on.
+# model_forbidden refuses this one model, so it takes the model consequence (404). A 403 would retire the key for every
+# model for ten minutes. insufficient_scope is about the key's own scope, so it stays 403.
 _IN_STREAM_STATUS: dict[str, int] = {
-    "invalid_api_key": 401, "insufficient_scope": 403, "model_forbidden": 403, "model_not_found": 404,
+    "invalid_api_key": 401, "insufficient_scope": 403, "model_forbidden": 404, "model_not_found": 404,
     "rate_limit_exceeded": 429, "quota_exhausted": 429, "upstream_unavailable": 503, "upstream_invalid_output": 502,
     "upstream_request_rejected": 400, "unsupported_capability": 400, "unsupported_parameter": 400, "invalid_request": 400,
 }
