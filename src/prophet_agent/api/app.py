@@ -69,6 +69,16 @@ async def _capped_body(request: Request) -> bytes:
     return bytes(buf)
 
 
+KEY_CHARS_MAX = 256    # the longest provider key that is accepted; real keys are far shorter, and a longer string is written to .env
+
+
+def _check_key_lengths(keys: object) -> None:
+    """422 for a key string longer than KEY_CHARS_MAX. Keys are otherwise unbounded, and each one is written to .env."""
+    for item in keys if isinstance(keys, list) else []:
+        if isinstance(item, str) and len(item) > KEY_CHARS_MAX:
+            raise HTTPException(422, f"a key is longer than {KEY_CHARS_MAX} characters; paste one key per entry")
+
+
 def _checked_goal(goal: str) -> str:
     text = goal.strip()
     shown = mentions.plain(text).strip()
@@ -546,6 +556,12 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(422, "nim accepts only keys")
         if providers is not None and not isinstance(providers, dict):
             raise HTTPException(422, "providers must map a provider name to {keys: [...]}")
+        # Checked before anything is saved, so a refused key leaves the rest of the patch unapplied too.
+        if isinstance(nim, dict):
+            _check_key_lengths(nim.get("keys"))
+        for entry in (providers or {}).values():
+            if isinstance(entry, dict):
+                _check_key_lengths(entry.get("keys"))
         try:
             service.settings.update(patch)
             if nim is not None and "keys" in nim:
