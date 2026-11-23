@@ -49,12 +49,17 @@ def notes_tool(store, mission_id: str, scope: str) -> Tool:
             if action == "append" and current is not None and (current == text or current.endswith("\n" + text)):
                 # The tool is re-run after a crash while "started", with the same arguments. An append that repeats the
                 # note's last text is therefore a no-op; otherwise a retry would write the same line twice (round 6l, item 7).
-                return {"scope": scope, "name": name, "chars": min(len(current), MAX_NOTE * 4), "saved": True,
-                        "unchanged": True}
+                return {"scope": scope, "name": name, "chars": len(current), "saved": True, "unchanged": True}
+            if action == "append" and current is not None and len(current) + 1 + len(text) > MAX_NOTE:
+                # The limit is on the note, not on one text: an append that would take the note past it is refused, and the
+                # note is left as it was (round 6m: ten 1,000-character appends had made a 10,019-character note).
+                total = len(current) + 1 + len(text)
+                raise ValueError(f"this append would make note {name!r} {total} characters; a note is at most {MAX_NOTE}. "
+                                 "Write a shorter text, replace the note with action write, or start a new note name")
             if current is None and len(store.note_list(mission_id, scope)) >= MAX_NOTES:
                 raise ValueError(f"at most {MAX_NOTES} notes per agent; overwrite or reuse one")
             chars = store.note_put(mission_id, scope, name, text, append=(action == "append"))
-            return {"scope": scope, "name": name, "chars": min(chars, MAX_NOTE * 4), "saved": True}
+            return {"scope": scope, "name": name, "chars": chars, "saved": True}
         raise ValueError("action is one of: list, read, write, append")
     return Tool("notes", _run, idempotent=True)
 
