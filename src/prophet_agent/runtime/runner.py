@@ -186,13 +186,11 @@ class Ctx:
         if rec is not None and rec.status == "done":
             return rec.result["answers"]
         self.store.tool_start(self.mission_id, self.step_idx, "ask_user", payload, key)
-        self.store.tool_set(key, "waiting")
-        open_for_key = [q for q in self.store.open_questions(self.mission_id) if q["tool_key"] == key]
-        if open_for_key:
-            qid = open_for_key[0]["id"]
-        else:
-            qid = self.store.open_question(self.mission_id, key, payload)
-            self.store.append_event(self.mission_id, "question.opened", {"question": qid})
+        # Opening the question checks for an answer in the same transaction, so an answer that arrived after the first read
+        # above is used here and the question is not asked again (round 6m).
+        qid = self.store.open_question(self.mission_id, key, payload)
+        if qid is None:
+            return self.store.tool_get(key).result["answers"]
         raise Paused(qid)
 
 
@@ -224,41 +222,49 @@ class Runtime:
         self.lease_s = lease_s
         self.store.acquire_lease(mission_id, self.owner, lease_s)
         self.store.set_status(mission_id, "running")
-        ctx = Ctx(self, mission_id)
-        try:
-            result = program(ctx)
-        except Paused as p:
-            self.store.set_status(mission_id, "waiting_user")
-            self.store.release_lease(mission_id, self.owner)
-            return {"status": "waiting_user", "question": p.question_id}
-        except Cancelled:
-            self.store.close_open_questions(mission_id)
-            self.store.set_status(mission_id, "cancelled")
-            self.store.release_lease(mission_id, self.owner)
-            return {"status": "cancelled"}
-        except LeaseLost:
-            # Another runtime took the mission over. This one stops and writes nothing more: the new owner decides.
-            return {"status": "lease_lost"}
-        except OutcomeUnknown as exc:
-            self.store.set_status(mission_id, "outcome_unknown")
-            self.store.append_event(mission_id, "mission.outcome_unknown", {"reason": redact(str(exc))})
-            self.store.release_lease(mission_id, self.owner)
-            return {"status": "outcome_unknown", "reason": redact(str(exc))}
-        except BudgetExceeded as exc:
-            # The segment's allowance of time or tool calls is spent. That is a checkpoint, never a failure: the stored
-            # steps stay, and the person continues with a fresh allowance (see MissionService.continue_mission).
-            self.store.set_status(mission_id, "checkpoint")
-            self.store.append_event(mission_id, "mission.checkpoint",
-                                    {"which": exc.which, **({"detail": exc.detail} if exc.detail else {})})
-            self.store.release_lease(mission_id, self.owner)
-            return {"status": "checkpoint", "which": exc.which,
-                    "reason": f"this part of the work reached its {exc.which} allowance"}
-        except Exception as exc:
-            msg = redact(f"{type(exc).__name__}: {exc}")
-            self.store.set_status(mission_id, "failed")
-            self.store.append_event(mission_id, "mission.failed", {"error": msg})
-            self.store.release_lease(mission_id, self.owner)
-            return {"status": "failed", "error": msg}
+        while True:
+            try:
+                result = program(Ctx(self, mission_id))
+                break
+            except Paused as p:
+                # The pause is recorded only while the question is still open. An answer that landed during the pause
+                # resumes the run here: the stored answer resolves the call, so nothing is asked again (round 6m).
+                state = self.store.mark_waiting(mission_id, p.question_id)
+                if state == "answered":
+                    continue
+                self.store.release_lease(mission_id, self.owner)
+                if state == "cancelled":
+                    self.store.set_status(mission_id, "cancelled")
+                    return {"status": "cancelled"}
+                return {"status": "waiting_user", "question": p.question_id}
+            except Cancelled:
+                self.store.close_open_questions(mission_id)
+                self.store.set_status(mission_id, "cancelled")
+                self.store.release_lease(mission_id, self.owner)
+                return {"status": "cancelled"}
+            except LeaseLost:
+                # Another runtime took the mission over. This one stops and writes nothing more: the new owner decides.
+                return {"status": "lease_lost"}
+            except OutcomeUnknown as exc:
+                self.store.set_status(mission_id, "outcome_unknown")
+                self.store.append_event(mission_id, "mission.outcome_unknown", {"reason": redact(str(exc))})
+                self.store.release_lease(mission_id, self.owner)
+                return {"status": "outcome_unknown", "reason": redact(str(exc))}
+            except BudgetExceeded as exc:
+                # The segment's allowance of time or tool calls is spent. That is a checkpoint, never a failure: the stored
+                # steps stay, and the person continues with a fresh allowance (see MissionService.continue_mission).
+                self.store.set_status(mission_id, "checkpoint")
+                self.store.append_event(mission_id, "mission.checkpoint",
+                                        {"which": exc.which, **({"detail": exc.detail} if exc.detail else {})})
+                self.store.release_lease(mission_id, self.owner)
+                return {"status": "checkpoint", "which": exc.which,
+                        "reason": f"this part of the work reached its {exc.which} allowance"}
+            except Exception as exc:
+                msg = redact(f"{type(exc).__name__}: {exc}")
+                self.store.set_status(mission_id, "failed")
+                self.store.append_event(mission_id, "mission.failed", {"error": msg})
+                self.store.release_lease(mission_id, self.owner)
+                return {"status": "failed", "error": msg}
         self.store.set_answer(mission_id, result)
         # Report the goal's own outcome. A stalled or budget-capped run is not "completed" in the sense of "met".
         outcome = result.get("status") if isinstance(result, dict) else None
@@ -266,7 +272,6 @@ class Runtime:
         self.store.set_status(mission_id, mission_status)
         self.store.release_lease(mission_id, self.owner)
         return {"status": mission_status, "result": result}
-
 
 
 __all__ = ["Runtime", "Ctx", "Tool", "Paused", "BudgetExceeded", "Cancelled", "ArgumentRejected", "LeaseHeld"]

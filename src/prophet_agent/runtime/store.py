@@ -604,13 +604,46 @@ class Store:
 
     # -- questions ---------------------------------------------------------------------------------------------
 
-    def open_question(self, mission_id: str, tool_key: str, payload: dict) -> str:
+    def open_question(self, mission_id: str, tool_key: str, payload: dict) -> str | None:
+        """Open the question for a waiting call, or find the one already open for it. Returns None when the call was
+        already answered, in which case the caller reads the stored answers. The check and the open are one transaction, so
+        an answer cannot land between them and be lost or asked again (round 6m)."""
         qid = uuid.uuid4().hex
         with self._tx() as c:
             self._fence(c, mission_id)
+            call = c.execute("SELECT status FROM tool_calls WHERE idem_key=?", (tool_key,)).fetchone()
+            if call is not None and call["status"] == "done":
+                return None
+            c.execute("UPDATE tool_calls SET status='waiting', updated=? WHERE idem_key=? AND status!='done'",
+                      (time.time(), tool_key))
+            open_row = c.execute("SELECT id FROM questions WHERE mission_id=? AND tool_key=? AND status='open'",
+                                 (mission_id, tool_key)).fetchone()
+            if open_row is not None:
+                return open_row["id"]
             c.execute("INSERT INTO questions (id, mission_id, tool_key, payload_json, status, created) "
                       "VALUES (?,?,?,?,?,?)", (qid, mission_id, tool_key, canonical(payload), "open", time.time()))
+            self._emit(c, mission_id, "question.opened", {"question": qid})
         return qid
+
+    def mark_waiting(self, mission_id: str, question_id: str) -> str:
+        """A run that asked a question is about to pause. In one transaction: if the question is still open, the mission
+        becomes waiting_user and its lease is released; if it was answered meanwhile, nothing changes and the run must go
+        on; otherwise it was cancelled. Returns "waiting", "answered" or "cancelled" (round 6m: an answer that landed
+        during the pause used to leave a waiting mission with nothing open to resume it)."""
+        with self._tx() as c:
+            self._fence(c, mission_id)
+            row = c.execute("SELECT status FROM questions WHERE id=? AND mission_id=?",
+                            (question_id, mission_id)).fetchone()
+            if row is None:
+                raise KeyError(f"no question {question_id} in mission {mission_id}")
+            if row["status"] == "answered":
+                return "answered"
+            if row["status"] != "open":
+                return "cancelled"
+            c.execute("UPDATE missions SET status='waiting_user', updated=?, lease_owner=NULL, lease_until=0 WHERE id=?",
+                      (time.time(), mission_id))
+            self._emit(c, mission_id, "mission.status", {"status": "waiting_user"})
+            return "waiting"
 
     def open_questions(self, mission_id: str) -> list[dict]:
         with self.lock:
@@ -634,14 +667,17 @@ class Store:
                             (question_id,)).fetchone()
             if row is None:
                 raise KeyError(f"no question {question_id}")
-            if row["status"] != "open":
+            if row["status"] == "answered":
                 raise ValueError("question already answered")
+            if row["status"] != "open":
+                raise ValueError("question is no longer open")
             self._fence(c, row["mission_id"])
+            now = time.time()
             c.execute("UPDATE questions SET status='answered', answers_json=?, answered=? WHERE id=?",
-                      (canonical(answers), time.time(), question_id))
+                      (canonical(answers), now, question_id))
             c.execute("UPDATE tool_calls SET status='done', result_json=?, updated=? WHERE idem_key=?",
-                      (canonical({"answers": answers}), time.time(), row["tool_key"]))
-        self.append_event(row["mission_id"], "question.answered", {"question": question_id})
+                      (canonical({"answers": answers}), now, row["tool_key"]))
+            self._emit(c, row["mission_id"], "question.answered", {"question": question_id})
         return {"mission_id": row["mission_id"]}
 
 
