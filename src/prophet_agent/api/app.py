@@ -248,6 +248,21 @@ def create_app(service: MissionService) -> FastAPI:
             if problem:
                 raise HTTPException(503, problem)
 
+    def _start_new(mission_id: str) -> None:
+        """Start a mission whose row was just written. If the start fails, the row is marked failed at once. Left as
+        "created" it would block the notebook's next turn and could not be deleted, until the orphan sweep found it."""
+        try:
+            service.start(mission_id)
+        except NotConfigured:
+            service.store.set_status(mission_id, "failed")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        except PolicyRefused as exc:
+            service.store.set_status(mission_id, "failed")
+            raise HTTPException(409, str(exc))
+        except Exception:
+            service.store.set_status(mission_id, "failed")
+            raise
+
     @app.post("/api/missions", status_code=201)
     def create_mission(body: MissionIn) -> dict:
         _model_gate(body.model)
@@ -256,10 +271,7 @@ def create_app(service: MissionService) -> FastAPI:
             mission_id = service.create(_checked_goal(body.goal), dataset_ids=body.dataset_ids, model=body.model)
         except KeyError:
             raise HTTPException(422, "one of the uploaded files no longer exists; upload it again")
-        try:
-            service.start(mission_id)
-        except NotConfigured:
-            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        _start_new(mission_id)
         return {"id": mission_id}
 
     @app.get("/api/missions/{mission_id}")
@@ -472,10 +484,7 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(409, str(exc))
         except PolicyRefused as exc:
             raise HTTPException(409, str(exc))
-        try:
-            service.start(mission_id)
-        except NotConfigured:
-            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        _start_new(mission_id)
         service.notebooks.touch(nid)
         return {"id": mission_id, "seq": service.store.mission(mission_id)["seq"]}
 
