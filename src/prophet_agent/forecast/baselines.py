@@ -68,18 +68,62 @@ def _band(point: np.ndarray, resid_sd: float, floor: bool = True) -> np.ndarray:
     return np.clip(q, 0, None) if floor else q
 
 
+def _band_sd(point: np.ndarray, sd_h: np.ndarray, floor: bool = True) -> np.ndarray:
+    """point (h,) with a residual sd for each lead (h,) -> quantiles (h, 9); floored at zero only when ``floor``."""
+    q = point[:, None] + Z[None, :] * np.asarray(sd_h, dtype=float)[:, None]
+    return np.clip(q, 0, None) if floor else q
+
+
+MIN_PAIRS = 6               # fewest h-step errors a lead needs before its spread is measured from the history
+
+
+def _measured_lead_sd(s: np.ndarray, w: int, h: int) -> np.ndarray | None:
+    """Residual sd of the moving-average rule's own j-step errors for j = 1..h, or None when no lead can be measured.
+
+    Motivation vs Logic
+    Motivation: the band was sd * Z * sqrt(h), a random-walk growth. A moving-average level does not accumulate error on a
+    stationary or seasonal series, so the band over-covered: about 96 percent on stationary noise and 98 percent on a
+    period-4 series against a label of 80 (measured, synthetic, 400 replications). The growth belongs to a series whose
+    level drifts, and that is measurable from the history rather than assumed.
+    Logic: the forecast made at origin t is mean(s[t-w:t]), and its j-step error is s[t+j-1] minus that. Each lead's error sd
+    is taken from the history, with the variance fitted as a line in j (least squares, slope not below zero). A flat fit
+    gives a flat band; a drifting level gives a widening one. The fit extends past the last measurable lead, so the
+    band beyond the history is a straight-line extrapolation of the measured variance, not a hold.
+    """
+    n = len(s)
+    roll = np.convolve(s, np.ones(w) / w, mode="valid")        # roll[u] = mean(s[u:u+w]): the forecast at origin u + w
+    sds: list[float] = []
+    for j in range(1, h + 1):
+        cnt = n - w - j + 1                                    # origins whose j-step target lies inside the history
+        if cnt < MIN_PAIRS:
+            break
+        sds.append(float(np.std(s[w + j - 1:] - roll[:cnt], ddof=1)))
+    if not sds:
+        return None
+    v = np.square(sds)
+    if len(v) == 1:
+        a, b = float(v[0]), 0.0
+    else:
+        X = np.column_stack([np.ones(len(v)), np.arange(len(v), dtype=float)])
+        (a, b), *_ = np.linalg.lstsq(X, v, rcond=None)
+        if b < 0:
+            a, b = float(v.mean()), 0.0
+    return np.sqrt(np.maximum(a + b * np.arange(h, dtype=float), 0.0))
+
+
 def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray, np.ndarray]:
     s = np.asarray(series, dtype=float)
+    # An empty history or a window below one has no level. Returning zero would be a forecast with no basis (R6m probe).
+    if len(s) == 0 or window < 1:
+        raise ValueError("moving_average needs at least one point and a window of at least 1")
     w = min(window, len(s))
     level = s[-w:].mean() if w else 0.0
-    # residual sd from rolling one-step errors of the same rule
-    if len(s) > w + 4:
-        roll = np.convolve(s, np.ones(w) / w, mode="valid")[:-1]
-        sd = float(np.std(s[w:] - roll))
-    else:
-        sd = float(np.std(s)) if len(s) > 1 else 0.0
+    sd_h = _measured_lead_sd(s, w, h) if w >= 1 else None
+    if sd_h is None:
+        # too short to measure a lead's error: the spread of the whole history, the same at every lead
+        sd_h = np.full(h, float(np.std(s, ddof=1)) if len(s) > 1 else 0.0)
     p = np.full(h, level)
-    return p, _band(p, sd, floor=_nonneg(s))
+    return p, _band_sd(p, sd_h, floor=_nonneg(s))
 
 
 def _phase_sd(s: np.ndarray, season: int) -> np.ndarray:
@@ -153,5 +197,7 @@ def seasonal_year(series: np.ndarray, h: int, season: int = 52) -> tuple[np.ndar
     # Step i is the same period one season earlier; beyond one season ahead it repeats the last observed season (the index
     # len(s)+i-season ran past the data when h > season: IndexError, audit maths 5).
     p = np.array([s[len(s) - season + (i % season)] for i in range(h)]) * ratio
+    # The error is one stored value against one value a season earlier, so it is the same at every lead: no sqrt(h) growth
+    # (R6m, audit item 1: the growth covered 77 to 100 percent across horizons on a synthetic period-4 series).
     sd = float(np.std(s[-26:] - s[-26 - season:-season] * ratio)) if len(s) > season + 26 else float(np.std(s))
-    return p, _band(p, sd, floor=_nonneg(s))
+    return p, _band_sd(p, np.full(h, sd), floor=_nonneg(s))

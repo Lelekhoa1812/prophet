@@ -10,8 +10,10 @@ calendar. Its future holidays are then skipped. When no calendar is clearly foll
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
-from typing import Iterable
+from datetime import date, datetime, timedelta
+from typing import Any, Iterable
+
+import numpy as np
 
 CANDIDATES = ("NYSE", "ECB", "LSE", "JPX", "TSX", "ASX", "HKEX", "SSE")
 MIN_HOLIDAYS = 8          # weekday holidays inside the history needed before a calendar can be judged
@@ -27,10 +29,26 @@ def _weekday_holidays(code: str, years: Iterable[int]) -> set[date]:
     return {d for d in cal if d.weekday() < 5}
 
 
+def _as_date(d: Any) -> date:
+    """A calendar day from a date, a datetime (or pandas Timestamp), a numpy datetime64 or an ISO string.
+
+    Motivation vs Logic
+    Motivation: a datetime is also a date, so it was kept as a datetime; the comparison with the holiday dates then raised a
+    TypeError, and a numpy datetime64 or an ISO string had no .date() at all (R6m probe, synthetic).
+    Logic: a datetime is reduced to its day first; anything else goes through numpy's day type, which reads both ISO strings
+    and datetime64 values.
+    """
+    if isinstance(d, datetime):
+        return d.date()
+    if isinstance(d, date):
+        return d
+    return np.datetime64(d, "D").astype(date)
+
+
 def infer_calendar(observed: Iterable[date]) -> dict:
     """The exchange calendar a business-day history follows, measured. Returns {"calendar": code or None, "absent_share": float,
     "holidays_checked": int, "scores": {code: share}}. ``observed`` is the dates that carry a value."""
-    days = sorted({d if isinstance(d, date) else d.date() for d in observed})
+    days = sorted({_as_date(d) for d in observed})
     if len(days) < 60:
         return {"calendar": None, "absent_share": 0.0, "holidays_checked": 0, "scores": {}, "reason": "fewer than 60 dates"}
     first, last, have = days[0], days[-1], set(days)
