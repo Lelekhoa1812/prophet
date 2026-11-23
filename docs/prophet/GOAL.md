@@ -779,4 +779,9 @@ same step". It stopped at 56 calls, all sandbox_python analysis with the same co
 correction was not exercised live. The 80bbc853 failure remains the only live evidence; the fix is verified by the replay and
 the tests, not by a live run.
 
+Live rerun on 7ab9fbe, a7efe739 (Beijing, REP=3): done_verified, 1,156 seconds, 89 tool calls, no contract failures. The
+answer's table (day 1 and day 14 per station, average over 14 days) matches its stored forecast on all 24 checked cells, and
+the answer carries one correction note covering 16 figures. The note combines figure and table corrections, so the table's
+share of the 16 is not counted separately. This is the first live run of round 6i that reached a verified answer.
+
 Gate: 1,927 passed, 1 skipped, 4 deselected.
