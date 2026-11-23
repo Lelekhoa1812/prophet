@@ -52,3 +52,29 @@ def test_a_whole_number_is_not_changed_when_no_printed_value_rounds_to_it_unique
     # A genuinely absent whole number, with no printed value to cut from, is left alone.
     history = [{"kind": "tool", "tool": "t", "args": {}, "result": {"a": 150.7}}]
     assert snap("It is 198.", history, "") == ("It is 198.", [])
+
+
+# 4. The pooled blend is not a per-client blend (electricity f62b473c, rep13 wording, 2026-11-23).
+
+def _panel_pack(rules):
+    series = {f"c{i}": {"centre": {"rule": r}} for i, r in enumerate(rules)}
+    return [{"kind": "tool", "tool": "forecast_report", "args": {}, "result": {"n_series": len(rules), "series": series}}]
+
+
+def test_the_pooled_blend_called_a_per_client_blend_is_blocked():
+    history = _panel_pack(["global_blend"] * 3)
+    text = "The global blend (TimesFM combined with the best simple rule per client) is the centre line for the next 7 days."
+    c = contracts._blend_misdescribed(text, history)
+    assert c is not None and c["ok"] is False and c["name"] == "answer_blend_described_right"
+    assert any(x["name"] == "answer_blend_described_right" for x in contracts.blocking(contracts.check_answer(text, history)))
+
+
+def test_the_pooled_blend_described_as_one_blend_for_every_client_passes():
+    history = _panel_pack(["global_blend"] * 3)
+    text = "The centre is the equal-weight blend of the pooled model and TimesFM, the same for every client."
+    assert contracts._blend_misdescribed(text, history) is None
+
+
+def test_a_panel_with_per_client_rules_is_not_checked_for_the_blend_wording():
+    history = _panel_pack(["timesfm", "naive", "global_blend"])
+    assert contracts._blend_misdescribed("A blend per client was used.", history) is None

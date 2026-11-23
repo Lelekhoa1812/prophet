@@ -1748,6 +1748,28 @@ def _misnamed_bound(text: str, obs: list) -> dict | None:
     return None
 
 
+# The pooled blend is one equal-weight blend of the pooled model and TimesFM, the same for every client. A per-client blend
+# (TimesFM with each client's best simple rule) is another method. Live electricity rep13 (2026-11-23) wrote the pooled blend
+# as "TimesFM combined with the best simple rule per client", which sends the reader to the wrong method.
+PER_CLIENT_BLEND = re.compile(
+    r"\bblend\b[^.\n|]{0,90}?\bper[- ](?:client|series|entity|station|sku)s?\b"
+    r"|\bper[- ](?:client|series|entity|station|sku)s?\b[^.\n|]{0,30}?\bblend\b", re.I)
+
+
+def _blend_misdescribed(text: str, obs: list) -> dict | None:
+    """A block when the panel's centre is the pooled blend and the answer calls it a per-client blend. None otherwise."""
+    found = next(((h, r) for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict) and r.get("n_series")),
+                 None)
+    if found is None or set(_panel_rules(*found)) != {"global_blend"}:
+        return None
+    m = PER_CLIENT_BLEND.search(text)
+    if m is None:
+        return None
+    return _check("answer_blend_described_right", False,
+                  f"the panel's centre is the equal-weight blend of the pooled model and TimesFM, the same for every client, but "
+                  f"the answer describes it as a per-client blend ({m.group()[:160]}); describe it as that blend")
+
+
 def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict]:
     """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
     makes, so an answer with no such claim adds nothing.
@@ -1856,4 +1878,6 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(_check("answer_methods_run", False,
                              f"the answer says a method was tested or computed, but no tool call runs it ({methods[0][:160]}); "
                              "run the treatment, or take the claim out", "warn"))
+    if (blend := _blend_misdescribed(text, obs)) is not None:
+        checks.append(blend)
     return checks
