@@ -27,9 +27,12 @@ from __future__ import annotations
 
 import contextlib
 
+import functools
+import io
 import json
 import re
 import time
+import tokenize
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -347,21 +350,81 @@ REPEAT_EXEMPT = frozenset({"web_research", "web_search", "web_fetch", *READ_ONLY
 PURE_TOOLS = frozenset({"sandbox_python"})
 
 
+# Round 6m, goal audit item 1. A sandbox cell is the same call when its code, read as Python (comments and layout dropped), is the
+# same and each carried file the code can read holds the same bytes. Live stored missions (data/prophet.sqlite, 2026-11-23): 553 of
+# 4,917 sandbox cells had the code of an earlier cell. Auto-carry mounts every newest data file of the mission, so a cell that reads
+# one file gained a carry entry each time another output appeared, and a re-run of an upstream cell wrote a new run folder with the
+# same bytes. A comment that named the run changed the code text. None of these can change what the cell prints or writes.
+_LAYOUT = frozenset({tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER})
+# Code that reads the carried folder as a whole (a listing, a glob, a walk) depends on every carried file, not on the names it spells.
+CARRY_LISTING = re.compile(r"carried|listdir|glob|scandir|walk|iterdir")
+RUN_FOLDER = re.compile(r"(?<![0-9a-f])[0-9a-f]{32}(?=/)")    # a run folder in a path: data/sandbox/<run id>/program.py
+
+
+@functools.lru_cache(maxsize=512)
+def _code_form(code: str) -> str:
+    """The code as Python reads it: its tokens, with comments and layout dropped. Text that does not tokenise is kept as it is."""
+    try:
+        return " ".join(t.string for t in tokenize.generate_tokens(io.StringIO(code).readline) if t.type not in _LAYOUT)
+    except (tokenize.TokenError, SyntaxError):
+        return code
+
+
+def _output_digests(history: list[dict]) -> dict[tuple[str, str], str]:
+    """The sha256 of each file a sandbox run wrote, by (run id, path), from the stored results. Read from the history only, so a
+    resumed run makes the same decision whatever is still on disk. A result too large to keep has no digest here."""
+    digests: dict[tuple[str, str], str] = {}
+    for h in history:
+        if not isinstance(h, dict) or h.get("kind") != "tool" or h.get("tool") != "sandbox_python":
+            continue
+        res = h.get("full", h.get("result"))
+        if not isinstance(res, dict) or not isinstance(res.get("run_id"), str):
+            continue
+        for o in res.get("outputs") or []:
+            if isinstance(o, dict) and isinstance(o.get("path"), str) and isinstance(o.get("sha256"), str):
+                digests[(res["run_id"], o["path"])] = o["sha256"]
+    return digests
+
+
+def _cell_key(args: Any, digests: dict[tuple[str, str], str]) -> str:
+    """What a sandbox cell computes from: its code, and each carried file the code can read, by its bytes where they are known and by
+    its run where they are not. A carried file the code cannot read is left out, so mounting it again changes nothing."""
+    if not isinstance(args, dict) or not isinstance(args.get("code"), str):
+        return canonical(args)
+    code = args["code"]
+    listing = bool(CARRY_LISTING.search(code))
+    carried = []
+    for c in args.get("carry") or []:
+        if not isinstance(c, dict):
+            continue
+        run, rel = str(c.get("run_id", "")), str(c.get("file", ""))
+        name = rel.rsplit("/", 1)[-1]
+        if not listing and name.rsplit(".", 1)[0] not in code:
+            continue          # the name (or its stem, which the name contains) is not in the code: the cell cannot read this file
+        carried.append([name, digests.get((run, rel)) or [run, rel]])
+    return canonical({"code": _code_form(code), "carried": carried})
+
+
 def _repeat_of(name: str, args: Any, history: list[dict]) -> int | None:
     """The 1-based position of the earlier identical call, or None. Read from the stored history, so a resumed run makes the
     same decision and sends nothing to the tool."""
     if name in REPEAT_EXEMPT:
         return None
-    want = canonical(args)
+    pure = name in PURE_TOOLS
+    digests = _output_digests(history) if pure else {}
+    want = _cell_key(args, digests) if pure else canonical(args)
     for pos in range(len(history), 0, -1):          # the most recent identical call
         h = history[pos - 1]
-        if h.get("kind") == "tool" and h.get("tool") == name and not h.get("repeat_of") and canonical(h.get("args")) == want:
+        if h.get("kind") != "tool" or h.get("tool") != name or h.get("repeat_of"):
+            continue
+        same = _cell_key(h.get("args"), digests) == want if pure else canonical(h.get("args")) == want
+        if same:
             # A cell may have written the files the tool reads: live, a forecast was blocked until it ran again after the
             # inspection. So a call made after any sandbox cell is run again, not answered with a pointer.
-            # sandbox_python is not one of them: its result depends only on its code and on the immutable run folders named in
-            # carry, so an identical cell is answered with a pointer. Live Beijing e14af4bd (2026-11-23): 12 sandbox cells in a
-            # row re-ran the same code after another cell had run, and the stall rule stopped the mission at 56 calls.
-            if name not in PURE_TOOLS and any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:]):
+            # sandbox_python is not one of them: its result depends only on its code and on the carried bytes it reads, so an
+            # identical cell is answered with a pointer. Live Beijing e14af4bd (2026-11-23): 12 sandbox cells in a row re-ran the
+            # same code after another cell had run, and the stall rule stopped the mission at 56 calls.
+            if not pure and any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:]):
                 return None
             return pos
     return None
@@ -1048,7 +1111,11 @@ def _signature(obs: dict) -> str:
     if obs.get("tool") == "sandbox_python" and isinstance(args, dict):
         # The carry list names the run ids of earlier cells, and those change on every run. Live Beijing 3581d07d (2026-11-23):
         # the same ledger cell ran 57 times with new carry ids each time, so no window of identical calls was ever seen.
-        args = {k: v for k, v in args.items() if k != "carry"}
+        # Round 6m: the code is compared as Python reads it, and a run folder in the output (a traceback names one) is not an
+        # outcome. Before, an identical failure in another folder looked like progress, and the stall rule never fired.
+        args = {k: (_code_form(v) if k == "code" and isinstance(v, str) else v) for k, v in args.items() if k != "carry"}
+        sig = canonical({"tool": obs.get("tool"), "args": args, "result": res, "error": obs.get("error")})
+        return RUN_FOLDER.sub("<run>", sig)
     return canonical({"tool": obs.get("tool"), "args": args, "result": res, "error": obs.get("error")})
 
 
