@@ -1,11 +1,12 @@
 # Prophet: mission and completion criteria
 
-Status as of 2026-11-20. Every claim below is labelled with its evidence:
+Status as of 2026-11-20; test counts re-collected on 2026-11-23. Every claim below is labelled with its evidence:
 **[LIVE]** a real NIM or TimesFM call or a live browser or API check made in this repo, **[TEST]** an offline test in
 the gate (`scripts/check.sh`), **[DOC]** a document or research note, **[TODO]** not started or not verified.
 
-Gate at this status: `scripts/check.sh` 155 passed, 1 skipped (the real-weights test); `scripts/check.sh --real` adds
-2 passed (TimesFM 3 with cached weights).
+Collected on 2026-11-23 with `pytest --collect-only -q`: `scripts/check.sh` (`-m "not timesfm"`) collects 1997 tests (1972 before the r6l tests were added), and
+`scripts/check.sh --real` adds the 4 `timesfm`-marked tests. The 2026-11-20 result of 155 passed and 1 skipped has not been
+re-run; the next full gate run records the current pass and skip split.
 
 ## Mission
 
@@ -42,12 +43,12 @@ Each criterion is done only when its check passes and its evidence is recorded i
 | G11 | Charts and documents (PNG/SVG, XLSX, DOCX, PDF) produced from the sandbox and listed in a manifest | live forecast-pack mission; downloads re-hashed | **[LIVE]** 5 files from mission `1a1639de…`; each download's sha256 matched the manifest (2026-11-20) |
 | G12 | Chat UI with artefact panel, Dune-meets-space identity, works at 375 px with no horizontal scroll | browser check with screenshots and console | **[LIVE]** 375 px: no horizontal overflow (scroll width 375), artefacts card renders. 1280 px: three columns, fan chart and file list render. Console not re-read after the last fix |
 | G13 | TimesFM evaluation on the synthetic twin vs baselines, reported honestly against the 15 % bar | `scripts/backtest_twin.py` (written to `data/backtests/`, git-ignored) | **[LIVE]** SYNTHETIC REPLAY. The 15 % bar is **not met**: see the result below |
-| G15 | Provider routing never shows a rate-limit, overload, truncation or schema error to the person: key and model rotation, quota groups, diagnosed repair | transport tests (73) and live NIM and Gemini pressure runs | **[TEST]** per branch. **[LIVE]** Gemini 3.5 Flash and NIM completed hourly-load missions with no provider error shown (2026-11-21). One live failure found and fixed: Google answers a bad key with HTTP 400, which killed a Gemini mission; the key is now retired |
-| G16 | The agent works like a principal analyst: funnel, atomic breakdown, cause-led treatment, leakage-safe cleaning, deterministic checks before "met" | `docs/prophet/ANALYST_PLAYBOOK.md`; `runtime/contracts.py`; `sandbox/prophet_stats.py`; 11 skills | **[TEST]** 74 contract, 39 stats and 17 skill tests. **[LIVE]** NIM read playbooks mid-mission and repaired its own steps (r8 runs). Whether any cleaning step helps TimesFM is **unmeasured** (see below) |
-| G17 | The agent can test, not assume, what helps TimesFM: a leak-free paired experiment over input treatments with a zero baseline and pinball loss | `forecast/lab.py`, `tools/lab_tool.py` (`control_lab`), `ps.causal_canary` | **[TEST]** 44 lab tests with a fake engine; 47 helper tests. **[LIVE-MEASURED]** real TimesFM 3 on six real public series (below) |
+| G15 | Provider routing never shows a rate-limit, overload, truncation or schema error to the person: key and model rotation, quota groups, diagnosed repair | transport tests (75 in `test_nim_transport.py`, collected 2026-11-23) and live NIM and Gemini pressure runs | **[TEST]** per branch. **[LIVE]** Gemini 3.5 Flash and NIM completed hourly-load missions with no provider error shown (2026-11-21). One live failure found and fixed: Google answers a bad key with HTTP 400, which killed a Gemini mission; the key is now retired |
+| G16 | The agent works like a principal analyst: funnel, atomic breakdown, cause-led treatment, leakage-safe cleaning, deterministic checks before "met" | `docs/prophet/ANALYST_PLAYBOOK.md`; `runtime/contracts.py`; `sandbox/prophet_stats.py`; 18 skill playbooks | **[TEST]** 87 contract tests (`test_contracts.py`), 88 stats tests (`sandbox/test_prophet_stats.py`) and 19 skill-tool tests (`tools/test_skill_tool.py`), collected 2026-11-23. **[LIVE]** NIM read playbooks mid-mission and repaired its own steps (r8 runs). Whether any cleaning step helps TimesFM is **unmeasured** (see below) |
+| G17 | The agent can test, not assume, what helps TimesFM: a leak-free paired experiment over input treatments with a zero baseline and pinball loss | `forecast/lab.py`, `tools/lab_tool.py` (`control_lab`), `ps.causal_canary` | **[TEST]** 48 lab tests with a fake engine (`forecast/test_lab.py`, collected 2026-11-23). The "47 helper tests" figure from 2026-11-20 could not be matched to a file and is removed. **[LIVE-MEASURED]** real TimesFM 3 on six real public series (below) |
 | G18 | Typed, parallel, resumable sub-agents with own notes; replay makes no model calls | `tests/prophet_agent/test_subagents.py` | **[TEST]** scoping, brief, notes, parallel replay with 0 brain calls, resume, errors, unverified flag. **[LIVE]** pending |
-| G19 | Self-hosted web research (search, fetch, rank, quote-verify) available to the agent | `tests/prophet_agent/research/` (110 tests) and a live fetch | **[TEST]** offline. **[LIVE]** ddgs returned results through the bing, google and yahoo backends; `auto` often fails here |
-| G20 | Prediction intervals are calibrated on held-out windows and never narrowed | `tests/prophet_agent/forecast/test_calibrate.py`; real TimesFM 3 on three real series | **[TEST]** 6. **[LIVE-MEASURED]** 80 % band coverage on held-out windows: quakes 0.762 to 0.821 (applied), CO2 0.856 to 0.867 and WTI 0.808 to 0.808 (kept raw) |
+| G19 | Self-hosted web research (search, fetch, rank, quote-verify) available to the agent | `tests/prophet_agent/research/` (238 tests, collected 2026-11-23) and a live fetch | **[TEST]** offline. **[LIVE]** ddgs returned results through the bing, google and yahoo backends; `auto` often fails here |
+| G20 | Prediction intervals are calibrated on held-out windows and never narrowed | `tests/prophet_agent/forecast/test_calibrate.py`; real TimesFM 3 on three real series | **[TEST]** 17 (collected 2026-11-23). **[LIVE-MEASURED]** 80 % band coverage on held-out windows: quakes 0.762 to 0.821 (applied), CO2 0.856 to 0.867 and WTI 0.808 to 0.808 (kept raw) |
 | G14 | No key or secret reaches logs, errors, transcripts or git | redaction tests plus a whole-tree scan before each commit | **[TEST]** redaction; **[LIVE]** whole-tree scan on 2026-11-20 (below) |
 
 ### Evidence for G13 (synthetic replay, 2026-11-20)
@@ -234,7 +235,7 @@ smooth, impute, derivative_features and the new helpers only.
 
 - No value from the git-ignored `.env` appears in any file to be committed (count 0).
 - `NIM.md` (kept out of the commit) contains no key-shaped string.
-- Four test files contain key-shaped placeholders such as `nvapi-LEAKED…` and `nvapi-AAAA…`, used to prove redaction.
+- Seven test files contain key-shaped placeholders such as `nvapi-LEAKED…` and `nvapi-AAAA…`, used to prove redaction.
   They are not live keys.
 
 ## Working rules for this mission
