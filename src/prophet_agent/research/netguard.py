@@ -63,9 +63,10 @@ def _default_resolver(host: str, port: int) -> list[str]:
 LOOKUP_SECONDS = 10.0   # the longest a name lookup may take when the caller gives no deadline
 
 
-class LookupTimeout(TimeoutError):
-    """The name lookup did not finish before the deadline. The lookup cannot be cancelled, so its thread is left to end
-    on its own and its answer is dropped."""
+class LookupTimeout(httpx.ConnectTimeout):
+    """The name lookup did not finish before the deadline. It is an httpx transport error, so callers that already catch
+    transport errors (the open-data fetcher, for one) report it without a new branch. The lookup cannot be cancelled, so
+    its thread is left to end on its own and its answer is dropped."""
 
 
 def _bounded_lookup(resolver: Resolver, host: str, port: int, seconds: float) -> list[str]:
