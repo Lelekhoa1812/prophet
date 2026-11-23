@@ -402,23 +402,30 @@ def _check_schema(text: str, schema: dict) -> str | None:
     return validate(value, schema)
 
 
-def _json_slice(text: str) -> str:
+def _json_slice(text: str, schema: Mapping[str, Any] | None = None) -> str:
     """A reply that is a JSON value followed or preceded by prose (a lead-in, a closing remark) is cut down to the value.
-    Text that is already JSON, or holds no JSON value, comes back unchanged. Structure decides, not wording."""
+    Text that is already JSON, or holds no JSON value, comes back unchanged. Structure decides, not wording.
+
+    With a schema, the first JSON value that satisfies it wins: prose often holds a bracketed reference such as "[1]",
+    which is valid JSON but not the answer (T8). When no candidate satisfies it, the first JSON value is returned."""
     try:
         json.loads(text)
         return text
     except ValueError:
         pass
     decoder = json.JSONDecoder()
+    first: str | None = None
     for start, ch in enumerate(text):
         if ch in "{[":
             try:
                 _, end = decoder.raw_decode(text, start)
             except ValueError:
                 continue
-            return text[start:end]
-    return text
+            candidate = text[start:end]
+            if schema is None or _check_schema(candidate, schema) is None:
+                return candidate
+            first = first or candidate
+    return first or text
 
 
 def _timeout(remaining: float, silence: float | None = None) -> httpx.Timeout:
@@ -983,7 +990,7 @@ class NimClient:
             return _Outcome("model", f"{model}: empty reply (finish_reason={finish})", demote=finish != "length",
                             status=status)
         if opts.schema is not None and not opts.tools:
-            text = _json_slice(text)
+            text = _json_slice(text, opts.schema)
             err = _check_schema(text, opts.schema)
             if err:
                 # What the model sent is what a repair needs to see; the log keeps a short redacted head and tail.
