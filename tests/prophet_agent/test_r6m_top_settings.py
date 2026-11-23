@@ -28,3 +28,12 @@ def test_a_mask_shows_at_most_a_quarter_of_a_short_key():
 def test_a_full_length_nim_key_keeps_the_familiar_mask():
     key = "nvapi-" + "A" * 58 + "WXYZ"
     assert mask(key) == "nvapi-...WXYZ"
+
+
+def test_two_stored_keys_that_mask_alike_both_survive_an_echo_of_their_masks(settings):
+    keys = ["AIzaSyAAAAAAAAAA-1111", "AIzaSyBBBBBBBBBB-1111"]
+    settings.set_keys(keys, provider="gemini")
+    masks = [row["masked"] for row in settings.masked_keys("gemini")]
+    assert masks[0] == masks[1], "the premise: these two keys look the same once masked"
+    settings.set_keys(masks, provider="gemini")
+    assert settings.key_slots(None, "gemini") == keys, "echoing the form must not erase the second key"

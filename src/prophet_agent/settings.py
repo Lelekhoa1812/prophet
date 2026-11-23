@@ -401,15 +401,17 @@ class Settings:
         existing = self.key_slots(None, provider)
         pattern = KEY_PATTERN if provider == DEFAULT_PROVIDER else GENERIC_KEY_PATTERN
         resolved: list[str] = []
+        claimed: set[str] = set()                # each masked entry stands for a different stored key
         for item in keys:
             if not isinstance(item, str):
                 raise ValueError("each key must be a string")
             value = item.strip()
             if "..." in value:
-                match = [k for k in existing if mask(k) == value]
+                match = [k for k in existing if mask(k) == value and k not in claimed]
                 if not match:
                     raise ValueError("a masked key does not match any stored key; paste the full key")
                 value = match[0]
+                claimed.add(value)
             if not pattern.match(value):
                 if provider == DEFAULT_PROVIDER:
                     raise ValueError("a NIM key starts with nvapi- and contains only letters, digits, '-' and '_'")
