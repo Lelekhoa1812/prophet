@@ -1559,13 +1559,19 @@ def _panel_series(obs: list) -> dict | None:
 
 
 def _day_columns(header: list[str]) -> tuple[dict[int, int], int | None]:
-    """A header's day columns (column index -> day number) and its average column. A band header is never a day."""
+    """A header's day columns (column index -> day number) and its average column. A band header is never a day.
+
+    A bare number header ("1", "14") is a day column too (audit round 6l): a station table often writes its days that way,
+    and the day is only compared when its row names a station, so a plain number elsewhere is not checked.
+    """
     day_cols, avg_col = {}, None
     for i, cell in enumerate(header):
         days = _DAY_HEAD.findall(cell)
         if _BAND_HEAD.search(cell):
             continue                       # "Day 14 q10" holds a band edge, not the point
-        if len(days) == 1 and "→" not in cell and "->" not in cell:
+        if not days and re.fullmatch(r"\d{1,3}", cell.strip()):
+            day_cols[i] = int(cell.strip())
+        elif len(days) == 1 and "→" not in cell and "->" not in cell:
             day_cols[i] = int(days[0])
         elif _AVG_HEAD.search(cell):
             avg_col = i
@@ -1598,17 +1604,20 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
                 if i >= len(row) or not (1 <= k <= min(len(point), len(lo_all), len(hi_all))):
                     continue
                 toks = _NUMBER_TOKEN.findall(row[i])
-                if len(toks) not in (1, 3):
+                if not toks:
                     continue
                 expected = (point[k - 1], lo_all[k - 1], hi_all[k - 1])
-                ok = all(_printed_matches(t, e) for t, e in zip(toks, expected))
+                # Audit round 6l: a point with its band is read whole. Any other shape ("52 (12)", "52 ± 5", "52 (12 to 132,
+                # 90%)") still has its leading figure, the point, checked, so the extra figures cannot hide a wrong point.
+                pairs = zip(toks, expected) if len(toks) in (1, 3) else [(toks[0], expected[0])]
+                ok = all(_printed_matches(t, e) for t, e in pairs)
                 checked += 1
                 if not ok:
                     wrong.append(f"{row[0].strip(' *')} day {k} is {row[i]}; the forecast gives {expected[0]:.1f} "
                                  f"({expected[1]:.1f} to {expected[2]:.1f})")
             if avg_col is not None and avg_col < len(row) and point:
                 toks = _NUMBER_TOKEN.findall(row[avg_col])
-                if len(toks) == 1:
+                if toks:                   # the leading figure is the average, whatever follows it (audit round 6l)
                     checked += 1
                     mean = sum(point) / len(point)
                     if not _printed_matches(toks[0], mean):
@@ -2062,9 +2071,18 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
 
     claims = grounding.claimed_best_baselines(text)
     bt = _newest_backtest(obs)
-    if claims and bt is not None:
-        models, best = bt["models"], bt.get("best_baseline")
-        bm = _finite(models[best].get("mase")) if isinstance(best, str) and isinstance(models.get(best), dict) else None
+    models = bt["models"] if bt is not None else {}
+    best = bt.get("best_baseline") if bt is not None else None
+    bm = _finite(models[best].get("mase")) if isinstance(best, str) and isinstance(models.get(best), dict) else None
+    if claims and bm is None:
+        # Audit round 6l: with no backtest, or a backtest that names no usable best baseline, nothing verifies the claim,
+        # so it must not pass. The check blocks and asks for the backtest's best rule, or for the claim to be dropped.
+        name, sentence = claims[0]
+        why = "no backtest is stored" if bt is None else "the stored backtest records no usable best baseline"
+        checks.append(_check("answer_benchmark_matches", False,
+                             f"the answer calls {name} the best benchmark, but {why}, so the claim is not verified "
+                             f"({sentence[:160]}); run the backtest and name the rule it ranks best, or drop the claim"))
+    elif claims:
         wrong_rules = []
         for name, sentence in claims:
             nm = _finite(models[name].get("mase")) if isinstance(models.get(name), dict) else None
