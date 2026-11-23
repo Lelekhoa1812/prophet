@@ -86,6 +86,9 @@ def censor_series(latent: np.ndarray, item_index: np.ndarray, run: StockRun) -> 
     item_index = np.asarray(item_index, dtype=int)
     if latent.ndim != 2 or latent.shape[1] != run.demand.shape[1]:
         raise ValueError("latent must be (series, periods) with the same periods as the stock run")
+    # Demand is counts. A fraction cast to whole units would be recorded as under-stated and flagged censored with no stock-out.
+    if not np.all(np.isfinite(latent)) or not np.array_equal(latent, np.round(latent)):
+        raise ValueError("latent demand must be whole numbers of units and finite; round or fix the demand before censoring")
     if item_index.shape != (latent.shape[0],):
         raise ValueError("item_index must hold one item row per series")
 
