@@ -269,6 +269,20 @@ for _name in ("stat", "lstat"):
     setattr(os, _name, _guarded)
     setattr(_posix, _name, _guarded)
 del _name, _guarded
+# POSIX shared memory (round 7, item 2): shm_open creates a named object outside the run folder (on Linux, in /dev/shm) and
+# raises no audit event. multiprocessing.shared_memory calls these functions through the module at call time, so replacing
+# them here refuses it. Refused the same way as the other blocked calls: PermissionError with a message.
+def _shm_blocked(*a, **k):
+    raise PermissionError("shared memory is blocked in the sandbox")
+try:
+    import _posixshmem as _shm
+except ImportError:                    # no POSIX shared memory on this platform: nothing to block
+    _shm = None
+if _shm is not None:
+    for _name in ("shm_open", "shm_unlink"):
+        if hasattr(_shm, _name):
+            setattr(_shm, _name, _shm_blocked)
+    del _name
 import builtins, io
 _OPEN = builtins.open
 CARRIED = os.path.join(WD, "in", "carried")
