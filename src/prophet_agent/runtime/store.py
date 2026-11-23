@@ -698,6 +698,8 @@ class LeaseBound:
         self._owner = owner
 
     def __getattr__(self, name: str):
+        if name in ("_store", "_owner"):            # not yet set (copy or pickle): never look these up on the store
+            raise AttributeError(name)
         attr = getattr(self._store, name)
         if not callable(attr):
             return attr
