@@ -33,6 +33,16 @@ def _panel_file(root, run_id, doc):
     (root / run_id / "out" / "series.json").write_text(json.dumps(doc))
 
 
+def test_backtest_refuses_a_horizon_past_the_forecast_limit(monkeypatch):
+    import numpy as np
+    called = []
+    monkeypatch.setattr(data_tools, "rolling_backtest", lambda *a, **k: called.append(1) or {})
+    values = list(np.linspace(1.0, 100.0, 5000))
+    with pytest.raises(ValueError, match="at most 512"):
+        data_tools._backtest({"values": values, "horizon": 513}, "k")
+    assert called == []
+
+
 def test_a_driver_date_given_as_a_number_is_refused_not_read_as_1970():
     from prophet_agent.tools import drivers_tool
     for bad in (2026, 2026.0, True):

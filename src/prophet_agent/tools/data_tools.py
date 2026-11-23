@@ -91,6 +91,7 @@ INSPECT_DATA_SPEC = {
 }
 
 
+MAX_HORIZON = 512           # the limit of timesfm_forecast and calibrate_intervals
 MAX_BACKTEST_SERIES = 100   # as forecast_report's panel cap (round 5: electricity had 60 clients)
 
 
@@ -101,6 +102,10 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     horizon = args.get("horizon")
     if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
         raise ValueError("horizon must be a positive integer")
+    if horizon > MAX_HORIZON:
+        # The backtest forecasts this horizon at every window, so an unbounded one spends the model on steps timesfm_forecast
+        # would refuse (round 6m: the same limit, 512, as the forecast tools).
+        raise ValueError(f"horizon must be at most {MAX_HORIZON}, the limit of timesfm_forecast; a longer outlook is not backtested")
     named = resolve_series(args)
     if len(named) > MAX_BACKTEST_SERIES:
         raise ValueError(f"{len(named)} series in one call; at most {MAX_BACKTEST_SERIES}. Choose with source.name, or split the file")
