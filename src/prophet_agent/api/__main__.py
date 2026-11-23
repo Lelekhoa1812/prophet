@@ -28,8 +28,22 @@ def build_app():
     return create_app(service)
 
 
+DEFAULT_PORT = 8010
+
+
+def _port() -> int:
+    """PROPHET_API_PORT as a port number. Unset or empty means the default; anything else that is not 1 to 65535 stops
+    the start with a message that names the setting, rather than a traceback or a bind error."""
+    raw = os.environ.get("PROPHET_API_PORT", "").strip()
+    if not raw:
+        return DEFAULT_PORT
+    if not raw.isdigit() or not 1 <= int(raw) <= 65535:
+        raise SystemExit(f"PROPHET_API_PORT must be a port number from 1 to 65535, not {raw[:20]!r}")
+    return int(raw)
+
+
 def main() -> None:
-    port = int(os.environ.get("PROPHET_API_PORT", "8010"))
+    port = _port()                  # checked before the app opens the database
     uvicorn.run(build_app(), host="127.0.0.1", port=port, log_level="info")
 
 

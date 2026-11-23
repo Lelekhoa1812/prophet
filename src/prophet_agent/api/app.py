@@ -53,20 +53,68 @@ GOAL_VISIBLE_MAX = 2000
 GOAL_STORED_MAX = 6000
 
 
-async def _capped_body(request: Request) -> bytes:
-    """The raw request body, refused with 413 past MAX_BYTES. A declared Content-Length is checked before any byte is read.
-    The streamed bytes are counted as they arrive too: a chunked request has no Content-Length, and reading it whole
-    would let any size of upload fill memory before the dataset store's own check ran."""
-    too_large = f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB"
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > MAX_BYTES:
-        raise HTTPException(413, too_large)
-    buf = bytearray()
-    async for chunk in request.stream():
-        buf.extend(chunk)
-        if len(buf) > MAX_BYTES:
-            raise HTTPException(413, too_large)
-    return bytes(buf)
+# Every request body is capped by BodyLimit below. The two raw-bytes upload routes get the upload cap (MAX_BYTES); every
+# other route gets JSON_BODY_MAX, which is far above any real JSON request (a mission goal is at most 6000 characters).
+JSON_BODY_MAX = 1024 * 1024
+RAW_UPLOAD_PATH = re.compile(r"^/api/(datasets|notebooks/[^/]+/sources)$")
+
+
+def _body_limit(method: str, path: str) -> tuple[int, str]:
+    """The cap in bytes for one request, and the noun used in its 413 message."""
+    if method == "POST" and RAW_UPLOAD_PATH.match(path):
+        return MAX_BYTES, "file"
+    return JSON_BODY_MAX, "request"
+
+
+def _size_words(n: int) -> str:
+    return f"{n // (1024 * 1024)} MB" if n >= 1024 * 1024 else f"{max(1, n // 1024)} KB"
+
+
+class BodyLimit:
+    """The one place a request body is size-capped, for every route (round 6m). Before a route runs, this reads the body up
+    to its limit and counts bytes as they arrive, so a chunked body with no Content-Length is bounded too. A declared
+    Content-Length over the limit is refused before any byte is read. A body within the limit is handed to the route whole,
+    so a route reads it with request.body() as usual. Over the limit the answer is 413 and no route runs."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit, noun = _body_limit(scope["method"], scope["path"])
+        declared = dict(scope["headers"]).get(b"content-length", b"").decode("latin-1").strip()
+        if declared.isdigit() and int(declared) > limit:
+            return await _too_large(scope, receive, send, limit, noun)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":           # the client went away mid-body; there is no one to answer
+                return
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > limit:
+                return await _too_large(scope, receive, send, limit, noun)
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()                          # then the usual receive, so disconnects are still seen
+
+        await self.app(scope, replay, send)
+
+
+async def _too_large(scope, receive, send, limit: int, noun: str) -> None:
+    response = JSONResponse({"detail": f"the {noun} is larger than {_size_words(limit)}"}, status_code=413)
+    await response(scope, receive, send)
 
 
 KEY_CHARS_MAX = 256    # the longest provider key that is accepted; real keys are far shorter, and a longer string is written to .env
@@ -152,6 +200,9 @@ def create_app(service: MissionService) -> FastAPI:
                 return JSONResponse({"detail": "cross-origin write refused"}, status_code=403)
         return await call_next(request)
 
+    # Added last, so it is the outermost layer: no body is read by anything before its cap is checked.
+    app.add_middleware(BodyLimit)
+
     @app.get("/api/health")
     def health() -> dict:
         from prophet_agent.nim.transport import load_keys
@@ -185,7 +236,7 @@ def create_app(service: MissionService) -> FastAPI:
         from urllib.parse import unquote
         if request.headers.get("x-file-name"):
             name = unquote(request.headers["x-file-name"])
-        data = await _capped_body(request)
+        data = await request.body()                         # capped by BodyLimit
         try:
             return service.datasets.add(name, data)
         except ValueError as exc:
@@ -208,6 +259,15 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.patch("/api/missions/{mission_id}")
     def patch_mission(mission_id: str, body: MissionPatch) -> dict:
+        # Checked before anything is written: an unknown or notebook mission is 404 even when the patch changes nothing, and
+        # a blank name is refused before the archive step, so a refused patch never leaves a field half applied.
+        try:
+            if service.store.mission(mission_id).get("notebook_id") is not None:
+                raise KeyError(mission_id)
+        except KeyError:
+            raise HTTPException(404, "no such quick forecast")
+        if body.title is not None and not " ".join(body.title.split()):
+            raise HTTPException(409, "a name cannot be empty")          # the status the service's own check has always given
         try:
             if body.archived is not None:
                 service.archive(mission_id, body.archived)
@@ -413,7 +473,7 @@ def create_app(service: MissionService) -> FastAPI:
     async def add_source(nid: str, request: Request, name: str = "data") -> dict:
         """Raw file bytes in the body; the name in the X-File-Name header (or ?name= for scripts). Profiling runs in the
         background; poll the source."""
-        data = await _capped_body(request)
+        data = await request.body()                         # capped by BodyLimit
         header_name = request.headers.get("x-file-name")
         if header_name:
             name = unquote(header_name)
@@ -439,6 +499,9 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.get("/api/notebooks/{nid}/tables/{name}/download")
     def download_table(nid: str, name: str, version: int | None = None) -> FileResponse:
+        # Versions start at 1. A 0 must not fall through to the latest version (the store tests the version for truth).
+        if version is not None and version < 1:
+            raise HTTPException(404, "no such table or version")
         try:
             path = service.notebooks.table_path(nid, name, version)
         except KeyError:
@@ -565,19 +628,24 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(422, "nim accepts only keys")
         if providers is not None and not isinstance(providers, dict):
             raise HTTPException(422, "providers must map a provider name to {keys: [...]}")
-        # Checked before anything is saved, so a refused key leaves the rest of the patch unapplied too.
+        # Every shape check runs before anything is saved. Settings.update() saves the limits first, so a shape error
+        # found after it would leave the limits changed and the request refused.
+        if isinstance(nim, dict) and "keys" in nim and not isinstance(nim["keys"], list):
+            raise HTTPException(422, "nim.keys must be a list of keys")
+        for name, entry in (providers or {}).items():
+            if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
+                raise HTTPException(422, f"providers.{name} accepts only keys for a known provider")
+            if "keys" in entry and not isinstance(entry["keys"], list):
+                raise HTTPException(422, f"providers.{name}.keys must be a list of keys")
         if isinstance(nim, dict):
             _check_key_lengths(nim.get("keys"))
         for entry in (providers or {}).values():
-            if isinstance(entry, dict):
-                _check_key_lengths(entry.get("keys"))
+            _check_key_lengths(entry.get("keys"))
         try:
             service.settings.update(patch)
             if nim is not None and "keys" in nim:
                 service.settings.set_keys(nim["keys"])
             for name, entry in (providers or {}).items():
-                if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
-                    raise ValueError(f"providers.{name} accepts only keys for a known provider")
                 if "keys" in entry:
                     service.settings.set_keys(entry["keys"], provider=name)
         except ValueError as exc:
