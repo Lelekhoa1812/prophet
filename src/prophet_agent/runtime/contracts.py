@@ -1598,17 +1598,20 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
                 if i >= len(row) or not (1 <= k <= min(len(point), len(lo_all), len(hi_all))):
                     continue
                 toks = _NUMBER_TOKEN.findall(row[i])
-                if len(toks) not in (1, 3):
+                if not toks:
                     continue
                 expected = (point[k - 1], lo_all[k - 1], hi_all[k - 1])
-                ok = all(_printed_matches(t, e) for t, e in zip(toks, expected))
+                # Audit round 6l: a point with its band is read whole. Any other shape ("52 (12)", "52 ± 5", "52 (12 to 132,
+                # 90%)") still has its leading figure, the point, checked, so the extra figures cannot hide a wrong point.
+                pairs = zip(toks, expected) if len(toks) in (1, 3) else [(toks[0], expected[0])]
+                ok = all(_printed_matches(t, e) for t, e in pairs)
                 checked += 1
                 if not ok:
                     wrong.append(f"{row[0].strip(' *')} day {k} is {row[i]}; the forecast gives {expected[0]:.1f} "
                                  f"({expected[1]:.1f} to {expected[2]:.1f})")
             if avg_col is not None and avg_col < len(row) and point:
                 toks = _NUMBER_TOKEN.findall(row[avg_col])
-                if len(toks) == 1:
+                if toks:                   # the leading figure is the average, whatever follows it (audit round 6l)
                     checked += 1
                     mean = sum(point) / len(point)
                     if not _printed_matches(toks[0], mean):
