@@ -19,6 +19,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+from prophet_agent.nim.errors import scrub_keys
 from prophet_agent.prompts import CURRENT, load
 
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -40,7 +41,12 @@ def _scrub(data: bytes) -> bytes:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return data
-    return KEY_SHAPED.sub("[key removed]", text).encode("utf-8")
+    return scrub_keys(KEY_SHAPED.sub("[key removed]", text), mark="[key removed]").encode("utf-8")
+
+
+def _key_shaped(text: str) -> bool:
+    """True while any key-shaped text is left: NVIDIA keys, other providers' key formats, or a Bearer token."""
+    return bool(KEY_SHAPED.search(text)) or scrub_keys(text) != text
 
 
 def _packages() -> dict[str, str | None]:
@@ -157,7 +163,7 @@ def _assert_clean(data: bytes) -> None:
         for name in zf.namelist():
             if name == ".env" or name.endswith("/.env"):
                 raise RuntimeError("bundle would include an .env file")
-            if KEY_SHAPED.search(zf.read(name).decode("utf-8", errors="ignore")):
+            if _key_shaped(zf.read(name).decode("utf-8", errors="ignore")):
                 raise RuntimeError(f"bundle would include key-shaped text in {name}")
 
 

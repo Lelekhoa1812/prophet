@@ -53,6 +53,32 @@ GOAL_VISIBLE_MAX = 2000
 GOAL_STORED_MAX = 6000
 
 
+async def _capped_body(request: Request) -> bytes:
+    """The raw request body, refused with 413 past MAX_BYTES. A declared Content-Length is checked before any byte is read.
+    The streamed bytes are counted as they arrive too: a chunked request has no Content-Length, and reading it whole
+    would let any size of upload fill memory before the dataset store's own check ran."""
+    too_large = f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB"
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BYTES:
+        raise HTTPException(413, too_large)
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > MAX_BYTES:
+            raise HTTPException(413, too_large)
+    return bytes(buf)
+
+
+KEY_CHARS_MAX = 256    # the longest provider key that is accepted; real keys are far shorter, and a longer string is written to .env
+
+
+def _check_key_lengths(keys: object) -> None:
+    """422 for a key string longer than KEY_CHARS_MAX. Keys are otherwise unbounded, and each one is written to .env."""
+    for item in keys if isinstance(keys, list) else []:
+        if isinstance(item, str) and len(item) > KEY_CHARS_MAX:
+            raise HTTPException(422, f"a key is longer than {KEY_CHARS_MAX} characters; paste one key per entry")
+
+
 def _checked_goal(goal: str) -> str:
     text = goal.strip()
     shown = mentions.plain(text).strip()
@@ -159,10 +185,7 @@ def create_app(service: MissionService) -> FastAPI:
         from urllib.parse import unquote
         if request.headers.get("x-file-name"):
             name = unquote(request.headers["x-file-name"])
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > MAX_BYTES:
-            raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
-        data = await request.body()
+        data = await _capped_body(request)
         try:
             return service.datasets.add(name, data)
         except ValueError as exc:
@@ -225,6 +248,21 @@ def create_app(service: MissionService) -> FastAPI:
             if problem:
                 raise HTTPException(503, problem)
 
+    def _start_new(mission_id: str) -> None:
+        """Start a mission whose row was just written. If the start fails, the row is marked failed at once. Left as
+        "created" it would block the notebook's next turn and could not be deleted, until the orphan sweep found it."""
+        try:
+            service.start(mission_id)
+        except NotConfigured:
+            service.store.set_status(mission_id, "failed")
+            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        except PolicyRefused as exc:
+            service.store.set_status(mission_id, "failed")
+            raise HTTPException(409, str(exc))
+        except Exception:
+            service.store.set_status(mission_id, "failed")
+            raise
+
     @app.post("/api/missions", status_code=201)
     def create_mission(body: MissionIn) -> dict:
         _model_gate(body.model)
@@ -233,10 +271,7 @@ def create_app(service: MissionService) -> FastAPI:
             mission_id = service.create(_checked_goal(body.goal), dataset_ids=body.dataset_ids, model=body.model)
         except KeyError:
             raise HTTPException(422, "one of the uploaded files no longer exists; upload it again")
-        try:
-            service.start(mission_id)
-        except NotConfigured:
-            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        _start_new(mission_id)
         return {"id": mission_id}
 
     @app.get("/api/missions/{mission_id}")
@@ -378,10 +413,7 @@ def create_app(service: MissionService) -> FastAPI:
     async def add_source(nid: str, request: Request, name: str = "data") -> dict:
         """Raw file bytes in the body; the name in the X-File-Name header (or ?name= for scripts). Profiling runs in the
         background; poll the source."""
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > MAX_BYTES:
-            raise HTTPException(413, f"the file is larger than {MAX_BYTES // (1024 * 1024)} MB")
-        data = await request.body()
+        data = await _capped_body(request)
         header_name = request.headers.get("x-file-name")
         if header_name:
             name = unquote(header_name)
@@ -452,10 +484,7 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(409, str(exc))
         except PolicyRefused as exc:
             raise HTTPException(409, str(exc))
-        try:
-            service.start(mission_id)
-        except NotConfigured:
-            raise HTTPException(503, planner_problem() or "the planner is not configured")
+        _start_new(mission_id)
         service.notebooks.touch(nid)
         return {"id": mission_id, "seq": service.store.mission(mission_id)["seq"]}
 
@@ -536,6 +565,12 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(422, "nim accepts only keys")
         if providers is not None and not isinstance(providers, dict):
             raise HTTPException(422, "providers must map a provider name to {keys: [...]}")
+        # Checked before anything is saved, so a refused key leaves the rest of the patch unapplied too.
+        if isinstance(nim, dict):
+            _check_key_lengths(nim.get("keys"))
+        for entry in (providers or {}).values():
+            if isinstance(entry, dict):
+                _check_key_lengths(entry.get("keys"))
         try:
             service.settings.update(patch)
             if nim is not None and "keys" in nim:
