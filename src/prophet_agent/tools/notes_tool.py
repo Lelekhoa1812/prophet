@@ -17,6 +17,8 @@ from prophet_agent.runtime.runner import Tool
 
 MAX_NOTE = 6_000
 MAX_NOTES = 40
+REPEAT_NOTE = ("this text repeats the note's last text, so it was not added again; the note is unchanged. "
+               "Read the note with action read if you need to see it.")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,59}$")
 ALLOWED = {"action", "name", "text", "scope"}
 
@@ -61,11 +63,14 @@ def notes_tool(store, mission_id: str, scope: str) -> Tool:
             if action == "append" and current is not None and (current == text or current.endswith("\n" + text)):
                 # The tool is re-run after a crash while "started", with the same arguments. An append that repeats the
                 # note's last text is therefore a no-op; otherwise a retry would write the same line twice (round 6l, item 7).
-                return {"scope": scope, "name": name, "chars": len(current), "saved": True, "unchanged": True}
+                # The result says so in words: a silent drop looked like a save to the planner (GOAL.md defect 1).
+                return {"scope": scope, "name": name, "chars": len(current), "saved": True, "unchanged": True,
+                        "repeat": True, "note": REPEAT_NOTE}
             if action == "write" and current == text:
                 # Round 6m: a write that repeats the note's text changes nothing; say so, as an identical append already does,
                 # so the planner does not repeat it to see whether it took.
-                return {"scope": scope, "name": name, "chars": len(current), "saved": True, "unchanged": True}
+                return {"scope": scope, "name": name, "chars": len(current), "saved": True, "unchanged": True,
+                        "repeat": True, "note": REPEAT_NOTE}
             if action == "append" and current is not None and len(current) + 1 + len(text) > MAX_NOTE:
                 # The limit is on the note, not on one text: an append that would take the note past it is refused, and the
                 # note is left as it was (round 6m: ten 1,000-character appends had made a 10,019-character note).
