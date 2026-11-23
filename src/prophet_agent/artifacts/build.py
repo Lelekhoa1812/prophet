@@ -122,7 +122,10 @@ c.setFont("Times-Bold", 16)
 c.drawString(72, 780, title[:90])
 import textwrap
 c.setFont("Times-Roman", 10)
-for k, line in enumerate(textwrap.wrap(note, 105)[:6]):
+wrapped = textwrap.wrap(note, 105)
+# Six lines fit above the chart. A longer note is cut here and the page says so; report.docx has the full note (R6l).
+lines = wrapped if len(wrapped) <= 6 else wrapped[:5] + ["Note cut to fit the page; the full note is in report.docx."]
+for k, line in enumerate(lines):
     c.drawString(72, 764 - 13 * k, line)
 c.drawImage("out/forecast.png", 72, 380, width=460, preserveAspectRatio=True)
 c.save()
@@ -273,7 +276,9 @@ c = canvas.Canvas("out/report.pdf", pagesize=A4)
 c.setFont("Times-Bold", 16)
 c.drawString(72, 780, title[:90])
 c.setFont("Times-Roman", 10)
-lines = textwrap.wrap(note, 105)[:6]
+wrapped = textwrap.wrap(note, 105)
+# Six lines fit above the grid. A longer note is cut here and the page says so; report.docx has the full note (R6l).
+lines = wrapped if len(wrapped) <= 6 else wrapped[:5] + ["Note cut to fit the page; the full note is in report.docx."]
 if len(series) > PER_FIGURE:
     lines.append(f"First {PER_FIGURE} of {len(series)} series shown; the other panels are in the chart files and the workbook.")
 for k, line in enumerate(lines):
