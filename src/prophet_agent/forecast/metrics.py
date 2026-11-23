@@ -60,7 +60,12 @@ def coverage(actual: np.ndarray, q: np.ndarray, lo: int = 0, hi: int = 8) -> flo
     The figure is measured, not assumed: compare it with NOMINAL_COVERAGE, and do not read a band as 80 percent because
     of its quantile labels. A band built from a sd that is too small covers less (synthetic: a random walk's seasonal naive
     covered about 47 percent)."""
-    return float(((actual >= q[..., lo]) & (actual <= q[..., hi])).mean())
+    a = np.asarray(actual, dtype=float)
+    finite = np.isfinite(a)              # a missing actual is not a miss: it is left out of the share
+    if not finite.any():
+        return float("nan")
+    inside = (a >= q[..., lo]) & (a <= q[..., hi])
+    return float(inside[finite].mean())
 
 
 def mase(actual: np.ndarray, pred: np.ndarray, hist_scale: np.ndarray) -> float:
