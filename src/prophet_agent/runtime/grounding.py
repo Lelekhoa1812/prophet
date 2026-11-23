@@ -28,7 +28,9 @@ _DATE = re.compile(rf"\b{_MONTH}\s+(?:\d{{1,2}},?\s+)?\d{{4}}\b|\b\d{{1,2}}\s+{_
 # month names count, so "Mark 15" or "Decision 12" are not swallowed.
 _REAL_MONTH = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
                r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)")
-_DAYS = r"\d{1,2}(?:(?:st|nd|rd|th)\b)?(?:\s*-\s*\d{1,2}(?:(?:st|nd|rd|th)\b)?)?"
+# A day is 1 to 31: "May 40 cases" is a month beside a count, not a date (audit round 6m).
+_DAY = r"(?:0?[1-9]|[12]\d|3[01])"
+_DAYS = rf"{_DAY}(?:(?:st|nd|rd|th)\b)?(?:\s*-\s*{_DAY}(?:(?:st|nd|rd|th)\b)?)?"
 _DAY_MONTH = re.compile(rf"\b{_DAYS}\s+(?:of\s+)?{_REAL_MONTH}\b|\b{_REAL_MONTH}\.?\s+{_DAYS}(?![\d%,.]*\d)(?!%)")
 
 # Models write dates and minus signs with non-breaking hyphens, en dashes and the true minus sign.
