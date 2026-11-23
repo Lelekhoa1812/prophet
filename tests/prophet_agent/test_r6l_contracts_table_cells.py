@@ -59,3 +59,22 @@ def test_a_wrong_average_with_a_spread_is_blocked():
 def test_a_right_average_with_a_spread_passes():
     text = "| Station | 14-day average |\n|---|---|\n| Aotizhongxin | 57.5 ± 3 |\n"
     assert _check(text)["ok"] is True
+
+
+def test_a_wrong_figure_under_a_bare_day_number_header_is_blocked():
+    text = "| Station | 1 | 2 |\n|---|---|---|\n| Aotizhongxin | 52 | 75 |\n| Dingling | 10 | 12 |\n"
+    c = _check(text)
+    assert c["ok"] is False and "Aotizhongxin day 1 is 52" in c["detail"]
+
+
+def test_right_figures_under_a_bare_day_number_header_pass():
+    text = "| Station | 1 | 2 |\n|---|---|---|\n| Aotizhongxin | 40 (4.5 to 114.2) | 75 |\n| Dingling | 10 | 12 |\n"
+    assert _check(text)["ok"] is True
+
+
+def test_a_bare_number_outside_the_horizon_is_not_a_day_and_is_not_checked():
+    assert _check("| Station | 2019 |\n|---|---|\n| Aotizhongxin | 52 |\n") is None
+
+
+def test_a_table_without_station_rows_is_not_checked_under_bare_number_headers():
+    assert _check("| Measure | 1 | 2 |\n|---|---|---|\n| Count | 52 | 75 |\n") is None

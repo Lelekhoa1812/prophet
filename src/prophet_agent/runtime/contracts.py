@@ -1559,13 +1559,19 @@ def _panel_series(obs: list) -> dict | None:
 
 
 def _day_columns(header: list[str]) -> tuple[dict[int, int], int | None]:
-    """A header's day columns (column index -> day number) and its average column. A band header is never a day."""
+    """A header's day columns (column index -> day number) and its average column. A band header is never a day.
+
+    A bare number header ("1", "14") is a day column too (audit round 6l): a station table often writes its days that way,
+    and the day is only compared when its row names a station, so a plain number elsewhere is not checked.
+    """
     day_cols, avg_col = {}, None
     for i, cell in enumerate(header):
         days = _DAY_HEAD.findall(cell)
         if _BAND_HEAD.search(cell):
             continue                       # "Day 14 q10" holds a band edge, not the point
-        if len(days) == 1 and "→" not in cell and "->" not in cell:
+        if not days and re.fullmatch(r"\d{1,3}", cell.strip()):
+            day_cols[i] = int(cell.strip())
+        elif len(days) == 1 and "→" not in cell and "->" not in cell:
             day_cols[i] = int(days[0])
         elif _AVG_HEAD.search(cell):
             avg_col = i
