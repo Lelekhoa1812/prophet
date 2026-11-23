@@ -1136,7 +1136,13 @@ def change_test(x: Any, recent: int = 28, lag: int | None = None, alpha: float =
     if lag is None:
         lag = 364 if n >= 364 + 2 * recent + 20 else recent
     lag = int(lag)
-    if recent < 2 or lag < recent or n < lag + recent + 20:
+    # Live retail business user (f1cc71cb, 2026-11-23): lag=7 with recent=28 is an overlapping pair of windows, which this
+    # returned as "not enough history" with the point-count note, though the series had 738 points. The planner read that as
+    # missing data, repeated the identical call three times, and the run stalled. An overlap is a usage error: raise it.
+    if recent < 2 or lag < recent:
+        raise ValueError(f"lag ({lag}) must be at least recent ({recent}): the two windows must not overlap. Pass lag >= {recent}, "
+                         f"or a smaller recent (a week against the same weekday a week earlier is recent=7, lag=7).")
+    if n < lag + recent + 20:
         return "not enough history", {"points": n, "recent": recent, "lag": lag,
                                       "note": "need at least lag + recent + 20 points to compare the change with usual ones"}
 

@@ -304,6 +304,11 @@ def with_delegated(history) -> list:
     return out
 
 
+# The ledger a cell saves: out/ledger.json, or a named variant such as out/ledger_full.json (live Beijing 3581d07d, 2026-11-23:
+# seven decisions were saved as ledger_full.json, which this check did not read, so the mission reported zero stages).
+LEDGER_FILE = re.compile(r"out/ledger[^/]*\.json")
+
+
 def _saved_ledgers(history, run_root) -> list[list]:
     """The entries of every saved ledger in this mission (newest first). A step that saved the ledger and then failed later in
     the cell still saved it: the file is the evidence. Unreadable or unsafe paths are skipped."""
@@ -312,14 +317,19 @@ def _saved_ledgers(history, run_root) -> list[list]:
         res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") == "sandbox_python" else None
         if not isinstance(res, dict) or not isinstance(res.get("run_id"), str) or "/" in res["run_id"] or ".." in res["run_id"]:
             continue
-        outputs = [_output_path(o) for o in (res.get("outputs") or [])]
-        if "out/ledger.json" not in outputs:
-            continue
-        try:
-            entries = json.loads((Path(run_root) / res["run_id"] / "out" / "ledger.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(entries, list):
+        entries: list = []
+        read = False
+        for path in [_output_path(o) for o in (res.get("outputs") or [])]:
+            if not LEDGER_FILE.fullmatch(path):
+                continue
+            try:
+                doc = json.loads((Path(run_root) / res["run_id"] / path).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, list):
+                entries.extend(doc)
+                read = True
+        if read:
             out.append(entries)
     return out
 
@@ -442,8 +452,12 @@ def _decision_recipe(findings: list[dict], missing: list[str], history, run_root
     rows = [(i, _scope_text(scopes[i])) for i in missing if i in scopes]
     newest = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
                    if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
-                   and "out/ledger.json" in [_output_path(o) for o in (h["result"].get("outputs") or [])]), None)
-    carry = (f"carry=[{{run_id: '{newest}', file: 'out/ledger.json'}}], then led = ps.Ledger.open('in/carried/ledger.json')"
+                   and any(LEDGER_FILE.fullmatch(_output_path(o)) for o in (h["result"].get("outputs") or []))), None)
+    ledger_path = next((_output_path(o) for h in reversed(with_delegated(history))
+                        if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
+                        and h["result"].get("run_id") == newest
+                        for o in (h["result"].get("outputs") or []) if LEDGER_FILE.fullmatch(_output_path(o))), "out/ledger.json")
+    carry = (f"carry=[{{run_id: '{newest}', file: '{ledger_path}'}}], then led = ps.Ledger.open('in/carried/{ledger_path.split('/')[-1]}')"
              if newest else "led = ps.Ledger()")
     # led.decide reads the stage and the finding text from the saved scan, so the cell has no scan parsing to get wrong
     # (live retail_biz rep5: guards on scan keys that do not exist skipped both adds, and the save changed nothing).

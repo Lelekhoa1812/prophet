@@ -1039,7 +1039,12 @@ def _signature(obs: dict) -> str:
     res = obs.get("result")
     if isinstance(res, dict):
         res = {k: v for k, v in res.items() if k not in VOLATILE_KEYS}
-    return canonical({"tool": obs.get("tool"), "args": obs.get("args"), "result": res, "error": obs.get("error")})
+    args = obs.get("args")
+    if obs.get("tool") == "sandbox_python" and isinstance(args, dict):
+        # The carry list names the run ids of earlier cells, and those change on every run. Live Beijing 3581d07d (2026-11-23):
+        # the same ledger cell ran 57 times with new carry ids each time, so no window of identical calls was ever seen.
+        args = {k: v for k, v in args.items() if k != "carry"}
+    return canonical({"tool": obs.get("tool"), "args": args, "result": res, "error": obs.get("error")})
 
 
 def _error_run(history: list[dict]) -> int:
