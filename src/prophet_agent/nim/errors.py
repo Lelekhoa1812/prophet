@@ -5,13 +5,16 @@ import re
 
 _KEY = re.compile(r"nvapi-[A-Za-z0-9_\-]+")
 # The other providers' key formats: OpenAI and OpenRouter sk-, Anthropic sk-ant-, Google AIza, xAI xai-.
-_VENDOR_KEY = re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{8,}|AIza[0-9A-Za-z_\-]{20,}|xai-[A-Za-z0-9_\-]{8,})")
-_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]{8,}")
-# A key-like name with a value, as a query or form pair, or as JSON. ``key=`` counts only after ? or &, so ordinary
-# code such as ``sorted(x, key=len)`` in sandbox output is left alone.
-_NAMED = re.compile(r"(?i)\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password)=[^\s&\"',;}\]]{8,}")
-_QUERY_KEY = re.compile(r"(?i)(?<=[?&])key=[^\s&\"',;}\]]{8,}")
-_NAMED_JSON = re.compile(r"(?i)\"(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password)\"\s*:\s*\"[^\"]+\"")
+# An sk- value is a vendor key only when it is 20+ characters and holds a digit, so sk-learn-utilities is left alone.
+_VENDOR_KEY = re.compile(r"\b(?:sk-(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{20,}|xai-[A-Za-z0-9_\-]{8,})")
+# A Bearer value is a token when it holds a digit or is 20+ characters, so "Bearer securities issued" is left alone.
+_BEARER = re.compile(r"(?i)\bbearer\s+(?=[A-Za-z0-9._~+/=\-]*\d|[A-Za-z0-9._~+/=\-]{20})[A-Za-z0-9._~+/=\-]{8,}")
+# A key-like name with a value, as a query or form pair, or as JSON. ``key=`` and ``token=`` count only after ? or &
+# (a URL query), so ordinary code such as ``sorted(x, key=len)``, free text such as ``token=customer_segment_a`` and
+# JSON fields named token are left alone. api_key, access_token, auth_token, secret and password mask everywhere.
+_NAMED = re.compile(r"(?i)\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret|password)=[^\s&\"',;}\]]{8,}")
+_QUERY_KEY = re.compile(r"(?i)(?<=[?&])(key|token)=[^\s&\"',;}\]]{8,}")
+_NAMED_JSON = re.compile(r"(?i)\"(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret|password)\"\s*:\s*\"[^\"]+\"")
 
 
 def scrub_keys(text: str, mark: str = "[key]") -> str:
@@ -26,7 +29,7 @@ def redact(text: object, limit: int = 300) -> str:
     """Replace anything shaped like a key (see scrub_keys), and a key-like name=value pair, and cap the length."""
     out = scrub_keys(str(text))
     out = _NAMED.sub(lambda m: f"{m.group(1)}=[key]", out)
-    out = _QUERY_KEY.sub("key=[key]", out)
+    out = _QUERY_KEY.sub(lambda m: f"{m.group(1)}=[key]", out)
     out = _NAMED_JSON.sub(lambda m: f'"{m.group(1)}": "[key]"', out)
     return out[:limit]
 
