@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
@@ -28,11 +29,12 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, Resolver,
-                                             Robots, UnsafeURL, check_url)
+                                             Robots, UnsafeURL, check_syntax, open_pinned, read_capped)
 from prophet_agent.research.rank import parse_date
 from prophet_agent.research.search import cache_key, cache_root, read_cache, write_cache
 
 MAX_REDIRECTS = 4
+TOTAL_SECONDS = 45.0   # the whole fetch: every redirect hop and the body. Each socket wait is also bounded by timeout.
 MAX_TEXT_CHARS = 60_000
 CACHE_TTL_S = 24 * 3600
 ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "application/json")
@@ -79,6 +81,12 @@ def _media_and_charset(content_type: str) -> tuple[str, str | None]:
     media = content_type.split(";", 1)[0].strip().lower()
     match = _CHARSET.search(content_type or "")
     return media, (match.group(1) if match else None)
+
+
+def _is_wide_text(body: bytes, charset: str | None) -> bool:
+    """UTF-16 and UTF-32 text has NUL bytes by design; it is text when declared or marked by a byte order mark."""
+    declared = (charset or "").lower().replace("_", "-")
+    return declared.startswith(("utf-16", "utf-32")) or body[:2] in (b"\xff\xfe", b"\xfe\xff")
 
 
 def _decode(body: bytes, charset: str | None) -> str:
@@ -140,7 +148,7 @@ def explicit_date(html: str, *, allow_time: bool) -> str | None:
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             values = _walk_json_dates(json.loads(script.string or ""))
-        except ValueError:
+        except (ValueError, RecursionError):   # a block nested too deep for the parser is not a date source
             continue
         for value in values:
             if _iso(value):
@@ -180,7 +188,7 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
     if media == "application/json":
         try:
             return json.dumps(json.loads(body), indent=1, ensure_ascii=False), "", None, "json"
-        except ValueError:
+        except (ValueError, RecursionError):   # too deeply nested to pretty-print: keep the raw text
             return body, "", None, "raw"
     if media == "text/plain":
         return body, "", None, "plain"
@@ -202,31 +210,26 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
     return text, title or fallback_title, date, method
 
 
-def _get_checked(client: httpx.Client, url: str, *, resolver: Resolver | None, throttle: HostThrottle,
-                 timeout: float):
-    """One GET hop after the address check and pacing. Returns a streaming response; the caller reads it."""
-    parts = check_url(url, resolver=resolver)
-    throttle.wait(parts.netloc.lower())
-    return client.stream("GET", url, headers=HEADERS, timeout=timeout)
-
-
 def fetch_page(url: str, *, max_bytes: int = 2_000_000, timeout: float = 15.0, use_cache: bool = True,
                cache_dir=None, client: httpx.Client | None = None, resolver: Resolver | None = None,
-               robots: Robots | None = None, throttle: HostThrottle | None = None) -> Page:
+               robots: Robots | None = None, throttle: HostThrottle | None = None,
+               total_seconds: float = TOTAL_SECONDS) -> Page:
     """Fetch and extract one page. Never raises; a refused or failed fetch returns Page(ok=False, note=...)."""
     try:
         return _fetch(url, max_bytes=max_bytes, timeout=timeout, use_cache=use_cache, cache_dir=cache_dir,
-                      client=client, resolver=resolver, robots=robots, throttle=throttle)
+                      client=client, resolver=resolver, robots=robots, throttle=throttle,
+                      total_seconds=total_seconds)
     except Exception as exc:   # last line of defence: the research tools must always get an answer
         return _failed(url, f"fetch failed: {type(exc).__name__}")
 
 
-def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, robots, throttle) -> Page:
+def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, robots, throttle,
+           total_seconds) -> Page:
     if not isinstance(url, str) or not url.strip():
         return _failed(url or "", "the URL is empty")
     url = url.strip()
     try:
-        check_url(url, resolver=resolver)
+        check_syntax(url)   # no lookup here: each hop resolves and checks its host once, right before it connects
     except UnsafeURL as exc:
         return _failed(url, f"refused: {exc}")
 
@@ -240,20 +243,34 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
     http = client or httpx.Client(follow_redirects=False, timeout=timeout)
     robots = robots or (Robots(client=client, resolver=resolver) if client or resolver else DEFAULT_ROBOTS)
     throttle = throttle or DEFAULT_THROTTLE
+    deadline = time.monotonic() + total_seconds
     try:
-        if not robots.allowed(url):
-            return _failed(url, "disallowed by robots.txt")
         current = url
         for _ in range(MAX_REDIRECTS + 1):
+            if time.monotonic() >= deadline:
+                return _failed(url, f"no complete response within {total_seconds:g} seconds", final_url=current)
             try:
-                opened = _get_checked(http, current, resolver=resolver, throttle=throttle, timeout=timeout)
+                check_syntax(current)
+            except UnsafeURL as exc:
+                return _failed(url, f"refused: {exc}", final_url=current)
+            # robots.txt is per origin, so every hop is checked against the origin it is about to contact
+            if not robots.allowed(current):
+                return _failed(url, "disallowed by robots.txt", final_url=current)
+            throttle.wait(urlsplit(current).netloc.lower())
+            try:
+                response = open_pinned(http, current, resolver=resolver, headers=HEADERS,
+                                       timeout=min(timeout, max(deadline - time.monotonic(), 0.001)),
+                                       deadline=deadline)
             except UnsafeURL as exc:   # a redirect hop to a forbidden address is refused, not followed
                 return _failed(url, f"refused: {exc}", final_url=current)
-            with opened as response:
+            try:
                 if response.status_code in REDIRECT_CODES and response.headers.get("location"):
                     current = urljoin(current, response.headers["location"])
                     continue
-                return _read_response(url, current, response, max_bytes=max_bytes, use_cache=use_cache, path=path)
+                return _read_response(url, current, response, max_bytes=max_bytes, use_cache=use_cache, path=path,
+                                      deadline=deadline, total_seconds=total_seconds)
+            finally:
+                response.close()
         return _failed(url, f"more than {MAX_REDIRECTS} redirects", final_url=current)
     finally:
         if own_client:
@@ -261,9 +278,9 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
 
 
 def _read_response(url: str, final_url: str, response: httpx.Response, *, max_bytes: int, use_cache: bool,
-                   path) -> Page:
+                   path, deadline: float | None = None, total_seconds: float = TOTAL_SECONDS) -> Page:
     status = response.status_code
-    if status >= 400:
+    if status >= 300:   # a redirect with a location was followed by the caller; anything else is not content
         return _failed(url, f"HTTP {status}", final_url=final_url, status=status)
     media, charset = _media_and_charset(response.headers.get("content-type", ""))
     if media == "application/pdf":
@@ -272,17 +289,19 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
     if media and media not in ALLOWED_MEDIA:
         return _failed(url, f"content type {media} is not text; only HTML, plain text and JSON are read",
                        final_url=final_url, status=status)
-    body = bytearray()
-    truncated = False
-    for chunk in response.iter_bytes():
-        room = max_bytes - len(body)
-        if len(chunk) > room:
-            body.extend(chunk[:max(room, 0)])
-            truncated = True
-            break
-        body.extend(chunk)
-    notes = [f"response cut at {max_bytes} bytes"] if truncated else []
-    decoded = _decode(bytes(body), charset)
+    body, stopped = read_capped(response, max_bytes, deadline)
+    notes = []
+    if stopped == "size":
+        notes.append(f"response cut at {max_bytes} bytes")
+    elif stopped == "time":
+        notes.append(f"response stopped after {total_seconds:g} seconds")
+    if body.startswith(b"%PDF-"):
+        return _failed(url, "PDF files are not read; look for the HTML version or a text source",
+                       final_url=final_url, status=status)
+    if b"\x00" in body[:4096] and not _is_wide_text(body, charset):
+        return _failed(url, "the body is binary, not text; only HTML, plain text and JSON are read",
+                       final_url=final_url, status=status)
+    decoded = _decode(body, charset)
     text, title, extracted, method = extract(decoded, media or "text/html")
     if method == "bs4":
         notes.append("main text taken by fallback extraction")

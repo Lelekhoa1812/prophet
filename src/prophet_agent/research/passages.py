@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 
@@ -196,7 +197,10 @@ def _checkable(token: str) -> bool:
     """Years 1900 to 2100 and whole numbers under 10 are left out: they are dates and counts, not claims to check."""
     if "." in token or "," in token:
         return True
-    value = int(token)
+    digits = token.lstrip("0")
+    if len(digits) > 4:   # at least 10000: never a year or a small count, and too long for int() to be safe
+        return True
+    value = int(digits or "0")
     return not (1900 <= value <= 2100 or value < 10)
 
 
@@ -241,12 +245,18 @@ DATE_SCORE = 0.1
 
 
 def parse_date_expr(expr: str, default_year: int) -> tuple[str, bool] | None:
-    """(ISO date, year was written in the text) for an expression from DATE_EXPR or STATED; None when unreadable.
-    A missing year takes default_year and is reported as not written, so the caller can label it as inferred."""
+    """(ISO date, year was written in the text) for an expression from DATE_EXPR or STATED; None when unreadable or
+    not a real calendar date (31 February, 2026-13-45). A missing year takes default_year and is reported as not
+    written, so the caller can label it as inferred."""
     value = expr.strip().lower()
     iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value)
     if iso:
-        return f"{iso.group(1)}-{iso.group(2)}-{iso.group(3)}", True
+        year_value, month, day = int(iso.group(1)), int(iso.group(2)), int(iso.group(3))
+        try:
+            date(year_value, month, day)
+        except ValueError:
+            return None
+        return f"{year_value:04d}-{month:02d}-{day:02d}", True
     day_first = re.fullmatch(r"(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?", value)
     month_first = re.fullmatch(r"([a-z]+)\s+(\d{1,2})(?:,?\s+(\d{4}))?", value)
     if day_first:
@@ -261,10 +271,12 @@ def parse_date_expr(expr: str, default_year: int) -> tuple[str, bool] | None:
     month = MONTHS.get(month_word[:3])
     if month is None or not 1 <= int(day) <= 31:
         return None
+    year_value = int(year or default_year)
     try:
-        return f"{int(year or default_year):04d}-{month:02d}-{int(day):02d}", year is not None
+        date(year_value, month, int(day))
     except ValueError:
         return None
+    return f"{year_value:04d}-{month:02d}-{int(day):02d}", year is not None
 
 
 def stated_date(text: str, default_year: int) -> tuple[str, bool] | None:
