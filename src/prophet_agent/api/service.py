@@ -26,7 +26,7 @@ from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import DELEGATED_CALLS, UNCHARGED, Runtime, Tool
-from prophet_agent.runtime.store import LeaseHeld, Store
+from prophet_agent.runtime.store import ACTIVE, LeaseHeld, LeaseLost, Store
 from prophet_agent.tools.notebook_tools import NotebookBinding
 from prophet_agent.api.outcome import outcome_for
 from prophet_agent.api.sharing import DEFAULT_SHARING, PolicyRefused, tools_allowed
@@ -69,6 +69,9 @@ class MissionService:
         self.model_service_wait_s = MODEL_SERVICE_WAIT_S   # 0 in tests
         self._sleep, self._clock = time.sleep, time.monotonic
         self._threads: dict[str, threading.Thread] = {}
+        # Missions whose worker has decided to exit and will start nothing more. A start may then begin a new worker while the
+        # old one is still returning. Set and read only under self._lock.
+        self._exiting: set[str] = set()
         self._lock = threading.Lock()
         # Missions a previous process left running would otherwise block their notebook forever.
         self.interrupted_at_start = self.store.interrupt_orphans()
@@ -158,18 +161,20 @@ class MissionService:
 
     def delete(self, mission_id: str) -> None:
         """Permanently remove a quick forecast and its run history. A running one must be stopped first."""
-        with self.store.lock:
-            row = self.store.conn.execute("SELECT status, budget_json FROM missions WHERE id=? AND notebook_id IS NULL",
-                                          (mission_id,)).fetchone()
+        # The status and the lease are read in the same transaction as the purge, so a run that starts in another process
+        # between a check and the delete cannot lose its ledger under it.
+        with self.store._tx() as c:
+            row = c.execute("SELECT status, lease_owner, lease_until, budget_json FROM missions "
+                            "WHERE id=? AND notebook_id IS NULL", (mission_id,)).fetchone()
             if row is None:
                 raise KeyError(mission_id)
-            if row["status"] in ("created", "running", "waiting_user"):
+            held = row["lease_owner"] is not None and row["lease_until"] > time.time()
+            if row["status"] in ACTIVE or held:
                 raise ValueError("this forecast is still running; stop it first")
             dataset_ids = json.loads(row["budget_json"]).get("dataset_ids", [])
-            with self.store._tx() as c:
-                run_ids = mission_run_ids(c, [mission_id])
-                _purge_missions(c, [mission_id])
-                orphans = unreferenced_datasets(c, dataset_ids)
+            run_ids = mission_run_ids(c, [mission_id])
+            _purge_missions(c, [mission_id])
+            orphans = unreferenced_datasets(c, dataset_ids)
         # Files go after the commit: the run folder (outputs, copies of inputs) and any attached file nothing else uses.
         remove_runs(run_ids)
         remove_datasets(self.datasets.root, orphans)
@@ -359,35 +364,87 @@ class MissionService:
 
     def start(self, mission_id: str) -> None:
         """Run (or resume) the mission on a background thread. Raises LeaseHeld if it is already running."""
-        mission = self.store.mission(mission_id)
         with self._lock:
-            live = self._threads.get(mission_id)
-            if live is not None and live.is_alive():
+            if self._busy(mission_id):
                 raise LeaseHeld(f"mission {mission_id} is already running")
-            # The notebook's provider rule applies to every start, including a resume: refused before a thread exists.
-            budget = self._sharing_budget(mission)
-            if budget != mission["budget"]:
-                self.store.set_budget(mission_id, budget)
-                mission = self.store.mission(mission_id)
-            program = self._build_program(mission)
+            program = self._resume_program(self.store.mission(mission_id))
+            self._exiting.discard(mission_id)
             # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
             runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
             t = threading.Thread(target=self._run, args=(runtime, mission_id, program), daemon=True)
             self._threads[mission_id] = t
             t.start()
 
+    def _resume_program(self, mission: dict) -> Callable:
+        """The program for the mission as it stands. The notebook's provider rule applies to every start, including a resume,
+        and is checked before a thread exists. Raises PolicyRefused."""
+        budget = self._sharing_budget(mission)
+        if budget != mission["budget"]:
+            self._store_budget(mission["id"], budget)
+            mission = self.store.mission(mission["id"])
+        return self._build_program(mission)
+
+    def _busy(self, mission_id: str) -> bool:
+        """True when this service's worker is running the mission, or a runtime in any process holds its lease now. The
+        database answers the second part, because another process's runtime is invisible to this service's thread list.
+        Caller holds self._lock."""
+        t = self._threads.get(mission_id)
+        if t is not None and t.is_alive() and mission_id not in self._exiting:
+            return True
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT lease_owner, lease_until FROM missions WHERE id=?", (mission_id,)).fetchone()
+        return row is not None and row["lease_owner"] is not None and row["lease_until"] > time.time()
+
+    def _refuse_if_running(self, mission_id: str) -> None:
+        """Raise LeaseHeld before anything is written, when the mission is running here or in another process."""
+        with self._lock:
+            if self._busy(mission_id):
+                raise LeaseHeld(f"mission {mission_id} is already running")
+
+    def _store_budget(self, mission_id: str, budget: dict) -> None:
+        """Write the budget through the lease fence. A lease another runtime holds is a conflict for the caller (LeaseHeld),
+        not LeaseLost, which the API does not map."""
+        try:
+            self.store.set_budget(mission_id, budget)
+        except LeaseLost:
+            raise LeaseHeld(f"mission {mission_id} is being run by another runtime") from None
+
     def _run(self, runtime: Runtime, mission_id: str, program: Callable) -> None:
         try:
             while True:
                 runtime.run(mission_id, program)
-                program = self._next_part(mission_id)
+                program = self._next_part(mission_id) or self._after_pause(mission_id)
                 if program is None:
                     return
                 runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")
-        except LeaseHeld:
-            return
+        except (LeaseHeld, LeaseLost):
+            return      # another runtime holds the mission now; it decides what happens next
         except Exception as exc:  # the runtime records its own failures; this guards against bugs in the service
-            self.store.append_event(mission_id, "service.error", {"error": type(exc).__name__})
+            try:
+                self.store.append_event(mission_id, "service.error", {"error": type(exc).__name__})
+            except (LeaseHeld, LeaseLost):
+                pass
+
+    def _after_pause(self, mission_id: str) -> Callable | None:
+        """Called by a worker whose run has stopped, just before it exits. A run that paused on a question releases the lease
+        before it returns, so an answer recorded in that gap found this thread alive and was left to it: here the answer is
+        resumed. Otherwise the worker retires. Both decisions are made under the lock that start() and answer() take, so an
+        answer either lands before the decision (and is resumed here) or after it (and start() sees the worker retired).
+        Returns the program to run next, or None after retiring."""
+        me = threading.current_thread()
+        with self._lock:
+            mission = self.store.mission(mission_id)
+            if mission["status"] == "waiting_user" and mission["cancel_requested"]:
+                # A cancel arrived while the run was pausing. Nothing else will act on it, so it is closed here.
+                self._close_unleased(mission_id)
+            elif mission["status"] == "waiting_user" and not self.store.open_questions(mission_id):
+                try:
+                    return self._resume_program(mission)
+                except PolicyRefused as exc:
+                    self.store.append_event(mission_id, "mission.resume_refused", {"reason": str(exc)})
+            if self._threads.get(mission_id) is me:
+                self._exiting.add(mission_id)
+        return None
 
     def _next_part(self, mission_id: str) -> Callable | None:
         """A durable mission keeps going by itself: when a part ends at a checkpoint and the mission may still start parts on
@@ -418,7 +475,7 @@ class MissionService:
         budget["segment"] = int(budget.get("segment", 0)) + 1
         self._top_up(mission_id, budget)
         budget["finish_now"] = False
-        self.store.set_budget(mission_id, budget)
+        self._store_budget(mission_id, budget)
         self.store.append_event(mission_id, "mission.auto_continue", {"part": budget["segment"] + 1,
                                                                       "automatic_parts_used": used + 1})
         return self._build_program(self.store.mission(mission_id))
@@ -449,26 +506,58 @@ class MissionService:
         return done
 
     def cancel(self, mission_id: str) -> str:
-        """Ask a mission to stop. A running mission stops at its next step; one with no live runner (waiting for an
-        answer, or never started) is closed here. Returns the resulting state: cancelled, cancelling, or the status of
-        a mission that is no longer active."""
+        """Ask a mission to stop. A run that holds the mission (here, or in another process) stops at its next step and
+        records the cancel itself; a mission that nothing holds (waiting for an answer, or never started) is closed here.
+        Returns the resulting state: cancelled, cancelling, or the status of a mission that is no longer active."""
         mission = self.store.mission(mission_id)
         if not self.store.request_cancel(mission_id):
             return mission["status"]
         with self._lock:
             t = self._threads.get(mission_id)
-            live = t is not None and t.is_alive()
-        if live:
-            return "cancelling"
-        self.store.close_open_questions(mission_id)
-        self.store.set_status(mission_id, "cancelled")
+            if t is not None and t.is_alive() and mission_id not in self._exiting:
+                return "cancelling"
+        return self._close_unleased(mission_id)
+
+    def _close_unleased(self, mission_id: str) -> str:
+        """Close an active mission that no runtime holds: its open questions and its status are cancelled in one transaction,
+        so a runtime that takes the lease concurrently either comes before this write (and it is left alone) or after it.
+        A lease held now, in any process, is left alone: its holder records the cancel at its next step. Never raises
+        LeaseLost, because the write does not go through the lease fence."""
+        now = time.time()
+        with self.store._tx() as c:
+            row = c.execute("SELECT status, lease_owner, lease_until FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if row is None:
+                raise KeyError(mission_id)
+            if row["status"] not in ACTIVE:
+                return row["status"]
+            if row["lease_owner"] is not None and row["lease_until"] > now:
+                return "cancelling"
+            c.execute("UPDATE questions SET status='cancelled' WHERE mission_id=? AND status='open'", (mission_id,))
+            c.execute("UPDATE missions SET status='cancelled', updated=? WHERE id=?", (now, mission_id))
+            self.store._emit(c, mission_id, "mission.status", {"status": "cancelled"})
         return "cancelled"
 
     def answer(self, question_id: str, answers: dict) -> str:
         """Record the answer and resume the mission it belongs to. Returns the mission id."""
-        info = self.store.answer_question(question_id, answers)
-        self.start(info["mission_id"])
-        return info["mission_id"]
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT mission_id FROM questions WHERE id=?", (question_id,)).fetchone()
+        if row is not None:
+            # The notebook's provider rule is checked before the answer is recorded. A resume refused after the commit would
+            # leave the answered mission waiting with nothing to resume it. Raises PolicyRefused, and nothing is written.
+            self._sharing_budget(self.store.mission(row["mission_id"]))
+        try:
+            info = self.store.answer_question(question_id, answers)
+        except LeaseLost:
+            # This service still holds an old lease record for the mission, and another runtime holds it now: a conflict.
+            raise LeaseHeld("the mission is being run by another runtime") from None
+        mission_id = info["mission_id"]
+        try:
+            self.start(mission_id)
+        except LeaseHeld:
+            # Still being run: a worker here finishing its pause (it resumes the answer when it exits), or a runtime in another
+            # process (its mark_waiting or its next replay of the question sees the answer). The answer is not lost.
+            pass
+        return mission_id
 
     def continue_mission(self, mission_id: str) -> None:
         """Carry a checkpointed mission into its next part. The stored steps replay; the tool allowance is topped up by
@@ -477,11 +566,12 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can continue")
+        self._refuse_if_running(mission_id)
         budget = self._sharing_budget(mission)
         budget["segment"] = int(budget.get("segment", 0)) + 1
         self._top_up(mission_id, budget)
         budget["finish_now"] = False
-        self.store.set_budget(mission_id, budget)
+        self._store_budget(mission_id, budget)
         self.start(mission_id)
 
     def answer_now(self, mission_id: str) -> None:
@@ -489,9 +579,10 @@ class MissionService:
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can be answered now")
+        self._refuse_if_running(mission_id)
         budget = self._sharing_budget(mission)
         budget["finish_now"] = True
-        self.store.set_budget(mission_id, budget)
+        self._store_budget(mission_id, budget)
         self.start(mission_id)
 
     def wait(self, mission_id: str, timeout: float | None = None) -> None:
