@@ -220,10 +220,12 @@ def _rule_line(values: list[float], h: int, which: str, season: int | None) -> t
     if which == "naive":
         return np.full(h, last), None
     if which in ("seasonal_naive", "mean_last_season"):
-        # The same rules and the same season choice as backtest_series, so the delivered line is the one that was scored.
-        from prophet_agent.forecast.rolling import _mean_last, _snaive, pick_season
+        # The same rules and the same season choice as the backtest, so the delivered line is the one that was scored. The
+        # backtest measures an unset season on the history before its first test window (backtest_season); measuring it on the
+        # whole history here gave season 7 where the backtest scored season 1 (audit: report_tool.py:225-226, 40 of 40 probes).
+        from prophet_agent.forecast.rolling import DEFAULT_ORIGINS, _mean_last, _snaive, backtest_season
         x = np.asarray(values, dtype=float)
-        m = pick_season(x, season)
+        m, _ = backtest_season(x, h, DEFAULT_ORIGINS, season)
         return (_snaive(x, h, m) if which == "seasonal_naive" else _mean_last(x, h, m)), m
     slope = (float(values[-1]) - float(values[0])) / max(len(values) - 1, 1)   # drift: the average change, extended
     return last + slope * np.arange(1, h + 1), None
