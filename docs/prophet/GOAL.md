@@ -943,7 +943,7 @@ Known and not fixed in this round. Owner decisions are marked.
   without outer pipes; `sandbox_tool` stderr run paths.
 - **Synthetic generator** (top-level audit): `synth/generator.py` crashes when `n_items` is under 8; `synth/censor.py` mishandles
   a non-integer latent; synthetic source labelling is incomplete; usage behaviour lacks tests. `.gitignore` lacks `.env.*`.
-- **Owner decision needed**: the redaction trade-off above.
+- **Owner decision (2026-11-23)**: keep the redaction rule as merged. A `Bearer` or `sk-` value with no digit prints unmasked.
 - **Worktrees**: `agent-a20d6af35060836c5`, `agent-a8a099c3eda9246a3`, `agent-a7cf04b87537a34d9` and `agent-a36045868ea93098d`
   are locked by the Claude Code app process (PID 35675). All four branches are merged. Removal awaits the owner's go-ahead.
 - **Shutdown**: `MissionService.close()` stops the sweeper; the owner of the `Store` still closes the database, which the
