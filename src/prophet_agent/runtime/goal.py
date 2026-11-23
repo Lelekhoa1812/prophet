@@ -1216,14 +1216,18 @@ ERROR_STALL = 8      # identical failures in a row after which the loop stops re
 
 def _stalled(history: list[dict], window: int) -> bool:
     """Stalled when the newest ``window`` tool calls are the same call with the same outcome (run ids aside), or when the newest
-    ERROR_STALL calls failed the same way even with different code: the planner is not converging."""
+    ERROR_STALL calls failed the same way even with different code: the planner is not converging. Two calls taking turns
+    (A, B, A with a window of 3; A, B, A, B with 4) are a loop too when each returns the same outcome it returned before:
+    a call that changed nothing it reads back is not progress."""
     if _error_run(history) >= ERROR_STALL:
         return True
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
         return False
     last = [_signature(h) for h in tool_obs[-window:]]
-    return len(set(last)) == 1
+    if len(set(last)) == 1:
+        return True
+    return window >= 3 and len(set(last)) == 2 and all(last[k] == last[k - 2] for k in range(2, len(last)))
 
 
 def _specs(plan: dict) -> list[dict]:
@@ -1329,16 +1333,18 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
         # the empty report as work done. No written answer is not met, whatever the run status says.
         status, reason = "not_met", "the sub-agent gave no written answer" + (f": {reason}" if reason else "")
     task = str(spec["task"]).strip()
+    # A sub-agent's figures are checked against the tool results it saw, never against its brief: the task is the lead
+    # agent's own words, so a figure repeated from it would pass without any tool having printed it (audit item 3).
     obs = {"kind": "subagent", "agent_id": agent_id, "agent_type": agent.name, "task": task,
            "tools": sorted(sub_tools), "status": status, "answer": answer, "reason": reason,
            "steps": len(sub_history), "files": _files_of(sub_history), "evidence": sub_history,
            "findings": [str(f)[:300] for f in sub.get("findings") or []][:12],
            "figures": [{"name": str(f["name"])[:120], "value": str(f["value"])[:60],
-                        "sourced": not unverified(str(f["value"]), sub_history, task)}
+                        "sourced": not unverified(str(f["value"]), sub_history, "")}
                        for f in sub.get("figures") or [] if isinstance(f, dict) and "name" in f and "value" in f][:20]}
     # A4-14: the sub-agent's own figure list is reconciled too. A figure it marked unsourced reaches the lead even when the
     # answer text leaves it out, so the lead never reads an unsourced figure as checked.
-    bad = unverified(answer, sub_history, str(spec["task"])) if answer else []
+    bad = unverified(answer, sub_history, "") if answer else []
     bad = list(dict.fromkeys(bad + [f["value"] for f in obs["figures"] if not f["sourced"]]))
     if bad:
         obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
@@ -1866,9 +1872,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 history.append({"kind": "evaluation", "verdict": "not_met", "missing": _missing_figures_text(bad),
                                 "unverified": bad})
                 continue
+            pre_repair = None
             if bad:
                 # Repair pass: the figures must come from the evidence or be left out. Figures that still lack a source
                 # after the gathering rounds are removed, and the answer says what is not available.
+                pre_repair = answer
                 repaired = _compose(ctx, brain, f"repair:{tag}:{i}", goal, history, memo, context, answer, bad)
                 if repaired is None:
                     fixed = ctx.step(f"repair:{tag}:{i}", lambda c: brain.decide(
@@ -1879,6 +1887,15 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     return {"status": "partial", "iterations": i + 1, "answer": "",
                             "reason": "The results did not support a written answer.", "evidence": history}
                 bad = unverified(answer, history, goal)
+            if pre_repair is not None and answer != pre_repair and cfg.depth == 0:
+                # The claims above were checked on the text before the repair. The rewrite may have changed a claim the stored
+                # output supports (a cycle, a benchmark), so the claims are checked again on the text that will be returned.
+                stale = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
+                if stale:
+                    return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
+                            "reason": "The repaired answer states something the analysis output does not support: "
+                                      + contracts.summarise(stale),
+                            "contract_failures": [c["name"] for c in stale]}
             if bad:
                 return {"status": "partial", "iterations": i + 1, "answer": answer,
                         "reason": "Some figures in this answer could not be matched to the analysis output.",
