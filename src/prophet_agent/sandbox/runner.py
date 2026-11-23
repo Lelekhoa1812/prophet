@@ -23,6 +23,7 @@ import json
 import os
 import platform
 import re
+import resource
 import signal
 import subprocess
 import shutil
@@ -339,6 +340,9 @@ resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_S + 2, TIMEOUT_S + 2))
 _FBYTES = FILE_MB * 1024 * 1024
 resource.setrlimit(resource.RLIMIT_FSIZE, (_FBYTES, _FBYTES))
 resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+NPROC = int(sys.argv[8])                # 0 = no process limit (round 7, item 3: set by the parent on Linux only)
+if NPROC:
+    resource.setrlimit(resource.RLIMIT_NPROC, (NPROC, NPROC))
 if platform.system() == "Linux":        # macOS does not enforce RLIMIT_AS, so the memory cap is reported as not enforced there
     _MBYTES = MEM_MB * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (_MBYTES, _MBYTES))
@@ -514,6 +518,41 @@ def memory_limit_enforced() -> bool:
     return platform.system() == "Linux"
 
 
+PROCESS_HEADROOM = 256   # tasks above the user's count at run start that a Linux run may create (round 7, item 3)
+
+
+def _user_task_count() -> int:
+    """Tasks (processes and threads) owned by this user, read from /proc. RLIMIT_NPROC counts the same tasks."""
+    uid = os.getuid()
+    total = 0
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid == uid:
+                total += len(os.listdir(f"/proc/{pid}/task"))
+        except OSError:                 # the process ended while it was counted
+            continue
+    return total
+
+
+def _process_limit() -> int | None:
+    """The soft and hard RLIMIT_NPROC for the child, or None when none is set: on macOS, or when /proc cannot be read.
+    The limit is relative to the user's count, because the count is per user: a fixed small number would stop a busy
+    machine before the run starts. The child's own hard limit (inherited) caps it."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        count = _user_task_count()
+    except OSError:
+        return None
+    limit = count + PROCESS_HEADROOM
+    hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+    if hard != resource.RLIM_INFINITY:
+        limit = min(limit, hard)
+    return limit
+
+
 SHORT_MODULES = {"ps": "prophet_stats", "sc": "prophet_scan"}
 
 
@@ -579,10 +618,11 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     script = wd / "program.py"
     script.write_text(code, encoding="utf-8")
 
+    nproc = _process_limit()
     limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb, "disk_mb": disk_mb,
-              "memory_limit_enforced": memory_limit_enforced()}
+              "memory_limit_enforced": memory_limit_enforced(), "processes_limit": nproc}
     cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home()),
-           str(timeout_s), str(mem_mb), str(file_mb)]
+           str(timeout_s), str(mem_mb), str(file_mb), str(nproc or 0)]
     # start_new_session makes the child a session and process-group leader, so the timeout can kill its whole group. The
     # limits are applied by _BOOT in the child (no preexec_fn: it is unsafe in a multi-threaded parent).
     proc = subprocess.Popen(cmd, cwd=str(wd), env=_scrubbed_env(home), stdout=subprocess.PIPE,
