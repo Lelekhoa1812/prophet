@@ -1578,6 +1578,18 @@ def _day_columns(header: list[str]) -> tuple[dict[int, int], int | None]:
     return day_cols, avg_col
 
 
+def _station_series(cell: str, by_name: dict) -> dict | None:
+    """The series a table's first cell names: the exact name, or the name with a suffix in brackets or after a dash.
+
+    Audit round 6m: "Aotizhongxin (north)" and "Aotizhongxin - north" named a station, but an exact match alone left their wrong
+    figures unchecked. A suffix must follow a space and a separator, so "Dingling Annex" is not read as "Dingling"."""
+    name = re.sub(r"[*_`]", "", cell).strip().lower()
+    if name in by_name:
+        return by_name[name]
+    m = re.match(r"^(.+?)\s*(?:\([^)]*\)|\s[-–—:,]\s.*)$", name)
+    return by_name.get(m.group(1).strip()) if m else None
+
+
 def _table_matches_panel(text: str, obs: list) -> dict | None:
     """The day-by-day cells of a station table match that station's own forecast on that day. Blocks on the first mismatch.
 
@@ -1593,8 +1605,7 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
         if not day_cols and avg_col is None:
             continue
         for row in table[1:]:
-            name = re.sub(r"[*_`]", "", row[0]).strip().lower()
-            fc = by_name.get(name)
+            fc = _station_series(row[0], by_name)
             if fc is None:
                 continue
             point = _numbers(fc.get("point")) or []
@@ -1657,7 +1668,7 @@ def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: l
         cells = rows[k]
         if all(re.fullmatch(r":?-{2,}:?", c.strip()) for c in cells if c.strip()):
             continue                                   # the separator row
-        fc = by_name.get(re.sub(r"[*_`]", "", cells[0]).strip().lower())
+        fc = _station_series(cells[0], by_name)
         if fc is None:
             continue
         point = _numbers(fc.get("point")) or []
