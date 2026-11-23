@@ -92,6 +92,51 @@ def _hook(event, args):
     elif event in ("socket.connect", "socket.bind", "socket.sendto"):
         raise PermissionError("network access is blocked in the sandbox")
 sys.addaudithook(_hook)
+# A relative path given with dir_fd is resolved against the folder the descriptor opens, not the working directory. The hook
+# above checks the relative name, so os.remove("f.txt", dir_fd=fd) with fd on a folder outside the run deleted that file
+# (probe: the file outside was removed). Each such call now resolves its real folder and applies the same check first.
+def _fd_dir(fd):
+    try:
+        if sys.platform == "darwin":
+            import fcntl
+            return os.fsdecode(fcntl.fcntl(fd, 50, b"\0" * 1024).rstrip(b"\0"))     # F_GETPATH
+        return os.readlink("/proc/self/fd/%d" % fd)
+    except (OSError, ValueError, TypeError):
+        return None
+def _dir_fd_guard(fn, positions, read_only=None):
+    def guarded(*a, **k):
+        ro = bool(read_only and read_only(a, k))
+        for key, pos in positions.items():
+            fd = k.get(key)
+            if fd is None or pos >= len(a):
+                continue
+            path = a[pos]
+            if isinstance(path, bytes):
+                path = os.fsdecode(path)
+            if not isinstance(path, str) or os.path.isabs(path):
+                continue
+            base = _fd_dir(fd)
+            if base is None:
+                raise PermissionError("cannot tell which folder this descriptor opens in the sandbox")
+            joined = os.path.join(base, path)
+            if not (_readable(joined) if ro else _inside(joined)):
+                raise PermissionError("changing files outside the run folder is blocked: " + os.path.basename(path))
+        return fn(*a, **k)
+    guarded.__name__ = fn.__name__
+    return guarded
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+def _open_is_read_only(a, k):
+    flags = a[1] if len(a) > 1 else k.get("flags", 0)
+    return isinstance(flags, int) and not (flags & _WRITE_FLAGS)
+for _name, _positions, _ro in (
+        ("open", {"dir_fd": 0}, _open_is_read_only), ("remove", {"dir_fd": 0}, None), ("unlink", {"dir_fd": 0}, None),
+        ("rmdir", {"dir_fd": 0}, None), ("mkdir", {"dir_fd": 0}, None), ("chmod", {"dir_fd": 0}, None),
+        ("chown", {"dir_fd": 0}, None), ("utime", {"dir_fd": 0}, None), ("rename", {"src_dir_fd": 0, "dst_dir_fd": 1}, None),
+        ("replace", {"src_dir_fd": 0, "dst_dir_fd": 1}, None), ("link", {"src_dir_fd": 0, "dst_dir_fd": 1}, None),
+        ("symlink", {"dir_fd": 1}, None)):
+    if hasattr(os, _name):
+        setattr(os, _name, _dir_fd_guard(getattr(os, _name), _positions, _ro))
+del _name, _positions, _ro
 import builtins, io
 _OPEN = builtins.open
 CARRIED = os.path.join(WD, "in", "carried")
