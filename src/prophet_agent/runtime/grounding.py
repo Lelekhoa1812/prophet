@@ -85,8 +85,12 @@ _LABEL_NOUN = (r"(?:week|day|month|quarter|promo|store|region|product|sku|row|it
                r"horizon|period|model|window|fold|series|id|order|invoice|sheet)")
 # A label noun, singular or plural, then a number or a list or range of numbers ("week 12", "rows 60 through 66",
 # "customer IDs 41-48", "days 3, 10, 17, 24"). Every number in the phrase names an identifier, not a measured value.
+#
+# A list separator is a comma followed by a space, so a thousands group ("customers 1,200") is a measured value, not a list, and
+# it is not blanked. A number that continues into a decimal or a thousands group is not an identifier either (probe: "Customers
+# 1,200 bought" lost its figure and "Store 3.5" left ".5" behind before this).
 _IDENTIFIER = re.compile(
-    rf"\b{_LABEL_NOUN}s?\s*#?\s*\d{{1,4}}(?:\s*(?:,|-|\u2013|\u2014|to|through)\s*\d{{1,4}})*\b", re.I)
+    rf"\b{_LABEL_NOUN}s?\s*#?\s*\d{{1,4}}(?:\s*(?:,\s+|-|\u2013|\u2014|to|through)\s*\d{{1,4}})*\b(?![.,]\d)", re.I)
 # Standard quantile levels written as a band ("10\u201390%", "5-95% interval"). Only these pairs are labels. Any other
 # range, such as an invented width "\u00b115\u201320%", is a claim the evidence has to support.
 _LEVEL_PAIR = re.compile(r"(?<![\w.])(\d{1,2}(?:\.\d+)?)\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2}(?:\.\d+)?)")
