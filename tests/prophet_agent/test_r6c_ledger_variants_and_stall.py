@@ -48,7 +48,9 @@ def test_the_same_cell_with_new_carry_ids_is_a_stall():
     assert G._stalled(hist, 3) is True
 
 
-def test_different_code_with_the_same_outcome_is_not_a_stall():
+def test_different_code_with_the_same_output_is_a_stall():
+    # Round 7 (GOAL.md open item, "409 identical-output sandbox cells with different code"): the same printed line and the same file
+    # digest are no progress, whatever the code. This test said the opposite before round 7 and was changed with that item.
     a, b, c = _cell("r1", "c1"), _cell("r2", "c2"), _cell("r3", "c3")
     c["args"] = {**c["args"], "code": "print('something else')"}
-    assert G._stalled([a, b, c], 3) is False
+    assert G._stalled([a, b, c], 3) is True

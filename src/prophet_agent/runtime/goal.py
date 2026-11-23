@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 
 import functools
+import hashlib
 import io
 import json
 import re
@@ -449,6 +450,7 @@ def _repeat_of(name: str, args: Any, history: list[dict]) -> int | None:
 def _repeat_obs(name: str, args: Any, history: list[dict], pos: int) -> dict:
     earlier = history[pos - 1]
     obs = {"kind": "tool", "tool": name, "args": args, "repeat_of": pos, "sig": _signature(earlier),
+           "outcome": _progress_key(earlier),      # the stall key of the call it points to (round 7)
            "note": (f"this call was already made at step {pos}; it gave the same result and was not run again. Read that "
                     "result there, or change the arguments.")}
     if "error" in earlier:
@@ -1298,12 +1300,108 @@ def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: f
 
 ERROR_STALL = 8      # identical failures in a row after which the loop stops repeating (live: 33 and 19 before this existed)
 
+# Round 7 (2026-11-24, four workflow runs ended partial/stalled; GOAL.md open item "409 identical-output sandbox cells with
+# different code"). The stall key used to hold a sandbox cell's code, so cells that printed and wrote the same thing were never a
+# repeat. A sandbox cell is now keyed by what it produced: its ok flag, its printed text and its errors with run ids and layout
+# removed, and each file it wrote by path and digest. The code still decides an exact repeat (_repeat_of). A cell that produced
+# nothing (no print, no error text, no file) says nothing about progress, so it keeps the old key: its code and its arguments.
+STALL_NOTICE_REPEATS = 1     # no-progress steps (repeats of the newest result) before the planner is told the result already exists.
+                             # The stop comes at cfg.stall_window (3 identical calls by default: two repeats), so the notice is the
+                             # one step the planner gets before the loop stops.
+RUN_ID_ANY = re.compile(r"[0-9a-f]{32}")
+
+
+def _outcome_key(obs: dict) -> str | None:
+    """A digest of what a sandbox cell produced, or None when it produced nothing to compare or failed before it ran."""
+    if obs.get("tool") != "sandbox_python" or obs.get("error") is not None:
+        return None
+    res = obs.get("full") if isinstance(obs.get("full"), dict) else obs.get("result")
+    if not isinstance(res, dict):
+        return None
+    stdout = str(res.get("stdout") or "")
+    stderr = str(res.get("stderr") or res.get("stderr_tail") or "")
+    files: list[Any] = []
+    for o in res.get("outputs") or []:
+        if isinstance(o, dict) and isinstance(o.get("path"), str):
+            files.append([o["path"], o.get("sha256") or o.get("bytes")])
+        elif isinstance(o, str):
+            files.append(o)          # a summary lists "path (N bytes)"
+    if not (stdout.strip() or stderr.strip() or files):
+        return None
+
+    def norm(text: str) -> str:
+        lines = [" ".join(ln.split()) for ln in text.splitlines() if ln.strip()]
+        return RUN_ID_ANY.sub("<run>", "\n".join(lines))
+    body = {"ok": res.get("ok") is True, "returncode": res.get("returncode"), "timed_out": bool(res.get("timed_out")),
+            "stdout": norm(stdout), "stderr": norm(stderr), "files": sorted(files, key=str)}
+    return "out:" + hashlib.sha256(canonical(body).encode("utf-8")).hexdigest()
+
+
+def _progress_key(obs: dict) -> str:
+    """The key stall detection compares. A pointer carries the key of the call it points to; a sandbox cell that produced something
+    is keyed by its outcome (so the same output from a different cell is no progress); anything else by its full signature."""
+    if "outcome" in obs:
+        return obs["outcome"]
+    return _outcome_key(obs) or _signature(obs)
+
+
+def _run_of_same_result(history: list[dict]) -> list[dict]:
+    """The newest tool calls in a row whose progress key equals the newest call's, newest first. One call is a run of one."""
+    calls = [h for h in history if h.get("kind") == "tool"]
+    if not calls:
+        return []
+    key, run = _progress_key(calls[-1]), []
+    for h in reversed(calls):
+        if _progress_key(h) != key:
+            break
+        run.append(h)
+    return run
+
+
+def _outcome_line(obs: dict) -> str:
+    """One line that says what a call gave: its error, a failed cell's last stderr line, or a cell's first printed line."""
+    if obs.get("error"):
+        text, last = str(obs["error"]), True
+    else:
+        res = obs.get("full") if isinstance(obs.get("full"), dict) else obs.get("result")
+        if not isinstance(res, dict):
+            return ""
+        if res.get("ok") is False:
+            text, last = str(res.get("stderr") or res.get("stderr_tail") or ""), True
+        else:
+            text, last = str(res.get("stdout") or ""), False
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return RUN_ID_ANY.sub("<run>", lines[-1] if last else lines[0])[:120]
+
+
+def _stall_label(run: list[dict]) -> str:
+    """Names the repeated step: its tool, the step it first ran at, and what that call gave (a run is newest first)."""
+    src = next((h for h in reversed(run) if "result" in h or "error" in h), run[-1])
+    line = _outcome_line(src)
+    return f"{src.get('tool')} at step {src.get('step', '?')}" + (f", which gave: {line}" if line else "")
+
+
+def _stall_notice(history: list[dict], next_item: str | None) -> str | None:
+    """The planner's note once the newest result has repeated STALL_NOTICE_REPEATS times: the result already exists, so the next
+    unfinished checklist item (or the next step of the goal) is what to do now. Derived from the history, so a resumed run sees it."""
+    run = _run_of_same_result(history)
+    if len(run) < 1 + STALL_NOTICE_REPEATS:
+        return None
+    todo = (f"The next unfinished checklist item must be done now, with a different step: {next_item}." if next_item else
+            "Take the next unfinished step of the goal with a different call, or finish with what is found.")
+    return ("Stall notice: the last " + str(len(run)) + " calls gave the same result as " + _stall_label(run) + ". That result "
+            "already exists: do not run this step again. " + todo + " If the same result comes back again, the run is stopped "
+            "with what it has found.")
+
 
 def _stalled(history: list[dict], window: int) -> bool:
     """Stalled when the newest ``window`` tool calls are the same call with the same outcome (run ids aside), or when the newest
     ERROR_STALL calls failed the same way even with different code: the planner is not converging. Two calls taking turns
     (A, B, A with a window of 3; A, B, A, B with 4) are a loop too when each returns the same outcome it returned before:
-    a call that changed nothing it reads back is not progress.
+    a call that changed nothing it reads back is not progress. The outcome is compared by _progress_key, so the same output
+    from a different sandbox cell is no progress either.
     A refused argument list ("rejected") is not a call: it is not charged, and it is not counted here either (GOAL.md
     defect 5). Before, the same invalid call sent again reached ERROR_STALL and stopped the mission as stalled."""
     history = [h for h in history if not h.get("rejected")]
@@ -1312,7 +1410,7 @@ def _stalled(history: list[dict], window: int) -> bool:
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
         return False
-    last = [_signature(h) for h in tool_obs[-window:]]
+    last = [_progress_key(h) for h in tool_obs[-window:]]
     if len(set(last)) == 1:
         return True
     return window >= 3 and len(set(last)) == 2 and all(last[k] == last[k - 2] for k in range(2, len(last)))
@@ -1761,6 +1859,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                      if nxt else None)
             rescue = False
             _status(ctx, i, history, items, started)
+        if (stall_note := _stall_notice(history, stuck[0] if stuck else None)):
+            note += "\n\n" + stall_note          # round 7: one repeat of the same result, so the planner is told it already exists
         stored = _stored_step_name(ctx)
         # A resumed run follows the decision the ledger holds at this position: the harness's choice depends on the call
         # allowance, which grows when a run continues, so recomputing it could take the other path (live retail: "replay
@@ -1848,10 +1948,12 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             draft = _gap_draft(verdict)
             written = _compose(ctx, brain, f"composestall:{tag}:{i}", goal, history, memo, context, draft)
             text = written if written is not None else verdict.get("answer", "")
+            # Round 7: the reason names the repeated step, and keeps the words the outcome mapping reads as reason "stalled".
+            reason = ("The analysis kept repeating the same step (" + _stall_label(_run_of_same_result(history) or [obs])
+                      + "), so this answer rests on what was found before that.")
             if text.strip() and verdict["verdict"] != "impossible":
-                return {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history,
-                        "reason": "The analysis kept repeating the same step, so this answer rests on what was found before that."}
-            return {"status": "stalled", "iterations": i + 1, "evidence": history}
+                return {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history, "reason": reason}
+            return {"status": "stalled", "iterations": i + 1, "evidence": history, "reason": reason}
 
         last = i == cfg.end - 1
         # The gate must judge a step the same way in every part: `last` moves with cfg.end, so a finish that ended part 1 was
