@@ -7,10 +7,15 @@ environment, resource limits and a hard timeout covers the common mistakes and t
 Logic, layer by layer:
   1. ``python -I``: no PYTHON* variables, no user site-packages, no script directory on sys.path.
   2. Scrubbed environment: only PATH, a fresh HOME and TMPDIR inside the run folder. No API keys reach the child.
-  3. POSIX rlimits: CPU seconds, file size, open files, core dumps off, and address space where the OS enforces it.
-     macOS does not enforce RLIMIT_AS, so the memory cap is reported as ``memory_limit_enforced: false`` there.
-  4. An audit hook installed before user code: writes outside the run folder, subprocess creation, and network
-     sockets raise. Audit hooks are bypassable from C extensions (for example via ctypes), which is why this is a
+  3. POSIX rlimits: CPU seconds, file size, open files, core dumps off, and on Linux the process count (RLIMIT_NPROC,
+     relative to the user's count at start) and the address space (RLIMIT_AS).
+     macOS has no working memory cap: measured on Darwin 25.6.0, setrlimit fails with EINVAL for every finite RLIMIT_AS,
+     RLIMIT_DATA and RLIMIT_RSS, so no address-space cap is set there. macOS also gets no process limit. A run records
+     what was not enforced in ``not_enforced`` (``memory_mb``, ``processes``) and ``memory_limit_enforced: false``.
+  4. An audit hook installed before user code: writes outside the run folder, subprocess creation, network sockets and
+     name lookups raise. Some calls raise no audit event, so the boot script wraps them: os.stat and os.lstat follow the
+     read rule of open(), and POSIX shared memory (shm_open, shm_unlink) is refused. Audit hooks and wrappers are
+     bypassable from C extensions (for example via ctypes, which is refused by name), which is why this is a
      guardrail and not a security boundary. The real boundary would be a container or a VM.
   5. Wall-clock timeout; the whole process group is killed.
 Outputs: the program writes files into ``out/``. After it exits, every file there is listed with its sha256 and size
@@ -368,6 +373,9 @@ class SandboxResult:
     outputs: list[OutputFile] = field(default_factory=list)
     workdir: str = ""
     memory_limit_enforced: bool = False
+    # What the run asked for and did not get on this platform: "memory_mb" on macOS (no address-space cap can be set), and
+    # "processes" where no process limit was applied (round 7, item 4). A reader must not take a run as capped when it is not.
+    not_enforced: list = field(default_factory=list)
     limits: dict = field(default_factory=dict)
     output_truncated: bool = False     # true when output between the kept head and tail was dropped or clipped
     over_disk_limit: bool = False      # true when the run wrote more than its disk quota and was stopped
@@ -619,6 +627,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
     script.write_text(code, encoding="utf-8")
 
     nproc = _process_limit()
+    not_enforced = ([] if memory_limit_enforced() else ["memory_mb"]) + ([] if nproc else ["processes"])
     limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb, "disk_mb": disk_mb,
               "memory_limit_enforced": memory_limit_enforced(), "processes_limit": nproc}
     cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home()),
@@ -667,6 +676,7 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
         run_id=run_id, returncode=returncode, timed_out=timed_out,
         stdout=_clip(out_text), stderr=_clip(err_text),
         outputs=outputs, workdir=str(wd), memory_limit_enforced=memory_limit_enforced(), limits=limits,
+        not_enforced=not_enforced,
         output_truncated=bool(out_cap.dropped or err_cap.dropped or len(out_text) > MAX_STREAM_CHARS
                               or len(err_text) > MAX_STREAM_CHARS),
         over_disk_limit=bool(over_disk),
