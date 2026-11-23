@@ -491,7 +491,9 @@ def _error_signature(h: dict) -> str | None:
     text = h.get("error") or (res.get("stderr_tail") if isinstance(res, dict) and res.get("ok") is False else None)
     if not text:
         return None
-    last = [ln for ln in str(text).strip().splitlines() if ln.strip()][-1]
+    lines = [ln for ln in str(text).strip().splitlines() if ln.strip()]
+    # A whitespace-only error still failed: it gets one fixed signature, so repeats of it still count as one failure (round 6n).
+    last = lines[-1] if lines else "the tool failed without a message"
     return re.sub(r"[0-9a-f]{32}|\d+", "#", last)[:160]
 
 
