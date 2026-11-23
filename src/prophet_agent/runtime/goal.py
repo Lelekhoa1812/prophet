@@ -1833,7 +1833,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                         "reason": "This answer did not pass every required check: " + contracts.summarise(blocked),
                         "contract_failures": [c["name"] for c in blocked]}
             answer, fixed = snap(answer, history, goal)          # a copying slip in a large figure is corrected, not argued over
-            answer += snap_note(fixed)
+            # ...and a copying slip in a station table's day cell, set to the forecast's own value for that station and day.
+            answer, table_fixed = contracts.snap_tables(answer, history)
+            answer += snap_note([*fixed, *table_fixed])
             # The answer's plain claims (a cycle, the best rule, a total the pack withheld) are checked against the stored
             # output. The fix is in the words, so the composer rewrites once; a claim still wrong after that leaves partial.
             # Round 4: these checks were built (C3a) and tested but never called here, so none ran live.

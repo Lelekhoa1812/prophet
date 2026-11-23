@@ -760,3 +760,23 @@ and blocks the first mismatch. Replayed on the stored answers: the 6h and 355ea1
 d1a1d077 tables pass. Blocking mismatches in other stored answers (c69a6e80, 032eea79, 68d70b8d, 82fb34d9, d861b74e) are
 real mismatches, not checked by hand one by one.
 Gate: 1,916 passed, 1 skipped, 4 deselected.
+
+### Round 6i: a wrong station day cell is set to its forecast (fixed 2026-11-23, build after a1c81fd)
+
+Beijing 80bbc853 (round 6h rerun, partial, answer_table_matches_forecast): 111 cells in eight stations' rows were not the stored
+forecast. Guanyuan day 2 was 124.0 (57.5 to 225.2); the forecast view gave 129.1 (59.2 to 226.5). The view was not the cause:
+the planner's observation carried every station's day (`by_day`), and the wrong cells were copied wrong at composition. One
+rewrite was given the same evidence and copied them wrong again, so the answer left partial.
+
+Fixed: `contracts.snap_tables` sets each station's day and average cell to the forecast's own value at the printed decimals,
+keeping the cell's markup and separators, and leaves a cell alone when it already matches, holds a band header, or is not a
+single number or a point with its band. It runs after `snap` in `goal.py`, so the claims check and any repair see the corrected
+table. Replayed on the stored 80bbc853 answer: 111 cells corrected, the table then passes (168 cells match), and text outside
+the table is unchanged. Tests: `tests/prophet_agent/test_r6i_table_snap.py` (11), with the table tests (22 passed in total).
+
+Live rerun on this build, e14af4bd (Beijing, REP=2): partial, stop reason `partial_unverified`, "the analysis kept repeating the
+same step". It stopped at 56 calls, all sandbox_python analysis with the same code, before any `forecast_report`. So the table
+correction was not exercised live. The 80bbc853 failure remains the only live evidence; the fix is verified by the replay and
+the tests, not by a live run.
+
+Gate: 1,927 passed, 1 skipped, 4 deselected.

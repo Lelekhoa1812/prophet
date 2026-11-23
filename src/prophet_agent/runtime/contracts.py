@@ -1543,12 +1543,8 @@ def _printed_matches(token: str, value: float) -> bool:
     return abs(float(digits) - value) <= 0.5 * 10 ** -decimals + 1e-9
 
 
-def _table_matches_panel(text: str, obs: list) -> dict | None:
-    """The day-by-day cells of a station table match that station's own forecast on that day. Blocks on the first mismatch.
-
-    Read from the newest panel forecast's full result. A row is a station when its first cell names a series exactly; a
-    day column is a header with one "Day n"; a cell is checked when it holds the point alone or the point with its band.
-    """
+def _panel_series(obs: list) -> dict | None:
+    """The newest panel forecast's series keyed by lower-cased name, read from its full result; None when there is none."""
     pack = next(((h, r) for h in reversed(obs) if isinstance(r := _ok_result(h, "forecast_report"), dict) and r.get("n_series")),
                 None)
     if pack is None:
@@ -1559,19 +1555,35 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
     series = fc_part.get("series") if isinstance(fc_part, dict) else None
     if not isinstance(series, dict) or not series:
         return None
-    by_name = {str(k).lower(): v for k, v in series.items() if isinstance(v, dict)}
+    return {str(k).lower(): v for k, v in series.items() if isinstance(v, dict)}
+
+
+def _day_columns(header: list[str]) -> tuple[dict[int, int], int | None]:
+    """A header's day columns (column index -> day number) and its average column. A band header is never a day."""
+    day_cols, avg_col = {}, None
+    for i, cell in enumerate(header):
+        days = _DAY_HEAD.findall(cell)
+        if _BAND_HEAD.search(cell):
+            continue                       # "Day 14 q10" holds a band edge, not the point
+        if len(days) == 1 and "→" not in cell and "->" not in cell:
+            day_cols[i] = int(days[0])
+        elif _AVG_HEAD.search(cell):
+            avg_col = i
+    return day_cols, avg_col
+
+
+def _table_matches_panel(text: str, obs: list) -> dict | None:
+    """The day-by-day cells of a station table match that station's own forecast on that day. Blocks on the first mismatch.
+
+    Read from the newest panel forecast's full result. A row is a station when its first cell names a series exactly; a
+    day column is a header with one "Day n"; a cell is checked when it holds the point alone or the point with its band.
+    """
+    by_name = _panel_series(obs)
+    if by_name is None:
+        return None
     checked, wrong = 0, []
     for table in _tables(text):
-        header = table[0]
-        day_cols, avg_col = {}, None
-        for i, cell in enumerate(header):
-            days = _DAY_HEAD.findall(cell)
-            if _BAND_HEAD.search(cell):
-                continue                       # "Day 14 q10" holds a band edge, not the point
-            if len(days) == 1 and "→" not in cell and "->" not in cell:
-                day_cols[i] = int(days[0])
-            elif _AVG_HEAD.search(cell):
-                avg_col = i
+        day_cols, avg_col = _day_columns(table[0])
         if not day_cols and avg_col is None:
             continue
         for row in table[1:]:
@@ -1608,6 +1620,89 @@ def _table_matches_panel(text: str, obs: list) -> dict | None:
                       f"{len(wrong)} table cell(s) do not match the station's own forecast: {wrong[0][:200]}. Copy each "
                       "station's figures for each day from the forecast, not from another row")
     return _check("answer_table_matches_forecast", True, f"{checked} table cell(s) match each station's own forecast")
+
+
+def _is_table_line(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|") and len(s) > 1
+
+
+def _restate(cell: str, values: list[float]) -> str:
+    """The cell's numbers replaced in order by ``values``, each printed to the decimals it had; the rest of the cell is kept."""
+    it = iter(values)
+
+    def _one(m: re.Match) -> str:
+        tok = m.group(0)
+        decimals = len(tok.split(".")[1]) if "." in tok else 0
+        return f"{next(it):.{decimals}f}"
+    return _NUMBER_TOKEN.sub(_one, cell)
+
+
+def _snap_block(lines: list[str], start: int, stop: int, by_name: dict, fixed: list[tuple[str, str]]) -> None:
+    """Corrects one markdown table's station day and average cells in place, recording each (old, new) cell."""
+    rows = [lines[k].strip().split("|")[1:-1] for k in range(start, stop)]
+    day_cols, avg_col = _day_columns([c.strip() for c in rows[0]])
+    if not day_cols and avg_col is None:
+        return
+    for k in range(1, len(rows)):
+        cells = rows[k]
+        if all(re.fullmatch(r":?-{2,}:?", c.strip()) for c in cells if c.strip()):
+            continue                                   # the separator row
+        fc = by_name.get(re.sub(r"[*_`]", "", cells[0]).strip().lower())
+        if fc is None:
+            continue
+        point = _numbers(fc.get("point")) or []
+        quant = fc.get("quantiles") if isinstance(fc.get("quantiles"), dict) else {}
+        lo_all, hi_all = _numbers(quant.get("0.1")) or [], _numbers(quant.get("0.9")) or []
+        targets = [(i, (point[d - 1], lo_all[d - 1], hi_all[d - 1])) for i, d in day_cols.items()
+                   if 1 <= d <= min(len(point), len(lo_all), len(hi_all))]
+        if avg_col is not None and point:
+            targets.append((avg_col, (sum(point) / len(point),)))
+        changed = False
+        for i, expected in targets:
+            if i >= len(cells) or "," in cells[i]:
+                continue
+            toks = _NUMBER_TOKEN.findall(cells[i])
+            if len(toks) not in (1, len(expected)):
+                continue
+            if all(_printed_matches(t, e) for t, e in zip(toks, expected)):
+                continue
+            new = _restate(cells[i], list(expected[:len(toks)]))
+            if new != cells[i]:
+                fixed.append((cells[i].strip(), new.strip()))
+                cells[i] = new
+                changed = True
+        if changed:
+            line = lines[start + k]
+            lead, trail = line[: len(line) - len(line.lstrip())], line[len(line.rstrip()):]
+            lines[start + k] = lead + "|" + "|".join(cells) + "|" + trail
+
+
+def snap_tables(text: str, obs: list) -> tuple[str, list[tuple[str, str]]]:
+    """The answer with each station table's day and average cells set to the newest panel forecast, and the (old, new) pairs.
+
+    The same kind of copying slip snap corrects in a figure, found by the same check: the row names the station and the
+    column names the day, so the printed value is known. Only a cell holding one number, or a point with its band and no
+    thousands comma, is changed, and only when it differs from the forecast at its printed decimals. Live Beijing 80bbc853
+    (2026-11-23): eight stations' day cells were not their stored values; the one rewrite copied them wrong again, and the
+    answer left partial.
+    """
+    by_name = _panel_series(obs)
+    if by_name is None:
+        return text, []
+    lines = text.split("\n")
+    fixed: list[tuple[str, str]] = []
+    i = 0
+    while i < len(lines):
+        if not _is_table_line(lines[i]):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and _is_table_line(lines[j]):
+            j += 1
+        _snap_block(lines, i, j, by_name, fixed)
+        i = j
+    return "\n".join(lines), fixed
 
 
 def panel_sentence(history) -> str:
