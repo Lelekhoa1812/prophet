@@ -989,9 +989,11 @@ class NimClient:
                 # What the model sent is what a repair needs to see; the log keeps a short redacted head and tail.
                 truncated = finish == "length"
                 log.warning("nim: %s reply refused locally (%s); category=%s finish=%s len=%d max_tokens=%s shape=%s "
-                            "head=%r tail=%r", model, err, "truncated" if truncated else _diagnose(err), finish, len(text),
+                            "head=%r tail=%r", model, redact(err), "truncated" if truncated else _diagnose(err), finish, len(text),
                             opts.max_tokens, shape.mode, redact(text[:160]), redact(text[-120:]))
-                return _Outcome("truncated" if truncated else "model", f"{model}: local schema check failed: {err}",
+                # jsonschema quotes the offending value, which is model output and may be key-shaped: redact it before it
+                # reaches the logs, the repair turn's reason and any error raised from it (T5).
+                return _Outcome("truncated" if truncated else "model", f"{model}: local schema check failed: {redact(err)}",
                                 invalid=True, status=status, text=text)
         if opts.schema is None and not opts.tools and finish == "length" and text.strip():
             # Free text cut by the token allowance: continue from it as a broken stream continues, instead of returning an
