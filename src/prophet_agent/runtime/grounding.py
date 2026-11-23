@@ -97,7 +97,10 @@ _IDENTIFIER = re.compile(
 # range, such as an invented width "\u00b115\u201320%", is a claim the evidence has to support.
 _LEVEL_PAIR = re.compile(r"(?<![\w.])(\d{1,2}(?:\.\d+)?)\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2}(?:\.\d+)?)")
 _LEVEL_PAIRS = {(10.0, 90.0), (5.0, 95.0), (2.5, 97.5), (25.0, 75.0), (20.0, 80.0)}
-_BAND_WORD = re.compile(r"\s*%|\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b", re.I)
+# A "%" makes a pair a band label only when a band word follows it ("10-90% interval", "(10-90%) range"). A bare "growth of
+# 10-90%" is a measured range and keeps its figures (audit round 6m).
+_BAND_WORD = re.compile(r"\s*%(?=\)?\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b)|"
+                        r"\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b", re.I)
 
 
 def _blank(text: str, span: tuple[int, int]) -> str:
