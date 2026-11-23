@@ -89,13 +89,13 @@ def _phase_sd(s: np.ndarray, season: int) -> np.ndarray:
     of zero width by accident.
     """
     resid = s[season:] - s[:-season]
-    pooled = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
+    pooled = float(np.std(resid, ddof=1) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
     sd = np.full(season, pooled)
     phase = (np.arange(len(resid)) + season) % season
     for ph in range(season):
         r = resid[phase == ph]
         if len(r) >= 3:
-            sd[ph] = float(np.std(r) / np.sqrt(2))
+            sd[ph] = float(np.std(r, ddof=1) / np.sqrt(2))
     return sd
 
 
@@ -108,7 +108,8 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
     widens with sqrt(h) is too wide at 2 and 3 seasons out (audit A2-13: 4.54 at horizon 1 against 16.37 at horizon 13 on a
     period-4 series with noise 2, measured, synthetic).
     Logic: band_mode "phase" (the default) uses the residual sd of the lag-season difference for the forecast's own phase,
-    with no growth in h. band_mode "sqrt" keeps the earlier random-walk band for callers that need it.
+    with no growth in h, and widened by sqrt(1 + 1/k) for the mean of k values (R6l, audit item 1). band_mode "sqrt" keeps
+    the earlier random-walk band for callers that need it.
     A history shorter than one season has no same-phase value to repeat, so it returns moving_average(series, h, season)
     instead (the mean of the whole history when it is shorter than the season). That is the documented fallback; check the
     length first if the seasonal rule is wanted.
@@ -119,6 +120,7 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
     if len(s) < season:
         return moving_average(s, h, season)
     p = np.zeros(h)
+    n_avg = np.zeros(h)
     for i in range(h):
         # The k most recent observed values with this step's phase. Step i's same-phase values sit at len(s) + i - season * j,
         # and the smallest j that lies in the history is i // season + 1, so every step averages k values however far ahead.
@@ -126,12 +128,15 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
         idx = len(s) + i - season * np.arange(j0, j0 + k)
         idx = idx[idx >= 0]
         p[i] = s[idx].mean()
+        n_avg[i] = len(idx)
     if band_mode == "sqrt":
         resid = s[season:] - s[:-season]
         sd = float(np.std(resid) / np.sqrt(2)) if len(resid) > 2 else float(np.std(s))
         return p, _band(p, sd, floor=_nonneg(s))
+    # The forecast is a mean of n_avg same-phase values, so its error is sigma * sqrt(1 + 1/n_avg), not sigma alone: the
+    # lag-season difference measures a single value. Without this factor the 10 to 90 band covered about 70 percent.
     phase_sd = _phase_sd(s, season)
-    sd_h = phase_sd[(len(s) + np.arange(h)) % season]
+    sd_h = phase_sd[(len(s) + np.arange(h)) % season] * np.sqrt(1.0 + 1.0 / n_avg)
     q = p[:, None] + Z[None, :] * sd_h[:, None]
     return p, (np.clip(q, 0, None) if _nonneg(s) else q)
 
