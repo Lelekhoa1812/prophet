@@ -738,6 +738,7 @@ of step 21's observation, read pages 2 to 8 again, and then ran two sandbox cell
 wrote no file. The stall rule saw two identical outcomes and stopped. Fixed in this commit: a cell that prints nothing and
 writes no file now carries a note that says so and asks for the figures to be printed or saved in the next cell.
 
-Not yet checked against the stored tables: the per-day figures in this answer differ from the 6g answer for Aotizhongxin
-(day 1 52 against 40.7), so one of the two runs used a different forecast. Needs a look before any figure from Beijing is
-treated as verified.
+The day-by-day table does not match the stored forecast. The stored forecast_report (run 685b8c6123cb479ea1749b7a6619465d)
+gives Aotizhongxin day 1 as 40.7, band 4.5 to 114.2; the answer gives 52, band 12 to 132. The figure check passed the table
+anyway, so a number is matched to some figure elsewhere in the history rather than to its own station and day. Open gap: the
+table was not grounded to its forecast, and this answer must not be used as a verified Beijing forecast.
