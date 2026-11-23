@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from prophet_agent.config import DATA, DOTENV, TIMESFM_CHECKPOINT
+from prophet_agent.config import DATA, DOTENV, TIMESFM_CHECKPOINT, load_dotenv_values
 from prophet_agent.nim.errors import NotConfigured
 from prophet_agent.nim.model_checks import MODEL_CHECK_FILE, model_check, read_model_checks
 from prophet_agent.nim.providers import CATALOG, DEFAULT_PROVIDER, MODELS, PROVIDERS, Provider, get_provider
@@ -338,7 +338,11 @@ class Settings:
     # -- NIM and provider keys ---------------------------------------------------------------------------------
 
     def key_slots(self, environ: dict[str, str] | None = None, provider: str = DEFAULT_PROVIDER) -> list[str]:
+        """The provider's keys as stored. Keys are read from this Settings' own .env, as set_keys writes them; the
+        process environment still wins over the file, as everywhere else."""
         from prophet_agent.nim.transport import load_keys
+        if environ is None:
+            environ = {**load_dotenv_values(self.dotenv), **os.environ}
         return load_keys(environ, provider)
 
     def _checks_by_slot(self, provider: str) -> dict[int, dict]:

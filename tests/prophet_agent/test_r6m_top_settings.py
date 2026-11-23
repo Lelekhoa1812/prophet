@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from prophet_agent import config
 from prophet_agent.settings import Settings, mask
 
 GEMINI_NAMES = ["GOOGLE_API_KEY", "GEMINI_API_KEY"] + [f"{p}_{i}" for p in ("GOOGLE_API_KEY", "GEMINI_API_KEY") for i in range(1, 10)]
@@ -37,3 +38,12 @@ def test_two_stored_keys_that_mask_alike_both_survive_an_echo_of_their_masks(set
     assert masks[0] == masks[1], "the premise: these two keys look the same once masked"
     settings.set_keys(masks, provider="gemini")
     assert settings.key_slots(None, "gemini") == keys, "echoing the form must not erase the second key"
+
+
+def test_keys_are_read_from_the_settings_own_dotenv_not_the_repo_file(settings, tmp_path, monkeypatch):
+    decoy = tmp_path / "repo.env"
+    decoy.write_text("NVIDIA_NIM_API_KEYS=nvapi-DECOYDECOY1234\n")
+    monkeypatch.setattr(config, "DOTENV", decoy)
+    assert settings.key_slots() == [], "a key in another file must not be used by this Settings"
+    settings.set_keys(["nvapi-OWNKEYOWNKEY1234"])
+    assert settings.key_slots() == ["nvapi-OWNKEYOWNKEY1234"]
