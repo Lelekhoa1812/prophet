@@ -87,8 +87,12 @@ KEPT_ON_CLEAR = ("settings.json", MODEL_CHECK_FILE)
 
 
 def mask(key: str) -> str:
-    """A key as a person may see it: the prefix and the last four characters. Never the whole value."""
-    return f"{key[:6]}...{key[-4:]}" if len(key) > 12 else "nvapi-..."
+    """A key as a person may see it: up to six leading and four trailing characters, and never more than a quarter of
+    the key together. A full NIM key (about 64 characters) shows the familiar "nvapi-...abcd" form; a short key shows less."""
+    edge = len(key) // 8
+    if edge == 0:
+        return "..."
+    return f"{key[:min(6, edge)]}...{key[-min(4, edge):]}"
 
 
 def key_status(http_status: int | None) -> str:
