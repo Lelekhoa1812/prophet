@@ -34,18 +34,19 @@ def test_forecast_url_accepts_a_list_of_variables_and_ignores_none():
     url = sources.build_url("open_meteo_forecast", {
         "latitude": 52, "longitude": 13, "hourly": ["temperature_2m", "relative_humidity_2m"], "timezone": None})
     assert url == ("https://api.open-meteo.com/v1/forecast?latitude=52.0&longitude=13.0"
-                   "&hourly=temperature_2m,relative_humidity_2m")
+                   "&hourly=temperature_2m,relative_humidity_2m&format=csv")
 
 
-def test_forecast_url_with_only_a_point_has_no_optional_parts():
+def test_forecast_url_with_only_a_point_asks_for_csv_and_has_no_other_parts():
+    # The format is written into every Open-Meteo request: without it the API answers JSON.
     assert sources.build_url("open_meteo_forecast", FORECAST_OK) == \
-        "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41"
+        "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&format=csv"
 
 
 def test_archive_url_takes_both_dates_and_its_own_host():
     url = sources.build_url("open_meteo_archive", {**ARCHIVE_OK, "daily": "temperature_2m_max"})
     assert url == ("https://archive-api.open-meteo.com/v1/archive?latitude=52.0&longitude=13.0"
-                   "&daily=temperature_2m_max&start_date=2024-01-01&end_date=2024-01-31")
+                   "&daily=temperature_2m_max&format=csv&start_date=2024-01-01&end_date=2024-01-31")
 
 
 def test_archive_span_of_exactly_twenty_years_is_allowed():

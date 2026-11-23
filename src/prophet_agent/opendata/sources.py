@@ -242,6 +242,10 @@ def normalise(source_key: str, params: dict) -> dict:
             canonical[name] = param.check(given[name])
         except ValueError as exc:
             raise ValueError(f"parameter {name!r} {exc}") from None
+    # Open-Meteo answers JSON when no format is named, while the store reads a download without one as CSV. The default is
+    # therefore written into the request and the provenance: a download always says which format it asked for.
+    if "format" in source.params and "format" not in canonical:
+        canonical["format"] = "csv"
     source.cross_check(canonical)
     return canonical
 

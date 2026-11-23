@@ -208,6 +208,22 @@ def test_the_same_parameters_from_another_source_are_not_a_match(served, tmp_pat
     assert served["calls"] == 2
 
 
+def test_a_download_with_no_format_asks_for_csv_and_records_it(served, tmp_path):
+    """Open-Meteo answers JSON when no format is named. The request, the provenance and the stored type must agree."""
+    meta = store.download_to_dataset("open_meteo_forecast", FORECAST, store_at(tmp_path))
+    assert meta["provenance"]["params"]["format"] == "csv"
+    assert "format=csv" in meta["provenance"]["url"]
+    assert meta["name"] == "open_meteo_forecast.csv"
+
+
+def test_a_json_body_returned_for_a_csv_request_is_not_stored_as_a_table(served, tmp_path):
+    served.update(body=JSON_BYTES, content_type="application/json")
+    datasets = store_at(tmp_path)
+    with pytest.raises(ValueError, match="is JSON, not CSV"):
+        store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    assert not datasets.root.exists() or list(datasets.root.iterdir()) == []
+
+
 # --- refusals store nothing --------------------------------------------------------------------------------------------
 
 def test_invalid_parameters_are_refused_before_any_request(served, tmp_path):

@@ -58,6 +58,10 @@ def _json_table(text: str) -> tuple[list, int, list]:
 
 
 def _csv_table(text: str) -> tuple[list, int, list]:
+    if text.lstrip()[:1] in ("{", "["):
+        # Without this, a JSON body parses as a one-column CSV and is stored as a table. Live, 2026-11-24: a request with
+        # no format came back as JSON.
+        raise ValueError("the body is JSON, not CSV")
     # Lines starting with '#' are comments. Open-Meteo prints a location block before its table, marked by a
     # 'latitude' first cell; the table then starts at the first row whose first cell is 'time' or 'date'.
     lines = [line for line in text.splitlines() if not line.startswith("#")]
