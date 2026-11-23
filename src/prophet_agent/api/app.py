@@ -628,19 +628,24 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(422, "nim accepts only keys")
         if providers is not None and not isinstance(providers, dict):
             raise HTTPException(422, "providers must map a provider name to {keys: [...]}")
-        # Checked before anything is saved, so a refused key leaves the rest of the patch unapplied too.
+        # Every shape check runs before anything is saved. Settings.update() saves the limits first, so a shape error
+        # found after it would leave the limits changed and the request refused.
+        if isinstance(nim, dict) and "keys" in nim and not isinstance(nim["keys"], list):
+            raise HTTPException(422, "nim.keys must be a list of keys")
+        for name, entry in (providers or {}).items():
+            if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
+                raise HTTPException(422, f"providers.{name} accepts only keys for a known provider")
+            if "keys" in entry and not isinstance(entry["keys"], list):
+                raise HTTPException(422, f"providers.{name}.keys must be a list of keys")
         if isinstance(nim, dict):
             _check_key_lengths(nim.get("keys"))
         for entry in (providers or {}).values():
-            if isinstance(entry, dict):
-                _check_key_lengths(entry.get("keys"))
+            _check_key_lengths(entry.get("keys"))
         try:
             service.settings.update(patch)
             if nim is not None and "keys" in nim:
                 service.settings.set_keys(nim["keys"])
             for name, entry in (providers or {}).items():
-                if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
-                    raise ValueError(f"providers.{name} accepts only keys for a known provider")
                 if "keys" in entry:
                     service.settings.set_keys(entry["keys"], provider=name)
         except ValueError as exc:
