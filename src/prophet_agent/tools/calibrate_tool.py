@@ -66,6 +66,11 @@ def observe(result: dict) -> dict:
     out["calibrated"] = {k: v[:30] for k, v in result["calibrated"].items() if k in ("q10", "q90")}
     out["raw"] = {k: v[:30] for k, v in result["raw"].items()}
     out["point"] = result["point"][:30]
+    # Round 6m: the cut was silent, so the planner could not tell a 30-step forecast from a longer one shown in part.
+    lengths = [len(v) for v in [result["point"], *result["calibrated"].values(), *result["raw"].values()]]
+    if lengths and max(lengths) > 30:
+        out["note"] = (f"the forecast has {max(lengths)} points; the first 30 of each list are shown here, and the full lists "
+                       "are kept in the ledger")
     return out
 
 

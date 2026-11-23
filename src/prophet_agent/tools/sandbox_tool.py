@@ -145,7 +145,12 @@ def observe(result: dict) -> dict:
     if result.get("carried_as"):
         out["carried_as"] = result["carried_as"]      # where a file with a repeated name was mounted
     if result["stderr"]:
-        out["stderr_tail"] = result["stderr"][-SEEN_STDERR:]
+        err = result["stderr"]
+        if len(err) > SEEN_STDERR:
+            # Round 6m: the head of a long error was cut with no marker, so the planner read a traceback that began mid-line.
+            out["stderr_tail"] = f"[... {len(err) - SEEN_STDERR} characters cut ...]\n" + err[-SEEN_STDERR:]
+        else:
+            out["stderr_tail"] = err
     if result["timed_out"]:
         out["timed_out"] = True
     return out

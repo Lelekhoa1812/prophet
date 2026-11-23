@@ -215,11 +215,15 @@ def _detect(args: dict, _key: str) -> dict[str, Any]:
 def _observe_detect(result: dict) -> dict:
     ranges = result.get("ignore_ranges", [])
     out = {k: result[k] for k in ("run_id", "series", "points", "method", "threshold", "dated") if k in result}
+    candidates = result.get("candidates", [])
     out["candidate_count"] = len(result.get("indices", []))
-    out["candidates"] = result.get("candidates", [])[:MAX_RANGES_SHOWN]
+    out["candidates"] = candidates[:MAX_RANGES_SHOWN]
     out["ignore_ranges"] = ranges[:MAX_RANGES_SHOWN]
-    if len(ranges) > MAX_RANGES_SHOWN:
-        out["note"] = f"{len(ranges)} ranges; the first {MAX_RANGES_SHOWN} shown"
+    # Round 6m: the candidate list was cut with no note; only the ranges had one.
+    notes = [f"{len(seq)} {label}; the first {MAX_RANGES_SHOWN} shown" for seq, label in
+             ((candidates, "candidates"), (ranges, "ranges")) if len(seq) > MAX_RANGES_SHOWN]
+    if notes:
+        out["note"] = "; ".join(notes) + ". The full lists are kept in the ledger"
     out["reading"] = ("These are candidates, not verdicts. Compare each against known events and holidays before passing "
                       "any range as ignore_ranges; keep only the unexplained ones and check with backtest_series.")
     return out

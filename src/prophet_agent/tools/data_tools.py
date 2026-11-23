@@ -71,9 +71,13 @@ def _col_line(c: dict) -> str:
 
 def observe_inspect(result: dict) -> dict:
     p = result["profile"]
-    return {"file": result["file"], "rows": p["rows"], "read": {k: v for k, v in p["read"].items() if k != "file"},
-            "columns": [_col_line(c) for c in p["columns"][:40]], "issues": p["issues"], "layout_hints": p["layout_hints"],
-            "analysis_run_id": result["run_id"]}
+    out = {"file": result["file"], "rows": p["rows"], "read": {k: v for k, v in p["read"].items() if k != "file"},
+           "columns": [_col_line(c) for c in p["columns"][:40]], "issues": p["issues"], "layout_hints": p["layout_hints"],
+           "analysis_run_id": result["run_id"]}
+    if len(p["columns"]) > 40:
+        # Round 6m: the column cut was silent; a wide file looked as if it had only 40 columns.
+        out["note"] = f"{len(p['columns'])} columns; the first 40 shown. The full profile is kept in the ledger"
+    return out
 
 
 def inspect_data_tool(datasets: dict[str, Path] | None = None) -> Tool:
@@ -147,7 +151,11 @@ def observe_backtest(result: dict) -> dict:
     """A panel backtest shows its summary table to the planner, not every series' full result (the ledger keeps those)."""
     if "series" not in result:
         return result
-    return {k: v for k, v in result.items() if k != "series"}
+    # Round 6m: the per-series results were dropped with no note; the summary table is what the planner sees.
+    out = {k: v for k, v in result.items() if k != "series"}
+    out["note"] = (f"the full result of each of the {len(result['series'])} series is kept in the ledger; this view shows the "
+                   "summary table only")
+    return out
 
 
 def backtest_tool() -> Tool:
