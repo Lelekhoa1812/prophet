@@ -490,6 +490,9 @@ def create_app(service: MissionService) -> FastAPI:
 
     @app.get("/api/notebooks/{nid}/tables/{name}/download")
     def download_table(nid: str, name: str, version: int | None = None) -> FileResponse:
+        # Versions start at 1. A 0 must not fall through to the latest version (the store tests the version for truth).
+        if version is not None and version < 1:
+            raise HTTPException(404, "no such table or version")
         try:
             path = service.notebooks.table_path(nid, name, version)
         except KeyError:
