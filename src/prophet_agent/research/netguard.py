@@ -178,11 +178,11 @@ class Robots:
         try:
             check_url(robots_url, resolver=self._resolver)
             if self._client is not None:
-                response = self._client.get(robots_url, timeout=self._timeout)
+                response = self._client.get(robots_url, timeout=self._timeout, follow_redirects=False)
             else:
                 with httpx.Client(timeout=self._timeout, follow_redirects=False,
                                   headers={"User-Agent": self._agent}) as client:
-                    response = client.get(robots_url)
+                    response = client.get(robots_url, follow_redirects=False)
         except Exception:
             return None
         if response.status_code != 200:

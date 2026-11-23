@@ -20,6 +20,20 @@ def public_resolver(host, port):
     return [PUBLIC]
 
 
+def test_redirect_to_a_private_address_is_refused_even_when_the_client_follows_redirects():
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/go":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/admin"})
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=ARTICLE)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    page = fetch_page("https://example.com/go", client=client, resolver=public_resolver,
+                      throttle=HostThrottle(0.0), use_cache=False)
+    assert page.ok is False and "refused" in page.note and "loopback" in page.note
+
+
 def test_redirect_to_another_origin_is_checked_against_its_robots_txt():
     def handler(request):
         path, host = request.url.path, request.headers["host"]

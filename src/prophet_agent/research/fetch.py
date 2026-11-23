@@ -207,7 +207,7 @@ def _get_checked(client: httpx.Client, url: str, *, resolver: Resolver | None, t
     """One GET hop after the address check and pacing. Returns a streaming response; the caller reads it."""
     parts = check_url(url, resolver=resolver)
     throttle.wait(parts.netloc.lower())
-    return client.stream("GET", url, headers=HEADERS, timeout=timeout)
+    return client.stream("GET", url, headers=HEADERS, timeout=timeout, follow_redirects=False)
 
 
 def fetch_page(url: str, *, max_bytes: int = 2_000_000, timeout: float = 15.0, use_cache: bool = True,
