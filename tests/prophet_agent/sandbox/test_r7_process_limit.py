@@ -38,8 +38,9 @@ def test_the_child_runs_with_a_process_limit_on_linux():
 
 @LINUX_ONLY
 def test_threads_stop_at_the_process_limit_on_linux():
-    # Thread creation fails with RuntimeError once the limit is reached. The stacks are small, so the address-space cap
-    # (RLIMIT_AS) cannot be what stops the threads.
+    # Thread creation fails with RuntimeError once the limit is reached. The address-space cap is lifted (mem_mb) so that
+    # it cannot be what stops the threads: glibc arenas would hit a 1 GiB cap after a few dozen threads. The run must
+    # create most of the headroom before it stops, which only the process limit explains.
     code = ("import resource, threading\n"
             "soft = resource.getrlimit(resource.RLIMIT_NPROC)[0]\n"
             "threading.stack_size(262144)\n"
@@ -49,12 +50,16 @@ def test_threads_stop_at_the_process_limit_on_linux():
             "        t = threading.Thread(target=stop.wait, daemon=True); t.start(); made.append(t)\n"
             "    print('UNLIMITED', len(made), soft)\n"
             "except RuntimeError:\n"
-            "    print('LIMITED', len(made) < soft, soft)\n"
+            "    print('LIMITED', len(made), soft)\n"
             "finally:\n"
             "    stop.set()\n")
-    r = run_python(code, timeout_s=60)
+    r = run_python(code, timeout_s=60, mem_mb=4096)
     assert r.ok, r.stderr
-    assert "LIMITED True" in r.stdout, r.stdout
+    parts = r.stdout.split()
+    assert parts[0] == "LIMITED", r.stdout
+    made, soft = int(parts[1]), int(parts[2])
+    assert made < soft
+    assert made >= PROCESS_HEADROOM // 2, r.stdout
 
 
 @DARWIN_ONLY
