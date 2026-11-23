@@ -26,10 +26,22 @@ def notes_tool(store, mission_id: str, scope: str) -> Tool:
         extra = sorted(set(args) - ALLOWED)
         if extra:
             raise ValueError(f"unknown arguments {extra}; allowed: action, name, text, scope")
-        action = args.get("action", "list")
+        # Round 6m: the action and the scope are checked before the name, and each is checked for its type. A name of None
+        # used to be stored as the note "None", and a list scope reached the store unchecked.
+        action = args.get("action") or "list"
+        if action not in ("list", "read", "write", "append"):
+            raise ValueError("action must be one of: list, read, write, append")
+        scope_arg = args.get("scope")
+        if scope_arg is not None and (not isinstance(scope_arg, str) or not scope_arg.strip()):
+            raise ValueError("scope must be one of the agent scopes, for example main, a1 or a2, or left out")
         if action == "list":
-            return {"scope": scope, "notes": store.note_list(mission_id, args.get("scope"))}
-        name = str(args.get("name", "")).strip()
+            return {"scope": scope, "notes": store.note_list(mission_id, scope_arg)}
+        raw_name = args.get("name")
+        if raw_name is None or raw_name == "":
+            raise ValueError("name is required: 1 to 60 characters, letters, digits, space, _ . -")
+        if not isinstance(raw_name, str):
+            raise ValueError("name is required as text: 1 to 60 characters, letters, digits, space, _ . -")
+        name = raw_name.strip()
         if not NAME.match(name):
             raise ValueError("name is 1 to 60 characters: letters, digits, space, _ . -")
         if action == "read":

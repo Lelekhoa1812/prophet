@@ -69,3 +69,27 @@ def test_a_write_may_still_replace_a_long_note_up_to_the_limit():
     store, tool = _tool()
     tool.fn({"action": "write", "name": "log", "text": "a" * MAX_NOTE}, "k1")
     assert len(store.notes[("main", "log")]) == MAX_NOTE
+
+
+def test_a_misspelt_action_is_named_as_the_problem():
+    _, tool = _tool()
+    with pytest.raises(ValueError, match="action must be one of"):
+        tool.fn({"action": "appendd", "name": "log", "text": "x"}, "k")
+    with pytest.raises(ValueError, match="action must be one of"):
+        tool.fn({"action": "appendd", "text": "x"}, "k")
+
+
+def test_a_name_that_is_not_text_is_refused_not_stored_as_its_text():
+    store, tool = _tool()
+    with pytest.raises(ValueError, match="name is required"):
+        tool.fn({"action": "write", "name": None, "text": "t"}, "k")
+    with pytest.raises(ValueError, match="name is required"):
+        tool.fn({"action": "write", "name": 5, "text": "t"}, "k")
+    assert store.notes == {}
+
+
+def test_a_scope_that_is_not_text_is_refused_for_every_action():
+    _, tool = _tool()
+    for action in ("list", "read", "write"):
+        with pytest.raises(ValueError, match="scope must be one of"):
+            tool.fn({"action": action, "name": "log", "text": "t", "scope": ["main"]}, "k")
