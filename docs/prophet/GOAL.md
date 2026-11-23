@@ -4,7 +4,7 @@ Status as of 2026-11-20; test counts re-collected on 2026-11-23. Every claim bel
 **[LIVE]** a real NIM or TimesFM call or a live browser or API check made in this repo, **[TEST]** an offline test in
 the gate (`scripts/check.sh`), **[DOC]** a document or research note, **[TODO]** not started or not verified.
 
-Collected on 2026-11-23 with `pytest --collect-only -q`: `scripts/check.sh` (`-m "not timesfm"`) collects 1972 tests, and
+Collected on 2026-11-23 with `pytest --collect-only -q`: `scripts/check.sh` (`-m "not timesfm"`) collects 1997 tests (1972 before the r6l tests were added), and
 `scripts/check.sh --real` adds the 4 `timesfm`-marked tests. The 2026-11-20 result of 155 passed and 1 skipped has not been
 re-run; the next full gate run records the current pass and skip split.
 
