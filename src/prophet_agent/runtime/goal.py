@@ -1261,6 +1261,17 @@ def _notes_for(ctx: Ctx, scope: str):
                    activity=NOTES_SPEC["activity"])
 
 
+SEED_RESULTS = 12    # the lead's most recent tool results a new analyst starts with
+
+
+def seed_history(history: list[dict]) -> list[dict]:
+    """The lead's tool results a new analyst starts with, marked seeded. Pointers, rejected calls and the lead's own
+    repeats are left out. The most recent SEED_RESULTS are kept, so the analyst's prompt does not grow with the run."""
+    usable = [h for h in history if h.get("kind") == "tool" and "result" in h and not h.get("repeat_of")
+              and not h.get("rejected") and "error" not in h]
+    return [{**h, "seeded": True} for h in usable[-SEED_RESULTS:]]
+
+
 def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, Tool], cfg: GoalConfig, context: str,
                history: list[dict]) -> dict:
     """Runs one sub-agent with its own history, memo, notes and a tool list scoped by its type."""
@@ -1282,7 +1293,10 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     # got cfg.sub_steps whatever its type said.
     sub_cfg = GoalConfig(max_iterations=agent.steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps,
                          tag=f"d1.{agent_id}")
-    sub_history: list[dict] = list(prior["evidence"]) if prior else []
+    # Live (Beijing 3c379255, 2026-11-23): four analysts started with an empty history and each ran the lead's inspect_data
+    # again, then read the same pages, and the step stalled. They start with the lead's tool results so far, so an identical
+    # call is answered with the earlier result, as it is for the lead.
+    sub_history: list[dict] = list(prior["evidence"]) if prior else seed_history(history)
     sub_tools = _sub_observation_tools(sub_tools, sub_history)
     goal = _brief(spec, agent, agent_id, prior is not None)
     play = agents.playbooks(agent)
