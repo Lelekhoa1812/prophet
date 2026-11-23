@@ -81,8 +81,10 @@ TRUNCATION_TOKEN_CAP = 32768
 SLOW_CALL_S = 15.0                # log calls at least this slow, or any >= 400
 # Error codes a gateway puts in an in-stream error frame, mapped to the HTTP status they stand for (FreeRouter's
 # envelope: free-router src/lib/http.ts). An unknown code is treated as a 502: the key cools briefly and the call moves on.
+# model_forbidden refuses this one model, so it takes the model consequence (404). A 403 would retire the key for every
+# model for ten minutes. insufficient_scope is about the key's own scope, so it stays 403.
 _IN_STREAM_STATUS: dict[str, int] = {
-    "invalid_api_key": 401, "insufficient_scope": 403, "model_forbidden": 403, "model_not_found": 404,
+    "invalid_api_key": 401, "insufficient_scope": 403, "model_forbidden": 404, "model_not_found": 404,
     "rate_limit_exceeded": 429, "quota_exhausted": 429, "upstream_unavailable": 503, "upstream_invalid_output": 502,
     "upstream_request_rejected": 400, "unsupported_capability": 400, "unsupported_parameter": 400, "invalid_request": 400,
 }
@@ -272,18 +274,36 @@ def _tool_calls(acc: Mapping[int, dict]) -> tuple[dict, ...]:
     return tuple(out)
 
 
-def _accumulate(acc: dict[int, dict], deltas: Sequence[Mapping[str, Any]] | None) -> None:
-    for tc in deltas or []:
-        idx = int(tc.get("index") or 0)
+def _accumulate(acc: dict[int, dict], deltas: Any) -> None:
+    """Joins tool-call deltas by index. A delta of the wrong shape is unreadable, like broken JSON: it raises ValueError,
+    which the caller treats as a failed attempt (the key cools and the next one is tried), never as a crash."""
+    if deltas is None:
+        return
+    if not isinstance(deltas, list):
+        raise ValueError("tool_calls is not a list")
+    for tc in deltas:
+        if not isinstance(tc, dict):
+            raise ValueError("tool call delta is not an object")
+        try:
+            idx = int(tc.get("index") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tool call index is not a number") from exc
         item = acc.setdefault(idx, {"id": None, "name": "", "args": ""})
         if tc.get("id"):
             item["id"] = tc["id"]
         fn = tc.get("function") or {}
-        if fn.get("name") and not item["name"]:
-            item["name"] = fn["name"]
+        if not isinstance(fn, dict):
+            raise ValueError("tool call function is not an object")
+        name = fn.get("name")
+        if name and not isinstance(name, str):
+            raise ValueError("tool call name is not text")
+        if name and not item["name"]:
+            item["name"] = name
         args = fn.get("arguments")
         if isinstance(args, dict):
             args = json.dumps(args)
+        if args is not None and not isinstance(args, str):
+            raise ValueError("tool call arguments are not text")
         item["args"] += args or ""
 
 
@@ -382,23 +402,30 @@ def _check_schema(text: str, schema: dict) -> str | None:
     return validate(value, schema)
 
 
-def _json_slice(text: str) -> str:
+def _json_slice(text: str, schema: Mapping[str, Any] | None = None) -> str:
     """A reply that is a JSON value followed or preceded by prose (a lead-in, a closing remark) is cut down to the value.
-    Text that is already JSON, or holds no JSON value, comes back unchanged. Structure decides, not wording."""
+    Text that is already JSON, or holds no JSON value, comes back unchanged. Structure decides, not wording.
+
+    With a schema, the first JSON value that satisfies it wins: prose often holds a bracketed reference such as "[1]",
+    which is valid JSON but not the answer (T8). When no candidate satisfies it, the first JSON value is returned."""
     try:
         json.loads(text)
         return text
     except ValueError:
         pass
     decoder = json.JSONDecoder()
+    first: str | None = None
     for start, ch in enumerate(text):
         if ch in "{[":
             try:
                 _, end = decoder.raw_decode(text, start)
             except ValueError:
                 continue
-            return text[start:end]
-    return text
+            candidate = text[start:end]
+            if schema is None or _check_schema(candidate, schema) is None:
+                return candidate
+            first = first or candidate
+    return first or text
 
 
 def _timeout(remaining: float, silence: float | None = None) -> httpx.Timeout:
@@ -520,7 +547,11 @@ class NimClient:
                 chain = [m for m in chain if verdicts[m] is None]
                 if not chain:
                     raise Exhausted("token budget used up: " + "; ".join(reasons))
-        deadline = self.clock() + budget_s
+        call_started = self.clock()
+        deadline = call_started + budget_s
+        # Without a caller checkpoint nothing else can stop a call that keeps waiting, so it gets one hard end: the work
+        # budget plus RATE_WAIT_LIMIT_S. Every wait, including pacing sleeps inside key selection, is capped by it (T6b).
+        hard_end = float("inf") if checkpoint is not None else call_started + budget_s + RATE_WAIT_LIMIT_S
         opts = _Opts(thinking, max_tokens, schema, schema_name, [dict(t) for t in tools] if tools else None)
         last, last_invalid = "no attempt", False
         base = list(messages)
@@ -528,6 +559,8 @@ class NimClient:
         waited = 0.0                      # seconds spent waiting out rate limits and overloads, across passes
 
         while True:
+            if self.clock() >= hard_end:
+                break
             dispatched, waitable, dead = 0, False, set()
             for model in chain:
                 shape = _Shape("strict")
@@ -539,7 +572,7 @@ class NimClient:
                     if checkpoint is not None:
                         checkpoint()
                     try:
-                        key = self._acquire(model, deadline, only=key if reuse else None)
+                        key = self._acquire(model, deadline, only=key if reuse else None, checkpoint=checkpoint)
                     except _AllBusy as busy:
                         last, waitable = str(busy), True      # try the next model, then wait for the soonest key (see _rate_wait)
                         break
@@ -632,7 +665,7 @@ class NimClient:
             wait = self._rate_wait(chain)
             if wait is None:
                 break                                  # every key is rejected: the provider is depleted
-            wait = min(wait, ceiling - waited)
+            wait = min(wait, ceiling - waited, max(0.0, hard_end - self.clock()))
             log.warning("nim: rate limited or overloaded on every usable model; waiting %.0fs then trying again (%s)",
                         wait, last)
             if on_wait is not None:
@@ -643,10 +676,10 @@ class NimClient:
                     log.debug("on_wait failed", exc_info=True)
             waited += wait
             self._wait(wait, checkpoint)
-            deadline = max(deadline, self.clock() + budget_s)   # waiting for a rate limit does not spend the work budget
+            deadline = max(deadline, min(self.clock() + budget_s, hard_end))   # waiting does not spend the work budget
 
-        if checkpoint is None and waited >= RATE_WAIT_LIMIT_S:
-            message = f"nim-rate-limited: still refused after {waited:.0f}s of waiting; last: {last}"
+        if checkpoint is None and (waited >= RATE_WAIT_LIMIT_S or self.clock() >= hard_end):
+            message = f"nim-rate-limited: still refused after {self.clock() - call_started:.0f}s; last: {last}"
         else:
             message = f"nim-exhausted: {last}"
         if last_invalid:
@@ -707,11 +740,19 @@ class NimClient:
                     next(gen)
                 except StopIteration as stop:
                     out = stop.value
+        except NimError as exc:
+            # A stream that ends with no answer after text began raises inside _attempt. The check reports it as failed:
+            # verify_models must get one row per model and reach the next one (T4).
+            return {"model": model, "status": "failed", "http_status": None, "error": redact(str(exc), limit=200)}
         finally:
             self._release(key)
         if out is not None and out.kind == "ok" and out.reply is not None:
             self._record(out.reply)
             return {"model": model, "status": "verified", "http_status": out.status or 200, "error": None}
+        if out is not None and out.kind == "cut" and out.status == 200 and clean_text(out.partial or "").strip():
+            # A 200 with text that the 64-token allowance cut short: the model answered, so the check verified it. Only the
+            # allowance cut carries a status; a stream error or a dropped read carries none and stays failed.
+            return {"model": model, "status": "verified", "http_status": 200, "error": None}
         error = out.detail or out.reason if out is not None else "no answer"
         return {"model": model, "status": "failed", "http_status": out.status if out is not None else None,
                 "error": redact(error, limit=200)}
@@ -784,8 +825,10 @@ class NimClient:
         window = now if len(w) < self.per_minute else w[0] + 60.0
         return max(self.cool.get((key, model), 0.0), window)
 
-    def _acquire(self, model: str, deadline: float, only: str | None = None) -> str:
-        """Pick a key that has window capacity and no cooldown for this model. Sleeps only if every candidate is busy."""
+    def _acquire(self, model: str, deadline: float, only: str | None = None,
+                 checkpoint: Callable[[], None] | None = None) -> str:
+        """Pick a key that has window capacity and no cooldown for this model. Waits only if every candidate is busy, and
+        the wait calls the checkpoint between slices so a cancel or a spent allowance can stop it (T6a)."""
         while True:
             with self.lock:
                 now = self.clock()
@@ -808,7 +851,7 @@ class NimClient:
                 at = self._ready_at(soonest, model, now)
             if at > deadline:
                 raise _AllBusy("all keys are cooling or paced past the budget")
-            self.sleep(max(0.01, at - now))
+            self._wait(max(0.01, at - now), checkpoint)
 
     def _release(self, key: str) -> None:
         with self.lock:
@@ -849,12 +892,16 @@ class NimClient:
         parts: list[str] = []
         live = opts.schema is None and not opts.tools        # release text as it arrives only when nothing is buffered
         body = build_body(model, messages, opts, shape, self.provider)
+        remaining = max(0.1, deadline - self.clock())
+        # The read limit is the smaller of the silence limit and what the budget has left. When the budget is the smaller,
+        # a read cut short says nothing about the model or the key, so it must not be penalised (NIM.md 4.2).
+        budget_bound = remaining < (self.provider.silence_s or STREAM_IDLE_S)
         try:
             with self.http.stream("POST", "/chat/completions",
                                   headers={"authorization": f"Bearer {key}", "accept": "text/event-stream",
                                           **dict(self.provider.extra_headers)},
                                   json=body,
-                                  timeout=_timeout(max(0.1, deadline - self.clock()), self.provider.silence_s)) as r:
+                                  timeout=_timeout(remaining, self.provider.silence_s)) as r:
                 status = r.status_code
                 if status >= 400:
                     raw = r.read().decode("utf-8", "replace")
@@ -877,14 +924,23 @@ class NimClient:
                     if data == "[DONE]":
                         break
                     ev = json.loads(data)
-                    if isinstance(ev, dict) and ev.get("error") is not None:
+                    if not isinstance(ev, dict):
+                        raise ValueError("stream event is not a JSON object")     # unreadable: fails over like broken JSON
+                    if ev.get("error") is not None:
                         # A gateway can fail after HTTP 200 (FreeRouter sends an error frame and no [DONE]). It is
                         # classified as the HTTP status its code stands for, so a refusal is never read as an empty reply.
                         return self._stream_error(key, model, slot, ev["error"], emitted, parts, opts, shape, started)
                     usage = ev.get("usage") or usage
-                    for ch in ev.get("choices") or []:
+                    choices = ev.get("choices") or []
+                    if not isinstance(choices, list):
+                        raise ValueError("stream choices is not a list")
+                    for ch in choices:
+                        if not isinstance(ch, dict):
+                            raise ValueError("stream choice is not an object")
                         finish = ch.get("finish_reason") or finish
                         delta = ch.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            raise ValueError("stream delta is not an object")
                         piece = _content_text(delta.get("content"))
                         if piece:
                             parts.append(piece)
@@ -900,6 +956,8 @@ class NimClient:
         except httpx.ReadTimeout as exc:
             if emitted:
                 return _Outcome("cut", f"{model}: stream interrupted ({type(exc).__name__})", partial="".join(parts))
+            if budget_bound:
+                return _Outcome("budget", f"{model}: budget spent while reading")
             if self.provider.silence_s:
                 # Silence is a slow or hung model, not a bad key: rotating keys on the same model would repeat the wait.
                 self._demote(model, SILENCE_DEMOTE_S)
@@ -932,15 +990,17 @@ class NimClient:
             return _Outcome("model", f"{model}: empty reply (finish_reason={finish})", demote=finish != "length",
                             status=status)
         if opts.schema is not None and not opts.tools:
-            text = _json_slice(text)
+            text = _json_slice(text, opts.schema)
             err = _check_schema(text, opts.schema)
             if err:
                 # What the model sent is what a repair needs to see; the log keeps a short redacted head and tail.
                 truncated = finish == "length"
                 log.warning("nim: %s reply refused locally (%s); category=%s finish=%s len=%d max_tokens=%s shape=%s "
-                            "head=%r tail=%r", model, err, "truncated" if truncated else _diagnose(err), finish, len(text),
+                            "head=%r tail=%r", model, redact(err), "truncated" if truncated else _diagnose(err), finish, len(text),
                             opts.max_tokens, shape.mode, redact(text[:160]), redact(text[-120:]))
-                return _Outcome("truncated" if truncated else "model", f"{model}: local schema check failed: {err}",
+                # jsonschema quotes the offending value, which is model output and may be key-shaped: redact it before it
+                # reaches the logs, the repair turn's reason and any error raised from it (T5).
+                return _Outcome("truncated" if truncated else "model", f"{model}: local schema check failed: {redact(err)}",
                                 invalid=True, status=status, text=text)
         if opts.schema is None and not opts.tools and finish == "length" and text.strip():
             # Free text cut by the token allowance: continue from it as a broken stream continues, instead of returning an
