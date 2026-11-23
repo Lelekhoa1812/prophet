@@ -50,3 +50,56 @@ def test_a_crash_on_a_notification_writes_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(m, "handle", boom)
     assert run_loop(monkeypatch, [json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})], capsys) == []
+
+
+def test_a_read_timeout_from_the_local_api_is_reported_as_no_answer(monkeypatch):
+    def slow(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(m.urllib.request, "urlopen", slow)
+    reply = call("prophet_notebook", {"notebook_id": "n1"})
+    text = reply["result"]["content"][0]["text"]
+    assert reply["result"]["isError"] is True
+    assert "did not answer" in text and "TimeoutError" not in text
+
+
+def test_a_response_with_an_unexpected_shape_is_not_reported_as_a_missing_argument(monkeypatch):
+    # The API answered without a 'payload' key. The caller sent every argument, so "missing argument" would mislead.
+    monkeypatch.setattr(m, "_call", lambda *a, **k: {"id": "t", "status": "waiting_user", "questions": [{"id": "q"}]})
+    reply = call("prophet_status", {"turn_id": "t"})
+    text = reply["result"]["content"][0]["text"]
+    assert reply["result"]["isError"] is True
+    assert "missing argument" not in text
+
+
+def test_a_call_without_a_required_argument_names_it(monkeypatch):
+    reply = call("prophet_ask", {"question": "what sold?"})
+    assert reply["result"]["isError"] is True
+    assert "missing argument 'notebook_id'" in reply["result"]["content"][0]["text"]
+
+
+def test_a_line_that_is_not_json_gets_a_parse_error(monkeypatch, capsys):
+    replies = run_loop(monkeypatch, ["{not json"], capsys)
+    assert replies == [{"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error: the line is not JSON"}}]
+
+
+def test_every_argument_a_handler_reads_is_declared_in_its_schema():
+    """The schema is what clients see; a handler reading an undeclared name would never receive it from a client."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(m))
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "a" \
+                and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+            read.add(node.slice.value)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "a" and node.args \
+                and isinstance(node.args[0], ast.Constant):
+            read.add(node.args[0].value)
+    declared: set[str] = set()
+    for name, (_desc, schema, _fn) in m.TOOLS.items():
+        assert set(schema["required"]) <= set(schema["properties"]), name
+        declared |= set(schema["properties"])
+    assert read <= declared, f"handlers read undeclared arguments: {sorted(read - declared)}"
