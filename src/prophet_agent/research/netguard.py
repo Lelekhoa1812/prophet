@@ -351,9 +351,22 @@ def origin_of(parts: SplitResult) -> str:
     return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
 
 
+class _Entry(NamedTuple):
+    """What robots.txt said for one origin. ``closed`` is the HTTP status of a 5xx answer: every URL on the origin is
+    then refused."""
+    parser: urllib.robotparser.RobotFileParser | None
+    closed: int = 0
+
+
 class Robots:
-    """robots.txt per origin, fetched once and cached for the process. Disallow is honoured; if robots.txt cannot be
-    fetched (network error, 5xx, redirect) the origin is treated as allowed."""
+    """robots.txt per origin, fetched once and cached for the life of the object (the process, for DEFAULT_ROBOTS).
+
+    Disallow is honoured. Three cases are decided here, and the choice is deliberate:
+    - a network failure (connection refused, reset, timeout) is treated as allowed, as the brief asks;
+    - any other status except 200 (404, 401, 403, 3xx) is treated as allowed, as the file does not exist for that host;
+    - a 5xx status fails CLOSED: the origin is refused for the rest of the run, because a server error is not evidence
+      that the site has no rules. The cache holds that answer like any other, so it lasts as long as the object does.
+    A lookup or request cut short by the caller's deadline is not cached, so the next request asks again."""
 
     def __init__(self, *, client: httpx.Client | None = None, resolver: Resolver | None = None,
                  user_agent: str = USER_AGENT, timeout: float = 10.0):
@@ -361,33 +374,37 @@ class Robots:
         self._resolver = resolver
         self._agent = user_agent
         self._timeout = timeout
-        self._cache: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._cache: dict[str, _Entry] = {}
         self._lock = threading.Lock()
 
     def check(self, url: str, *, deadline: float | None = None) -> str | None:
         """The reason robots.txt refuses ``url``, or None when it allows it. The robots.txt lookup and request are
         bounded by ``deadline`` (a time.monotonic value); a lookup cut short by it is not cached, so it is asked again."""
-        parser = self._parser(origin_of(urlsplit(url)), deadline)
-        if parser is None:
+        entry = self._entry(origin_of(urlsplit(url)), deadline)
+        if entry is None:
             return None
-        return None if parser.can_fetch(self._agent, url) else "disallowed by robots.txt"
+        if entry.closed:
+            return f"robots.txt answered HTTP {entry.closed}, so the host is not fetched in this run"
+        if entry.parser is None:
+            return None
+        return None if entry.parser.can_fetch(self._agent, url) else "disallowed by robots.txt"
 
     def allowed(self, url: str, *, deadline: float | None = None) -> bool:
         return self.check(url, deadline=deadline) is None
 
-    def _parser(self, origin: str, deadline: float | None) -> urllib.robotparser.RobotFileParser | None:
+    def _entry(self, origin: str, deadline: float | None) -> _Entry | None:
+        """The cached answer for ``origin``; None when the answer is not known yet (the deadline cut it short)."""
         with self._lock:
             if origin in self._cache:
                 return self._cache[origin]
-        cacheable, parser = self._load(origin, deadline)
+        cacheable, entry = self._load(origin, deadline)
         if not cacheable:
             return None
         with self._lock:
-            return self._cache.setdefault(origin, parser)
+            return self._cache.setdefault(origin, entry)
 
-    def _load(self, origin: str, deadline: float | None) -> tuple[bool, urllib.robotparser.RobotFileParser | None]:
-        """(cacheable, parser). A network failure is cacheable and allows everything, as before; a lookup or request cut
-        short by the deadline is not cacheable."""
+    def _load(self, origin: str, deadline: float | None) -> tuple[bool, _Entry]:
+        """(cacheable, entry). See the class docstring for each status."""
         robots_url = f"{origin}/robots.txt"
         owned = self._client is None
         client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=False)
@@ -396,23 +413,25 @@ class Robots:
                                    headers={"User-Agent": self._agent, "Accept-Encoding": "gzip, deflate"},
                                    timeout=self._timeout, deadline=deadline)
             try:
+                if response.status_code >= 500:
+                    return True, _Entry(None, closed=response.status_code)
                 if response.status_code != 200:
-                    return True, None
+                    return True, _Entry(None)
                 body, _ = read_capped(response, ROBOTS_MAX_BYTES, time.monotonic() + self._timeout)
             finally:
                 response.close()
         except LookupTimeout:
-            return False, None
+            return False, _Entry(None)
         except Exception:
             if deadline is not None and time.monotonic() >= deadline:
-                return False, None
-            return True, None
+                return False, _Entry(None)
+            return True, _Entry(None)
         finally:
             if owned:
                 client.close()
         parser = urllib.robotparser.RobotFileParser()
         parser.parse(body.decode("utf-8", errors="replace").splitlines())
-        return True, parser
+        return True, _Entry(parser)
 
 
 DEFAULT_ROBOTS = Robots()
