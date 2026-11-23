@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 from prophet_agent.nim.errors import redact
 
-from .store import LeaseHeld, LeaseLost, OutcomeUnknown, Store, idem_key
+from .store import LeaseBound, LeaseHeld, LeaseLost, OutcomeUnknown, Store, idem_key
 
 
 class Paused(Exception):
@@ -196,8 +196,10 @@ class Ctx:
 
 class Runtime:
     def __init__(self, store: Store, owner: str | None = None):
-        self.store = store
         self.owner = owner or uuid.uuid4().hex
+        # Every write this runtime makes is made as this owner, so the lease fence can tell it from another runtime.
+        base = store._store if isinstance(store, LeaseBound) else store
+        self.store = LeaseBound(base, self.owner)
         self.deadline: float | None = None
         self.budget: dict = {}
         self.lease_s: float = 300.0

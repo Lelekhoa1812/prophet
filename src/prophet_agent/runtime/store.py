@@ -191,8 +191,10 @@ class Store:
         self.conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
-        # Leases this process holds, by mission: the owner each mission's writes must still match (see _fence).
+        # Leases this process holds, by mission: the owner that last acquired each mission through this store (see _fence).
         self._owned: dict[str, str] = {}
+        # The runtime on whose behalf the current call runs. Set only by LeaseBound, under the lock, for the length of one call.
+        self._caller: str | None = None
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -327,18 +329,33 @@ class Store:
                       (canonical(answer), time.time(), mission_id))
 
     def _fence(self, c: sqlite3.Connection, mission_id: str) -> None:
-        """Refuse a write to a mission this process leased when the lease now belongs to someone else.
+        """Refuse a write to a mission whose lease this runtime no longer holds.
 
         Motivation (audit: runtime store.py:409-437, HIGH): writes did not check the lease owner, so a runtime whose lease
         had been taken over kept writing events, steps and tool results beside the new owner.
-        Logic: only for a mission this process holds (``_owned``). The owner is read in the same transaction as the write,
-        so a takeover cannot slip between the check and the write. Writes from elsewhere (the service, a cancel) are unchanged.
+        Round 6m: the check compared the database owner with the owner that last acquired the mission through this store,
+        which says nothing about who is writing. A stalled runtime on the same store passed once another runtime had
+        taken the mission over; and a sweep that dropped the record unfenced a lapsed runtime altogether.
+        Logic: ``_owned`` names the owner that holds the mission on this store. A write made by a runtime (``_caller`` set
+        by LeaseBound) must come from that owner, and the database must still name it, both read in the write's own
+        transaction. A write from outside the runner (the service's cancel, a clear) is refused only while a different
+        runtime holds the lease; with no lease, or none held by anyone, it goes through as before.
         """
-        owner = self._owned.get(mission_id)
-        if owner is None:
-            return
+        expected = self._owned.get(mission_id)
+        caller = self._caller
+        if expected is None:
+            if caller is None:
+                return                                   # not leased through this store: an outside write, unchanged
+            raise LeaseLost(f"mission {mission_id} is not leased to this runtime")
         row = c.execute("SELECT lease_owner FROM missions WHERE id=?", (mission_id,)).fetchone()
-        if row is None or row["lease_owner"] != owner:
+        if row is None:
+            raise LeaseLost(f"mission {mission_id} no longer exists")
+        holder = row["lease_owner"]
+        if caller is None:
+            if holder is not None and holder != expected:
+                raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
+            return
+        if caller != expected or holder != expected:
             raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
 
     def _fence_key(self, c: sqlite3.Connection, key: str) -> None:
@@ -356,7 +373,7 @@ class Store:
                 (owner, now + ttl_s, mission_id, owner, now))
             if cur.rowcount != 1:
                 raise LeaseHeld(f"mission {mission_id} is leased by another runtime")
-        self._owned[mission_id] = owner
+            self._owned[mission_id] = owner
 
     def renew_lease(self, mission_id: str, owner: str, ttl_s: float) -> None:
         """Extend the lease. Raises LeaseLost when this runtime no longer holds it (it expired and another runtime
@@ -380,8 +397,8 @@ class Store:
             for mid in ids:
                 c.execute("UPDATE missions SET status='interrupted', lease_owner=NULL, lease_until=0, updated=? "
                           "WHERE id=?", (now, mid))
-        for mid in ids:
-            self._owned.pop(mid, None)      # the lease lapsed, so this process no longer holds it (see _fence)
+        # The record of who held the lease is kept: a runtime that stalled past its lease is still fenced by the database
+        # check in _fence, and must not regain the mission's writes because a sweep ran on this store (round 6m).
         for mid in ids:
             self.append_event(mid, "mission.status", {"status": "interrupted",
                                                       "reason": "the runtime stopped before this mission finished"})
@@ -391,8 +408,8 @@ class Store:
         with self._tx() as c:
             c.execute("UPDATE missions SET lease_owner=NULL, lease_until=0 WHERE id=? AND lease_owner=?",
                       (mission_id, owner))
-        if self._owned.get(mission_id) == owner:
-            del self._owned[mission_id]
+            if self._owned.get(mission_id) == owner:
+                del self._owned[mission_id]
 
     # -- event log ---------------------------------------------------------------------------------------------
 
@@ -606,3 +623,30 @@ class Store:
                       (canonical({"answers": answers}), time.time(), row["tool_key"]))
         self.append_event(row["mission_id"], "question.answered", {"question": question_id})
         return {"mission_id": row["mission_id"]}
+
+
+class LeaseBound:
+    """One runtime's view of a Store. Every call made through it runs with that runtime as the caller, so the write fence
+    checks that this runtime, and not another that has used the same Store, still holds the lease (round 6m, Store._fence).
+    Methods are called as on the Store; only the caller differs. The lock is held for the whole call, so a call from
+    another thread never sees this caller."""
+
+    def __init__(self, store: Store, owner: str):
+        self._store = store
+        self._owner = owner
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._store, name)
+        if not callable(attr):
+            return attr
+        store, owner = self._store, self._owner
+
+        def bound(*args, **kwargs):
+            with store.lock:
+                previous = store._caller
+                store._caller = owner
+                try:
+                    return attr(*args, **kwargs)
+                finally:
+                    store._caller = previous
+        return bound
