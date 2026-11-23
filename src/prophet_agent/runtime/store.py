@@ -149,6 +149,9 @@ _MISSION_COLUMNS_V2 = {
     "archived": "INTEGER NOT NULL DEFAULT 0",
 }
 ACTIVE = ("created", "running", "waiting_user")
+# A turn that is "created" with no lease has not been started yet. The sweep leaves it alone until it has waited this long
+# (round 6m): a fresh turn is about to start, and freeing its notebook would let a second turn begin beside it.
+STARTUP_GRACE_S = 300.0
 
 
 def canonical(obj: Any) -> str:
@@ -280,7 +283,7 @@ class Store:
             c.execute("INSERT INTO missions (id, goal, status, budget_json, created, updated, notebook_id, seq, "
                       "parent_turn_id) VALUES (?,?,?,?,?,?,?,?,?)",
                       (mission_id, goal, "created", canonical(budget), now, now, notebook_id, seq, parent_turn_id))
-        self.append_event(mission_id, "mission.created", {"goal": goal, "budget": budget, "notebook_id": notebook_id})
+            self._emit(c, mission_id, "mission.created", {"goal": goal, "budget": budget, "notebook_id": notebook_id})
         return mission_id
 
     def request_cancel(self, mission_id: str) -> bool:
@@ -314,7 +317,7 @@ class Store:
         with self._tx() as c:
             self._fence(c, mission_id)
             c.execute("UPDATE missions SET status=?, updated=? WHERE id=?", (status, time.time(), mission_id))
-        self.append_event(mission_id, "mission.status", {"status": status})
+            self._emit(c, mission_id, "mission.status", {"status": status})
 
     def set_budget(self, mission_id: str, budget: dict) -> None:
         with self._tx() as c:
@@ -391,17 +394,20 @@ class Store:
         ``exclude`` names missions a live worker in this process is running, which are never touched."""
         now = time.time()
         with self._tx() as c:
-            ids = [r["id"] for r in c.execute(
-                "SELECT id FROM missions WHERE status IN ('created','running') "
-                "AND (lease_owner IS NULL OR lease_until<?)", (now,)).fetchall() if r["id"] not in exclude]
+            # Running with a lapsed or missing lease: its runtime died. Created: a lease that lapsed (a start that died after
+            # taking it), or no lease and older than the startup grace (a turn whose start never came).
+            rows = c.execute(
+                "SELECT id FROM missions WHERE (status='running' AND (lease_owner IS NULL OR lease_until<?)) "
+                "OR (status='created' AND ((lease_owner IS NULL AND updated<?) OR (lease_owner IS NOT NULL AND lease_until<?)))",
+                (now, now - STARTUP_GRACE_S, now)).fetchall()
+            ids = [r["id"] for r in rows if r["id"] not in exclude]
             for mid in ids:
                 c.execute("UPDATE missions SET status='interrupted', lease_owner=NULL, lease_until=0, updated=? "
                           "WHERE id=?", (now, mid))
+                self._emit(c, mid, "mission.status", {"status": "interrupted",
+                                                      "reason": "the runtime stopped before this mission finished"})
         # The record of who held the lease is kept: a runtime that stalled past its lease is still fenced by the database
         # check in _fence, and must not regain the mission's writes because a sweep ran on this store (round 6m).
-        for mid in ids:
-            self.append_event(mid, "mission.status", {"status": "interrupted",
-                                                      "reason": "the runtime stopped before this mission finished"})
         return ids
 
     def release_lease(self, mission_id: str, owner: str) -> None:
@@ -416,9 +422,14 @@ class Store:
     def append_event(self, mission_id: str, kind: str, payload: dict) -> int:
         with self._tx() as c:
             self._fence(c, mission_id)
-            cur = c.execute("INSERT INTO events (mission_id, kind, payload_json, ts) VALUES (?,?,?,?)",
-                            (mission_id, kind, canonical(payload), time.time()))
-            return int(cur.lastrowid)
+            return self._emit(c, mission_id, kind, payload)
+
+    def _emit(self, c: sqlite3.Connection, mission_id: str, kind: str, payload: dict) -> int:
+        """Write an event inside the caller's transaction, so a state change and its event commit or fail together (round
+        6m). A crash between the two used to leave a finished step with no event, or a waiting mission with no record."""
+        cur = c.execute("INSERT INTO events (mission_id, kind, payload_json, ts) VALUES (?,?,?,?)",
+                        (mission_id, kind, canonical(payload), time.time()))
+        return int(cur.lastrowid)
 
     def events(self, mission_id: str, after_seq: int = 0) -> list[dict]:
         with self.lock:
@@ -456,13 +467,19 @@ class Store:
                  "output": (json.loads(r["output_json"]) or {}).get("v") if r["output_json"] else None}
                 for r in rows]
 
-    def finish_step(self, mission_id: str, idx: int, name: str, output: Any) -> None:
+    def finish_step(self, mission_id: str, idx: int, name: str, output: Any) -> bool:
+        """Record a finished step with its event, in one transaction. The first finished result at a position is the one
+        kept: a later write there does not replace it (round 6m), so every replay returns what the ledger holds. Returns
+        True when this call recorded the step, False when the position was already finished."""
         with self._tx() as c:
             self._fence(c, mission_id)
-            c.execute("INSERT INTO steps (mission_id, idx, name, status, output_json, attempts, updated) "
-                      "VALUES (?,?,?,?,?,?,?) ON CONFLICT(mission_id, idx) DO UPDATE SET "
-                      "status='done', output_json=excluded.output_json, updated=excluded.updated",
-                      (mission_id, idx, name, "done", canonical(output), 1, time.time()))
+            cur = c.execute("INSERT INTO steps (mission_id, idx, name, status, output_json, attempts, updated) "
+                            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(mission_id, idx) DO NOTHING",
+                            (mission_id, idx, name, "done", canonical(output), 1, time.time()))
+            if cur.rowcount != 1:
+                return False
+            self._emit(c, mission_id, "step.done", {"idx": idx, "name": name})
+            return True
 
     # -- tool calls --------------------------------------------------------------------------------------------
 
@@ -484,9 +501,12 @@ class Store:
                       (key, mission_id, step_idx, tool, canonical(args), "started", time.time(), lane))
 
     def tool_set(self, key: str, status: str, result: Any = None, error: str | None = None) -> None:
+        """Record a call's outcome. A call marked done is final: a later write cannot downgrade it to failed or replace its
+        result (round 6m), so a replay always returns the first result the tool gave."""
         with self._tx() as c:
             self._fence_key(c, key)
-            c.execute("UPDATE tool_calls SET status=?, result_json=?, error=?, updated=? WHERE idem_key=?",
+            c.execute("UPDATE tool_calls SET status=?, result_json=?, error=?, updated=? "
+                      "WHERE idem_key=? AND status!='done'",
                       (status, canonical(result) if result is not None else None, error, time.time(), key))
 
     def wipe_ledger(self) -> dict[str, int]:

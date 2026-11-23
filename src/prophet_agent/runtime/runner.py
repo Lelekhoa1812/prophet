@@ -137,8 +137,10 @@ class Ctx:
             return rec["v"]
         self._guard_time()
         out = fn(self)
-        self.store.finish_step(self.mission_id, idx, name, {"v": out})
-        self.store.append_event(self.mission_id, "step.done", {"idx": idx, "name": name})
+        # The step's event is written with the step. If the position was finished meanwhile, the ledger's result is the one
+        # returned, so the program never acts on a value the ledger does not hold (round 6m).
+        if not self.store.finish_step(self.mission_id, idx, name, {"v": out}):
+            return self.store.step_record(self.mission_id, idx)["v"]
         return out
 
     def call(self, tool: Tool, args: dict) -> Any:
