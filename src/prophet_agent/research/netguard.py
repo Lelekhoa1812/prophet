@@ -202,7 +202,10 @@ def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, he
         if failure is not None and deadline is not None and time.monotonic() >= deadline:
             break
         target = pinned(parts, address)
-        request = client.build_request("GET", target.url, headers={**(headers or {}), "Host": target.host},
+        # The pool keys connections by the address in the URL, so two names on one address would share a TLS session
+        # verified for the first name. Closing after each response keeps every session matched to its own name.
+        request = client.build_request("GET", target.url,
+                                       headers={**(headers or {}), "Host": target.host, "Connection": "close"},
                                        timeout=timeout,
                                        extensions={"sni_hostname": target.sni} if target.sni else None)
         try:

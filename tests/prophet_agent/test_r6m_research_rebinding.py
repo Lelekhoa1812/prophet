@@ -113,3 +113,20 @@ def test_netguard_pins_the_request_to_an_address_literal():
     assert target.url == f"https://{PUBLIC}:443/a?b=1"
     assert target.host == "news.example.com:443"
     assert target.sni == "news.example.com"
+
+
+def test_pinned_requests_never_share_a_pooled_connection():
+    """Two names on one checked address must not share a TLS session verified for only one of them."""
+    seen = []
+
+    def handler(request):
+        seen.append((request.headers.get("host"), request.headers.get("connection")))
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "https://other.example.com/article"})
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=ARTICLE)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    page = fetch_page("https://news.example.com/start", client=client, resolver=lambda host, port: [PUBLIC],
+                      robots=AllowAll(), throttle=HostThrottle(0.0), use_cache=False)
+    assert page.ok is True
+    assert seen == [("news.example.com", "close"), ("other.example.com", "close")]
