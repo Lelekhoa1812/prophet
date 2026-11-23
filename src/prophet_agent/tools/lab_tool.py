@@ -78,7 +78,11 @@ def observe(result: dict) -> dict:
         wins = "" if r["wins"] is None else f", wins {r['wins']}/{result['fold_count']}"
         interval = "" if r["interval_pct"] is None else f", interval [{r['interval_pct'][0]:+.1f}%, {r['interval_pct'][1]:+.1f}%]"
         lines.append(f"{r['name']} ({r['kind']}): MASE gain {gain}, pinball {pin}{wins}{interval}, {r['decision']}")
-    return {
+    # Round 6m: the cuts below were silent. Say how many of each were left out; the ledger keeps them all.
+    cut = [f"{len(result[k])} {label}, first {n} shown" for k, label, n in
+           (("skipped", "skipped", 5), ("failed", "failed", 5), ("caveats", "caveats", MAX_OBSERVED_NOTES))
+           if len(result[k]) > n]
+    out = {
         "horizon": result["horizon"],
         "points": result["points"],                       # the series length tested: the treatment gate matches it (audit 18)
         "measured": [r["name"] for r in result["table"]],  # every candidate measured, not only the rows shown
@@ -92,6 +96,9 @@ def observe(result: dict) -> dict:
         "failed": [f"{f['candidate']}: {f['error']}" for f in result["failed"][:5]],
         "caveats": result["caveats"][:MAX_OBSERVED_NOTES],
     }
+    if cut:
+        out["note"] = "left out of this view: " + "; ".join(cut) + ". The full lists are kept in the ledger"
+    return out
 
 
 def lab_tool(engine_factory: Callable[[], Any] | None = None) -> Tool:

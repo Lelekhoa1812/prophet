@@ -37,7 +37,11 @@ def make_inspect(datasets: dict[str, Path]):
         names = sorted(datasets)
         if not names:
             raise ValueError("no files were uploaded for this request")
-        name = args.get("file") or (names[0] if len(names) == 1 else None)
+        raw = args.get("file")
+        if raw is not None and not isinstance(raw, str):
+            # A list or dict is unhashable, so the lookup below raised a bare TypeError (round 6m).
+            raise ValueError(f"file must be one of {names}, given as text")
+        name = raw or (names[0] if len(names) == 1 else None)
         if name not in datasets:
             raise ValueError(f"file must be one of {names}")
         res = run_python(PROFILE_CODE.format(name=name, sheet=args.get("sheet", 0)), timeout_s=60, mem_mb=1536,
@@ -67,9 +71,13 @@ def _col_line(c: dict) -> str:
 
 def observe_inspect(result: dict) -> dict:
     p = result["profile"]
-    return {"file": result["file"], "rows": p["rows"], "read": {k: v for k, v in p["read"].items() if k != "file"},
-            "columns": [_col_line(c) for c in p["columns"][:40]], "issues": p["issues"], "layout_hints": p["layout_hints"],
-            "analysis_run_id": result["run_id"]}
+    out = {"file": result["file"], "rows": p["rows"], "read": {k: v for k, v in p["read"].items() if k != "file"},
+           "columns": [_col_line(c) for c in p["columns"][:40]], "issues": p["issues"], "layout_hints": p["layout_hints"],
+           "analysis_run_id": result["run_id"]}
+    if len(p["columns"]) > 40:
+        # Round 6m: the column cut was silent; a wide file looked as if it had only 40 columns.
+        out["note"] = f"{len(p['columns'])} columns; the first 40 shown. The full profile is kept in the ledger"
+    return out
 
 
 def inspect_data_tool(datasets: dict[str, Path] | None = None) -> Tool:
@@ -87,6 +95,7 @@ INSPECT_DATA_SPEC = {
 }
 
 
+MAX_HORIZON = 512           # the limit of timesfm_forecast and calibrate_intervals
 MAX_BACKTEST_SERIES = 100   # as forecast_report's panel cap (round 5: electricity had 60 clients)
 
 
@@ -97,6 +106,10 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     horizon = args.get("horizon")
     if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
         raise ValueError("horizon must be a positive integer")
+    if horizon > MAX_HORIZON:
+        # The backtest forecasts this horizon at every window, so an unbounded one spends the model on steps timesfm_forecast
+        # would refuse (round 6m: the same limit, 512, as the forecast tools).
+        raise ValueError(f"horizon must be at most {MAX_HORIZON}, the limit of timesfm_forecast; a longer outlook is not backtested")
     named = resolve_series(args)
     if len(named) > MAX_BACKTEST_SERIES:
         raise ValueError(f"{len(named)} series in one call; at most {MAX_BACKTEST_SERIES}. Choose with source.name, or split the file")
@@ -138,7 +151,11 @@ def observe_backtest(result: dict) -> dict:
     """A panel backtest shows its summary table to the planner, not every series' full result (the ledger keeps those)."""
     if "series" not in result:
         return result
-    return {k: v for k, v in result.items() if k != "series"}
+    # Round 6m: the per-series results were dropped with no note; the summary table is what the planner sees.
+    out = {k: v for k, v in result.items() if k != "series"}
+    out["note"] = (f"the full result of each of the {len(result['series'])} series is kept in the ledger; this view shows the "
+                   "summary table only")
+    return out
 
 
 def backtest_tool() -> Tool:

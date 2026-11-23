@@ -17,10 +17,10 @@ import numpy as np
 from prophet_agent.forecast import global_gbm
 from prophet_agent.forecast.timesfm import TimesFMEngine
 from prophet_agent.runtime.runner import Tool
-from prophet_agent.tools.series_io import resolve_series
+from prophet_agent.tools.series_io import MAX_NAMED, resolve_series
 
 ALLOWED = {"source", "horizon", "n_origins", "season", "entities"}
-MAX_PICK = 200          # most entities the person can name in one call
+MAX_PICK = MAX_NAMED    # most entities the person can name in one call: the file reader's own per-call limit (round 6m: was 200)
 OBSERVE_ROWS = 30       # per-entity rows the planner sees; the ledger keeps all of them
 PLAIN = {"naive": "the last value", "seasonal_naive": "the same step last season", "global_gbm": "the global model",
          "timesfm": "TimesFM", "blend": "the blend of the global model and TimesFM"}
@@ -54,7 +54,12 @@ def _run(args: dict, _key: str, engine_factory=None) -> dict[str, Any]:
             raise ValueError(f"entities must be a list of 1 to {MAX_PICK} series names")
         if len(set(entities)) != len(entities):
             raise ValueError("entities must not repeat a name")
-    panel = dict(resolve_series(args))
+    pick = args
+    if entities is not None and isinstance(args.get("source"), dict):
+        # Round 6m: the names are picked from the file before its size is checked, so a 150-series file can be backtested on
+        # three of its series. The file reader's per-call limit then applies to the picked entities, not to the whole file.
+        pick = {**args, "source": {**args["source"], "name": list(entities)}}
+    panel = dict(resolve_series(pick))
     if entities is not None:
         missing = [e for e in entities if e not in panel]
         if missing:

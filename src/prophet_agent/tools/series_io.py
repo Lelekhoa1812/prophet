@@ -33,6 +33,12 @@ def _clean(name: str, raw: Any) -> np.ndarray:
         raise ValueError(f"series {name!r} must be a non-empty list of numbers")
     if len(raw) > MAX_SERIES:
         raise ValueError(f"series {name!r} has {len(raw)} points; the limit is {MAX_SERIES}")
+    # Round 6m: numpy turned a nested list into a two-dimensional array and text such as "1" into a number without a word.
+    # Both are refused here, with the form the values must take.
+    if any(isinstance(v, (list, tuple, dict)) for v in raw):
+        raise ValueError(f"series {name!r} must be one flat list of numbers, not a list of lists or objects")
+    if any(isinstance(v, (str, bool)) for v in raw):
+        raise ValueError(f"series {name!r} contains values that are not numbers (text or true/false); give numbers only")
     try:
         arr = np.asarray(raw, dtype=np.float64)
     except (TypeError, ValueError):
@@ -108,6 +114,9 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     else:
         raise ValueError(f"{rel} must hold a list of numbers or a dict of named lists")
     want = source.get("name")
+    if want is not None and not isinstance(want, (str, list)):
+        # A dict is unhashable and raised a bare TypeError in the lookup below; a number is not a series name either (round 6m).
+        raise ValueError("source.name is one series name (text), or a list of series names")
     if isinstance(want, list):
         # A subset of a panel (live electricity rep5: a list of ten names failed with "unhashable type: 'list'", three times).
         if not want or not all(isinstance(n, str) for n in want):
