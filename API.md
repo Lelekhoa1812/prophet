@@ -127,7 +127,17 @@ A turn is a mission. Fields:
 
 Reason codes: `blocked_by_check` (a required check did not pass), `unverified_figures` (figures not traced to a tool result), `stalled` (the same step kept repeating), `answered_now` (you asked for the answer now), `budget_spent` (a checkpoint), `not_settled`, `impossible`, `failed`, `outcome_unknown`, `cancelled`. A `met` or `completed` turn has no reasons.
 
-Statuses: `created`, `running`, `waiting_user`, `completed`, `met`, `failed`, `stalled`, `impossible`, `iteration_budget`, `budget_exhausted`, `outcome_unknown`, `cancelled`. Working states are `created` and `running`. `waiting_user` needs an answer. Everything else is final.
+`partial` means the run finished with a best answer that was not verified as met. The turn's `status` and the answer's `status` are both `partial`, and `answer` holds the text, labelled as partial. It is a final status, not a failure: the answer and every step are kept, and the person can ask again with more detail. A `partial` turn happens when:
+
+- a required check still failed after the planner had two chances to fix it (reason `blocked_by_check`, with `checks`);
+- a figure in the answer could not be traced to a tool result, including a met answer that fails this trace (reason `unverified_figures`, with `figures`);
+- the planner kept repeating the same step, and the answer was written from the findings made before that (reason `stalled`);
+- the person asked for the answer now, with `answer-now` (reason `answered_now`);
+- the answer was otherwise not settled (reason `not_settled`).
+
+A `partial` turn can carry more than one reason. Its `stalled` reason comes only from a partial answer whose reason says the analysis kept repeating the same step; a turn that stalled with no answer to write has status `stalled` instead.
+
+Statuses: `created`, `running`, `waiting_user`, `completed`, `met`, `partial`, `failed`, `stalled`, `impossible`, `iteration_budget`, `budget_exhausted`, `outcome_unknown`, `cancelled`. Working states are `created` and `running`. `waiting_user` needs an answer. Everything else is final.
 
 A good poll loop waits 2 seconds between calls and stops on any final status. Latency is measured, not promised: across 58 stored missions on one machine, the median run took about 9 minutes (557 s) and the longest about 29 minutes (1,756 s, a run that continued into a second part). Short questions can finish in well under that. Use `progress` to show how far a run has got.
 
