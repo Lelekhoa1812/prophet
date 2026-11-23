@@ -20,7 +20,7 @@ The decided rule, for the owner of nim/errors.py to apply (not applied here, bec
   3. An sk- value masks only when it holds a digit and is 20 characters or longer (the vendor key shape).
 
 The guard tests below pass now and must keep passing: real credentials in these shapes stay masked. The false-positive
-tests are strict expected failures, so they flip to failures (and must lose their marker) when the rule is corrected.
+tests pass under the corrected rule in prophet_agent/nim/errors.py.
 """
 from __future__ import annotations
 
@@ -38,10 +38,6 @@ FALSE_POSITIVES = [
     ("use sk-learn-utilities here", "use sk-learn-utilities here"),
 ]
 
-REASON = "redaction rule is in prophet_agent/nim/errors.py, outside the sandbox package (see module docstring)"
-
-
-@pytest.mark.xfail(strict=True, reason=REASON)
 @pytest.mark.parametrize("text, expected", FALSE_POSITIVES, ids=[t for t, _ in FALSE_POSITIVES])
 def test_analysis_output_that_is_not_a_credential_is_printed_as_written(text, expected):
     r = run_python(f"print({text!r})\n")
