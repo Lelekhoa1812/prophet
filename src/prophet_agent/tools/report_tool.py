@@ -319,7 +319,7 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
     return {
-        "forecast": fc,
+        "forecast": {**fc, "level": is_level_name(title)},
         "run_id": pack.run_id,
         "manifest": f"{pack.workdir}/manifest.json",
         "files": [{"path": o.path, "sha256": o.sha256, "bytes": o.bytes} for o in pack.outputs],
@@ -455,7 +455,7 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
         elif rule != "timesfm":
             fc = _centre(fc, values, rule, _season_arg(args))
         fc = _floor_at_zero(fc, values)
-        out_fc[name] = fc
+        out_fc[name] = {**fc, "level": is_level_name(title)}
         dates = run_dates(args, name)
         if dates is not None and len(dates) != len(values):
             dates = None
@@ -640,6 +640,12 @@ def _headline(fc: dict) -> dict:
     """
     verdict = (fc.get("health") or {}).get("verdict")
     reasons = []
+    if fc.get("level"):
+        # A level (PM2.5, a price, a rate) has no total over days: the sum of its daily values is not a figure anyone reports.
+        # Live Beijing 3581d07d and d861b74e (2026-11-23): the per-station "14-day total" was still emitted after the panel total
+        # was withheld. The average over the horizon and each day's own values are what the pack gives.
+        reasons.append("the measure is a level (a price, rate or concentration), so its total over the horizon means nothing; "
+                       "give the average over the horizon and each day's own values instead")
     if (fc.get("floor") or {}).get("applied"):
         reasons.append(f"{fc['floor']['days_below_zero']} forecast day(s) were below zero in a series whose history never is, "
                        "so they are floored at zero and the total is not a headline")
@@ -660,6 +666,8 @@ def total_range(fc: dict) -> dict | None:
     ``if_days_miss_together`` (the edges add: the widest the total could be). The range under two assumptions lies between them; the answer states both
     and never one of them as exact. Normal approximation, centred on the centre line's total.
     """
+    if fc.get("level"):
+        return None                       # a level has no range for a total (see _headline)
     try:
         point, lo, hi = fc["point"], fc["quantiles"]["0.1"], fc["quantiles"]["0.9"]
         centre = sum(float(v) for v in point)

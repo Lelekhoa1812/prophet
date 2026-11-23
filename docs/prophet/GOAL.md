@@ -667,3 +667,41 @@ Causes, read from each stored answer (not yet fixed; see the next step in this s
   them.
 
 Build f84cce2 gate: scripts/check.sh 1,877 passed, 1 skipped, 4 deselected.
+
+### Repeat rounds 6d and 6e on builds 3f047a5 and ad15f53 (measured, 2026-11-23)
+
+Round 6d (build 3f047a5) ran the retail business user and Beijing together, then electricity. Round 6e (build ad15f53) ran
+the same order. Every series is synthetic. Mission ids are from data/prophet.sqlite.
+
+| Round | Scenario | Mission | Status | Stop reason | Seconds | Tool calls |
+|---|---|---|---|---|---|---|
+| 6d (3f047a5) | retail business user | f1cc71cb | partial | partial_unverified | 149 | 14 |
+| 6d (3f047a5) | Beijing panel | 3581d07d | partial | partial_unverified | 1,388 | 117 |
+| 6d (3f047a5) | electricity panel | 8f4ada17 | completed | done_verified | 706 | 77 |
+| 6e (ad15f53) | retail business user | cae00201 | completed | done_verified | 263 | 17 |
+| 6e (ad15f53) | Beijing panel | d861b74e | partial | partial_unverified | 931 | 99 |
+| 6e (ad15f53) | electricity panel | 29acb1c0 | partial | partial_unverified | 991 | 99 |
+
+Causes of the four partials, read from the stored missions, and the fix for each:
+
+- **Retail business user (f1cc71cb, 6d):** the change test was called with a lag shorter than its recent window, so the two
+  windows overlapped. The tool returned a "not enough history" note that did not name the cause, the planner repeated the same
+  call, and the run stopped as a stall. Fixed in ad15f53: `change_test` raises a ValueError that names the fix when lag is
+  less than recent. Not re-run on a stall case since the fix.
+- **Beijing panel (3581d07d, 6d):** the ledger was saved as out/ledger_full.json, which the check did not read, so the
+  analysis_ledger check counted 0 stages, and the scan's changepoints.level_shift had no decision. The run also repeated the
+  same ledger cell 117 times with new carry ids, so the stall signature never matched. Fixed in ad15f53: LEDGER_FILE accepts
+  out/ledger*.json, and the stall signature ignores carry ids. The next Beijing run (d861b74e) stored only one failure, the
+  level-sum check, so the ledger check passed on that run.
+- **Beijing panel (d861b74e, 6e):** the answer gave an average daily PM2.5 of 873 µg/m³ (12,222 ÷ 14). 12,222 was the sum of
+  station totals, which forecast_report emitted as a panel total for a level title. A level has no meaningful sum.
+  answer_level_not_summed blocked it. Fixed at source in b68ae46: report_tool gives panel_total None for level titles
+  (is_level_name).
+- **Electricity panel (29acb1c0, 6e):** the answer named global_gbm as the centre, following the ledger, while forecast_report
+  drew global_blend for every client. The reason the run stopped on was that the centre the answer named did not match the
+  pack. Fixed in b68ae46: _centre_named_wrong blocks a centre claim that names the other rule. A ranking sentence that names
+  a rule is not a centre claim.
+
+Both fixes in b68ae46 are checked by unit tests and by the replay of the stored answers. The live rerun is in the next section.
+Known open item: the Beijing answer still gives a per-station 14-day total for a level measure (PM2.5), because only the panel
+total is withheld at source.
