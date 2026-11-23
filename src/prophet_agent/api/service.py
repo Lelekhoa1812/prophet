@@ -76,7 +76,15 @@ class MissionService:
         # Missions a previous process left running would otherwise block their notebook forever.
         self.interrupted_at_start = self.store.interrupt_orphans()
         self._stop = threading.Event()
-        threading.Thread(target=self._sweep_loop, daemon=True, name="orphan-sweeper").start()
+        self._sweeper = threading.Thread(target=self._sweep_loop, daemon=True, name="orphan-sweeper")
+        self._sweeper.start()
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Stop the orphan sweeper and wait for it to exit. Called when the API app shuts down, so the sweeper never runs
+        against a store that its owner has finished with. Safe to call more than once."""
+        self._stop.set()
+        if self._sweeper is not threading.current_thread():
+            self._sweeper.join(timeout)
 
     # A restart inside a dead worker's lease window leaves its mission "running" with nobody behind it. The startup pass
     # cannot tell that from a live one, so the same check runs on a timer: once the lease lapses, the mission is marked

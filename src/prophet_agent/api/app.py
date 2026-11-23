@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -188,7 +189,12 @@ def _history(args: dict) -> list[float]:
 
 
 def create_app(service: MissionService) -> FastAPI:
-    app = FastAPI(title="Prophet", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        service.close()                              # stop the orphan sweeper when the app shuts down
+
+    app = FastAPI(title="Prophet", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     app.state.service = service
 
