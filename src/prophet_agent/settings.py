@@ -137,6 +137,40 @@ class Settings:
 
     def update(self, patch: dict[str, Any]) -> dict[str, dict[str, int]]:
         """Validate and persist a partial update. Raises ValueError naming the first problem; nothing is written then."""
+        current, llm_patch = self._check_patch(patch)
+        with self._lock:
+            stored = self._raw()                     # keep sections this method does not own, such as key_checks
+            if llm_patch is not None:
+                stored[LLM_SECTION] = self._llm_after(stored, llm_patch)
+            stored.update(current)
+            self._write_json(self.path, stored)
+        if llm_patch is not None:
+            reset_shared_client()
+        return current
+
+    def check_save(self, body: dict[str, Any]) -> None:
+        """Dry run of one settings save: limits, llm choices and keys together, in the shape the settings API takes
+        (``nim: {keys}``, ``providers: {name: {keys}}``). Raises ValueError for the first problem and writes nothing,
+        so a caller can refuse the whole save before update() or set_keys() touches disk."""
+        if not isinstance(body, dict):
+            raise ValueError("settings must be an object")
+        nim = body.get("nim")
+        providers = body.get("providers")
+        if nim is not None and (not isinstance(nim, dict) or set(nim) - {"keys"}):
+            raise ValueError("nim accepts only keys")
+        if providers is not None and not isinstance(providers, dict):
+            raise ValueError("providers must map a provider name to {keys: [...]}")
+        self._check_patch(body)                      # KEY_SECTIONS are skipped there, as in update()
+        if isinstance(nim, dict) and "keys" in nim:
+            self._resolve_keys(nim["keys"], DEFAULT_PROVIDER)
+        for name, entry in (providers or {}).items():
+            if name not in PROVIDERS or not isinstance(entry, dict) or set(entry) - {"keys"}:
+                raise ValueError(f"providers.{name} accepts only keys for a known provider")
+            if "keys" in entry:
+                self._resolve_keys(entry["keys"], name)
+
+    def _check_patch(self, patch: dict[str, Any]) -> tuple[dict[str, dict[str, int]], dict[str, Any] | None]:
+        """Every check update() needs, with no write. Returns the merged numeric settings and the llm patch, if any."""
         if not isinstance(patch, dict):
             raise ValueError("settings must be an object")
         current = self.values()
@@ -158,15 +192,9 @@ class Settings:
                 if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                     raise ValueError(f"{section}.{name} must be a whole number from {low} to {high}")
                 current[section][name] = value
-        with self._lock:
-            stored = self._raw()                     # keep sections this method does not own, such as key_checks
-            if llm_patch is not None:
-                stored[LLM_SECTION] = self._llm_after(stored, llm_patch)   # validates before anything is written
-            stored.update(current)
-            self._write_json(self.path, stored)
         if llm_patch is not None:
-            reset_shared_client()
-        return current
+            self._llm_after(self._raw(), llm_patch)  # raises for a bad llm choice; the result is not kept here
+        return current, llm_patch
 
     def _raw(self) -> dict[str, Any]:
         try:
@@ -400,6 +428,23 @@ class Settings:
         that echoes masked values back cannot erase a key. Writes .env (owner-only) and the process environment. The
         provider's key checks are cleared, because the slots now mean different keys."""
         spec = get_provider(provider)
+        resolved = self._resolve_keys(keys, provider)
+        self._write_dotenv(spec, resolved)
+        os.environ[spec.key_list_var] = ",".join(resolved)
+        for alias in spec.key_aliases:
+            os.environ[alias] = ""
+        if spec.key_prefix:
+            for i in range(1, 10):                   # blank the indexed form so an old value cannot come back
+                os.environ[f"{spec.key_prefix}_{i}"] = ""
+                for alias in spec.key_aliases:
+                    os.environ[f"{alias}_{i}"] = ""
+        self._drop_key_checks(provider)
+        reset_shared_client(provider)
+        return resolved
+
+    def _resolve_keys(self, keys: Any, provider: str) -> list[str]:
+        """Every check set_keys needs, with no write: the full key list it would store."""
+        spec = get_provider(provider)
         if not isinstance(keys, list) or len(keys) > MAX_KEYS:
             raise ValueError(f"keys must be a list of at most {MAX_KEYS} entries")
         existing = self.key_slots(None, provider)
@@ -424,17 +469,6 @@ class Settings:
                 resolved.append(value)
         if not spec.multi_key and len(resolved) > 1:
             raise ValueError(f"{spec.label} takes one key")
-        self._write_dotenv(spec, resolved)
-        os.environ[spec.key_list_var] = ",".join(resolved)
-        for alias in spec.key_aliases:
-            os.environ[alias] = ""
-        if spec.key_prefix:
-            for i in range(1, 10):                   # blank the indexed form so an old value cannot come back
-                os.environ[f"{spec.key_prefix}_{i}"] = ""
-                for alias in spec.key_aliases:
-                    os.environ[f"{alias}_{i}"] = ""
-        self._drop_key_checks(provider)
-        reset_shared_client(provider)
         return resolved
 
     def _write_dotenv(self, spec: Provider, keys: list[str]) -> None:

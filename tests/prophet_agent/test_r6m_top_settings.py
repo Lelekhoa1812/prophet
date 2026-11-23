@@ -92,3 +92,29 @@ def test_a_failed_swap_leaves_the_old_env_intact_and_no_temp_file_behind(setting
         stray += [p.name for p in settings.data_root.iterdir() if p.name.startswith(".")]
     assert stray == [".env"], "no temp file may keep a key outside the owner-only .env"
     assert stat.S_IMODE(os.stat(settings.dotenv).st_mode) == 0o600
+
+
+def test_a_save_with_a_refused_nim_key_changes_no_limit(settings):
+    """The settings API saves one body. A refused key must refuse the whole body, limits included."""
+    before = settings.values()
+    body = {"agent": {"part_steps": 50}, "nim": {"keys": ["not a key"]}}
+    with pytest.raises(ValueError):
+        settings.check_save(body)
+    assert settings.values() == before
+    assert settings.dotenv.read_text() == "# keep me\n"
+
+
+def test_a_save_with_a_refused_provider_key_changes_no_limit(settings):
+    before = settings.values()
+    body = {"agent": {"part_steps": 50}, "providers": {"gemini": {"keys": ["short"]}}}
+    with pytest.raises(ValueError):
+        settings.check_save(body)
+    assert settings.values() == before
+
+
+def test_a_valid_save_passes_the_check_and_is_only_written_by_update(settings):
+    body = {"agent": {"part_steps": 50}, "nim": {"keys": []}}
+    settings.check_save(body)
+    assert settings.values()["agent"]["part_steps"] == 200
+    settings.update({"agent": {"part_steps": 50}})
+    assert settings.values()["agent"]["part_steps"] == 50
