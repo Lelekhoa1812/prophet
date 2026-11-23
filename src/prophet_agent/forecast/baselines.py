@@ -113,6 +113,9 @@ def _measured_lead_sd(s: np.ndarray, w: int, h: int) -> np.ndarray | None:
 
 def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray, np.ndarray]:
     s = np.asarray(series, dtype=float)
+    # An empty history or a window below one has no level. Returning zero would be a forecast with no basis (R6m probe).
+    if len(s) == 0 or window < 1:
+        raise ValueError("moving_average needs at least one point and a window of at least 1")
     w = min(window, len(s))
     level = s[-w:].mean() if w else 0.0
     sd_h = _measured_lead_sd(s, w, h) if w >= 1 else None

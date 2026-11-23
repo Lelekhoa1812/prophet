@@ -6,8 +6,9 @@ contained its only finite actual: a missing actual was counted as a miss.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from prophet_agent.forecast import metrics
+from prophet_agent.forecast import baselines, metrics, tsb
 
 
 def test_coverage_leaves_out_missing_actuals_instead_of_counting_them_as_misses():
@@ -18,8 +19,6 @@ def test_coverage_leaves_out_missing_actuals_instead_of_counting_them_as_misses(
 
 
 # ------------------------------------------------------------------------------------------ TSB: missing periods --
-
-from prophet_agent.forecast import tsb  # noqa: E402
 
 LUMPY = np.array([0.0, 3.0, 0.0, 0.0, 5.0, 2.0, 0.0, 4.0, 0.0, 0.0, 6.0, 1.0, 0.0, 0.0, 0.0, 3.0] * 3)
 
@@ -45,3 +44,12 @@ def test_tsb_sampler_ignores_a_missing_period_too():
 def test_intermittence_is_judged_on_the_observed_periods_only():
     with_gap = np.concatenate([LUMPY, [np.nan] * 10])
     assert tsb.is_intermittent(with_gap) == tsb.is_intermittent(LUMPY)
+
+
+# ---------------------------------------------------------------------------------------- baselines: empty history --
+
+def test_moving_average_refuses_an_empty_history_instead_of_forecasting_zero():
+    with pytest.raises(ValueError):
+        baselines.moving_average(np.array([]), 3, 4)
+    with pytest.raises(ValueError):
+        baselines.moving_average(np.array([1.0, 2.0]), 3, 0)
