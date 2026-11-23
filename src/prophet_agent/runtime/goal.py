@@ -42,7 +42,7 @@ from .grounding import snap, snap_note, unverified
 from . import agents
 from .questions import QUESTIONS_SCHEMA, validate_questions
 from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
-from .store import OutcomeUnknown, canonical
+from .store import LeaseLost, OutcomeUnknown, canonical
 
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT
 
@@ -1168,8 +1168,11 @@ def _coverage_note(obs: dict, history: list[dict]) -> str | None:
 def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> dict:
     try:
         result = ctx.call(tool, args)
-    except (BudgetExceeded, Cancelled, OutcomeUnknown, Paused):
-        raise                    # control flow, not evidence: the runtime must see these
+    except (BudgetExceeded, Cancelled, OutcomeUnknown, Paused, LeaseLost):
+        # Control flow, not evidence: the runtime must see these. A lost lease is included: the renewal runs inside
+        # Ctx.call, so before this it became a tool error and the loop went on writing after another runtime took the mission
+        # (audit: goal.py:1177-1178, runtime HIGH).
+        raise
     except ArgumentRejected as exc:
         # Round 3 (A5-12): a refused argument list is not a tool call and is not charged. Live: an "unknown arguments" error
         # was counted and the same invalid call was sent again.
