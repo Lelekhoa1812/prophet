@@ -350,12 +350,15 @@ class Store:
             if caller is None:
                 return                                   # not leased through this store: an outside write, unchanged
             raise LeaseLost(f"mission {mission_id} is not leased to this runtime")
-        row = c.execute("SELECT lease_owner FROM missions WHERE id=?", (mission_id,)).fetchone()
+        row = c.execute("SELECT lease_owner, lease_until FROM missions WHERE id=?", (mission_id,)).fetchone()
         if row is None:
             raise LeaseLost(f"mission {mission_id} no longer exists")
         holder = row["lease_owner"]
         if caller is None:
-            if holder is not None and holder != expected:
+            # A lapsed lease that another runtime took and then left is not a live holder: the record still names it
+            # until a sweep clears it, but an outside write (cancel, budget) must not be refused by a stale name.
+            live_foreign = holder is not None and holder != expected and row["lease_until"] > time.time()
+            if live_foreign:
                 raise LeaseLost(f"mission {mission_id} lease was taken over by another runtime")
             return
         if caller != expected or holder != expected:
