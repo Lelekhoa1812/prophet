@@ -5,6 +5,7 @@ The `run` name dispatcher from the legacy file is not ported. Callers use the th
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -111,8 +112,25 @@ def _measured_lead_sd(s: np.ndarray, w: int, h: int) -> np.ndarray | None:
     return np.sqrt(np.maximum(a + b * np.arange(h, dtype=float), 0.0))
 
 
-def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray, np.ndarray]:
+def require_finite(series: Any, name: str) -> np.ndarray:
+    """The history as floats, or a ValueError naming the count of missing values.
+
+    Motivation vs Logic
+    Motivation (known defect): a baseline with a NaN in its window returned a NaN point and band, which reached scores and
+    charts with no reason (GOAL.md: "baselines propagate NaN").
+    Logic: a gap is not a zero and not the last level, so no baseline has an honest value for it. Each baseline refuses and
+    says how many values are missing; the caller fills or cuts them first.
+    """
     s = np.asarray(series, dtype=float)
+    bad = int((~np.isfinite(s)).sum())
+    if bad:
+        raise ValueError(f"{name} refuses a history with {bad} missing or non-finite value(s) of {len(s)}: a gap is not a zero "
+                         "or the last level, so fill or cut them first")
+    return s
+
+
+def moving_average(series: np.ndarray, h: int, window: int) -> tuple[np.ndarray, np.ndarray]:
+    s = require_finite(series, "moving_average")
     # An empty history or a window below one has no level. Returning zero would be a forecast with no basis (R6m probe).
     if len(s) == 0 or window < 1:
         raise ValueError("moving_average needs at least one point and a window of at least 1")
@@ -160,7 +178,7 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
     """
     if band_mode not in ("phase", "sqrt"):
         raise ValueError("band_mode must be 'phase' or 'sqrt'")
-    s = np.asarray(series, dtype=float)
+    s = require_finite(series, "seasonal_naive")
     if len(s) < season:
         return moving_average(s, h, season)
     p = np.zeros(h)
@@ -187,7 +205,7 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
 
 def seasonal_year(series: np.ndarray, h: int, season: int = 52) -> tuple[np.ndarray, np.ndarray]:
     """Same period last season, scaled by the recent level ratio. Needs more than one season of history."""
-    s = np.asarray(series, dtype=float)
+    s = require_finite(series, "seasonal_year")
     if len(s) < season + h + 8:
         return moving_average(s, h, 8)
     recent = s[-8:].mean()

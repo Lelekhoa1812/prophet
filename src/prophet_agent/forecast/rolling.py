@@ -24,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from prophet_agent.forecast.baselines import candidate_rules, rule_windows
+from prophet_agent.forecast.baselines import candidate_rules, require_finite, rule_windows
 from prophet_agent.forecast.combine import adopt_equal_blend, combine, equal_blend
 from prophet_agent.forecast.health import season_check
 from prophet_agent.forecast.metrics import paired_signflip, wis
@@ -46,12 +46,14 @@ BLEND_CAVEAT = ("The rule and the adoption were both chosen on these same window
 
 
 def _snaive(x: np.ndarray, h: int, m: int) -> np.ndarray:
+    x = require_finite(x, "seasonal_naive")
     if m < 2 or len(x) < m:
         return np.full(h, x[-1])
     return np.array([x[len(x) - m + (i % m)] for i in range(h)])
 
 
 def _drift(x: np.ndarray, h: int) -> np.ndarray:
+    x = require_finite(x, "drift")
     if len(x) < 2:
         return np.full(h, x[-1])
     slope = (x[-1] - x[0]) / (len(x) - 1)
@@ -73,6 +75,7 @@ def _mean_last_window(m: int) -> int:
 
 
 def _mean_last(x: np.ndarray, h: int, m: int) -> np.ndarray:
+    x = require_finite(x, "mean_last_season")
     return np.full(h, x[-_mean_last_window(m):].mean())
 
 
