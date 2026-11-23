@@ -115,6 +115,15 @@ def _hook(event, args):
                    "os.forkpty", "_posixsubprocess.fork_exec"):
         # os.forkpty was missing (round 6m): it forks a child in a new session, outside the process group the timeout kills.
         raise PermissionError("starting processes is blocked in the sandbox")
+    elif event in ("os.listdir", "os.scandir"):
+        # Listing the project or home folder shows which keys and notes exist, though their contents are blocked (round 6m).
+        p = args[0] if args else None
+        if isinstance(p, os.PathLike):
+            p = os.fspath(p)
+        if isinstance(p, bytes):
+            p = os.fsdecode(p)
+        if isinstance(p, str) and not _readable(p):
+            raise PermissionError("reading this location is blocked in the sandbox: " + os.path.basename(p))
     elif event in ("os.kill", "os.killpg"):
         # Signals reach any process of the same user, the parent included (round 6m). A program may signal itself and its
         # own process group only.
