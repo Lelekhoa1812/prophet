@@ -61,6 +61,16 @@ def missing_output(run_id: str, rel: str) -> str:
             + (", ".join(wrote) if wrote else "no files") + ". Name one of those, or the run that saved this file")
 
 
+def _out_file(run_id: str, rel: str) -> Path:
+    """The resolved path of ``rel`` inside the run's ``out/`` folder. Raises ValueError when it lies elsewhere. Every reader of
+    a source file goes through here: an absolute or ``../`` name used to read any file on disk (round 6l, audit item 6)."""
+    base = (SANDBOX_ROOT / run_id).resolve()
+    target = (base / rel).resolve()
+    if not str(target).startswith(str((base / OUT_DIR).resolve()) + "/"):
+        raise ValueError(missing_output(run_id, rel))
+    return target
+
+
 def source_path(args: dict) -> Path:
     """The file a ``source`` argument names, after the same checks as resolve_series: a hex run id and a file inside the
     run's ``out/`` folder. Raises ValueError with the fix when either check fails."""
@@ -68,9 +78,8 @@ def source_path(args: dict) -> Path:
     if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
         raise ValueError("source needs run_id (the 32-character id of the analysis run that wrote the file)")
     rel = str(source.get("file", f"{OUT_DIR}/series.json"))
-    base = (SANDBOX_ROOT / source["run_id"]).resolve()
-    target = (base / rel).resolve()
-    if not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
+    target = _out_file(source["run_id"], rel)
+    if not target.is_file():
         raise ValueError(missing_output(source["run_id"], rel))
     return target
 
@@ -84,9 +93,8 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
         raise ValueError("source needs run_id (the 32-character id of the analysis run that wrote the file)")
     rel = str(source.get("file", f"{OUT_DIR}/series.json"))
-    base = (SANDBOX_ROOT / source["run_id"]).resolve()
-    target = (base / rel).resolve()
-    if not str(target).startswith(str((base / OUT_DIR).resolve()) + "/") or not target.is_file():
+    target = _out_file(source["run_id"], rel)
+    if not target.is_file():
         raise ValueError(missing_output(source["run_id"], rel))
     try:
         doc = json.loads(target.read_text(encoding="utf-8"))
@@ -126,7 +134,7 @@ def source_covariates(args: dict) -> dict[str, Any]:
     if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
         return {}
     try:
-        target = (SANDBOX_ROOT / source["run_id"] / str(source.get("file", f"{OUT_DIR}/series.json"))).resolve()
+        target = _out_file(source["run_id"], str(source.get("file", f"{OUT_DIR}/series.json")))
         doc = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
@@ -140,7 +148,7 @@ def run_dates(args: dict, name: str) -> list[str] | None:
     if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
         return None
     try:
-        target = (SANDBOX_ROOT / source["run_id"] / str(source.get("file", f"{OUT_DIR}/series.json"))).resolve()
+        target = _out_file(source["run_id"], str(source.get("file", f"{OUT_DIR}/series.json")))
         doc = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None

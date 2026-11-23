@@ -6,7 +6,8 @@ run id or a list of open questions the agent wants to keep exactly must live som
 calls this the todo or notes file; Claude Code's agent memory is the same idea.
 Logic: one note store per mission, one scope per agent (``main`` for the goal, ``a1``, ``a2`` for sub-agents). An agent writes
 and appends only to its own scope and may read any scope, so the parent can read what a sub-agent left and a sub-agent can
-read the parent's brief notes. A note is plain text, at most 6,000 characters. The tool is idempotent: a write is an upsert.
+read the parent's brief notes. A note is plain text, at most 6,000 characters. The tool is idempotent: a write is an upsert,
+and an append that repeats the note's last text is a no-op, so a retried call does not duplicate it.
 """
 from __future__ import annotations
 
@@ -44,7 +45,13 @@ def notes_tool(store, mission_id: str, scope: str) -> Tool:
                 raise ValueError("text must be a non-empty string")
             if len(text) > MAX_NOTE:
                 raise ValueError(f"a note is at most {MAX_NOTE} characters")
-            if store.note_get(mission_id, scope, name) is None and len(store.note_list(mission_id, scope)) >= MAX_NOTES:
+            current = store.note_get(mission_id, scope, name)
+            if action == "append" and current is not None and (current == text or current.endswith("\n" + text)):
+                # The tool is re-run after a crash while "started", with the same arguments. An append that repeats the
+                # note's last text is therefore a no-op; otherwise a retry would write the same line twice (round 6l, item 7).
+                return {"scope": scope, "name": name, "chars": min(len(current), MAX_NOTE * 4), "saved": True,
+                        "unchanged": True}
+            if current is None and len(store.note_list(mission_id, scope)) >= MAX_NOTES:
                 raise ValueError(f"at most {MAX_NOTES} notes per agent; overwrite or reuse one")
             chars = store.note_put(mission_id, scope, name, text, append=(action == "append"))
             return {"scope": scope, "name": name, "chars": min(chars, MAX_NOTE * 4), "saved": True}
