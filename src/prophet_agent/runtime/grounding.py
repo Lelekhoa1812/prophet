@@ -438,9 +438,16 @@ _TREATMENTS = (
                                                                              "truncat", "regime")),
     (re.compile(r"\bprophet\b", re.I), ("fbprophet", "prophet import", "prophet(", "prophet.prophet")),
     (re.compile(r"znorm|z-norm|normalis|normaliz", re.I), ("znorm",)),
-    (re.compile(r"symmetric", re.I), ("symmetric",)),
+    (re.compile(r"\bsymmetric", re.I), ("symmetric",)),
+    (re.compile(r"\basymmetric", re.I), ("asymmetric",)),
     (re.compile(r"covariate|holiday|driver", re.I), ("covariate", "driver", "holiday")),
 )
+
+
+def _carries(call_text: str, marker: str) -> bool:
+    """Whether a call's arguments carry a marker as a word or the start of one. "symmetric" is not carried by "asymmetric"
+    (audit round 6l, item 5: a claim of a symmetric loss passed on a call that used the asymmetric loss)."""
+    return re.search(r"(?<![a-z0-9])" + re.escape(marker), call_text) is not None
 
 
 def _call_arguments(history) -> list[str]:
@@ -466,7 +473,7 @@ def unsupported_method_claims(answer: str, history: list) -> list[str]:
         if not m or negated(unit, m.start()):
             continue
         for rx, markers in _TREATMENTS:
-            if rx.search(unit) and not any(mk in c for c in calls for mk in markers):
+            if rx.search(unit) and not any(_carries(c, mk) for c in calls for mk in markers):
                 out.append(unit.strip())
                 break
     return out
