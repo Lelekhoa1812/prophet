@@ -85,7 +85,7 @@ def test_the_bundled_inputs_match_their_recorded_sha256(tmp_path, monkeypatch):
     mid, files = _mission_with_run(service, root)
     zf = _zip(client, mid)
     hashes = json.loads(zf.read("hashes.json"))
-    assert hashes[f"runs/{RUN_A}/in/series.csv"] == _sha(files["in/series.csv"])
+    assert hashes[f"runs/{RUN_A}/in/series.csv"] == {"sha256": _sha(files["in/series.csv"])}
     assert zf.read(f"runs/{RUN_A}/in/series.csv") == files["in/series.csv"]
 
 

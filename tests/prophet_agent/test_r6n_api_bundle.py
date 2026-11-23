@@ -2,7 +2,7 @@
 
 The bundle removes key-shaped text from text files before it writes them. Hashing the scrubbed copy alone meant a person who
 compared hashes.json with their original file found a mismatch. A changed file now records sha256_original (the bytes as
-read from the sandbox, the bytes the person supplied) and sha256_scrubbed (the copy in the bundle), and only when they differ.
+read from the sandbox, the bytes the person supplied), and every entry's sha256 is the copy in the bundle.
 
 The key below is synthetic: "nvapi-" followed by twenty made-up letters. No real key is used anywhere in these tests.
 """
@@ -67,8 +67,8 @@ def test_a_scrubbed_input_records_the_hash_of_the_original_bytes_and_of_the_scru
 
     record = json.loads(entries["hashes.json"])[f"runs/{rid}/in/data.csv"]
     assert record["sha256_original"] == _sha(original), "the original hash must match the bytes the person supplied"
-    assert record["sha256_scrubbed"] == _sha(stored), "the scrubbed hash must match the copy in the bundle"
-    assert record["sha256_scrubbed"] != record["sha256_original"]
+    assert record["sha256"] == _sha(stored), "the hash must match the copy in the bundle"
+    assert record["sha256"] != record["sha256_original"]
 
 
 def test_a_file_that_needed_no_scrubbing_has_one_hash_that_matches_its_bytes(tmp_path):
@@ -77,13 +77,13 @@ def test_a_file_that_needed_no_scrubbing_has_one_hash_that_matches_its_bytes(tmp
     data = b"date,value\n2026-01-01,4\n"
     mid, rid = _mission_with_run(service, sandbox, {"program.py": b"pass\n", "in/data.csv": data})
     hashes = json.loads(_read(build_bundle(service.store, mid, sandbox))["hashes.json"])
-    assert hashes[f"runs/{rid}/in/data.csv"] == _sha(data)
-    assert "sha256_scrubbed" not in json.dumps(hashes), "a file that did not change records no second hash"
+    assert hashes[f"runs/{rid}/in/data.csv"] == {"sha256": _sha(data)}, "every entry is an object with sha256"
+    assert "sha256_original" not in json.dumps(hashes), "a file that did not change records no second hash"
 
 
 def test_the_rerun_note_tells_the_reader_which_hash_to_compare(tmp_path):
     note = bundle_mod.RERUN_NOTE
-    assert "sha256_original" in note and "sha256_scrubbed" in note
+    assert "sha256_original" in note and "sha256" in note
     service = MissionService(tmp_path / "api.sqlite", lambda: None, default_tools())
     sandbox = tmp_path / "sandbox"
     mid, _ = _mission_with_run(service, sandbox, {"program.py": b"pass\n"})

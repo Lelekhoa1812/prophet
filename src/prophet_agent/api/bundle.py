@@ -26,10 +26,10 @@ RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 KEY_SHAPED = re.compile(r"nvapi-[A-Za-z0-9_\-]{4,}")
 PACKAGES = ("timesfm", "numpy", "pandas", "scipy", "lightgbm", "statsmodels")
 MAX_INPUT_BYTES = 200 * 1024 * 1024        # inputs beyond this are listed by hash and not copied
-RERUN_NOTE = ("Rerunning the same code on the same input should give the same figures. Each file's sha256 is in hashes.json. "
-              "To check an input against your original file, compare your file's hash with sha256_original. Where hashes.json "
-              "also gives sha256_scrubbed, that is the copy in this bundle, with key-shaped text removed. "
-              "Package versions are in configuration.json.")
+RERUN_NOTE = ("Rerunning the same code on the same input should give the same figures. Each file's entry in hashes.json has "
+              "a sha256, which is the copy in this bundle. Where an entry also has sha256_original, the file held key-shaped "
+              "text that was removed here; to check an input against your original file, compare your file's hash with "
+              "sha256_original. Package versions are in configuration.json.")
 BUDGET_SECRET_WORDS = ("key", "token", "secret", "password")
 
 
@@ -114,8 +114,8 @@ def build_bundle(store, mission_id: str, sandbox_root: Path, prompts: dict | Non
         name: {"version": load(version).version, "sha256": load(version).sha256} for name, version in CURRENT.items()}
 
     entries: dict[str, bytes] = {}
-    # A file that was not changed has its sha256 as a string. A file that held key-shaped text has both hashes: the bytes as
-    # they were read (what the person can check against their own file) and the scrubbed copy stored in the bundle.
+    # Every entry is an object with the sha256 of the file as stored in the bundle. A file that held key-shaped text also
+    # has sha256_original: the bytes as they were read, which is what the person can check against their own file.
     hashes: dict[str, Any] = {}
     missing: list[str] = []
     input_bytes = 0
@@ -124,7 +124,7 @@ def build_bundle(store, mission_id: str, sandbox_root: Path, prompts: dict | Non
     def add(name: str, data: bytes) -> None:
         stored = _scrub(data)
         entries[name] = stored
-        hashes[name] = _sha(data) if stored == data else {"sha256_original": _sha(data), "sha256_scrubbed": _sha(stored)}
+        hashes[name] = {"sha256": _sha(stored)} if stored == data else {"sha256": _sha(stored), "sha256_original": _sha(data)}
 
     for run_id in _run_ids(tool_rows):
         run_dir = sandbox_root / run_id
@@ -136,7 +136,7 @@ def build_bundle(store, mission_id: str, sandbox_root: Path, prompts: dict | Non
             if rel.startswith("in/"):
                 if input_bytes + len(data) > MAX_INPUT_BYTES:
                     skipped_inputs.append(rel)
-                    hashes[f"runs/{run_id}/{rel}"] = _sha(data)
+                    hashes[f"runs/{run_id}/{rel}"] = {"sha256": _sha(data)}
                     continue
                 input_bytes += len(data)
             add(f"runs/{run_id}/{rel}", data)

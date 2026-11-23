@@ -71,7 +71,7 @@ def test_the_bundle_holds_the_mission_files_and_a_sha256_for_each_of_them(tmp_pa
     hashes = json.loads(entries["hashes.json"])
     assert set(hashes) == set(entries) - {"hashes.json"}
     for name, digest in hashes.items():
-        assert hashlib.sha256(entries[name]).hexdigest() == digest, name
+        assert hashlib.sha256(entries[name]).hexdigest() == digest["sha256"], name
     mission = json.loads(entries["mission.json"])
     assert mission["id"] == mid and mission["goal"] == "forecast the regional demand"
 
@@ -113,7 +113,7 @@ def test_an_input_over_the_copy_limit_is_listed_by_hash_and_not_copied(tmp_path,
     config = json.loads(entries["configuration.json"])
     assert config["inputs_not_copied"] == ["in/big.csv"]
     hashes = json.loads(entries["hashes.json"])
-    assert hashes[f"runs/{rid}/in/big.csv"] == hashlib.sha256(files["in/big.csv"]).hexdigest()
+    assert hashes[f"runs/{rid}/in/big.csv"] == {"sha256": hashlib.sha256(files["in/big.csv"]).hexdigest()}
 
 
 def test_a_run_folder_that_is_gone_is_listed_as_missing(tmp_path):
