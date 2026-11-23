@@ -60,7 +60,7 @@ _PREFIXES = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec
 # Mutating calls that change the file system. Each entry lists which argument positions are paths that must stay inside.
 _MUTATE = {"os.remove": (0,), "os.rmdir": (0,), "os.mkdir": (0,), "os.chmod": (0,), "os.truncate": (0,),
            "os.utime": (0,), "os.chown": (0,), "os.rename": (0, 1), "os.replace": (0, 1), "os.link": (0, 1),
-           "os.symlink": (1,)}
+           "os.symlink": (1,), "os.chflags": (0,), "os.setxattr": (0,), "os.removexattr": (0,)}
 def _fold(p):
     # macOS and Windows file systems ignore case, and realpath keeps the case the caller typed. Without folding, /Users/LIAMLE
     # or in/ written as IN/ got past the prefix checks (round 6l, audit item 2: probed, the project file was read and in/ was
@@ -205,6 +205,27 @@ for _name, _positions, _ro in (
     if hasattr(os, _name):
         setattr(os, _name, _dir_fd_guard(getattr(os, _name), _positions, _ro))
 del _name, _positions, _ro
+# A FIFO or device node is created without any audit event (round 6m), so the path itself is checked here. The same function
+# is reachable as os.mkfifo and posix.mkfifo, so both names are wrapped.
+def _path_guard(fn):
+    def guarded(*a, **k):
+        if k.get("dir_fd") is None and a:
+            p = a[0]
+            if isinstance(p, os.PathLike):
+                p = os.fspath(p)
+            if isinstance(p, bytes):
+                p = os.fsdecode(p)
+            if isinstance(p, str) and not _inside(p):
+                raise PermissionError("changing files outside the run folder is blocked: " + os.path.basename(p))
+        return fn(*a, **k)
+    guarded.__name__ = fn.__name__
+    return guarded
+import posix as _posix
+for _name in ("mkfifo", "mknod"):
+    _guarded = _path_guard(_dir_fd_guard(getattr(os, _name), {"dir_fd": 0}))
+    setattr(os, _name, _guarded)
+    setattr(_posix, _name, _guarded)
+del _name, _guarded
 import builtins, io
 _OPEN = builtins.open
 CARRIED = os.path.join(WD, "in", "carried")
