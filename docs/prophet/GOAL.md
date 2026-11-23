@@ -805,3 +805,20 @@ shape description reached the planner in 10 observations, and the final table ma
 cells. One run does not prove the stall is gone in every case; it is the open check for the next rounds.
 
 Gate: 1,935 passed, 1 skipped, 4 deselected.
+
+### Round 6k: the forecast window is named in every observation (fixed 2026-11-23, build after 008917e)
+
+Live retail rep9 (e6caf00e) reached done_verified, but its answer gave the forecast total without the period it covered. The
+forecast did carry its dates: all five `forecast_report` calls wrote `out/forecast.json` with date lists matching their
+horizons (30, 38, 39, 40 and 54 steps), and the table had a date column. Nothing named the window, so the planner had to
+infer it from the table's first and last rows.
+
+- **Forecast report.** `observe()` now adds `window` (first, last, steps) for a single series, and each panel line carries
+  its own `window`. Fixed in `report_tool.py` by the `_window` helper.
+- **Raw TimesFM.** `timesfm_forecast` returns `future_dates` and `window` when the history's dates are known and match its
+  length, and the compact view the planner reads shows the window (rep8 had answered with 20 values and no period).
+  Fixed in `timesfm_tool.py` by `_attach_window`.
+
+Tests: `tests/prophet_agent/test_r6j_report_window.py` (2) and `tests/prophet_agent/test_r6j_timesfm_window.py` (5), with the
+retail date tests (8). Commits 1c0882c and e147381. Gate: 1,950 passed, 1 skipped, 4 deselected. A live rerun on this build
+has not been done; it is the open check for the next round.
