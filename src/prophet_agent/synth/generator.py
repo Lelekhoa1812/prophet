@@ -200,7 +200,7 @@ def generate(seed: int, n_entities: int, n_periods: int, horizon: int, *, freq: 
 
     # promotions: about one item in twelve gets one to three uplift windows of one to two weeks
     promo = np.ones((n_items, nd))
-    for i in rng.choice(n_items, max(8, n_items // 12), replace=False):
+    for i in rng.choice(n_items, min(n_items, max(8, n_items // 12)), replace=False):   # at most every item when n_items < 8
         for _ in range(int(rng.integers(1, 4))):
             s0 = int(rng.integers(30, nd - 20))
             ln = int(rng.integers(7, 15))
