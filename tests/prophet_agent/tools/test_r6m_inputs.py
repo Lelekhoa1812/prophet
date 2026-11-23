@@ -18,3 +18,27 @@ def test_inspect_data_refuses_a_file_name_that_is_not_text(tmp_path):
     for bad in (["a.csv"], {"name": "a.csv"}, 5):
         with pytest.raises(ValueError, match="file must be one of"):
             run({"file": bad}, "k")
+
+
+@pytest.fixture()
+def sandbox(tmp_path, monkeypatch):
+    from prophet_agent.tools import series_io
+    monkeypatch.setattr(series_io, "SANDBOX_ROOT", tmp_path)
+    return tmp_path
+
+
+def _panel_file(root, run_id, doc):
+    import json
+    (root / run_id / "out").mkdir(parents=True)
+    (root / run_id / "out" / "series.json").write_text(json.dumps(doc))
+
+
+def test_a_series_name_that_is_not_text_is_refused_with_the_fix(sandbox):
+    from prophet_agent.tools import series_io
+    rid = "2" * 32
+    _panel_file(sandbox, rid, {"series": {"a": [1, 2, 3], "b": [4, 5, 6]}})
+    for bad in ({"a": 1}, 5):
+        with pytest.raises(ValueError, match="source.name is one series name"):
+            series_io.resolve_series({"source": {"run_id": rid, "file": "out/series.json", "name": bad}})
+    named = series_io.resolve_series({"source": {"run_id": rid, "file": "out/series.json", "name": "a"}})
+    assert [n for n, _ in named] == ["a"]

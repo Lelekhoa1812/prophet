@@ -108,6 +108,9 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     else:
         raise ValueError(f"{rel} must hold a list of numbers or a dict of named lists")
     want = source.get("name")
+    if want is not None and not isinstance(want, (str, list)):
+        # A dict is unhashable and raised a bare TypeError in the lookup below; a number is not a series name either (round 6m).
+        raise ValueError("source.name is one series name (text), or a list of series names")
     if isinstance(want, list):
         # A subset of a panel (live electricity rep5: a list of ten names failed with "unhashable type: 'list'", three times).
         if not want or not all(isinstance(n, str) for n in want):
