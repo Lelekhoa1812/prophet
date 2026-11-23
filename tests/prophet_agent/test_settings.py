@@ -94,6 +94,26 @@ def test_a_masked_entry_matching_no_key_and_a_malformed_key_are_refused(env):
     assert settings.key_slots() == [KEY_A], "a refused key list leaves the stored keys alone"
 
 
+def test_an_export_is_capped_per_table_and_names_what_it_cut(env, tmp_path):
+    settings, _, _ = env
+    (tmp_path / "data").mkdir(exist_ok=True)
+    store = Store(tmp_path / "data" / "prophet.sqlite")
+    for n in range(3):
+        store.create_mission(f"forecast demand {n}", {"max_tool_calls": 5})
+
+    class _Datasets:
+        def list(self, limit=50):
+            return [{"id": str(i)} for i in range(min(limit, 3))]
+
+    capped = settings.export(store, _Datasets(), row_limit=2)
+    assert len(capped["missions"]) == 2 and len(capped["datasets"]) == 2
+    # Each mission also writes events, so events is cut too; the point is that every cut table is named.
+    assert {"missions", "datasets"} <= set(capped["truncated"]), "a cut table or listing is named, never silently dropped"
+    whole = settings.export(store, _Datasets(), row_limit=10)
+    assert len(whole["missions"]) == 3 and whole["truncated"] == []
+    store.close()
+
+
 def test_export_carries_settings_and_ledger_but_no_key_material(env, tmp_path):
     settings, _, _ = env
     settings.set_keys([KEY_A])

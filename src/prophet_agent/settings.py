@@ -500,13 +500,23 @@ class Settings:
         return {"missions": int(missions), "notebooks": int(notebooks), "datasets": len(datasets.list(limit=10_000)),
                 "bytes": int(_data_bytes(self.data_root))}
 
-    def export(self, store, datasets) -> dict[str, Any]:
-        """Everything the ledger holds, as plain JSON. Keys and .env are not part of it."""
+    def export(self, store, datasets, row_limit: int = 50_000) -> dict[str, Any]:
+        """Everything the ledger holds, as plain JSON, up to row_limit rows per table and per dataset listing. A table or
+        listing that is cut is named under 'truncated', so an export never looks complete when it is not. Keys and .env are
+        not part of it."""
+        cut: list[str] = []
+        tables: dict[str, list[dict]] = {}
         with store.lock:
-            tables = {name: [dict(r) for r in store.conn.execute(f"SELECT * FROM {name}").fetchall()]
-                      for name in ("missions", "steps", "events", "questions", "notebooks", "sources")}
+            for name in ("missions", "steps", "events", "questions", "notebooks", "sources"):
+                rows = store.conn.execute(f"SELECT * FROM {name} ORDER BY rowid LIMIT ?", (row_limit + 1,)).fetchall()
+                if len(rows) > row_limit:
+                    cut.append(name)
+                tables[name] = [dict(r) for r in rows[:row_limit]]
+        listing = datasets.list(limit=row_limit + 1)
+        if len(listing) > row_limit:
+            cut.append("datasets")
         return {"exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "settings": self.values(),
-                "datasets": datasets.list(limit=10_000), **tables}
+                "datasets": listing[:row_limit], "truncated": cut, **tables}
 
     def clear(self, store, active_statuses: tuple[str, ...], confirm: str) -> dict[str, int]:
         """Delete missions, notebooks, uploads and sandbox output. Settings, keys, usage and model checks stay. Refused while
