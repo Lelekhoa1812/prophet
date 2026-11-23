@@ -61,3 +61,13 @@ def test_utf16_html_is_still_read():
            "</html>"
     page = fetch_one({"content-type": "text/html; charset=utf-16"}, html.encode("utf-16"))
     assert page.ok is True and "Brent rose on Monday." in page.text
+
+
+def test_deeply_nested_json_ld_does_not_fail_the_page():
+    """A script block nested past the parser's recursion limit must cost only its date, not the whole page."""
+    nested = "[" * 5000 + "]" * 5000
+    html = ("<!doctype html><html><head><title>Oil</title><script type=\"application/ld+json\">" + nested +
+            "</script></head><body><article><p>Brent rose on Monday after the agency report.</p></article></body>"
+            "</html>")
+    page = fetch_one({"content-type": "text/html"}, html.encode())
+    assert page.ok is True and "Brent rose on Monday" in page.text

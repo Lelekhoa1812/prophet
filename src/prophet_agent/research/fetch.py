@@ -148,7 +148,7 @@ def explicit_date(html: str, *, allow_time: bool) -> str | None:
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             values = _walk_json_dates(json.loads(script.string or ""))
-        except ValueError:
+        except (ValueError, RecursionError):   # a block nested too deep for the parser is not a date source
             continue
         for value in values:
             if _iso(value):
@@ -188,7 +188,7 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
     if media == "application/json":
         try:
             return json.dumps(json.loads(body), indent=1, ensure_ascii=False), "", None, "json"
-        except ValueError:
+        except (ValueError, RecursionError):   # too deeply nested to pretty-print: keep the raw text
             return body, "", None, "raw"
     if media == "text/plain":
         return body, "", None, "plain"
