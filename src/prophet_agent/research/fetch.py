@@ -28,8 +28,8 @@ import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 
-from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, Resolver,
-                                             Robots, UnsafeURL, check_syntax, open_pinned, read_capped)
+from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, LookupTimeout,
+                                             Resolver, Robots, UnsafeURL, check_syntax, open_pinned, read_capped)
 from prophet_agent.research.rank import parse_date
 from prophet_agent.research.search import cache_key, cache_root, read_cache, write_cache
 
@@ -254,8 +254,9 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
             except UnsafeURL as exc:
                 return _failed(url, f"refused: {exc}", final_url=current)
             # robots.txt is per origin, so every hop is checked against the origin it is about to contact
-            if not robots.allowed(current):
-                return _failed(url, "disallowed by robots.txt", final_url=current)
+            reason = _robots_reason(robots, current, deadline)
+            if reason:
+                return _failed(url, reason, final_url=current)
             throttle.wait(urlsplit(current).netloc.lower())
             try:
                 response = open_pinned(http, current, resolver=resolver, headers=HEADERS,
@@ -263,6 +264,8 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
                                        deadline=deadline)
             except UnsafeURL as exc:   # a redirect hop to a forbidden address is refused, not followed
                 return _failed(url, f"refused: {exc}", final_url=current)
+            except LookupTimeout:
+                return _failed(url, "the DNS lookup did not finish before the deadline", final_url=current)
             try:
                 if response.status_code in REDIRECT_CODES and response.headers.get("location"):
                     current = urljoin(current, response.headers["location"])
@@ -275,6 +278,13 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
     finally:
         if own_client:
             http.close()
+
+
+def _robots_reason(robots, url: str, deadline: float) -> str | None:
+    """Why robots.txt refuses ``url``, or None. A caller's own robots object with only ``allowed(url)`` is honoured too."""
+    if isinstance(robots, Robots):
+        return robots.check(url, deadline=deadline)
+    return None if robots.allowed(url) else "disallowed by robots.txt"
 
 
 def _read_response(url: str, final_url: str, response: httpx.Response, *, max_bytes: int, use_cache: bool,

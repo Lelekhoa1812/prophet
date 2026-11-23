@@ -59,6 +59,37 @@ def _default_resolver(host: str, port: int) -> list[str]:
     return [info[4][0] for info in infos]
 
 
+LOOKUP_SECONDS = 10.0   # the longest a name lookup may take when the caller gives no deadline
+
+
+class LookupTimeout(TimeoutError):
+    """The name lookup did not finish before the deadline. The lookup cannot be cancelled, so its thread is left to end
+    on its own and its answer is dropped."""
+
+
+def _bounded_lookup(resolver: Resolver, host: str, port: int, seconds: float) -> list[str]:
+    """Run ``resolver`` in a daemon thread and wait at most ``seconds`` for it. The system resolver blocks with no
+    timeout of its own, so the wait, not the lookup, is what the deadline bounds."""
+    if seconds <= 0:
+        raise LookupTimeout(f"host {host!r} did not resolve before the deadline")
+    outcome: dict = {}
+
+    def run() -> None:
+        try:
+            outcome["addresses"] = resolver(host, port)
+        except BaseException as exc:   # handed back to the caller, which re-raises it
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, name="dns-lookup", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise LookupTimeout(f"host {host!r} did not resolve before the deadline")
+    if "error" in outcome:
+        raise outcome["error"]
+    return list(outcome.get("addresses", []))
+
+
 def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
     """The IPv4 address an IPv6 address carries, for the mapped, NAT64 and IPv4-compatible forms. A NAT64 gateway or a
     dual-stack host connects to that IPv4 address, so it is the address that must be checked."""
@@ -146,16 +177,20 @@ def check_syntax(url: str) -> SplitResult:
     return parts
 
 
-def resolve_checked(url: str, *, resolver: Resolver | None = None) -> tuple[SplitResult, list[str]]:
+def resolve_checked(url: str, *, resolver: Resolver | None = None,
+                    deadline: float | None = None) -> tuple[SplitResult, list[str]]:
     """Check the URL and resolve its host once. Returns the parsed URL and the checked addresses, in the order given;
-    raises UnsafeURL when any address is not public. ``resolver(host, port) -> [ip, ...]`` is injectable so tests never
-    touch the network."""
+    raises UnsafeURL when any address is not public, and LookupTimeout when the lookup does not finish by ``deadline``
+    (a time.monotonic value; without one the lookup is bounded by LOOKUP_SECONDS). ``resolver(host, port) -> [ip, ...]``
+    is injectable so tests never touch the network."""
     parts = check_syntax(url)
     host, port, literal = _host_and_port(parts)
     if literal:
         addresses = [host]
     else:
-        addresses = (resolver or _default_resolver)(host, port or (443 if parts.scheme.lower() == "https" else 80))
+        seconds = LOOKUP_SECONDS if deadline is None else deadline - time.monotonic()
+        addresses = _bounded_lookup(resolver or _default_resolver, host,
+                                    port or (443 if parts.scheme.lower() == "https" else 80), seconds)
     if not addresses:
         raise UnsafeURL(f"host {host!r} has no addresses")
     checked: list[str] = []
@@ -196,7 +231,7 @@ def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, he
     and each checked address is tried in order until one connects, while the deadline (a time.monotonic value) has not
     passed. Redirects are never followed here. The caller must close the returned response. Raises UnsafeURL for a
     refused address, or the last connect error."""
-    parts, addresses = resolve_checked(url, resolver=resolver)
+    parts, addresses = resolve_checked(url, resolver=resolver, deadline=deadline)
     failure: Exception | None = None
     for address in addresses:
         if failure is not None and deadline is not None and time.monotonic() >= deadline:
@@ -275,41 +310,54 @@ class Robots:
         self._cache: dict[str, urllib.robotparser.RobotFileParser | None] = {}
         self._lock = threading.Lock()
 
-    def allowed(self, url: str) -> bool:
-        parts = urlsplit(url)
-        origin = origin_of(parts)
-        with self._lock:
-            known = origin in self._cache
-        if not known:
-            parser = self._load(origin)
-            with self._lock:
-                self._cache.setdefault(origin, parser)
-        parser = self._cache[origin]
+    def check(self, url: str, *, deadline: float | None = None) -> str | None:
+        """The reason robots.txt refuses ``url``, or None when it allows it. The robots.txt lookup and request are
+        bounded by ``deadline`` (a time.monotonic value); a lookup cut short by it is not cached, so it is asked again."""
+        parser = self._parser(origin_of(urlsplit(url)), deadline)
         if parser is None:
-            return True
-        return parser.can_fetch(self._agent, url)
+            return None
+        return None if parser.can_fetch(self._agent, url) else "disallowed by robots.txt"
 
-    def _load(self, origin: str) -> urllib.robotparser.RobotFileParser | None:
+    def allowed(self, url: str, *, deadline: float | None = None) -> bool:
+        return self.check(url, deadline=deadline) is None
+
+    def _parser(self, origin: str, deadline: float | None) -> urllib.robotparser.RobotFileParser | None:
+        with self._lock:
+            if origin in self._cache:
+                return self._cache[origin]
+        cacheable, parser = self._load(origin, deadline)
+        if not cacheable:
+            return None
+        with self._lock:
+            return self._cache.setdefault(origin, parser)
+
+    def _load(self, origin: str, deadline: float | None) -> tuple[bool, urllib.robotparser.RobotFileParser | None]:
+        """(cacheable, parser). A network failure is cacheable and allows everything, as before; a lookup or request cut
+        short by the deadline is not cacheable."""
         robots_url = f"{origin}/robots.txt"
         owned = self._client is None
         client = self._client or httpx.Client(timeout=self._timeout, follow_redirects=False)
         try:
             response = open_pinned(client, robots_url, resolver=self._resolver, headers={"User-Agent": self._agent},
-                                   timeout=self._timeout)
+                                   timeout=self._timeout, deadline=deadline)
             try:
                 if response.status_code != 200:
-                    return None
+                    return True, None
                 body, _ = read_capped(response, ROBOTS_MAX_BYTES, time.monotonic() + self._timeout)
             finally:
                 response.close()
+        except LookupTimeout:
+            return False, None
         except Exception:
-            return None
+            if deadline is not None and time.monotonic() >= deadline:
+                return False, None
+            return True, None
         finally:
             if owned:
                 client.close()
         parser = urllib.robotparser.RobotFileParser()
         parser.parse(body.decode("utf-8", errors="replace").splitlines())
-        return parser
+        return True, parser
 
 
 DEFAULT_ROBOTS = Robots()
