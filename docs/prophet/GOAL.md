@@ -785,3 +785,23 @@ the answer carries one correction note covering 16 figures. The note combines fi
 share of the 16 is not counted separately. This is the first live run of round 6i that reached a verified answer.
 
 Gate: 1,927 passed, 1 skipped, 4 deselected.
+
+### Round 6j: repeated sandbox cells and guessed schemas (fixed 2026-11-23, build after 7ab9fbe)
+
+The stalled Beijing run e14af4bd (partial, 56 calls, "kept repeating the same step") was traced to two causes:
+
+- **Repeated cells.** The repeat rule answered an identical call with a pointer only when no sandbox cell had run since. A
+  cell that ran in between forced a rerun, though `sandbox_python` depends only on its code and on immutable `carry` folders.
+  Twelve identical cells ran in a row, and the stall rule stopped the mission. Measured across stored missions, identical
+  sandbox calls were common (e.g. 97 cells with 83 distinct arguments). Fixed: `PURE_TOOLS` exempts `sandbox_python` from the
+  rerun clause; read tools that depend on written files keep it.
+- **Guessed schemas.** A written JSON file was handed to the planner as a bare path. The scan is `findings` and `summary`, but
+  the planner tried `per_entity` three times and failed with KeyError. Fixed: `observe` now names each written JSON file's
+  top-level keys and their kinds (`json_shape`, up to 12 keys, files up to 5 MB).
+
+Tests: `tests/prophet_agent/test_r6i_repeat_and_shape.py` (8). Live rerun on this build, d4af2aaf (Beijing, REP=4): done_verified,
+1,126 seconds, 66 tool calls. Its 39 sandbox calls all had distinct arguments (against 63 calls with 5 repeats in a7efe739), the
+shape description reached the planner in 10 observations, and the final table matches its stored forecast on all 168 checked
+cells. One run does not prove the stall is gone in every case; it is the open check for the next rounds.
+
+Gate: 1,935 passed, 1 skipped, 4 deselected.

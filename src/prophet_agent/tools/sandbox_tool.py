@@ -9,6 +9,7 @@ stderr (the tail, where Python puts the error), and the list of output files; th
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from prophet_agent.runtime.runner import Tool
@@ -81,6 +82,40 @@ def make_run(datasets: dict[str, Path] | None = None):
     return _run
 
 
+SHAPE_MAX_BYTES = 5_000_000   # a larger written file is named and sized, not read
+SHAPE_KEYS = 12               # how many top-level keys a written JSON file names
+
+
+def _kind(value) -> str:
+    if isinstance(value, dict):
+        return f"dict of {len(value)} keys"
+    if isinstance(value, list):
+        if value and isinstance(value[0], dict):
+            return f"list of {len(value)} dicts, each with keys {', '.join(list(value[0])[:8])}"
+        return f"list of {len(value)}"
+    return type(value).__name__
+
+
+def json_shape(path: Path) -> str | None:
+    """What a written JSON file holds at its top level, so the next cell is written against the real keys, not a guess.
+
+    Live Beijing e14af4bd (2026-11-23): the planner read out/scan.json as if it had a per_entity key. Its top level is findings
+    and summary, and three cells failed with KeyError before the keys were printed. The shape is given when the file is written.
+    """
+    try:
+        if path.stat().st_size > SHAPE_MAX_BYTES:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return _kind(value)
+    keys = list(value)
+    parts = [f"{k}: {_kind(value[k])}" for k in keys[:SHAPE_KEYS]]
+    more = f"; and {len(keys) - SHAPE_KEYS} more keys" if len(keys) > SHAPE_KEYS else ""
+    return "top-level keys: " + "; ".join(parts) + more
+
+
 def observe(result: dict) -> dict:
     text = result["stdout"]
     if len(text) > SEEN_STDOUT:
@@ -99,6 +134,14 @@ def observe(result: dict) -> dict:
         # run stopped as a stall. Say so, and say what to do instead of running the cell again.
         out["note"] = ("the cell printed nothing and wrote no file, so it gave you nothing to act on: print the figures the next "
                        "decision needs, or save them under out/, in the next cell")
+    shapes = {}
+    for o in result["outputs"]:
+        if str(o.get("path", "")).endswith(".json"):
+            desc = json_shape(SANDBOX_ROOT / result["run_id"] / o["path"])
+            if desc:
+                shapes[o["path"]] = desc
+    if shapes:
+        out["shapes"] = shapes
     if result.get("carried_as"):
         out["carried_as"] = result["carried_as"]      # where a file with a repeated name was mounted
     if result["stderr"]:

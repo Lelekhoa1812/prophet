@@ -343,6 +343,8 @@ def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dic
 # Round 3 (A5-09, A3-10): live electricity mission, 2026-11-22, identical (tool, arguments) calls recurred 21 times (panel_backtest
 # 6, sandbox_python 9). Web calls are re-run because the web changes; notes and the read-only tools change with the ledger.
 REPEAT_EXEMPT = frozenset({"web_research", "web_search", "web_fetch", *READ_ONLY})
+# A call whose result depends only on its arguments, so an identical call after an unrelated cell is still the same result.
+PURE_TOOLS = frozenset({"sandbox_python"})
 
 
 def _repeat_of(name: str, args: Any, history: list[dict]) -> int | None:
@@ -356,7 +358,10 @@ def _repeat_of(name: str, args: Any, history: list[dict]) -> int | None:
         if h.get("kind") == "tool" and h.get("tool") == name and not h.get("repeat_of") and canonical(h.get("args")) == want:
             # A cell may have written the files the tool reads: live, a forecast was blocked until it ran again after the
             # inspection. So a call made after any sandbox cell is run again, not answered with a pointer.
-            if any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:]):
+            # sandbox_python is not one of them: its result depends only on its code and on the immutable run folders named in
+            # carry, so an identical cell is answered with a pointer. Live Beijing e14af4bd (2026-11-23): 12 sandbox cells in a
+            # row re-ran the same code after another cell had run, and the stall rule stopped the mission at 56 calls.
+            if name not in PURE_TOOLS and any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:]):
                 return None
             return pos
     return None
