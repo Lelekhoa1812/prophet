@@ -138,6 +138,7 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
         if ignored:
             r["config"]["ignored_arguments"] = ignored
         dates = run_dates(args, name)
+        _attach_window(r, dates, len(s), horizon)
         step = _typical_step(dates)
         if step is not None:
             r["config"]["series_step"] = step      # the series' own step, so a request in weeks or months can be converted
@@ -151,6 +152,21 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
     if len(results) == 1 and ("values" in args or "series" in results):
         return next(iter(results.values()))        # one unnamed series keeps the flat shape
     return {"series": results}
+
+
+def _attach_window(r: dict, dates: list[str] | None, n_history: int, horizon: int) -> None:
+    """Put the forecast's own calendar dates on a result, when the history's dates are known and match its length.
+
+    Live retail rep8 (2026-11-23): the planner answered from timesfm_forecast, which had no dates, so the answer listed
+    twenty values with no window. The dates follow the same rule as forecast_report (report_tool._future_dates).
+    """
+    if dates is None or len(dates) != n_history:
+        return
+    from prophet_agent.tools.report_tool import _future_dates     # report_tool imports this module, so the import is local
+    ahead = _future_dates(dates, horizon)
+    if ahead:
+        r["future_dates"] = ahead
+        r["window"] = {"first": ahead[0], "last": ahead[-1], "steps": len(ahead)}
 
 
 def _typical_step(dates: list[str] | None) -> float | None:
@@ -187,6 +203,8 @@ def _compact(r: dict) -> dict:
     out = {"config": {k: v for k, v in r["config"].items() if k != "quantile_levels"},
            "health": r.get("health"),
            "point": _thin(r["point"]), "q10": _thin(q["0.1"]), "q90": _thin(q["0.9"])}
+    if r.get("window"):
+        out["window"] = r["window"]           # the first and last forecast dates, so an answer can state the period it covers
     if len(r["point"]) > FULL_SHOWN:
         out["note"] = f"{len(r['point'])} periods; every ~{len(r['point']) // SHOWN}th shown"
     return out
