@@ -1872,9 +1872,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 history.append({"kind": "evaluation", "verdict": "not_met", "missing": _missing_figures_text(bad),
                                 "unverified": bad})
                 continue
+            pre_repair = None
             if bad:
                 # Repair pass: the figures must come from the evidence or be left out. Figures that still lack a source
                 # after the gathering rounds are removed, and the answer says what is not available.
+                pre_repair = answer
                 repaired = _compose(ctx, brain, f"repair:{tag}:{i}", goal, history, memo, context, answer, bad)
                 if repaired is None:
                     fixed = ctx.step(f"repair:{tag}:{i}", lambda c: brain.decide(
@@ -1885,6 +1887,15 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     return {"status": "partial", "iterations": i + 1, "answer": "",
                             "reason": "The results did not support a written answer.", "evidence": history}
                 bad = unverified(answer, history, goal)
+            if pre_repair is not None and answer != pre_repair and cfg.depth == 0:
+                # The claims above were checked on the text before the repair. The rewrite may have changed a claim the stored
+                # output supports (a cycle, a benchmark), so the claims are checked again on the text that will be returned.
+                stale = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
+                if stale:
+                    return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
+                            "reason": "The repaired answer states something the analysis output does not support: "
+                                      + contracts.summarise(stale),
+                            "contract_failures": [c["name"] for c in stale]}
             if bad:
                 return {"status": "partial", "iterations": i + 1, "answer": answer,
                         "reason": "Some figures in this answer could not be matched to the analysis output.",
