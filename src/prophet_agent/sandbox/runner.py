@@ -23,7 +23,6 @@ import json
 import os
 import platform
 import re
-import resource
 import signal
 import subprocess
 import shutil
@@ -49,7 +48,7 @@ RAW_HALF_BYTES = MAX_STREAM_CHARS * 2
 _CUT_WINDOW = 512
 
 _BOOT = r"""
-import os, runpy, sys, unicodedata, urllib.parse
+import os, platform, resource, runpy, sys, unicodedata, urllib.parse
 WD = os.path.realpath(sys.argv[1])
 TARGET = sys.argv[2]
 ROOT = os.path.realpath(sys.argv[3]) if sys.argv[3] else ""
@@ -283,6 +282,17 @@ def sandbox_connect(database, *args, **kwargs):
 _CONNECT_CODE = sandbox_connect.__code__
 sqlite3.connect = sqlite3.dbapi2.connect = sandbox_connect
 sys.path.insert(0, os.path.join(WD, "lib"))   # prophet_lib: loaders and profiling helpers
+# Round 6m: the limits are set here, in the child, before the program's code runs (they used to be set by preexec_fn, which
+# is unsafe in a multi-threaded parent). Both soft and hard values are set, so the program cannot raise them again.
+TIMEOUT_S, MEM_MB, FILE_MB = (int(v) for v in sys.argv[5:8])
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_S + 2, TIMEOUT_S + 2))
+_FBYTES = FILE_MB * 1024 * 1024
+resource.setrlimit(resource.RLIMIT_FSIZE, (_FBYTES, _FBYTES))
+resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+if platform.system() == "Linux":        # macOS does not enforce RLIMIT_AS, so the memory cap is reported as not enforced there
+    _MBYTES = MEM_MB * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (_MBYTES, _MBYTES))
 sys.argv = [TARGET]
 runpy.run_path(TARGET, run_name="__main__")
 """
@@ -413,20 +423,6 @@ def _scrubbed_env(home: Path) -> dict[str, str]:
     }
 
 
-def _limits_preexec(timeout_s: int, mem_mb: int, file_mb: int):
-    def apply() -> None:
-        os.setsid()
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_CPU, (timeout_s + 2, timeout_s + 2))
-        fbytes = file_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_FSIZE, (fbytes, fbytes))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-        if platform.system() == "Linux":
-            mbytes = mem_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (mbytes, mbytes))
-    return apply
-
-
 def memory_limit_enforced() -> bool:
     return platform.system() == "Linux"
 
@@ -495,9 +491,12 @@ def run_python(code: str, *, timeout_s: int = 20, mem_mb: int = 1024, file_mb: i
 
     limits = {"timeout_s": timeout_s, "mem_mb": mem_mb, "file_mb": file_mb,
               "memory_limit_enforced": memory_limit_enforced()}
-    cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home())]
+    cmd = [sys.executable, "-I", "-c", _BOOT, str(wd), str(script), str(ROOT), str(Path.home()),
+           str(timeout_s), str(mem_mb), str(file_mb)]
+    # start_new_session makes the child a session and process-group leader, so the timeout can kill its whole group. The
+    # limits are applied by _BOOT in the child (no preexec_fn: it is unsafe in a multi-threaded parent).
     proc = subprocess.Popen(cmd, cwd=str(wd), env=_scrubbed_env(home), stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, preexec_fn=_limits_preexec(timeout_s, mem_mb, file_mb))
+                            stderr=subprocess.PIPE, start_new_session=True)
     out_cap, err_cap = _Capture(), _Capture()
     readers = [threading.Thread(target=_pump, args=(proc.stdout, out_cap), daemon=True),
                threading.Thread(target=_pump, args=(proc.stderr, err_cap), daemon=True)]
