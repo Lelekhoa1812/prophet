@@ -1216,14 +1216,18 @@ ERROR_STALL = 8      # identical failures in a row after which the loop stops re
 
 def _stalled(history: list[dict], window: int) -> bool:
     """Stalled when the newest ``window`` tool calls are the same call with the same outcome (run ids aside), or when the newest
-    ERROR_STALL calls failed the same way even with different code: the planner is not converging."""
+    ERROR_STALL calls failed the same way even with different code: the planner is not converging. Two calls taking turns
+    (A, B, A with a window of 3; A, B, A, B with 4) are a loop too when each returns the same outcome it returned before:
+    a call that changed nothing it reads back is not progress."""
     if _error_run(history) >= ERROR_STALL:
         return True
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
         return False
     last = [_signature(h) for h in tool_obs[-window:]]
-    return len(set(last)) == 1
+    if len(set(last)) == 1:
+        return True
+    return window >= 3 and len(set(last)) == 2 and all(last[k] == last[k - 2] for k in range(2, len(last)))
 
 
 def _specs(plan: dict) -> list[dict]:
