@@ -191,13 +191,16 @@ def pinned(parts: SplitResult, address: str) -> Pinned:
 
 
 def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, headers: dict[str, str] | None,
-                timeout: float) -> httpx.Response:
+                timeout: float, deadline: float | None = None) -> httpx.Response:
     """Send one GET whose connection goes to a checked address. The name is resolved once, every address is checked,
-    and each checked address is tried in order until one connects. Redirects are never followed here. The caller must
-    close the returned response. Raises UnsafeURL for a refused address, or the last connect error."""
+    and each checked address is tried in order until one connects, while the deadline (a time.monotonic value) has not
+    passed. Redirects are never followed here. The caller must close the returned response. Raises UnsafeURL for a
+    refused address, or the last connect error."""
     parts, addresses = resolve_checked(url, resolver=resolver)
     failure: Exception | None = None
     for address in addresses:
+        if failure is not None and deadline is not None and time.monotonic() >= deadline:
+            break
         target = pinned(parts, address)
         request = client.build_request("GET", target.url, headers={**(headers or {}), "Host": target.host},
                                        timeout=timeout,
@@ -208,6 +211,22 @@ def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, he
             failure = exc
     assert failure is not None   # resolve_checked never returns an empty list
     raise failure
+
+
+def read_capped(response: httpx.Response, limit: int, deadline: float | None = None) -> tuple[bytes, str]:
+    """Read at most ``limit`` bytes of a streamed body, stopping early once the deadline (a time.monotonic value) has
+    passed. Returns (body, stop): stop is "" when the whole body was read, "size" when the byte cap cut it and "time"
+    when the deadline did."""
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        if deadline is not None and time.monotonic() >= deadline:
+            return bytes(body), "time"
+        room = limit - len(body)
+        if len(chunk) > room:
+            body.extend(chunk[:max(room, 0)])
+            return bytes(body), "size"
+        body.extend(chunk)
+    return bytes(body), ""
 
 
 class HostThrottle:

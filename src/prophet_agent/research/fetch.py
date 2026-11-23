@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
@@ -28,11 +29,12 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, Resolver,
-                                             Robots, UnsafeURL, check_syntax, open_pinned)
+                                             Robots, UnsafeURL, check_syntax, open_pinned, read_capped)
 from prophet_agent.research.rank import parse_date
 from prophet_agent.research.search import cache_key, cache_root, read_cache, write_cache
 
 MAX_REDIRECTS = 4
+TOTAL_SECONDS = 45.0   # the whole fetch: every redirect hop and the body. Each socket wait is also bounded by timeout.
 MAX_TEXT_CHARS = 60_000
 CACHE_TTL_S = 24 * 3600
 ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "application/json")
@@ -204,16 +206,19 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
 
 def fetch_page(url: str, *, max_bytes: int = 2_000_000, timeout: float = 15.0, use_cache: bool = True,
                cache_dir=None, client: httpx.Client | None = None, resolver: Resolver | None = None,
-               robots: Robots | None = None, throttle: HostThrottle | None = None) -> Page:
+               robots: Robots | None = None, throttle: HostThrottle | None = None,
+               total_seconds: float = TOTAL_SECONDS) -> Page:
     """Fetch and extract one page. Never raises; a refused or failed fetch returns Page(ok=False, note=...)."""
     try:
         return _fetch(url, max_bytes=max_bytes, timeout=timeout, use_cache=use_cache, cache_dir=cache_dir,
-                      client=client, resolver=resolver, robots=robots, throttle=throttle)
+                      client=client, resolver=resolver, robots=robots, throttle=throttle,
+                      total_seconds=total_seconds)
     except Exception as exc:   # last line of defence: the research tools must always get an answer
         return _failed(url, f"fetch failed: {type(exc).__name__}")
 
 
-def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, robots, throttle) -> Page:
+def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, robots, throttle,
+           total_seconds) -> Page:
     if not isinstance(url, str) or not url.strip():
         return _failed(url or "", "the URL is empty")
     url = url.strip()
@@ -232,9 +237,12 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
     http = client or httpx.Client(follow_redirects=False, timeout=timeout)
     robots = robots or (Robots(client=client, resolver=resolver) if client or resolver else DEFAULT_ROBOTS)
     throttle = throttle or DEFAULT_THROTTLE
+    deadline = time.monotonic() + total_seconds
     try:
         current = url
         for _ in range(MAX_REDIRECTS + 1):
+            if time.monotonic() >= deadline:
+                return _failed(url, f"no complete response within {total_seconds:g} seconds", final_url=current)
             try:
                 check_syntax(current)
             except UnsafeURL as exc:
@@ -244,14 +252,17 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
                 return _failed(url, "disallowed by robots.txt", final_url=current)
             throttle.wait(urlsplit(current).netloc.lower())
             try:
-                response = open_pinned(http, current, resolver=resolver, headers=HEADERS, timeout=timeout)
+                response = open_pinned(http, current, resolver=resolver, headers=HEADERS,
+                                       timeout=min(timeout, max(deadline - time.monotonic(), 0.001)),
+                                       deadline=deadline)
             except UnsafeURL as exc:   # a redirect hop to a forbidden address is refused, not followed
                 return _failed(url, f"refused: {exc}", final_url=current)
             try:
                 if response.status_code in REDIRECT_CODES and response.headers.get("location"):
                     current = urljoin(current, response.headers["location"])
                     continue
-                return _read_response(url, current, response, max_bytes=max_bytes, use_cache=use_cache, path=path)
+                return _read_response(url, current, response, max_bytes=max_bytes, use_cache=use_cache, path=path,
+                                      deadline=deadline, total_seconds=total_seconds)
             finally:
                 response.close()
         return _failed(url, f"more than {MAX_REDIRECTS} redirects", final_url=current)
@@ -261,7 +272,7 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
 
 
 def _read_response(url: str, final_url: str, response: httpx.Response, *, max_bytes: int, use_cache: bool,
-                   path) -> Page:
+                   path, deadline: float | None = None, total_seconds: float = TOTAL_SECONDS) -> Page:
     status = response.status_code
     if status >= 400:
         return _failed(url, f"HTTP {status}", final_url=final_url, status=status)
@@ -272,17 +283,13 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
     if media and media not in ALLOWED_MEDIA:
         return _failed(url, f"content type {media} is not text; only HTML, plain text and JSON are read",
                        final_url=final_url, status=status)
-    body = bytearray()
-    truncated = False
-    for chunk in response.iter_bytes():
-        room = max_bytes - len(body)
-        if len(chunk) > room:
-            body.extend(chunk[:max(room, 0)])
-            truncated = True
-            break
-        body.extend(chunk)
-    notes = [f"response cut at {max_bytes} bytes"] if truncated else []
-    decoded = _decode(bytes(body), charset)
+    body, stopped = read_capped(response, max_bytes, deadline)
+    notes = []
+    if stopped == "size":
+        notes.append(f"response cut at {max_bytes} bytes")
+    elif stopped == "time":
+        notes.append(f"response stopped after {total_seconds:g} seconds")
+    decoded = _decode(body, charset)
     text, title, extracted, method = extract(decoded, media or "text/html")
     if method == "bs4":
         notes.append("main text taken by fallback extraction")
