@@ -1014,3 +1014,39 @@ Known and not fixed in this round:
   series). The gate on the change: 2,698 passed, 1 skipped, 4 deselected, exit 0.
 - **Open.** The health check picks its period with `dominant_period` (sandbox library), which gives 356 for the same series
   against 365 for the backtest. It is not reconciled, because the sandbox uses that function too.
+
+## Round 8: sub-agent branches merged, robots and CSV decisions, seasonal band (2026-11-24, main d63644f)
+
+Owner decisions taken through questions on 2026-11-24. Each is recorded in the code or tests where it applies.
+
+- **robots.txt is no longer honoured.** `HONOUR_ROBOTS = False` in `research/fetch.py`. The robots code in `netguard.py` is
+  kept and covered by tests that opt in with `monkeypatch`. Commit 4f5ac15. This is an outward-facing crawling-policy
+  change: a disallowed path is now fetched, and robots.txt is not asked. Compliance review is recommended. Authentication
+  and CAPTCHA protections are unchanged (never bypassed).
+- **CSV text cap raised to 180,000 characters** (`CSV_MAX_TEXT_CHARS`, CSV media only). Plain text keeps 60,000. Commit 4f5ac15.
+  Tests: `tests/prophet_agent/research/test_fetch_robots_off_and_csv_cap.py` (4 tests).
+- **Seasonal naive default band is now `band_mode="measured"`** (commits 691bc9a and d63644f). Each lead's spread is the rule's
+  own past h-step errors at the same season position, using complete lags only; a lead with fewer than `MIN_PAIRS` (6)
+  errors falls back to the phase band. The `phase` and `sqrt` modes are unchanged. The default value of `band_mode` changed.
+  - Measured, synthetic, 1,000 replications on each of seeds 7 to 9, 200-point history, horizon 14, season 7, k 4, nominal
+    0.80: random walk 0.74 to 0.77 (phase band 0.48 to 0.50, sqrt band 0.83 to 0.85); period 7 with noise sd 2, 0.79 to 0.80.
+  - **Not met:** the random-walk coverage is still about five points under its label. The random-walk test window of
+    0.70 to 0.85 records that shortfall; it is not a claim that the band is calibrated on random walks.
+  - Tests changed: the width-equality assertion became a 15% tolerance on mean width (sampling noise between leads of one
+    phase, measured 5.48 against 5.23). The k=1 against k=4 width-ratio test now asks for `band_mode="phase"`, since the
+    sqrt(1 + 1/k) factor belongs to that band.
+  - **Stale stored figures, not regenerated:** lab, backtest and twin results that use the default seasonal naive band
+    (`lab.py` around line 384; `scripts/backtest_twin.py`). The seasonal-naive band figures earlier in this file (around
+    lines 928 to 930) are stale for the same reason. Regenerate before quoting any of them.
+- **Merge note.** The seasonal branch was cut from an older commit. Only its two commits were applied, not the branch.
+  One conflict in `forecast/baselines.py` was resolved by keeping `require_finite` (the NaN refusal from a4f8e91) and the
+  branch's `BAND_MODES` check.
+- **Gate on the merged tree (d63644f):** 2,808 passed, 4 skipped, 4 deselected, exit 0 (`scripts/check.sh`, offline).
+- **Open defects, not started in this round:** paging past 200k in `goal.py run_tool`; checkpoint status not documented
+  in API.md; `iteration_budget` and `budget_exhausted` never produced; refusal-loop bound; planner continuing after
+  "network access blocked"; `provenance_label` missing from timesfm, report and lab tool outputs; health-check period
+  disagreement with the backtest season (356 against 365); 30-step cycles invisible to `choose_season`; `prophet_lib`
+  `dominant_period`; the Linux sandbox path is not verified on macOS; 5xx robots closed for the process lifetime (now
+  moot while robots is off); web typecheck not run.
+- **Not verified:** the Linux sandbox path; the web typecheck; the four named workflows have not been re-run against the
+  new build.
