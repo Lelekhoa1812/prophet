@@ -161,23 +161,60 @@ def _phase_sd(s: np.ndarray, season: int) -> np.ndarray:
     return sd
 
 
+def _snaive_lead_sd(s: np.ndarray, season: int, k: int, h: int) -> np.ndarray:
+    """Residual sd of the seasonal naive rule's own h-step errors, measured on the history, one value per lead (h,).
+
+    Motivation vs Logic
+    Motivation: the phase band assumes the error of a k-value same-phase average is the lag-season difference scaled by
+    sqrt(1 + 1/k). On a random walk the k lags sit further back as the history grows, so that band covers about half the
+    time (measured, synthetic, 300 replications: 0.50 against a label of 0.80). The error that matters is the one this rule
+    actually made at each lead, and that can be measured from the history.
+    Logic: the forecast at origin o for step i is the mean of the k same-phase values before it, and its error is
+    s[o + i] minus that mean. Only origins at the same position in the season as the forecast origin are used (o = n - season
+    * r), so the spread stays specific to the phase being forecast, as the phase band is. An origin counts only when all k
+    lags lie in the history, so every error uses the rule exactly as it is used for the forecast. A lead with fewer than
+    MIN_PAIRS such errors is returned as nan, and the caller falls back to the phase band for that lead.
+    """
+    n = len(s)
+    sd = np.full(h, np.nan)
+    for i in range(h):
+        j0 = i // season + 1
+        lo = season * (j0 + k - 1) - i                 # earliest origin whose k same-phase lags are all in the history
+        r_min = -(-(i + 1) // season)                  # ceil((i + 1) / season): origin + i must lie inside the history
+        r_max = (n - lo) // season                     # origin n - season * r must be at or after lo
+        if r_max < r_min or r_max - r_min + 1 < MIN_PAIRS:
+            continue
+        o = n - season * np.arange(r_min, r_max + 1)
+        idx = o[:, None] + i - season * (j0 + np.arange(k))[None, :]
+        err = s[o + i] - s[idx].mean(axis=1)
+        sd[i] = float(np.std(err, ddof=1))
+    return sd
+
+
+BAND_MODES = ("measured", "phase", "sqrt")
+
+
 def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
-                   band_mode: str = "phase") -> tuple[np.ndarray, np.ndarray]:
+                   band_mode: str = "measured") -> tuple[np.ndarray, np.ndarray]:
     """Mean of the last k same-phase values, e.g. the last 4 same weekdays for daily data with season=7.
 
     Motivation vs Logic
     Motivation: the h-step error of a seasonal naive forecast repeats one season and does not accumulate, so a band that
     widens with sqrt(h) is too wide at 2 and 3 seasons out (audit A2-13: 4.54 at horizon 1 against 16.37 at horizon 13 on a
-    period-4 series with noise 2, measured, synthetic).
-    Logic: band_mode "phase" (the default) uses the residual sd of the lag-season difference for the forecast's own phase,
-    with no growth in h, and widened by sqrt(1 + 1/k) for the mean of k values (R6l, audit item 1). band_mode "sqrt" keeps
-    the earlier random-walk band for callers that need it.
+    period-4 series with noise 2, measured, synthetic). The phase band fixed that, but it covers a random walk only about
+    half the time (measured, synthetic, 0.50 against a label of 0.80), because its error does not match a k-lag average
+    of a drifting level.
+    Logic: band_mode "measured" (the default) uses the spread of this rule's own past h-step errors at each lead, measured
+    on the history at the same season position (_snaive_lead_sd). A lead with fewer than MIN_PAIRS such errors falls back to
+    the phase band for that lead, so a short history gives the old band rather than an unmeasured one. band_mode "phase"
+    uses the residual sd of the lag-season difference for the forecast's own phase, widened by sqrt(1 + 1/k) for the mean
+    of k values (R6l, audit item 1). band_mode "sqrt" keeps the earlier random-walk band for callers that need it.
     A history shorter than one season has no same-phase value to repeat, so it returns moving_average(series, h, season)
     instead (the mean of the whole history when it is shorter than the season). That is the documented fallback; check the
     length first if the seasonal rule is wanted.
     """
-    if band_mode not in ("phase", "sqrt"):
-        raise ValueError("band_mode must be 'phase' or 'sqrt'")
+    if band_mode not in BAND_MODES:
+        raise ValueError("band_mode must be 'measured', 'phase' or 'sqrt'")
     s = require_finite(series, "seasonal_naive")
     if len(s) < season:
         return moving_average(s, h, season)
@@ -199,6 +236,9 @@ def seasonal_naive(series: np.ndarray, h: int, season: int, k: int = 4,
     # lag-season difference measures a single value. Without this factor the 10 to 90 band covered about 70 percent.
     phase_sd = _phase_sd(s, season)
     sd_h = phase_sd[(len(s) + np.arange(h)) % season] * np.sqrt(1.0 + 1.0 / n_avg)
+    if band_mode == "measured":
+        measured = _snaive_lead_sd(s, season, k, h)
+        sd_h = np.where(np.isnan(measured), sd_h, measured)
     q = p[:, None] + Z[None, :] * sd_h[:, None]
     return p, (np.clip(q, 0, None) if _nonneg(s) else q)
 
