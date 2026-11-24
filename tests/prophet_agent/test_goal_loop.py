@@ -696,6 +696,18 @@ def _forecast_tool(verdict: str):
     return _tool("forecast_report", fn)
 
 
+def test_the_evaluator_is_pinned_to_the_stored_health_verdict():
+    from prophet_agent.runtime.goal import Memo, _eval_messages
+    hist = [{"kind": "finish", "rationale": "done"},
+            {"kind": "tool", "tool": "forecast_report",
+             "result": {"forecast": {"health": {"verdict": "check"}}}}]
+    text = _eval_messages("g", hist, Memo())[-1]["content"]
+    assert "Stored forecast health verdict: check" in text
+    assert "The finish rationale is not the answer" in text
+    assert "only when this verdict is flat_expected" in text
+    assert "Stored forecast health verdict" not in _eval_messages("g", [], Memo())[-1]["content"]
+
+
 def test_a_check_verdict_is_not_refused_for_the_flat_expected_level_sentence(store, monkeypatch):
     monkeypatch.setattr("prophet_agent.runtime.contracts.blocking", lambda checks: [])
     refusal = {"verdict": "not_met", "reason": SCIRES_LEVEL_REFUSAL}

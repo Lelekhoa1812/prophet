@@ -934,9 +934,24 @@ def _asked_block(goal: str, for_whom: str) -> str:
     return "Questions the person asked (the answer must address each one with evidence):\n" + listed + hint
 
 
+def _health_pin(history: list[dict]) -> str:
+    """The stored health verdict, pinned so the evaluator cannot invent one from the finish note.
+
+    SciRes-20261124-124543: the judge read the 400-character rationale and applied the flat_expected
+    level sentence to a check verdict. The verdict field is the fact. The rationale is not the answer.
+    """
+    verdict = _stored_health_verdict(history)
+    if not verdict:
+        return ""
+    return (f"Stored forecast health verdict: {verdict}. Judge this field. Do not read a different verdict from the "
+            "causes text or from the finish rationale. The finish rationale is not the answer. The level sentence is "
+            "required only when this verdict is flat_expected.\n\n")
+
+
 def _eval_messages(goal: str, history: list[dict], memo: Memo, context: str = "") -> list[dict]:
     system = prompts.current("evaluator").text
-    user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
+    user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_health_pin(history)}"
+            f"{_evidence_block(history, memo)}"
             + _asked_block(goal, "evaluator"))
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
