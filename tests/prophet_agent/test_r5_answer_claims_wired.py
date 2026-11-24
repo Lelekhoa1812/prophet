@@ -86,6 +86,14 @@ def test_the_level_sentence_is_required_only_for_flat_expected():
     ok = _named(contracts.check_answer(said, [_forecast("flat_expected")]), "answer_level_sentence")
     assert ok and ok[0]["ok"]
     assert _named(contracts.check_answer(missing, [_forecast("check")]), "answer_level_sentence") == []
+    # A later diagnostic timesfm_forecast does not clear the pack the person receives.
+    pack = [_forecast("flat_expected"),
+            {"kind": "tool", "tool": "timesfm_forecast", "result": {"health": {"verdict": "check"}, "point": [1.0]}}]
+    still = _named(contracts.check_answer(missing, pack), "answer_level_sentence")
+    assert still and not still[0]["ok"]
+    cleared = [{"kind": "tool", "tool": "timesfm_forecast", "result": {"health": {"verdict": "flat_expected"}, "point": [1.0]}},
+               _forecast("check")]
+    assert _named(contracts.check_answer(missing, cleared), "answer_level_sentence") == []
 
 
 def test_a_forecast_on_a_short_paste_of_a_downloaded_file_blocks():
@@ -104,6 +112,18 @@ def test_a_forecast_on_a_short_paste_of_a_downloaded_file_blocks():
     full = [{"kind": "tool", "tool": "download_web_data", "result": {"row_count": 100, "sandbox_file": "in/a.txt"}},
             {"kind": "tool", "tool": "timesfm_forecast", "result": {"config": {"history_points": 80}, "point": [1.0]}}]
     assert _named(contracts.check_answer("The forecast rises.", full), "series_covers_download") == []
+    # Two downloads. A full read of the smaller file must not be judged against the larger one.
+    both = [{"kind": "tool", "tool": "download_web_data", "result": {"row_count": 16037, "sandbox_file": "in/co2_daily_mlo.txt"}},
+            {"kind": "tool", "tool": "download_web_data", "result": {"row_count": 80, "sandbox_file": "in/small.csv"}},
+            {"kind": "tool", "tool": "forecast_report",
+             "result": {"forecast": {"config": {"history_points": 80}, "point": [1.0]}}}]
+    assert _named(contracts.check_answer("The forecast rises.", both), "series_covers_download") == []
+    neither = [{"kind": "tool", "tool": "download_web_data", "result": {"row_count": 16037, "sandbox_file": "in/co2_daily_mlo.txt"}},
+               {"kind": "tool", "tool": "download_web_data", "result": {"row_count": 2606, "sandbox_file": "in/sp500_fred.csv"}},
+               {"kind": "tool", "tool": "forecast_report",
+                "result": {"forecast": {"config": {"history_points": 13}, "point": [1.0]}}}]
+    still = _named(contracts.check_answer("The forecast rises.", neither), "series_covers_download")
+    assert still and not still[0]["ok"] and "16037" in still[0]["detail"]
 
 
 def test_a_total_the_pack_did_not_withhold_adds_no_check():

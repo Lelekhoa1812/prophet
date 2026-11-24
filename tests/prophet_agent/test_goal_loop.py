@@ -696,6 +696,15 @@ def _forecast_tool(verdict: str):
     return _tool("forecast_report", fn)
 
 
+def test_the_stored_verdict_follows_the_delivered_pack_not_a_later_diagnostic():
+    from prophet_agent.runtime.goal import _stored_health_verdict
+    hist = [{"kind": "tool", "tool": "forecast_report",
+             "result": {"forecast": {"health": {"verdict": "flat_expected"}}}},
+            {"kind": "tool", "tool": "timesfm_forecast",
+             "result": {"health": {"verdict": "check"}, "point": [1.0]}}]
+    assert _stored_health_verdict(hist) == "flat_expected"
+
+
 def test_the_evaluator_is_pinned_to_the_stored_health_verdict():
     from prophet_agent.runtime.goal import Memo, _eval_messages
     hist = [{"kind": "finish", "rationale": "done"},

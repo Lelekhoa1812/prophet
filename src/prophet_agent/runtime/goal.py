@@ -1773,19 +1773,11 @@ def window_checks(goal: str, history: list[dict]) -> list[dict]:
 
 
 def _stored_health_verdict(history: list[dict]) -> str | None:
-    """The health verdict on the latest forecast result, or None when no forecast stored one."""
-    found = None
-    for obs in history:
-        if not isinstance(obs, dict) or obs.get("kind") != "tool":
-            continue
-        res = obs.get("result")
-        if not isinstance(res, dict):
-            continue
-        forecast = res.get("forecast")
-        health = forecast.get("health") if isinstance(forecast, dict) else res.get("health")
-        if isinstance(health, dict) and health.get("verdict"):
-            found = str(health["verdict"])
-    return found
+    """The health verdict on the pack the person receives, or None when no forecast stored one.
+
+    A later timesfm_forecast is a diagnostic. It does not replace the newest forecast_report.
+    """
+    return contracts.delivered_verdict(history)
 
 
 def level_demand_misapplied(reason: str, history: list[dict]) -> bool:

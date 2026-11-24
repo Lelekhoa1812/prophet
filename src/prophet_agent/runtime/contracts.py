@@ -619,6 +619,26 @@ def check_controls(history, args: dict, record: dict | None = None) -> dict | No
     return _check("controls_tested", True, "control_lab measured the forecast's own series and horizon and the treatment was tested")
 
 
+def delivered_verdict(obs: list) -> str | None:
+    """The health verdict of the pack the person receives.
+
+    A later timesfm_forecast is a diagnostic. It does not replace the newest forecast_report.
+    With no pack, the last forecast is what the answer delivers.
+    """
+    pack = last = None
+    for h in obs if isinstance(obs, list) else []:
+        if not isinstance(h, dict):
+            continue
+        rec = _forecast_record(h)
+        verdict = delivered_health(rec) if isinstance(rec, dict) else None
+        if not verdict:
+            continue
+        last = str(verdict)
+        if h.get("tool") == "forecast_report":
+            pack = last
+    return pack or last
+
+
 def delivered_health(rec: dict) -> str | None:
     """The health verdict of the band the pack delivers. The band is TimesFM's whatever centre line is drawn (forecast_report
     shifts it, it does not redraw it), so a simple rule as the centre does not clear a flat band. Live retail rep4 (measured):
@@ -2253,14 +2273,7 @@ _LEVEL_LINE = re.compile(r"centre line is a level|center line is a level", re.I)
 
 
 def _latest_health_verdict(obs: list) -> str | None:
-    found = None
-    for h in obs:
-        rec = _forecast_record(h)
-        if isinstance(rec, dict):
-            health = rec.get("health")
-            if isinstance(health, dict) and health.get("verdict"):
-                found = str(health["verdict"])
-    return found
+    return delivered_verdict(obs)
 
 
 def _flat_expected_level_sentence(text: str, obs: list) -> dict | None:
@@ -2283,13 +2296,13 @@ def _series_shorter_than_file(obs: list) -> dict | None:
 
     FinRes-20261124-111851 forecast 228 points ending 2017-10-10. SciRes re-run pasted 13 rows from 1974 out of the
     NOAA file. The file's row count is on the download or on the fetch that landed it."""
-    rows, path = 0, ""
+    files: list[tuple[int, str]] = []
     for h in obs:
         for tool in ("web_fetch", "download_web_data", "download_open_data"):
             res = _ok_result(h, tool)
-            if isinstance(res, dict) and isinstance(res.get("row_count"), int) and res["row_count"] > rows:
-                rows, path = res["row_count"], str(res.get("sandbox_file") or "")
-    if rows < 30:
+            if isinstance(res, dict) and isinstance(res.get("row_count"), int) and res["row_count"] >= 30:
+                files.append((res["row_count"], str(res.get("sandbox_file") or "")))
+    if not files:
         return None
     used = None
     for h in reversed(obs):
@@ -2302,8 +2315,11 @@ def _series_shorter_than_file(obs: list) -> dict | None:
         if cfg and isinstance(cfg.get("history_points"), int):
             used = cfg["history_points"]
             break
-    if used is None or used >= rows * 0.5:
+    # A mission can download two series. The forecast covers the file it actually used when its history
+    # is at least half of that file. Block only when the history is a short paste of every downloaded file.
+    if used is None or any(used >= rows * 0.5 for rows, _path in files):
         return None
+    rows, path = max(files)
     where = f" at {path}" if path else ""
     return _check("series_covers_download", False,
                   f"the forecast used {used} points, but the downloaded file{where} has {rows} rows. "
