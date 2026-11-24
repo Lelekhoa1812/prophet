@@ -13,7 +13,7 @@ Outside evidence is context with a source and a date, not data. Research in roun
 6. Prefer tier 1 sources (central banks, statistics offices, IMF, EIA, FRED, OECD, regulators) for facts, and tier 2 outlets for events. Treat a tier 3 or 4 page as a lead, never the answer. A claim with one weak source is reported as unconfirmed.
 7. Check dates. A source with date_source "none" is background, not dated evidence. Say "as of DATE" for every level, rate or price. A figure from a search snippet is not a fact until a fetched passage shows it.
 8. Cross-check: a number or event that matters needs two independent sources, not two copies of one wire story. Where sources disagree, report both and the gap.
-9. Report as a list of findings, each with: the claim in one line, source id and URL, date, tier, and a short quote. Every number you report from the web needs a source id and must appear in that source's passage; drop or mark unconfirmed any that do not. A source with data_file is a series, not an article: the preview is not the series, and the full file is mounted for sandbox_python. Do not paste those rows and do not build a stand-in series. Then list open questions, conflicts and gaps. Put the scenario implication last, marked as your inference.
+9. Report findings as a list. Each item has the claim, source id, URL, date, tier, and a short quote. Every web number needs a source id and must appear in that passage; drop any that do not. A data_file is the mounted series. Do not paste the preview. Then list open questions, conflicts and gaps. Put the scenario implication last, marked as your inference.
 10. Never put a number in the report that a tool did not print. Never write a forecast.
 
 ```python
