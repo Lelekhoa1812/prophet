@@ -51,36 +51,63 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         specs["save_table"] = (save_table_tool(binding), SAVE_TABLE_SPEC)
     specs.update(open_data_tools(datasets, opendata))
     download = specs.get("download_web_data")
-    fetch = specs.get("web_fetch")
-    if download is not None and fetch is not None and opendata is not None and opendata.store is not None:
+    if download is not None and opendata is not None and opendata.store is not None:
         # SciRes re-run 2026-11-24 was told to call download_web_data and pasted the preview instead. Landing the file
-        # inside the fetch puts the full bytes on the mission before the planner writes a cell.
-        tool, spec = fetch
-        specs["web_fetch"] = (replace(tool, fn=_fetch_lands_the_file(tool.fn, download[0].fn)), spec)
+        # inside the fetch puts the full bytes on the mission before the planner writes a cell. web_research meets the
+        # same files, so it lands them too.
+        for name in ("web_fetch", "web_research"):
+            tool, spec = specs[name]
+            specs[name] = (replace(tool, fn=_fetch_lands_the_file(tool.fn, download[0].fn)), spec)
     return {name: replace(tool, doc=spec_doc(spec), title=spec["title"], activity=spec["activity"])
             for name, (tool, spec) in specs.items()}
 
 
 def _fetch_lands_the_file(fetch_fn, download_fn):
-    """When a fetch is a data table, store the full file and add its sandbox path to the fetch result."""
+    """When a fetch or a research round finds a data table, store the full file and name its sandbox path."""
     def run(args, key):
         out = fetch_fn(args, key)
-        if not isinstance(out, dict) or not out.get("data_file") or not isinstance(args, dict):
+        if not isinstance(out, dict) or not isinstance(args, dict):
             return out
-        url = args.get("url")
-        if not isinstance(url, str) or not url.strip():
+        urls = []
+        if out.get("data_file") and isinstance(args.get("url"), str):
+            urls.append(args["url"].strip())
+        for item in out.get("data_files") or []:
+            if isinstance(item, str) and item.strip():
+                urls.append(item.strip())
+        seen = []
+        for url in urls:
+            if url not in seen:
+                seen.append(url)
+        landed_rows = []
+        for url in seen:
+            try:
+                landed = download_fn({"url": url}, key)
+            except Exception as exc:
+                landed_rows.append({"url": url, "download_error": str(exc)[:300]})
+                continue
+            row = {"url": url}
+            for name in ("sandbox_file", "row_count", "dataset_id", "columns", "first_rows", "name", "last_row"):
+                if name in landed:
+                    row[name] = landed[name]
+            landed_rows.append(row)
+        if not landed_rows:
             return out
-        try:
-            landed = download_fn({"url": url.strip()}, key)
-        except Exception as exc:
-            out["download_error"] = str(exc)[:300]
+        if out.get("data_file") and len(landed_rows) == 1:
+            row = landed_rows[0]
+            out.update({k: v for k, v in row.items() if k != "url"})
+            if row.get("download_error"):
+                out["download_error"] = row["download_error"]
+            elif row.get("sandbox_file"):
+                out["note"] = ((out.get("note") or "") + f" The full file is mounted at {row['sandbox_file']} "
+                               f"({row.get('row_count')} rows). Read that file in sandbox_python.").strip()
             return out
-        for name in ("sandbox_file", "row_count", "dataset_id", "columns", "first_rows", "name", "last_row"):
-            if name in landed:
-                out[name] = landed[name]
-        if out.get("sandbox_file"):
-            out["note"] = ((out.get("note") or "") + f" The full file is mounted at {out['sandbox_file']} "
-                           f"({out.get('row_count')} rows). Read that file in sandbox_python.").strip()
+        out["landed_files"] = landed_rows
+        by_url = {row["url"]: row for row in landed_rows}
+        for source in out.get("sources") or []:
+            row = by_url.get(source.get("url"))
+            if not row:
+                continue
+            source.update({k: v for k, v in row.items() if k != "url"})
         return out
     return run
 

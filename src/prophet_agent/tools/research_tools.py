@@ -231,6 +231,21 @@ def web_search_tool(args: Any, _key: str) -> dict:
     return out
 
 
+def _is_data_page(page: Page) -> bool:
+    """A numeric table. A cached page has no media type. An HTML page stays an article."""
+    return (page.media or "") not in HTML_MEDIA and looks_like_data_table(page.text)
+
+
+def _data_preview(page: Page) -> str:
+    lines = [line for line in page.text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    return "\n".join(lines[:8])
+
+
+_DATA_FILE_NOTE = ("this is a data table, not an article. preview is the first rows only. "
+                   "Call download_web_data with this url if the file is not already mounted. "
+                   "Do not paste rows into sandbox code and do not build a stand-in series.")
+
+
 def web_fetch_tool(args: Any, _key: str) -> dict:
     args = _allow(args, FETCH_ARGS)
     url = args.get("url")
@@ -251,17 +266,12 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
         out["note"] = "; ".join(n for n in [out.get("note"), clamp] if n)
     if not page.ok:
         return out
-    # A cached page from before the media field has media "" and the old clip note. SciRes re-run 2026-11-24 read that
-    # cache, skipped this branch, and pasted 13 rows from 1974. An HTML page is still an article.
-    if (page.media or "") not in HTML_MEDIA and looks_like_data_table(page.text):
-        preview_lines = [line for line in page.text.splitlines() if line.strip() and not line.strip().startswith("#")]
-        steer = ("this is a data table, not an article. preview is the first rows only. Call download_web_data with this "
-                 "url so the full file is mounted for sandbox_python at in/<name>. Do not paste rows into sandbox code "
-                 "and do not build a stand-in series.")
+    if _is_data_page(page):
+        # SciRes re-run 2026-11-24 read a cached page with no media type and pasted 13 rows from 1974.
         out["data_file"] = True
-        out["preview"] = "\n".join(preview_lines[:8])
+        out["preview"] = _data_preview(page)
         out["text_truncated"] = "clipped" in (page.note or "")
-        out["note"] = "; ".join(part for part in (out.get("note"), steer) if part)
+        out["note"] = "; ".join(part for part in (out.get("note"), _DATA_FILE_NOTE) if part)
         return out
     if queries:
         passages = select_passages(page, queries, k=4)
@@ -316,10 +326,22 @@ def web_research_tool(args: Any, _key: str) -> dict:
 
     reads = ([("registry", p["url"], page, None, p["name"]) for p, page in zip(registry_todo, registry_read)]
              + [("search", h.url, page, h, None) for h, page in chosen])
-    sources, failed = [], list(search_failed)
+    sources, failed, data_files = [], list(search_failed), []
     for origin, url, page, hit, name in reads:
         if not page.ok:
             failed.append({"url": url, "why": page.note or "fetch failed", "origin": origin})
+            continue
+        if _is_data_page(page):
+            # A research round must not return the rows of a data file as passages. The lander stores the full file.
+            date, date_source = _date_of(page, hit)
+            source = {"origin": origin, "url": url, "final_url": page.final_url,
+                      "title": page.title or (hit.title if hit else name), "date": date, "date_source": date_source,
+                      "tier": credibility(page.final_url or url)[0], "sha256": page.sha256, "passages": [],
+                      "data_file": True, "preview": _data_preview(page), "note": _DATA_FILE_NOTE}
+            if name:
+                source["name"] = name
+            sources.append(source)
+            data_files.append(url)
             continue
         passages = select_passages(page, scoped, k=per_page)
         date, date_source = _date_of(page, hit)
@@ -339,6 +361,8 @@ def web_research_tool(args: Any, _key: str) -> dict:
                            "sources": sources, "failed": failed, "searched": len(ranked),
                            "new_sources": len(sources), "duplicate_sources": duplicates,
                            "metrics": _metrics(sources)}
+    if data_files:
+        out["data_files"] = data_files
     out["events"] = dated_events(sources, data_end, horizon_end)
     if diagnostics:
         out["search_diagnostics"] = diagnostics

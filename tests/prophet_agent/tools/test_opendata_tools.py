@@ -211,6 +211,31 @@ def test_a_downloaded_file_is_read_by_sandbox_python_in_the_same_run(served, mis
     assert lines[2] == "8"
 
 
+def test_web_research_lands_a_data_table_for_the_sandbox(served, mission, monkeypatch):
+    from prophet_agent.research.fetch import Page
+    from prophet_agent.research.search import Hit, SearchResult
+    from prophet_agent.tools import research_tools as rt
+    body = b"# year month day decimal co2\n" + b"1974 5 19 1974.3781 333.46\n" * 40
+    served["content_type"], served["body"] = "text/plain", body
+    url = "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"
+    monkeypatch.setattr(rt, "registry_pages", lambda family: [])
+    monkeypatch.setattr(rt, "rank_report", lambda hits, **kw: (list(hits), 0))
+    monkeypatch.setattr(rt, "web_search", lambda q, **kw: SearchResult(
+        [Hit(title="NOAA", url=url, snippet="daily", rank=1, backend="bing")], backend="bing"))
+    monkeypatch.setattr(rt, "fetch_page", lambda fetch_url, **kw: Page(
+        url=fetch_url, final_url=fetch_url, text=body.decode(), ok=True))
+    tools = default_tools(opendata=mission.context())
+    out = tools["web_research"].fn({"queries": ["Mauna Loa daily CO2"], "fetch_top": 1}, "k")
+    assert out["sources"][0]["passages"] == []
+    assert out["sources"][0]["sandbox_file"] == "in/co2_daily_mlo.txt"
+    assert out["sources"][0]["row_count"] == 40
+    code = ("n = sum(1 for line in open('in/co2_daily_mlo.txt') if line.strip() and not line.startswith('#'))\n"
+            "print(n)\n")
+    ran = tools["sandbox_python"].fn({"code": code}, "run-key-" + "4" * 22)
+    assert ran["ok"], ran.get("stderr")
+    assert ran["stdout"].strip() == "40"
+
+
 def test_web_fetch_of_a_cached_plain_table_mounts_the_full_file(served, mission, monkeypatch):
     # media "" is a page restored from the research cache. The fetch must still store every row.
     from prophet_agent.research.fetch import Page
