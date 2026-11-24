@@ -197,8 +197,9 @@ class MissionService:
     def create_turn(self, notebook_id: str, goal: str, model: str | None = None) -> str:
         """A new question in a notebook. Raises KeyError for an unknown notebook and NotebookBusy while one runs."""
         self.notebooks.get(notebook_id)
-        last = self.store.conn.execute(
-            "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
+        with self.store.lock:   # the shared connection is not safe to use from two request threads at once
+            last = self.store.conn.execute(
+                "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
         # The notebook's provider rule is checked before any row is written. With every provider allowed this is the model as sent.
         chosen = self._allowed_model(self.get_sharing(notebook_id), model)
         budget = self.default_budget()
@@ -214,7 +215,8 @@ class MissionService:
         """Name an untitled notebook after its first question. A notebook already named (for example after its first file) keeps its name."""
         from prophet_agent.api.titles import fallback_title, name_in_background
 
-        row = self.store.conn.execute("SELECT title FROM notebooks WHERE id=?", (notebook_id,)).fetchone()
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT title FROM notebooks WHERE id=?", (notebook_id,)).fetchone()
         if row is None or row["title"] != "New notebook":
             return
         fallback = fallback_title(goal)
