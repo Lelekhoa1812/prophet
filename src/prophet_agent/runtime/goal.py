@@ -141,6 +141,8 @@ MAX_PREMATURE_FINISHES = 2  # round 3, A5-04: finishes refused for checklist ite
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 _LEVEL_SENTENCE = re.compile(r"centre line is a level|center line is a level", re.I)
 _RATIONALE_JUDGED = re.compile(r"finish rationale|required language", re.I)
+# A refusal that also names a missing result is not only the level sentence. Do not turn that into met.
+_OTHER_GAP = re.compile(r"\b(total|workbook|backtest|chart|rows|table)\b", re.I)
 # Decision R1 (the person, 2026-11-22): no fixed number of questions. A question reaches the person only when the planner
 # declares it high-risk and says how a wrong guess changes the numbers; anything else the agent decides and states as an
 # assumption. Replaces MAX_ASKS = 8, which was set after a mission asked 109 low-value questions (mission 0c7432c7).
@@ -963,8 +965,9 @@ def _answer_channel(history: list[dict]) -> str:
 
 def _eval_messages(goal: str, history: list[dict], memo: Memo, context: str = "") -> list[dict]:
     system = prompts.current("evaluator").text
+    channel = "" if "Written answer to judge:" in (context or "") else _answer_channel(history)
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_health_pin(history)}"
-            f"{_answer_channel(history)}{_evidence_block(history, memo)}"
+            f"{channel}{_evidence_block(history, memo)}"
             + _asked_block(goal, "evaluator"))
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -1788,6 +1791,8 @@ def level_demand_misapplied(reason: str, history: list[dict]) -> bool:
     required only when the stored verdict is flat_expected.
     """
     text = reason or ""
+    if _OTHER_GAP.search(text):
+        return False
     if _LEVEL_SENTENCE.search(text) is None or _RATIONALE_JUDGED.search(text) is None:
         return False
     verdict = _stored_health_verdict(history)
@@ -2067,12 +2072,13 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             verdict = _accept_despite_level_demand(history)
         if verdict["verdict"] == "met":
             answer = verdict.get("answer", "")
-            # A verdict can say "met" and carry no answer (a reply cut short, or a model that only gave its reason).
-            # The writer then works from the reason and the evidence; "met" with nothing to read is never returned.
-            # The pre-finish write already is that answer when the evaluator adds none of its own.
-            if prewritten and prewritten.strip() and not answer.strip():
+            # A finish that already wrote the answer keeps that text. The evaluator judged it. A second write
+            # would replace it with the evaluator's schema-bound draft.
+            if prewritten and prewritten.strip():
                 answer = prewritten.strip()
             else:
+                # A verdict can say "met" and carry no answer (a reply cut short, or a model that only gave its reason).
+                # The writer then works from the reason and the evidence; "met" with nothing to read is never returned.
                 written = _compose(ctx, brain, f"compose:{tag}:{i}", goal, history, memo, judge_context,
                                    answer or verdict.get("reason", ""))
                 if written is not None:

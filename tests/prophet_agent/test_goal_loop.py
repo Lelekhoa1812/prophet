@@ -724,7 +724,8 @@ def test_a_finish_writes_the_answer_before_the_evaluator_sees_it(store, monkeypa
 
     class Writer(ScriptedBrain):
         def __init__(self):
-            super().__init__(plans=[call("forecast_report"), finish()], evals=[{"verdict": "met", "reason": "enough", "answer": ""}])
+            super().__init__(plans=[call("forecast_report"), finish()],
+                             evals=[{"verdict": "met", "reason": "enough", "answer": "schema bound one line"}])
             self.seen = []
 
         def decide(self, messages, schema, name):
@@ -741,6 +742,18 @@ def test_a_finish_writes_the_answer_before_the_evaluator_sees_it(store, monkeypa
     assert out["result"]["status"] == "met"
     assert out["result"]["answer"] == written
     assert brain.seen and "Written answer to judge:\n" + written in brain.seen[0]
+
+
+def test_a_level_sentence_refusal_that_also_names_a_missing_total_stays_unmet(store):
+    reason = (SCIRES_LEVEL_REFUSAL + " The answer does not state the 14-day total or the daily table.")
+    refusal = {"verdict": "not_met", "reason": reason, "answer": "The range is not stated."}
+    brain = ScriptedBrain(plans=[call("forecast_report"), finish(), finish(), finish()],
+                          evals=[dict(refusal), dict(refusal), dict(refusal)])
+    program = goal_program("g", {"forecast_report": _forecast_tool("check")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert "total" in out["result"]["reason"]
+    assert brain.calls["eval"] == 3
 
 
 def test_a_check_verdict_is_not_refused_for_the_flat_expected_level_sentence(store, monkeypatch):
