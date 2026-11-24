@@ -83,9 +83,13 @@ def _inside(p):
 def _readable(p):
     # Reads are allowed in the run folder, in the Python installation, and anywhere outside the project and the home
     # folder. The project holds the API keys (.env) and the notebooks; the home folder holds credentials.
+    # Shared temp folders are refused: SciRes-20261124-123136 read a leftover series in /tmp and reported it as the
+    # downloaded file.
     rp = os.path.realpath(p)
     if _under(rp, WD) or any(_under(rp, s) for s in _PREFIXES):
         return True
+    if any(_under(rp, base) for base in ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp")):
+        return False
     return not any(base and _under(rp, base) for base in (ROOT, REAL_HOME))
 def _check_database_uri(uri):
     # A database URI is a path plus query options. The path must be in the run folder, and a database in in/ may be

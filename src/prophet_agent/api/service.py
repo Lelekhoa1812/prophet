@@ -292,13 +292,25 @@ class MissionService:
     def _mission_tools(self, mission: dict) -> dict[str, Tool]:
         if self.tools_factory is None:
             return self.tools
+        opendata = OpenDataContext(self.datasets, lambda did: self._attach_dataset(mission["id"], did))
+        downloaded = self.datasets.mount(mission["budget"].get("dataset_ids", []))
         nb = mission.get("notebook_id")
         if nb:
+            # SciRes-20261124-123136 is a notebook turn. This branch used to skip the dataset store, so web_fetch
+            # could see the NOAA file and still leave it unmounted. The sandbox then read a leftover file in /tmp.
             mounts = self.notebooks.mounts(nb)
             mounts.update(self.notebooks.derived_mounts(nb))
-            return self.tools_factory(mounts, NotebookBinding(self.notebooks, nb, mission["id"]))
-        opendata = OpenDataContext(self.datasets, lambda did: self._attach_dataset(mission["id"], did))
-        return self.tools_factory(self.datasets.mount(mission["budget"].get("dataset_ids", [])), opendata=opendata)
+            for name, path in downloaded.items():
+                if path in mounts.values():
+                    continue
+                chosen = name
+                stem, suffix, n = Path(name).stem, Path(name).suffix, 1
+                while chosen in mounts:
+                    n += 1
+                    chosen = f"{stem}_{n}{suffix}"
+                mounts[chosen] = path
+            return self.tools_factory(mounts, NotebookBinding(self.notebooks, nb, mission["id"]), opendata=opendata)
+        return self.tools_factory(downloaded, opendata=opendata)
 
     def _attach_dataset(self, mission_id: str, dataset_id: str) -> None:
         """Record a dataset one of the mission's tools downloaded in its dataset_ids, so its tools mount it from the next build."""

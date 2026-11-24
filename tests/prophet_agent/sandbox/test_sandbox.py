@@ -116,6 +116,18 @@ def test_reading_outside_the_project_and_home_is_still_allowed():
     assert r.ok and r.stdout.strip() == "True"
 
 
+def test_reading_a_leftover_file_in_tmp_is_refused(tmp_path):
+    # SciRes-20261124-123136 opened /tmp/ts_raw/co2_daily_mlo.csv and treated it as the NOAA download.
+    target = Path("/tmp") / f"prophet-sandbox-block-{tmp_path.name}.txt"
+    target.write_text("leftover series")
+    try:
+        r = run_python(f"print(open({str(target)!r}).read())")
+    finally:
+        target.unlink(missing_ok=True)
+    assert not r.ok
+    assert "reading this location is blocked" in r.stderr
+
+
 def test_forking_is_refused():
     r = run_python("import os\nos.fork()", timeout_s=5)
     assert not r.ok

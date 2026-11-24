@@ -285,6 +285,34 @@ def test_a_plain_text_numeric_table_is_stored_whole_and_the_sandbox_reads_it(ser
     assert ran["stdout"].splitlines() == [str(len(body)), "3000"]
 
 
+def test_a_notebook_turn_mounts_a_fetched_data_file(served, tmp_path, monkeypatch):
+    # SciRes runs as a notebook turn. That path used to build tools without the dataset store, so the fetch
+    # named the NOAA file and the sandbox never received it.
+    from prophet_agent.research.fetch import Page
+    from prophet_agent.tools import research_tools as rt
+    service = MissionService(tmp_path / "nb.sqlite", lambda: None, default_tools(), tools_factory=default_tools)
+    notebook = service.notebooks.create("CO2")
+    mission_id = service.create_turn(notebook["id"], "forecast Mauna Loa daily CO2")
+    body = b"# year month day decimal co2\n" + b"1974 5 19 1974.3781 333.46\n" * 40
+    served["content_type"], served["body"] = "text/plain", body
+    url = "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"
+    monkeypatch.setattr(rt, "fetch_page", lambda fetch_url, **kw: Page(
+        url=fetch_url, final_url=fetch_url, text=body.decode(), ok=True, media="text/plain"))
+    tools = service.tools_for(service.store.mission(mission_id))
+    assert "download_web_data" in tools
+    out = tools["web_fetch"].fn({"url": url, "queries": ["CO2"]}, "k")
+    assert out["sandbox_file"] == "in/co2_daily_mlo.txt" and out["row_count"] == 40
+    ran = tools["sandbox_python"].fn(
+        {"code": "print(sum(1 for line in open('in/co2_daily_mlo.txt') if line.strip() and not line.startswith('#')))\n"},
+        "run-key-" + "5" * 22)
+    assert ran["ok"], ran.get("stderr")
+    assert ran["stdout"].strip() == "40"
+    rebuilt = service.tools_for(service.store.mission(mission_id))
+    again = rebuilt["sandbox_python"].fn({"code": "import os\nprint('co2_daily_mlo.txt' in os.listdir('in'))\n"},
+                                         "run-key-" + "6" * 22)
+    assert again["ok"] and again["stdout"].strip() == "True"
+
+
 def test_the_mission_records_the_download_and_a_rebuilt_tool_set_mounts_it(served, tmp_path):
     service = MissionService(tmp_path / "m.sqlite", lambda: None, default_tools(), tools_factory=default_tools)
     mid = service.create("forecast the weather")
