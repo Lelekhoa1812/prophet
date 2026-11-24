@@ -6,9 +6,11 @@ period-4 series it covered about 98 percent at horizons 3 to 8, and on stationar
 synthetic, 400 replications). The seasonal-year band had the same sqrt(h) growth and covered 77 to 100 percent across
 horizons (measured, synthetic). The fix measures each horizon's own error spread from the rule's past h-step errors.
 
-The seasonal-naive phase band is already close to nominal on a seasonal series (measured, synthetic: about 78 to 80
-percent). It is tested here so that a change to the shared band code cannot move it away from the label. Its known
-limit is a random walk, where a no-growth band under-covers; the backtest reports measured coverage so that is visible.
+The seasonal-naive band (now the measured default) is close to nominal on a seasonal series (measured, synthetic: about 77
+percent on this period-4 setup, against 78 percent for the phase band it replaced). It is tested here so that a change to the
+shared band code cannot move it away from the label. Its known
+limit is a random walk: the phase band covered about half of one, and the measured default about three quarters
+(measured, synthetic, see test_r4_seasonal_band.py). The backtest reports measured coverage so that is visible.
 """
 from __future__ import annotations
 
@@ -71,7 +73,7 @@ def test_moving_average_band_widens_with_horizon_on_a_random_walk():
     assert 0.68 < cov.mean() < 0.92, cov               # small-sample under-coverage is measured, not hidden (synthetic)
 
 
-def test_seasonal_naive_phase_band_stays_near_its_label_on_a_period_4_series():
+def test_seasonal_naive_default_band_stays_near_its_label_on_a_period_4_series():
     cov, _ = _coverage_by_horizon(_periodic, lambda s: seasonal_naive(s, H, season=4, k=4))
     assert 0.75 < cov.mean() < 0.85, cov
 
