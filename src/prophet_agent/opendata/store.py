@@ -94,15 +94,68 @@ def split_csv(text: str) -> tuple[str, str]:
     raise ValueError("no time or date header follows the location block")
 
 
+def _numeric_cell(cell: str) -> bool:
+    try:
+        float(cell)
+    except ValueError:
+        return False
+    return True
+
+
+def _mostly_numeric(rows: list) -> bool:
+    cells = [cell for row in rows for cell in row]
+    if not cells:
+        return False
+    return sum(_numeric_cell(cell) for cell in cells) / len(cells) >= 0.7
+
+
+def _whitespace_table(text: str) -> tuple[list, int, list]:
+    """A plain-text table: '#' lines are comments, columns are split on whitespace.
+
+    The NOAA daily CO2 file is this shape (text/plain, about 580,000 bytes). A comma reader sees each row as one
+    field, so this parser is the one that counts its rows. A row whose width is not the common width is left out.
+    Raises ValueError when the rows are not a numeric table."""
+    candidates = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        cells = stripped.split()
+        if len(cells) >= 2:
+            candidates.append(cells)
+    if not candidates:
+        raise ValueError("the text has no data rows")
+    width = max(set(len(row) for row in candidates), key=lambda n: sum(len(row) == n for row in candidates))
+    if width < 2:
+        raise ValueError("a table needs at least two columns")
+    rows = [row for row in candidates if len(row) == width]
+    if _mostly_numeric(rows[0]):
+        columns = [f"column_{i + 1}" for i in range(width)]
+        data = rows
+    else:
+        columns = [cell.strip() for cell in rows[0]]
+        data = rows[1:]
+    if not data or not _mostly_numeric(data):
+        raise ValueError("the text is not a numeric table")
+    return columns, len(data), [list(row) for row in data[:PREVIEW_ROWS]]
+
+
 def preview(body: bytes, fmt: str) -> dict:
-    """columns, the first five rows and the total row count of a CSV or JSON body. Raises ValueError if it is not a table."""
+    """columns, the first five rows and the total row count of a CSV, JSON or plain-text body.
+
+    ``fmt`` is ``json``, ``csv`` or ``text``. Raises ValueError if it is not a table of that kind."""
     try:
         text = body.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError("the body is not UTF-8 text") from None
-    label = "JSON" if fmt == "json" else "CSV"
+    label = {"json": "JSON", "text": "plain-text"}.get(fmt, "CSV")
     try:
-        columns, count, rows = _json_table(text) if fmt == "json" else _csv_table(text)
+        if fmt == "json":
+            columns, count, rows = _json_table(text)
+        elif fmt == "text":
+            columns, count, rows = _whitespace_table(text)
+        else:
+            columns, count, rows = _csv_table(text)
     except (json.JSONDecodeError, csv.Error, RecursionError) as exc:
         raise ValueError(f"the body does not parse as a {label} table ({type(exc).__name__})") from None
     return {"columns": columns, "rows": rows, "row_count": count}

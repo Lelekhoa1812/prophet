@@ -7,7 +7,9 @@ Motivation: a forecast often needs a public series the person did not upload. Th
 through the checked sources and the guarded download, and the file must be usable by the analysis code straight away.
 Logic: list and source downloads go through sources.py and opendata.store, which store the bytes with their provenance and
 return the same dataset for the same source and parameters. A web download goes through fetch.download (netguard, size,
-type and redirect rules) and is refused unless the body parses as a CSV or JSON table. Both paths record the new dataset
+type and redirect rules) and is refused unless the body parses as a CSV, JSON or plain-text numeric table. A plain-text
+table (space-separated columns, '#' comment lines) is stored whole, so a file larger than the research text cap still
+reaches the sandbox. Both paths record the new dataset
 on the mission (OpenDataContext.attach) so a later build of the mission's tools mounts it, and LiveMounts lets the sandbox
 read it in the current run, since the sandbox's inputs are otherwise fixed when the tools are built.
 """
@@ -142,22 +144,42 @@ def _web_format(media: str, body: bytes) -> str:
     return "json" if media == "application/json" or head in (b"[", b"{") else "csv"
 
 
-def _web_table(body: bytes, fmt: str) -> dict:
+def _web_table(body: bytes, fmt: str) -> tuple[dict, str]:
+    """The preview and the format to store: json, csv, or text (whitespace columns).
+
+    A text/plain body with no commas is one column to the CSV reader. When that happens the whitespace reader counts the
+    rows, and the original bytes are what the sandbox opens."""
+    if fmt == "json":
+        try:
+            table = preview(body, "json")
+        except ValueError as exc:
+            raise ValueError(f"the file is not a CSV or JSON table: {exc}") from None
+        if table["row_count"] < 1:
+            raise ValueError("the file has no data rows")
+        return table, "json"
+    table = None
     try:
-        table = preview(body, fmt)
+        table = preview(body, "csv")
+    except ValueError:
+        table = None
+    if table is not None and len(table["columns"]) >= 2 and table["row_count"] >= 1:
+        return table, "csv"
+    try:
+        table = preview(body, "text")
     except ValueError as exc:
-        raise ValueError(f"the file is not a CSV or JSON table: {exc}") from None
-    if fmt == "csv" and len(table["columns"]) < 2:
-        raise ValueError("the file is not a CSV table: a table needs at least two columns")
+        raise ValueError(f"the file is not a CSV, JSON or plain-text table: {exc}") from None
+    if len(table["columns"]) < 2:
+        raise ValueError("the file is not a table: a table needs at least two columns")
     if table["row_count"] < 1:
         raise ValueError("the file has no data rows")
-    return table
+    return table, "text"
 
 
 def _web_name(url: str, name: str | None, fmt: str) -> str:
     base = name if name is not None else unquote(urlsplit(url).path.rsplit("/", 1)[-1]) or WEB_NAME_FALLBACK
     base = clean_name(base)
-    return base if base.lower().endswith(f".{fmt}") else f"{base}.{fmt}"
+    suffix = {"json": ".json", "csv": ".csv", "text": ".txt"}[fmt]
+    return base if base.lower().endswith(suffix) else f"{base}{suffix}"
 
 
 def _existing_web(store: DatasetStore, url: str) -> dict | None:
@@ -200,7 +222,7 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
             fetched = fetch.download(url)          # refuses private addresses, redirects to them, and types or sizes it does not accept
             body = fetched["bytes"]
             fmt = _web_format(fetched["content_type"], body)
-            table = _web_table(body, fmt)
+            table, fmt = _web_table(body, fmt)
             provenance = {"source": "web", "format": fmt, "url": url, "final_url": fetched["final_url"],
                           "content_type": fetched["content_type"], "retrieved_at": fetched["retrieved_at"],
                           "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": key}
@@ -236,11 +258,13 @@ DOWNLOAD_WEB_DATA_SPEC = {
     "name": "download_web_data",
     "title": "Web data download",
     "activity": "Downloading a web file",
-    "description": "Download one CSV or JSON file from an https address into the mission's files. Pages and other content "
-                   "types are refused, and so are addresses that are not public. The result gives the dataset id, the first "
-                   "rows and sandbox_file (in/<name>) for sandbox_python. Its licence_key is unverified unless a known key "
-                   "is given.",
-    "args": {"url": "https address of a CSV or JSON file",
+    "description": "Download one CSV, JSON or plain-text numeric table from an https address into the mission's files. "
+                   "The full file is stored (not a clipped passage) and mounted at sandbox_file (in/<name>) for "
+                   "sandbox_python. A plain-text table has space-separated columns; lines that start with # stay in the "
+                   "file and are left out of the preview. Pages and other content types are refused, and so are addresses "
+                   "that are not public. Use this, not web_fetch, when the URL is the data file. Its licence_key is "
+                   "unverified unless a known key is given.",
+    "args": {"url": "https address of a CSV, JSON or plain-text data file",
              "name": "optional file name to store it under",
              "licence_key": f"optional known key ({', '.join(sorted(KNOWN_LICENCE_KEYS))}); leave out when unknown"},
 }

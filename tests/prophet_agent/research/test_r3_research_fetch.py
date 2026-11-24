@@ -114,6 +114,38 @@ def test_repeated_queries_are_searched_once(monkeypatch, identity_rank):
     assert out["repeated_queries"] == 2
 
 
+def test_a_data_table_is_a_preview_and_points_at_the_download(monkeypatch):
+    # The NOAA daily file is this shape. web_fetch must not hand the body to the planner as the series.
+    text = "# comment\n" + "".join(f"1974 5 19 1974.3781 {333.0 + i:.2f}\n" for i in range(40))
+    monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(
+        url=url, final_url=url, text=text, ok=True, media="text/plain",
+        note="text clipped to 60000 characters from 578731"))
+    tool = {t.name: t for t, _ in rt.tools()}["web_fetch"]
+    out = tool.fn({"url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt", "queries": ["Mauna Loa"]}, "key")
+    assert out["data_file"] is True and out["text_truncated"] is True
+    assert "text" not in out and "passages" not in out
+    assert "download_web_data" in out["note"] and "578731" in out["note"]
+    assert out["preview"].count("\n") < 8
+    assert len(out["preview"]) < len(text)
+
+
+def test_an_article_is_not_treated_as_a_data_file(monkeypatch):
+    monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(url=url, final_url=url, text=GOOD, ok=True,
+                                                                media="text/html"))
+    tool = {t.name: t for t, _ in rt.tools()}["web_fetch"]
+    out = tool.fn({"url": "https://www.eia.gov/x"}, "key")
+    assert "data_file" not in out and out["text"].startswith("OPEC+")
+
+
+def test_html_extract_that_looks_numeric_is_still_an_article(monkeypatch):
+    text = "\n".join(f"1974 5 19 1974.3781 {333.0 + i:.2f}" for i in range(20))
+    monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(url=url, final_url=url, text=text, ok=True,
+                                                                media="text/html"))
+    tool = {t.name: t for t, _ in rt.tools()}["web_fetch"]
+    out = tool.fn({"url": "https://gml.noaa.gov/ccgg/trends/"}, "key")
+    assert "data_file" not in out and "text" in out
+
+
 def test_max_chars_above_the_schema_is_clamped_and_said_so(monkeypatch):
     monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(url=url, final_url=url, text="word " * 9000, ok=True))
     tool = {t.name: t for t, _ in rt.tools()}["web_fetch"]

@@ -71,6 +71,7 @@ class Page:
     note: str = ""
     ok: bool = False
     cached: bool = False
+    media: str = ""
 
 
 PAGE_FIELDS = {f.name for f in fields(Page)}
@@ -218,6 +219,38 @@ def extract(body: str, media: str) -> tuple[str, str, str | None, str]:
     return text, title or fallback_title, date, method
 
 
+def looks_like_data_table(text: str) -> bool:
+    """True when the text is rows of numbers in columns, not an article.
+
+    A comma row is split on commas; any other row is split on whitespace. Comment lines that start with '#' are
+    skipped. The first rows must share one width of at least two columns, and most cells must be numbers. An article
+    does not. The check reads only the opening rows, so a clipped page still matches."""
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        cells = [cell.strip() for cell in stripped.split(",")] if stripped.count(",") >= 1 else stripped.split()
+        if len(cells) >= 2:
+            rows.append(cells)
+        if len(rows) >= 12:
+            break
+    if len(rows) < 8:
+        return False
+    width = len(rows[0])
+    if width < 2 or any(len(row) != width for row in rows):
+        return False
+    cells = [cell for row in rows for cell in row]
+    numeric = 0
+    for cell in cells:
+        try:
+            float(cell)
+        except ValueError:
+            continue
+        numeric += 1
+    return numeric / len(cells) >= 0.7
+
+
 def fetch_page(url: str, *, max_bytes: int = 2_000_000, timeout: float = 15.0, use_cache: bool = True,
                cache_dir=None, client: httpx.Client | None = None, resolver: Resolver | None = None,
                robots: Robots | None = None, throttle: HostThrottle | None = None,
@@ -336,13 +369,14 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
         return _failed(url, "no readable text found", final_url=final_url, status=status)
     cap = CSV_MAX_TEXT_CHARS if (media or "") in CSV_MEDIA else MAX_TEXT_CHARS
     if len(text) > cap:
+        full = len(text)
         text = text[:cap]
-        notes.append(f"text clipped to {cap} characters")
+        notes.append(f"text clipped to {cap} characters from {full}")
     date, date_source = publication_date(decoded, final_url, extracted, media or "text/html")
     page = Page(url=url, final_url=final_url, title=" ".join(title.split())[:300], date=date,
                 date_source=date_source, text=text,
                 sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), fetched_at=_now(), status=status,
-                note="; ".join(notes), ok=True)
+                note="; ".join(notes), ok=True, media=media or "")
     if use_cache:
         write_cache(path, asdict(page))
     return page

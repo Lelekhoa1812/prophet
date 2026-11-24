@@ -171,7 +171,7 @@ def test_a_known_licence_key_is_recorded_and_an_unknown_one_is_refused(served, m
 @pytest.mark.parametrize("content_type, body, message", [
     ("text/html", b"<html><body>a,b</body></html>", "content type"),
     ("text/plain", b"<!doctype html><html>a,b</html>", "HTML"),
-    ("text/plain", b"just words\nmore words\n", "at least two columns"),
+    ("text/plain", b"just words\nmore words\n", "numeric"),
     ("text/csv", b"a,b\n", "no data rows"),
     ("application/json", b'{"a": 1}', "does not hold a table"),
     ("application/octet-stream", b"\x00\x01\x02", "parses as CSV or JSON"),
@@ -209,6 +209,31 @@ def test_a_downloaded_file_is_read_by_sandbox_python_in_the_same_run(served, mis
     # The stored file is the table alone: the sandbox reads the time header first, then the seven data rows.
     assert lines[1] == "time,temperature_2m_max,precipitation_sum"
     assert lines[2] == "8"
+
+
+def test_a_plain_text_numeric_table_is_stored_whole_and_the_sandbox_reads_it(served, mission):
+    # SciRes-20261124-114145: co2_daily_mlo.txt is text/plain, about 580,000 bytes, and the 60,000-character
+    # research cap left the sandbox with a clipped passage. The download stores the bytes it fetched.
+    header = b"# year month day decimal co2\n"
+    row = b"1974 5 19 1974.3781 333.46\n"
+    body = header + row * 3000
+    assert len(body) > 60_000
+    served["content_type"], served["body"] = "text/plain; charset=utf-8", body
+    tools = default_tools(opendata=mission.context())
+    out = tools["download_web_data"].fn({"url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"}, "k1")
+    assert out["row_count"] == 3000
+    assert out["columns"] == [f"column_{i}" for i in range(1, 6)]
+    assert out["sandbox_file"] == "in/co2_daily_mlo.txt"
+    stored = mission.store.get(out["dataset_id"])
+    assert stored["provenance"]["format"] == "text"
+    assert stored["provenance"]["bytes"] == len(body)
+    assert mission.store.path(out["dataset_id"]).read_bytes() == body
+    code = (f"text = open({out['sandbox_file']!r}, encoding='utf-8').read()\n"
+            f"print(len(text.encode()))\n"
+            f"print(sum(1 for line in text.splitlines() if line.strip() and not line.strip().startswith('#')))\n")
+    ran = tools["sandbox_python"].fn({"code": code}, "run-key-" + "2" * 22)
+    assert ran["ok"], ran.get("stderr")
+    assert ran["stdout"].splitlines() == [str(len(body)), "3000"]
 
 
 def test_the_mission_records_the_download_and_a_rebuilt_tool_set_mounts_it(served, tmp_path):

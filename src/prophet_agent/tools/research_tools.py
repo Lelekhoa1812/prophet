@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from prophet_agent.research.events import dated_events, iso_day
-from prophet_agent.research.fetch import Page, fetch_page
+from prophet_agent.research.fetch import PLAIN_MEDIA, Page, fetch_page, looks_like_data_table
 from prophet_agent.research.passages import best_passages, select_passages, stated_date
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
                                             is_us_region, registry_pages, resolve_family)
@@ -251,6 +251,18 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
         out["note"] = "; ".join(n for n in [out.get("note"), clamp] if n)
     if not page.ok:
         return out
+    if (page.media or "") in (*PLAIN_MEDIA, "application/json") and looks_like_data_table(page.text):
+        # The research cap keeps a passage, not the file. SciRes (2026-11-24) fetched the NOAA daily file and the sandbox
+        # only saw the clipped text, then stalled on the same fetch. The full file is download_web_data's job.
+        preview_lines = [line for line in page.text.splitlines() if line.strip() and not line.strip().startswith("#")]
+        steer = ("this is a data table, not an article. preview is the first rows only. Call download_web_data with this "
+                 "url so the full file is mounted for sandbox_python at in/<name>. Do not paste rows into sandbox code "
+                 "and do not build a stand-in series.")
+        out["data_file"] = True
+        out["preview"] = "\n".join(preview_lines[:8])
+        out["text_truncated"] = "clipped" in (page.note or "")
+        out["note"] = "; ".join(part for part in (out.get("note"), steer) if part)
+        return out
     if queries:
         passages = select_passages(page, queries, k=4)
         out["passages"] = passages
@@ -410,9 +422,11 @@ WEB_FETCH_SPEC = {
     "name": "web_fetch",
     "title": "Read a page",
     "activity": "Reading a web page",
-    "description": "Read one web page (http or https only; robots.txt is honoured; no scripts or forms). Returns title, date, "
-                   "final_url, tier and sha256 of the text. With queries, returns the best-matching quotable passages "
-                   "(each with start offset and score); without them, the first max_chars of the text.",
+    "description": "Read one web page (http or https only; no scripts or forms). Returns title, date, final_url, tier and "
+                   "sha256 of the text. With queries, returns the best-matching quotable passages (each with start offset "
+                   "and score); without them, the first max_chars of the text. When the page is a data table, data_file is "
+                   "set and only a short preview is returned: call download_web_data with the same url for the full file, "
+                   "and do not paste the preview into sandbox code.",
     "args": {"url": "the page address from a search hit",
              "queries": "optional list of 1 to 8 strings: what you want from the page",
              "max_chars": "whole number 500 to 20000 (default 6000; a larger value is clamped and reported), used when "
