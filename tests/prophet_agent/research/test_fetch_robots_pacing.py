@@ -2,6 +2,7 @@
 6m, defect d). Before the fix, robots.txt was requested without pacing and the Crawl-delay was ignored."""
 import httpx
 
+from prophet_agent.research import fetch as fetch_mod
 from prophet_agent.research.fetch import fetch_page
 from prophet_agent.research.netguard import HostThrottle, Robots
 
@@ -33,6 +34,7 @@ def client_with_crawl_delay(robots_calls):
 
 
 def test_crawl_delay_spaces_later_requests_to_the_same_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_mod, "HONOUR_ROBOTS", True)  # these tests cover the robots code, which is off by default
     monkeypatch.setenv("PROPHET_RESEARCH_CACHE", str(tmp_path / "cache"))
     sleeps = []
     throttle = SpyThrottle(0.0, sleep=sleeps.append)
@@ -50,6 +52,7 @@ def test_crawl_delay_spaces_later_requests_to_the_same_host(tmp_path, monkeypatc
 
 
 def test_robots_request_goes_through_the_host_throttle(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_mod, "HONOUR_ROBOTS", True)  # these tests cover the robots code, which is off by default
     monkeypatch.setenv("PROPHET_RESEARCH_CACHE", str(tmp_path / "cache"))
     throttle = SpyThrottle(0.0, sleep=lambda seconds: None)
     client = client_with_crawl_delay([])

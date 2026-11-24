@@ -37,6 +37,11 @@ from prophet_agent.research.search import cache_key, cache_root, read_cache, wri
 MAX_REDIRECTS = 4
 TOTAL_SECONDS = 45.0   # the whole fetch: every redirect hop and the body. Each socket wait is also bounded by timeout.
 MAX_TEXT_CHARS = 60_000
+# Owner decision (2026-11-24): robots.txt is not honoured. The robots code stays in netguard.py; set this to True to restore it.
+HONOUR_ROBOTS = False
+# Owner decision (2026-11-24): a CSV body is kept up to this many characters, so a long price history reaches the planner.
+CSV_MAX_TEXT_CHARS = 180_000
+CSV_MEDIA = ("text/csv", "application/csv")
 CACHE_TTL_S = 24 * 3600
 ALLOWED_MEDIA = ("text/html", "application/xhtml+xml", "text/plain", "text/csv", "application/csv", "application/json")
 HTML_MEDIA = ("text/html", "application/xhtml+xml")
@@ -286,7 +291,10 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
 
 
 def _robots_reason(robots, url: str, deadline: float, throttle: HostThrottle) -> str | None:
-    """Why robots.txt refuses ``url``, or None. A caller's own robots object with only ``allowed(url)`` is honoured too."""
+    """Why robots.txt refuses ``url``, or None. A caller's own robots object with only ``allowed(url)`` is honoured too.
+    Not consulted while HONOUR_ROBOTS is False (owner decision, 2026-11-24)."""
+    if not HONOUR_ROBOTS:
+        return None
     if isinstance(robots, Robots):
         return robots.check(url, deadline=deadline, throttle=throttle)
     return None if robots.allowed(url) else "disallowed by robots.txt"
@@ -326,9 +334,10 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
     text = text.strip()
     if not text:
         return _failed(url, "no readable text found", final_url=final_url, status=status)
-    if len(text) > MAX_TEXT_CHARS:
-        text = text[:MAX_TEXT_CHARS]
-        notes.append(f"text clipped to {MAX_TEXT_CHARS} characters")
+    cap = CSV_MAX_TEXT_CHARS if (media or "") in CSV_MEDIA else MAX_TEXT_CHARS
+    if len(text) > cap:
+        text = text[:cap]
+        notes.append(f"text clipped to {cap} characters")
     date, date_source = publication_date(decoded, final_url, extracted, media or "text/html")
     page = Page(url=url, final_url=final_url, title=" ".join(title.split())[:300], date=date,
                 date_source=date_source, text=text,

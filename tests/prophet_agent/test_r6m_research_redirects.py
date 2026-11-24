@@ -8,6 +8,7 @@ No network: every request goes through httpx.MockTransport.
 """
 import httpx
 
+from prophet_agent.research import fetch as fetch_mod
 from prophet_agent.research.fetch import fetch_page
 from prophet_agent.research.netguard import HostThrottle
 
@@ -34,7 +35,8 @@ def test_redirect_to_a_private_address_is_refused_even_when_the_client_follows_r
     assert page.ok is False and "refused" in page.note and "loopback" in page.note
 
 
-def test_redirect_to_another_origin_is_checked_against_its_robots_txt():
+def test_redirect_to_another_origin_is_checked_against_its_robots_txt(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "HONOUR_ROBOTS", True)  # these tests cover the robots code, which is off by default
     def handler(request):
         path, host = request.url.path, request.headers["host"]
         if path == "/robots.txt":

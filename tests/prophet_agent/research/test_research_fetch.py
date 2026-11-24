@@ -114,7 +114,8 @@ def test_http_error_is_reported_not_raised():
     assert page.ok is False and page.status == 404 and "HTTP 404" in page.note
 
 
-def test_robots_disallow_stops_the_fetch():
+def test_robots_disallow_stops_the_fetch(monkeypatch):
+    monkeypatch.setattr(fetch_mod, "HONOUR_ROBOTS", True)  # these tests cover the robots code, which is off by default
     routes = {"/private/x": (200, {"content-type": "text/html"}, b"<p>secret</p>")}
 
     def handler_client():

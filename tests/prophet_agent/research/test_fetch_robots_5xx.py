@@ -2,6 +2,7 @@
 earlier behaviour treated it as allowed, so pages were fetched from a host whose rules could not be read."""
 import httpx
 
+from prophet_agent.research import fetch as fetch_mod
 from prophet_agent.research.fetch import fetch_page
 from prophet_agent.research.netguard import HostThrottle, Robots
 
@@ -23,6 +24,7 @@ def client_with_robots(status, calls):
 
 
 def test_robots_server_error_refuses_the_page(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_mod, "HONOUR_ROBOTS", True)  # these tests cover the robots code, which is off by default
     monkeypatch.setenv("PROPHET_RESEARCH_CACHE", str(tmp_path / "cache"))
     calls = []
     client = client_with_robots(503, calls)
@@ -35,6 +37,7 @@ def test_robots_server_error_refuses_the_page(tmp_path, monkeypatch):
 
 
 def test_robots_5xx_stays_closed_for_the_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_mod, "HONOUR_ROBOTS", True)  # these tests cover the robots code, which is off by default
     monkeypatch.setenv("PROPHET_RESEARCH_CACHE", str(tmp_path / "cache"))
     calls = []
     client = client_with_robots(500, calls)
