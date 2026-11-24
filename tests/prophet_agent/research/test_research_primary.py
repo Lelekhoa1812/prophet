@@ -60,6 +60,7 @@ def test_unknown_or_missing_family_gives_no_pages():
     ("treasury yields and the rate path", "rates"),
     ("CPI inflation release date", "inflation"),
     ("S&P 500 earnings season", "equities"),
+    ("S&P 500 daily closing prices", "equities"),
     ("Mauna Loa daily CO2", "co2"),
 ])
 def test_family_is_detected_from_the_query_words(query, family):

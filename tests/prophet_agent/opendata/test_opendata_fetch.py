@@ -55,6 +55,12 @@ def test_json_body_is_accepted(serve):
     assert fetch.download(API, resolver=public_resolver)["content_type"] == "application/json"
 
 
+def test_application_csv_is_accepted(serve):
+    # FinRes-20261124: FRED's graph CSV answered application/csv and the download refused it.
+    serve(lambda request: ok(CSV_BYTES, content_type="application/csv"))
+    assert fetch.download(API, resolver=public_resolver)["bytes"] == CSV_BYTES
+
+
 def test_plain_text_is_accepted(serve):
     serve(lambda request: ok(b"a,b\n1,2\n", content_type="text/plain"))
     assert fetch.download(API, resolver=public_resolver)["bytes"] == b"a,b\n1,2\n"

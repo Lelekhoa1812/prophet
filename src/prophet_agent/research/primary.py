@@ -149,7 +149,11 @@ def is_us_grid_query(query: str) -> bool:
 
 def detect_family(text: str) -> str | None:
     """The series family whose keywords appear most often in ``text``; None when no keyword appears."""
-    words = WORD.findall((text or "").lower())
+    raw = (text or "").lower()
+    # "S&P" splits into the letters s and p, so a closing-price query would otherwise match "prices" as inflation.
+    if "s&p" in raw or "sp500" in raw.replace(" ", ""):
+        return "equities"
+    words = WORD.findall(raw)
     best, best_hits = None, 0
     for family, keywords in FAMILY_KEYWORDS.items():
         hits = sum(1 for word in words if word in keywords)
