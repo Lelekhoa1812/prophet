@@ -709,6 +709,31 @@ def test_the_evaluator_is_pinned_to_the_stored_health_verdict():
     assert "Stored forecast health verdict" not in _eval_messages("g", [], Memo())[-1]["content"]
 
 
+def test_a_finish_writes_the_answer_before_the_evaluator_sees_it(store, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.contracts.blocking", lambda checks: [])
+    written = "The health verdict is check. The level sentence is not required."
+
+    class Writer(ScriptedBrain):
+        def __init__(self):
+            super().__init__(plans=[call("forecast_report"), finish()], evals=[{"verdict": "met", "reason": "enough", "answer": ""}])
+            self.seen = []
+
+        def decide(self, messages, schema, name):
+            if name == "eval":
+                self.seen.append(messages[-1]["content"])
+            return super().decide(messages, schema, name)
+
+        def write(self, messages):
+            return written
+
+    brain = Writer()
+    program = goal_program("g", {"forecast_report": _forecast_tool("check")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    assert out["result"]["answer"] == written
+    assert brain.seen and "Written answer to judge:\n" + written in brain.seen[0]
+
+
 def test_a_check_verdict_is_not_refused_for_the_flat_expected_level_sentence(store, monkeypatch):
     monkeypatch.setattr("prophet_agent.runtime.contracts.blocking", lambda checks: [])
     refusal = {"verdict": "not_met", "reason": SCIRES_LEVEL_REFUSAL}

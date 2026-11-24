@@ -2047,8 +2047,17 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         # the next part continues from there, so both runs ask the ledger for the same steps in the same order.
         if plan["action"] != "finish" and not last and not spent and not at_part_end:
             continue
+        # A finish with a stored forecast is written before it is judged. SciRes-20261124-124543 refused the
+        # 400-character rationale. The evaluator now sees the written answer. A resume replays the same step.
+        judge_context = context
+        prewritten = None
+        if plan["action"] == "finish" and _stored_health_verdict(history):
+            draft = _answer_channel(history).split(": ", 1)[-1].strip()
+            prewritten = _compose(ctx, brain, f"precompose:{tag}:{i}", goal, history, memo, context, draft)
+            if prewritten and prewritten.strip():
+                judge_context = ((context + "\n\n") if context else "") + "Written answer to judge:\n" + prewritten.strip()
         eval_schema = SUB_EVAL_SCHEMA if cfg.depth else EVAL_SCHEMA
-        verdict = ctx.step(f"eval:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
+        verdict = ctx.step(f"eval:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, judge_context),
                                                                  eval_schema, "eval"))
         # The evaluator may find that one decision by the person would change the answer. It is asked once per run,
         # then the evaluator judges again with the answer in the evidence.
@@ -2058,7 +2067,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if qs and not any(h.get("kind") == "evaluator_question" for h in history):
             answers = ctx.step(f"evalask:{tag}:{i}", lambda c: c.ask({"questions": qs}))
             history.append({"kind": "evaluator_question", "questions": qs, "answers": answers})
-            verdict = ctx.step(f"eval2:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
+            verdict = ctx.step(f"eval2:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, judge_context),
                                                                        eval_schema, "eval"))
         # SciRes-20261124-124543: the evaluator demanded the flat_expected level sentence for a check verdict,
         # and it judged the finish rationale. That refusal does not stand. The sentence stays required for flat_expected.
@@ -2068,9 +2077,14 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             answer = verdict.get("answer", "")
             # A verdict can say "met" and carry no answer (a reply cut short, or a model that only gave its reason).
             # The writer then works from the reason and the evidence; "met" with nothing to read is never returned.
-            written = _compose(ctx, brain, f"compose:{tag}:{i}", goal, history, memo, context, answer or verdict.get("reason", ""))
-            if written is not None:
-                answer = written
+            # The pre-finish write already is that answer when the evaluator adds none of its own.
+            if prewritten and prewritten.strip() and not answer.strip():
+                answer = prewritten.strip()
+            else:
+                written = _compose(ctx, brain, f"compose:{tag}:{i}", goal, history, memo, judge_context,
+                                   answer or verdict.get("reason", ""))
+                if written is not None:
+                    answer = written
             if not answer.strip():
                 if not last and not spent:
                     history.append({"kind": "evaluation", "verdict": "not_met",
