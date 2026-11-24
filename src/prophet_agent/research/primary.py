@@ -68,6 +68,8 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
          "what": "policy and supervision announcements"},
         {"name": "BEA release schedule", "url": "https://www.bea.gov/news/schedule",
          "what": "US GDP and income release dates"},
+        {"name": "FRED S&P 500 daily close", "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500",
+         "what": "S&P 500 daily closing level, CSV"},
     ),
     "inflation": (
         {"name": "BLS CPI release schedule", "url": "https://www.bls.gov/schedule/news_release/cpi.htm",
@@ -87,6 +89,10 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
         {"name": "USGS gold statistics", "url": "https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information",
          "what": "US gold production, trade and consumption statistics"},
     ),
+    "co2": (
+        {"name": "NOAA Mauna Loa daily CO2", "url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt",
+         "what": "Mauna Loa daily mean CO2, mole fraction in ppm, space-separated text"},
+    ),
 }
 
 FAMILY_KEYWORDS: dict[str, frozenset[str]] = {
@@ -97,6 +103,7 @@ FAMILY_KEYWORDS: dict[str, frozenset[str]] = {
     "rates": frozenset("rate rates yield yields treasury bond bonds fomc ecb boj policy".split()),
     "equities": frozenset("stock stocks equity equities shares index nasdaq earnings".split()),
     "inflation": frozenset("inflation cpi hicp deflation prices".split()),
+    "co2": frozenset("co2 mauna ppm".split()),
     # round 3 (A3-06): the domains the goal trigger uses. They have no hand-kept registry yet, so they need a region.
     "electricity": frozenset("electricity electric kwh megawatt megawatts".split()),
     "retail": frozenset("retail retailer retailers grocery supermarket supermarkets christmas footfall".split()),

@@ -16,7 +16,7 @@ def test_every_registry_page_is_an_official_tier_one_source(family):
 
 
 def test_the_families_named_in_the_brief_are_all_present():
-    assert set(PRIMARY_SOURCES) == {"oil", "fx", "rates", "equities", "inflation", "gas", "gold"}
+    assert set(PRIMARY_SOURCES) == {"oil", "fx", "rates", "equities", "inflation", "gas", "gold", "co2"}
 
 
 def test_oil_registry_names_the_eia_opec_and_iea_pages():
@@ -31,6 +31,14 @@ def test_fx_registry_names_the_ecb_boj_and_fed_calendars():
 
 def test_inflation_registry_names_the_bls_schedule():
     assert any("bls.gov/schedule" in p["url"] for p in registry_pages("inflation"))
+
+
+def test_co2_registry_names_the_noaa_daily_file():
+    assert any(p["url"].endswith("/co2_daily_mlo.txt") for p in registry_pages("co2"))
+
+
+def test_equities_registry_names_the_fred_daily_close():
+    assert any("fredgraph.csv?id=SP500" in p["url"] for p in registry_pages("equities"))
 
 
 def test_registry_returns_copies_so_callers_cannot_change_it():
@@ -52,6 +60,7 @@ def test_unknown_or_missing_family_gives_no_pages():
     ("treasury yields and the rate path", "rates"),
     ("CPI inflation release date", "inflation"),
     ("S&P 500 earnings season", "equities"),
+    ("Mauna Loa daily CO2", "co2"),
 ])
 def test_family_is_detected_from_the_query_words(query, family):
     assert detect_family(query) == family
