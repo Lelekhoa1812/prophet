@@ -100,6 +100,30 @@ def test_stated_publication_date_is_read_from_the_text(monkeypatch, identity_ran
     assert source["date_source"] in ("text", "text_year_inferred")
 
 
+def test_data_file_links_keep_the_noaa_daily_address():
+    from prophet_agent.research.fetch import data_file_links
+    html = ('<a href="/webdata/ccgg/trends/co2/co2_daily_mlo.txt">Mauna Loa CO2 daily means (text)</a>'
+            '<a href="co2_mm_mlo.csv">monthly</a>'
+            '<a href="https://example.com/about">about</a>')
+    links = data_file_links(html, "https://gml.noaa.gov/ccgg/trends/data.html")
+    assert links[0]["url"] == "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"
+    assert [item["url"] for item in links] == [
+        "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt",
+        "https://gml.noaa.gov/ccgg/trends/co2_mm_mlo.csv",
+    ]
+
+
+def test_web_fetch_returns_the_data_file_links(monkeypatch):
+    page = Page(url="https://gml.noaa.gov/ccgg/trends/data.html", final_url="https://gml.noaa.gov/ccgg/trends/data.html",
+                text="Mauna Loa CO2 daily means", ok=True, media="text/html",
+                file_links=[{"url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt", "text": "daily"}])
+    monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: page)
+    tool = {t.name: t for t, _ in rt.tools()}["web_fetch"]
+    out = tool.fn({"url": page.url, "queries": ["daily CO2"]}, "key")
+    assert out["file_links"][0]["url"].endswith("/co2_daily_mlo.txt")
+    assert "do not invent a path" in out["note"].lower()
+
+
 def test_repeated_queries_are_searched_once(monkeypatch, identity_rank):
     searched = []
 

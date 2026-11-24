@@ -86,15 +86,27 @@ def test_web_search_tool_returns_ranked_hits_with_tiers(monkeypatch):
     tool, _ = tools_by_name()["web_search"]
     out = tool.fn({"query": "oil outlook"}, "key")
     assert out["backend"] == "bing"
-    assert [h["tier"] for h in out["hits"]] == [1, 2, 4]
+    assert out["hits"][0]["source"] == "registry"
+    assert out["hits"][0]["url"] in {page["url"] for page in registry_pages("oil")}
+    assert [h["tier"] for h in out["hits"] if h.get("source") != "registry"] == [1, 2, 4]
     assert "diagnostics" not in out
+
+
+def test_web_search_lists_the_noaa_daily_file_before_other_hits(monkeypatch):
+    monkeypatch.setattr(rt, "web_search", lambda q, **kw: SearchResult([
+        Hit(title="finder", url="https://gml.noaa.gov/ccgg/trends/data.html", snippet="s", rank=1, backend="bing")],
+        backend="bing"))
+    tool, _ = tools_by_name()["web_search"]
+    out = tool.fn({"query": "Mauna Loa daily CO2"}, "key")
+    assert out["hits"][0]["url"].endswith("/co2_daily_mlo.txt")
+    assert out["hits"][0]["source"] == "registry"
 
 
 def test_web_search_tool_reports_diagnostics_when_nothing_came_back(monkeypatch):
     empty = SearchResult([], backend=None, diagnostics=["auto: DDGSException: blocked"])
     monkeypatch.setattr(rt, "web_search", lambda q, **kw: empty)
     tool, _ = tools_by_name()["web_search"]
-    out = tool.fn({"query": "oil"}, "key")
+    out = tool.fn({"query": "history of the roman roads"}, "key")
     assert out["hits"] == [] and out["diagnostics"] == ["auto: DDGSException: blocked"]
 
 

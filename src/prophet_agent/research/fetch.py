@@ -21,7 +21,7 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 
@@ -72,6 +72,7 @@ class Page:
     ok: bool = False
     cached: bool = False
     media: str = ""
+    file_links: list = field(default_factory=list)
 
 
 PAGE_FIELDS = {f.name for f in fields(Page)}
@@ -118,6 +119,32 @@ def _bs4_text(html: str) -> tuple[str, str]:
     root = soup.find("article") or soup.find("main") or soup.body or soup
     lines = [" ".join(line.split()) for line in root.get_text("\n").splitlines()]
     return "\n".join(line for line in lines if line), title
+
+
+def data_file_links(html: str, base_url: str, *, limit: int = 12) -> list[dict]:
+    """Absolute links from an HTML page to a .txt, .csv, .json or .tsv file.
+
+    Article extraction keeps the words and drops the address. SciRes then invented
+    https://gml.noaa.gov/ccgg/trends/co2_daily_mlo.txt, which is a 404. The real file is the href."""
+    if not html or limit < 1:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    found, seen = [], set()
+    for tag in soup.find_all("a", href=True):
+        href = str(tag.get("href") or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:")):
+            continue
+        absolute = urljoin(base_url, href)
+        parts = urlsplit(absolute)
+        if parts.scheme not in ("http", "https") or not parts.path.lower().endswith((".txt", ".csv", ".json", ".tsv")):
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        found.append({"url": absolute, "text": " ".join(tag.get_text(" ", strip=True).split())[:120]})
+        if len(found) >= limit:
+            break
+    return found
 
 
 def is_index_page(url: str) -> bool:
@@ -278,7 +305,11 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
     if use_cache:
         cached = read_cache(path, CACHE_TTL_S)
         if cached and cached.get("ok"):
-            return Page(**{**{k: v for k, v in cached.items() if k in PAGE_FIELDS}, "cached": True})
+            # An HTML page cached before file_links existed has no data-file addresses. Refetch it once.
+            if (cached.get("media") or "") in HTML_MEDIA and "file_links" not in cached:
+                cached = None
+            else:
+                return Page(**{**{k: v for k, v in cached.items() if k in PAGE_FIELDS}, "cached": True})
 
     own_client = client is None
     http = client or httpx.Client(follow_redirects=False, timeout=timeout)
@@ -373,10 +404,11 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
         text = text[:cap]
         notes.append(f"text clipped to {cap} characters from {full}")
     date, date_source = publication_date(decoded, final_url, extracted, media or "text/html")
+    links = data_file_links(decoded, final_url) if (media or "") in HTML_MEDIA else []
     page = Page(url=url, final_url=final_url, title=" ".join(title.split())[:300], date=date,
                 date_source=date_source, text=text,
                 sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), fetched_at=_now(), status=status,
-                note="; ".join(notes), ok=True, media=media or "")
+                note="; ".join(notes), ok=True, media=media or "", file_links=links)
     if use_cache:
         write_cache(path, asdict(page))
     return page

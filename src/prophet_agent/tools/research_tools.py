@@ -216,6 +216,18 @@ def _page_view(page, url: str) -> dict:
             "cached": page.cached}
 
 
+_FILE_LINK_NOTE = ("file_links are the data files this page links to. Call download_web_data with one of those "
+                   "urls. Do not invent a path.")
+
+
+def _with_file_links(out: dict, page: Page) -> dict:
+    if not page.file_links:
+        return out
+    out["file_links"] = page.file_links
+    out["note"] = "; ".join(part for part in (out.get("note"), _FILE_LINK_NOTE) if part)
+    return out
+
+
 def web_search_tool(args: Any, _key: str) -> dict:
     args = _allow(args, SEARCH_ARGS)
     query = _query(args.get("query"))
@@ -225,10 +237,23 @@ def web_search_tool(args: Any, _key: str) -> dict:
     result = web_search(query, kind=kind, max_results=max_results, timelimit=timelimit)
     hits = rank_hits(list(result), recency_days=days, queries=[query], kind=kind)
     out: dict[str, Any] = {"query": query, "kind": kind, "backend": result.backend, "cached": result.cached,
-                           "hits": [_hit_view(h) for h in hits]}
-    if not hits:
+                           "hits": _registry_hits(query) + [_hit_view(h) for h in hits]}
+    if not out["hits"]:
         out["diagnostics"] = result.diagnostics or ["no results"]
+    elif _registry_hits(query):
+        out["note"] = "registry pages for this series are listed first; use those urls for the data file"
     return out
+
+
+def _registry_hits(query: str) -> list[dict]:
+    """The official pages for the query's family. Search did not return the NOAA daily file, so the planner invented a 404."""
+    pages = registry_pages(detect_family(query))
+    hits = []
+    for page in pages:
+        tier, _score = credibility(page["url"])
+        hits.append({"rank": len(hits) + 1, "title": page["name"], "url": page["url"], "snippet": page["what"],
+                     "date": None, "source": "registry", "tier": tier, "backend": "registry"})
+    return hits
 
 
 def _is_data_page(page: Page) -> bool:
@@ -266,6 +291,7 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
         out["note"] = "; ".join(n for n in [out.get("note"), clamp] if n)
     if not page.ok:
         return out
+    out = _with_file_links(out, page)
     if _is_data_page(page):
         # SciRes re-run 2026-11-24 read a cached page with no media type and pasted 13 rows from 1974.
         out["data_file"] = True
@@ -352,6 +378,8 @@ def web_research_tool(args: Any, _key: str) -> dict:
             source["name"] = name
         if all(p["reason"] == "head" for p in passages):
             source["note"] = "no passage matched the queries; the opening of the page is shown"
+        if page.file_links:
+            source["file_links"] = page.file_links
         sources.append(source)
     for number, source in enumerate(sources, 1):
         source["id"] = f"S{number}"
