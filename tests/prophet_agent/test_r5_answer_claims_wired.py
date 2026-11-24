@@ -95,6 +95,12 @@ def test_a_forecast_on_a_short_paste_of_a_downloaded_file_blocks():
              {"kind": "tool", "tool": "timesfm_forecast", "result": {"config": {"history_points": 13}, "point": [1.0]}}]
     blocked = _named(contracts.check_answer("The forecast rises.", short), "series_covers_download")
     assert blocked and not blocked[0]["ok"] and blocked[0]["severity"] == "block"
+    # FinRes-20261124-111851 called forecast_report. The short sample lives under forecast.config.
+    packed = [{"kind": "tool", "tool": "download_web_data", "result": {"row_count": 2606, "sandbox_file": "in/sp500_fred.csv"}},
+              {"kind": "tool", "tool": "forecast_report",
+               "result": {"forecast": {"config": {"history_points": 228}, "point": [1.0]}}}]
+    packed_block = _named(contracts.check_answer("The forecast rises.", packed), "series_covers_download")
+    assert packed_block and not packed_block[0]["ok"] and "228" in packed_block[0]["detail"]
     full = [{"kind": "tool", "tool": "download_web_data", "result": {"row_count": 100, "sandbox_file": "in/a.txt"}},
             {"kind": "tool", "tool": "timesfm_forecast", "result": {"config": {"history_points": 80}, "point": [1.0]}}]
     assert _named(contracts.check_answer("The forecast rises.", full), "series_covers_download") == []

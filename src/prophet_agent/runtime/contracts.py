@@ -2293,10 +2293,12 @@ def _series_shorter_than_file(obs: list) -> dict | None:
         return None
     used = None
     for h in reversed(obs):
-        res = _ok_result(h, "timesfm_forecast")
-        if not isinstance(res, dict):
+        # forecast_report nests the same config. FinRes called that tool, not timesfm_forecast,
+        # so a 228-point sample of a downloaded file never reached this check.
+        rec = _forecast_record(h)
+        if not isinstance(rec, dict):
             continue
-        cfg = res.get("config") if isinstance(res.get("config"), dict) else None
+        cfg = rec.get("config") if isinstance(rec.get("config"), dict) else None
         if cfg and isinstance(cfg.get("history_points"), int):
             used = cfg["history_points"]
             break
