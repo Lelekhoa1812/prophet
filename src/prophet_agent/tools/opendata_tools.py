@@ -110,8 +110,11 @@ def _mount(ctx: OpenDataContext, live: LiveMounts, meta: dict) -> str:
 
 def _result(meta: dict, mount: str, extra: dict) -> dict:
     table = meta["preview"]
-    return {**extra, "dataset_id": meta["id"], "name": meta["name"], "sandbox_file": f"in/{mount}",
-            "row_count": table["row_count"], "columns": table["columns"], "first_rows": table["rows"]}
+    result = {**extra, "dataset_id": meta["id"], "name": meta["name"], "sandbox_file": f"in/{mount}",
+              "row_count": table["row_count"], "columns": table["columns"], "first_rows": table["rows"]}
+    if table.get("last_row"):
+        result["last_row"] = table["last_row"]
+    return result
 
 
 def list_sources_tool() -> Tool:

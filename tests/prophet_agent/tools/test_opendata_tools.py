@@ -211,6 +211,30 @@ def test_a_downloaded_file_is_read_by_sandbox_python_in_the_same_run(served, mis
     assert lines[2] == "8"
 
 
+def test_web_fetch_of_a_cached_plain_table_mounts_the_full_file(served, mission, monkeypatch):
+    # media "" is a page restored from the research cache. The fetch must still store every row.
+    from prophet_agent.research.fetch import Page
+    from prophet_agent.tools import research_tools as rt
+    header = b"# year month day decimal co2\n"
+    row = b"1974 5 19 1974.3781 333.46\n"
+    body = header + row * 40
+    served["content_type"], served["body"] = "text/plain", body
+    monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(
+        url=url, final_url=url, text=body.decode(), ok=True, note="text clipped to 60000 characters"))
+    tools = default_tools(opendata=mission.context())
+    out = tools["web_fetch"].fn({"url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt",
+                                 "queries": ["CO2"]}, "k")
+    assert out["data_file"] is True and "passages" not in out
+    assert out["sandbox_file"] == "in/co2_daily_mlo.txt" and out["row_count"] == 40
+    assert out["last_row"][-1] == "333.46"
+    assert "mounted at in/co2_daily_mlo.txt" in out["note"]
+    code = (f"n = sum(1 for line in open({out['sandbox_file']!r}) if line.strip() and not line.startswith('#'))\n"
+            "print(n)\n")
+    ran = tools["sandbox_python"].fn({"code": code}, "run-key-" + "3" * 22)
+    assert ran["ok"], ran.get("stderr")
+    assert ran["stdout"].strip() == "40"
+
+
 def test_a_plain_text_numeric_table_is_stored_whole_and_the_sandbox_reads_it(served, mission):
     # SciRes-20261124-114145: co2_daily_mlo.txt is text/plain, about 580,000 bytes, and the 60,000-character
     # research cap left the sandbox with a clipped passage. The download stores the bytes it fetched.

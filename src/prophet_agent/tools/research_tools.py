@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from prophet_agent.research.events import dated_events, iso_day
-from prophet_agent.research.fetch import PLAIN_MEDIA, Page, fetch_page, looks_like_data_table
+from prophet_agent.research.fetch import HTML_MEDIA, Page, fetch_page, looks_like_data_table
 from prophet_agent.research.passages import best_passages, select_passages, stated_date
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
                                             is_us_region, registry_pages, resolve_family)
@@ -251,9 +251,9 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
         out["note"] = "; ".join(n for n in [out.get("note"), clamp] if n)
     if not page.ok:
         return out
-    if (page.media or "") in (*PLAIN_MEDIA, "application/json") and looks_like_data_table(page.text):
-        # The research cap keeps a passage, not the file. SciRes (2026-11-24) fetched the NOAA daily file and the sandbox
-        # only saw the clipped text, then stalled on the same fetch. The full file is download_web_data's job.
+    # A cached page from before the media field has media "" and the old clip note. SciRes re-run 2026-11-24 read that
+    # cache, skipped this branch, and pasted 13 rows from 1974. An HTML page is still an article.
+    if (page.media or "") not in HTML_MEDIA and looks_like_data_table(page.text):
         preview_lines = [line for line in page.text.splitlines() if line.strip() and not line.strip().startswith("#")]
         steer = ("this is a data table, not an article. preview is the first rows only. Call download_web_data with this "
                  "url so the full file is mounted for sandbox_python at in/<name>. Do not paste rows into sandbox code "

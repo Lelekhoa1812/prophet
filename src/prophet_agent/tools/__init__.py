@@ -50,8 +50,39 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
     if binding is not None:
         specs["save_table"] = (save_table_tool(binding), SAVE_TABLE_SPEC)
     specs.update(open_data_tools(datasets, opendata))
+    download = specs.get("download_web_data")
+    fetch = specs.get("web_fetch")
+    if download is not None and fetch is not None and opendata is not None and opendata.store is not None:
+        # SciRes re-run 2026-11-24 was told to call download_web_data and pasted the preview instead. Landing the file
+        # inside the fetch puts the full bytes on the mission before the planner writes a cell.
+        tool, spec = fetch
+        specs["web_fetch"] = (replace(tool, fn=_fetch_lands_the_file(tool.fn, download[0].fn)), spec)
     return {name: replace(tool, doc=spec_doc(spec), title=spec["title"], activity=spec["activity"])
             for name, (tool, spec) in specs.items()}
+
+
+def _fetch_lands_the_file(fetch_fn, download_fn):
+    """When a fetch is a data table, store the full file and add its sandbox path to the fetch result."""
+    def run(args, key):
+        out = fetch_fn(args, key)
+        if not isinstance(out, dict) or not out.get("data_file") or not isinstance(args, dict):
+            return out
+        url = args.get("url")
+        if not isinstance(url, str) or not url.strip():
+            return out
+        try:
+            landed = download_fn({"url": url.strip()}, key)
+        except Exception as exc:
+            out["download_error"] = str(exc)[:300]
+            return out
+        for name in ("sandbox_file", "row_count", "dataset_id", "columns", "first_rows", "name", "last_row"):
+            if name in landed:
+                out[name] = landed[name]
+        if out.get("sandbox_file"):
+            out["note"] = ((out.get("note") or "") + f" The full file is mounted at {out['sandbox_file']} "
+                           f"({out.get('row_count')} rows). Read that file in sandbox_python.").strip()
+        return out
+    return run
 
 
 def tool_catalogue() -> dict:

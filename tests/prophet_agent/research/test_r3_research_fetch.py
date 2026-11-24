@@ -129,6 +129,17 @@ def test_a_data_table_is_a_preview_and_points_at_the_download(monkeypatch):
     assert len(out["preview"]) < len(text)
 
 
+def test_a_cached_page_with_no_media_still_counts_as_a_data_file(monkeypatch):
+    # The research cache written before the media field has media "". SciRes re-run 2026-11-24 took that path and
+    # returned passages of the 1974 clip.
+    text = "\n".join(f"1974 5 19 1974.3781 {333.0 + i:.2f}" for i in range(20))
+    monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(
+        url=url, final_url=url, text=text, ok=True, note="text clipped to 60000 characters"))
+    tool = {t.name: t for t, _ in rt.tools()}["web_fetch"]
+    out = tool.fn({"url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt", "queries": ["CO2"]}, "key")
+    assert out["data_file"] is True and "passages" not in out and "text" not in out
+
+
 def test_an_article_is_not_treated_as_a_data_file(monkeypatch):
     monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(url=url, final_url=url, text=GOOD, ok=True,
                                                                 media="text/html"))

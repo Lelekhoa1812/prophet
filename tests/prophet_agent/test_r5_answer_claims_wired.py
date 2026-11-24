@@ -73,6 +73,18 @@ def test_the_accuracy_paragraph_does_not_state_a_withheld_total():
     assert check and check[0]["ok"]
 
 
+def test_a_forecast_on_a_short_paste_of_a_downloaded_file_blocks():
+    # SciRes re-run pasted 13 rows. FinRes forecast 228 points of a file that holds thousands.
+    short = [{"kind": "tool", "tool": "web_fetch", "result": {"data_file": True, "row_count": 16037,
+                                                              "sandbox_file": "in/co2_daily_mlo.txt"}},
+             {"kind": "tool", "tool": "timesfm_forecast", "result": {"config": {"history_points": 13}, "point": [1.0]}}]
+    blocked = _named(contracts.check_answer("The forecast rises.", short), "series_covers_download")
+    assert blocked and not blocked[0]["ok"] and blocked[0]["severity"] == "block"
+    full = [{"kind": "tool", "tool": "download_web_data", "result": {"row_count": 100, "sandbox_file": "in/a.txt"}},
+            {"kind": "tool", "tool": "timesfm_forecast", "result": {"config": {"history_points": 80}, "point": [1.0]}}]
+    assert _named(contracts.check_answer("The forecast rises.", full), "series_covers_download") == []
+
+
 def test_a_total_the_pack_did_not_withhold_adds_no_check():
     assert _named(contracts.check_answer("Total forecast: 14 units.", [_pack(None)])) == []
 

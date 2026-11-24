@@ -2242,4 +2242,36 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(centre)
     if (table := _table_matches_panel(text, obs)) is not None:
         checks.append(table)
+    if (short := _series_shorter_than_file(obs)) is not None:
+        checks.append(short)
     return checks
+
+
+def _series_shorter_than_file(obs: list) -> dict | None:
+    """The forecast used a small paste of a file the mission already downloaded.
+
+    FinRes-20261124-111851 forecast 228 points ending 2017-10-10. SciRes re-run pasted 13 rows from 1974 out of the
+    NOAA file. The file's row count is on the download or on the fetch that landed it."""
+    rows, path = 0, ""
+    for h in obs:
+        for tool in ("web_fetch", "download_web_data", "download_open_data"):
+            res = _ok_result(h, tool)
+            if isinstance(res, dict) and isinstance(res.get("row_count"), int) and res["row_count"] > rows:
+                rows, path = res["row_count"], str(res.get("sandbox_file") or "")
+    if rows < 30:
+        return None
+    used = None
+    for h in reversed(obs):
+        res = _ok_result(h, "timesfm_forecast")
+        if not isinstance(res, dict):
+            continue
+        cfg = res.get("config") if isinstance(res.get("config"), dict) else None
+        if cfg and isinstance(cfg.get("history_points"), int):
+            used = cfg["history_points"]
+            break
+    if used is None or used >= rows * 0.5:
+        return None
+    where = f" at {path}" if path else ""
+    return _check("series_covers_download", False,
+                  f"the forecast used {used} points, but the downloaded file{where} has {rows} rows. "
+                  "Read that file in sandbox_python and forecast the series it holds, not a pasted preview")

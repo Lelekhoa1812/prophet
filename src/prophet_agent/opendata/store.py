@@ -109,7 +109,7 @@ def _mostly_numeric(rows: list) -> bool:
     return sum(_numeric_cell(cell) for cell in cells) / len(cells) >= 0.7
 
 
-def _whitespace_table(text: str) -> tuple[list, int, list]:
+def _whitespace_table(text: str) -> tuple[list, int, list, list]:
     """A plain-text table: '#' lines are comments, columns are split on whitespace.
 
     The NOAA daily CO2 file is this shape (text/plain, about 580,000 bytes). A comma reader sees each row as one
@@ -137,7 +137,7 @@ def _whitespace_table(text: str) -> tuple[list, int, list]:
         data = rows[1:]
     if not data or not _mostly_numeric(data):
         raise ValueError("the text is not a numeric table")
-    return columns, len(data), [list(row) for row in data[:PREVIEW_ROWS]]
+    return columns, len(data), [list(row) for row in data[:PREVIEW_ROWS]], list(data[-1])
 
 
 def preview(body: bytes, fmt: str) -> dict:
@@ -150,15 +150,19 @@ def preview(body: bytes, fmt: str) -> dict:
         raise ValueError("the body is not UTF-8 text") from None
     label = {"json": "JSON", "text": "plain-text"}.get(fmt, "CSV")
     try:
+        last = None
         if fmt == "json":
             columns, count, rows = _json_table(text)
         elif fmt == "text":
-            columns, count, rows = _whitespace_table(text)
+            columns, count, rows, last = _whitespace_table(text)
         else:
             columns, count, rows = _csv_table(text)
     except (json.JSONDecodeError, csv.Error, RecursionError) as exc:
         raise ValueError(f"the body does not parse as a {label} table ({type(exc).__name__})") from None
-    return {"columns": columns, "rows": rows, "row_count": count}
+    out = {"columns": columns, "rows": rows, "row_count": count}
+    if last:
+        out["last_row"] = last
+    return out
 
 
 def _find_existing(datasets: DatasetStore, source_key: str, digest: str) -> dict | None:
