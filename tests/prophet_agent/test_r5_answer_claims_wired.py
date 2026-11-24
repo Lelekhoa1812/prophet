@@ -55,6 +55,24 @@ def test_no_total_and_no_reason_is_a_warning():
     assert len(c) == 1 and not c[0]["ok"] and c[0]["severity"] == "warn"
 
 
+def test_the_accuracy_paragraph_does_not_state_a_withheld_total():
+    # SciFore-20261124-111851: the appended line "held the actual total in 8 of 12 windows" failed the check.
+    rows = [{"step": i + 1, "point": 10.0, "q10": 8.0, "q90": 12.0} for i in range(8)]
+    report = {"table": {"rows": rows, "rows_omitted": 0}, "total_range_80": {"centre": 80.0},
+              "headline": {"withheld": REASON, "verdict": "check"}}
+    bt = {"models": {"timesfm": {"mase": 0.21}, "naive": {"mase": 0.38}}, "best_baseline": "naive",
+          "origins": 12, "horizon": 8, "verdict": "timesfm_better", "timesfm_vs_best_baseline_pct": 45.2,
+          "timesfm_range_coverage_80": 0.8,
+          "total_error": {"origins": 12, "variance_ratio": 3.0, "held_measured": 8,
+                          "held_independent": 9, "held_together": 12}}
+    hist = [{"kind": "tool", "tool": "backtest_series", "result": bt},
+            {"kind": "tool", "tool": "forecast_report", "args": {"title": "daily series"}, "result": report}]
+    text = contracts.trust_statement(hist)
+    assert "actual total" not in text and "withheld" in text
+    check = _named(contracts.check_answer(text, hist))
+    assert check and check[0]["ok"]
+
+
 def test_a_total_the_pack_did_not_withhold_adds_no_check():
     assert _named(contracts.check_answer("Total forecast: 14 units.", [_pack(None)])) == []
 

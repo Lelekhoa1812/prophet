@@ -1825,16 +1825,26 @@ def trust_statement(history) -> str:
     found = _measured_total(history)
     if found is not None:
         mr, h = found
-        head_range = (f" This measure is a level, so it is not summed over the horizon. 80% range of its average over the {h} "
-                      f"steps: {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f} (centre {mr['mean']:,.2f})"
-                      if measure_is_level(history) else
-                      f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f} (per step on average: "
-                      f"{mr['mean']:,.2f}, range {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f})")
+        # SciFore (2026-11-24): this sentence is appended to the answer, then the withheld-total check reads it. A level,
+        # or a pack that withheld its total, must not be called a total here or the check fails on Prophet's own line.
+        level = measure_is_level(history)
+        withheld = _withheld_totals(history if isinstance(history, list) else [])
+        if level or withheld:
+            why = next(iter(withheld.values()), "")
+            head_range = ((" The pack withheld a summed total (" + why + ")." if why else "")
+                          + (" This measure is a level, so it is not summed over the horizon." if level else "")
+                          + f" 80% range of its average over the {h} steps: {mr['mean_q10']:,.2f} to "
+                          f"{mr['mean_q90']:,.2f} (centre {mr['mean']:,.2f})")
+            noun = "value"
+        else:
+            head_range = (f" 80% range of the {h}-step total: {mr['q10']:,.0f} to {mr['q90']:,.0f} (per step on average: "
+                          f"{mr['mean']:,.2f}, range {mr['mean_q10']:,.2f} to {mr['mean_q90']:,.2f})")
+            noun = "total"
         extra = (head_range + f", using the day-to-day error correlation "
                  f"measured over {mr['origins']} past windows of {mr['measured_horizon']} steps"
                  + (f", extended to {h} steps at the same average correlation between days"
                     if mr["measured_horizon"] != h else "")
-                 + f"; built the same way, the range held the actual total in {mr['held_measured']} of {mr['origins']} windows."
+                 + f"; built the same way, the range held the actual {noun} in {mr['held_measured']} of {mr['origins']} windows."
                  + extra)
     if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
         return ("**Accuracy check (computed from the stored backtest):**" + extra) if extra else ""

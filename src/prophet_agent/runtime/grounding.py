@@ -92,8 +92,9 @@ _LABEL_NOUN = (r"(?:week|day|month|quarter|promo|store|region|product|sku|row|it
 # A list separator is a comma followed by a space, so a thousands group ("customers 1,200") is a measured value, not a list, and
 # it is not blanked. A number that continues into a decimal or a thousands group is not an identifier either (probe: "Customers
 # 1,200 bought" lost its figure and "Store 3.5" left ".5" behind before this).
+# A slash joins two identifiers ("step 37/38"). It does not join a decimal: the closing lookahead still refuses "step 3.5".
 _IDENTIFIER = re.compile(
-    rf"\b{_LABEL_NOUN}s?\s*#?\s*\d{{1,4}}(?:\s*(?:,\s+|-|\u2013|\u2014|to|through)\s*\d{{1,4}})*\b(?![.,]\d)", re.I)
+    rf"\b{_LABEL_NOUN}s?\s*#?\s*\d{{1,4}}(?:\s*(?:,\s+|-|\u2013|\u2014|/|to|through)\s*\d{{1,4}})*\b(?![.,]\d)", re.I)
 # Standard quantile levels written as a band ("10\u201390%", "5-95% interval"). Only these pairs are labels. Any other
 # range, such as an invented width "\u00b115\u201320%", is a claim the evidence has to support.
 _LEVEL_PAIR = re.compile(r"(?<![\w.])(\d{1,2}(?:\.\d+)?)\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2}(?:\.\d+)?)")

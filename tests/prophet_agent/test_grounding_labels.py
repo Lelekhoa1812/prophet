@@ -12,6 +12,12 @@ def test_an_iso_date_inside_a_week_label_is_one_date_not_fragments():
     assert unverified("Week 2026-01-26 is 375", HIST, "forecast") == []
 
 
+def test_a_slash_between_step_numbers_is_a_label():
+    # FinRes-20261124-111851: "step 37/38" was read as the figure 38, which no tool had printed.
+    assert figures("The FRED CSV download at step 37/38 contains the full history") == []
+    assert figures("88 missing periods (38.5%) filled by straight-line interpolation") == ["88", "38.5%"]
+
+
 def test_plural_row_and_id_labels_and_their_ranges_are_labels():
     # Found in mission 19f1db8f ("rows 60 through 66") and 69b07e76 ("customer IDs 41-48").
     assert figures("rows 60 through 66 repeat rows 0 through 6") == []
