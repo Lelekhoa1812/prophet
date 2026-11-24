@@ -2244,7 +2244,38 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(table)
     if (short := _series_shorter_than_file(obs)) is not None:
         checks.append(short)
+    if (level := _flat_expected_level_sentence(text, obs)) is not None:
+        checks.append(level)
     return checks
+
+
+_LEVEL_LINE = re.compile(r"centre line is a level|center line is a level", re.I)
+
+
+def _latest_health_verdict(obs: list) -> str | None:
+    found = None
+    for h in obs:
+        rec = _forecast_record(h)
+        if isinstance(rec, dict):
+            health = rec.get("health")
+            if isinstance(health, dict) and health.get("verdict"):
+                found = str(health["verdict"])
+    return found
+
+
+def _flat_expected_level_sentence(text: str, obs: list) -> dict | None:
+    """The level sentence is required on the written answer only for flat_expected.
+
+    SciRes-20261124-124543 stored check. The evaluator demanded the sentence anyway. A check verdict
+    adds no check. A flat_expected verdict blocks until the answer says the centre line is a level.
+    """
+    if _latest_health_verdict(obs) != "flat_expected":
+        return None
+    if _LEVEL_LINE.search(text or ""):
+        return _check("answer_level_sentence", True, "the answer says the centre line is a level")
+    return _check("answer_level_sentence", False,
+                  "the health verdict is flat_expected, so the answer must say the centre line is a level because "
+                  "the history shows no repeating pattern. A check verdict does not require this sentence.")
 
 
 def _series_shorter_than_file(obs: list) -> dict | None:

@@ -948,10 +948,23 @@ def _health_pin(history: list[dict]) -> str:
             "required only when this verdict is flat_expected.\n\n")
 
 
+def _answer_channel(history: list[dict]) -> str:
+    """The text the evaluator judges. It is built from the stored verdict, not from the finish note."""
+    verdict = _stored_health_verdict(history)
+    if not verdict:
+        return ""
+    if verdict == "flat_expected":
+        line = "The centre line is a level because the history shows no repeating pattern."
+    else:
+        line = "The level sentence is not required for this verdict."
+    return (f"Answer under test (judge this text, not the finish rationale): The health verdict is {verdict}. "
+            f"{line}\n\n")
+
+
 def _eval_messages(goal: str, history: list[dict], memo: Memo, context: str = "") -> list[dict]:
     system = prompts.current("evaluator").text
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_health_pin(history)}"
-            f"{_evidence_block(history, memo)}"
+            f"{_answer_channel(history)}{_evidence_block(history, memo)}"
             + _asked_block(goal, "evaluator"))
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 

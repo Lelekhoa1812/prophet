@@ -704,6 +704,7 @@ def test_the_evaluator_is_pinned_to_the_stored_health_verdict():
     text = _eval_messages("g", hist, Memo())[-1]["content"]
     assert "Stored forecast health verdict: check" in text
     assert "The finish rationale is not the answer" in text
+    assert "Answer under test" in text and "not required for this verdict" in text
     assert "only when this verdict is flat_expected" in text
     assert "Stored forecast health verdict" not in _eval_messages("g", [], Memo())[-1]["content"]
 

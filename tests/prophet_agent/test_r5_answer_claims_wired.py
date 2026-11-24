@@ -73,6 +73,21 @@ def test_the_accuracy_paragraph_does_not_state_a_withheld_total():
     assert check and check[0]["ok"]
 
 
+def _forecast(verdict: str):
+    return {"kind": "tool", "tool": "forecast_report", "result": {"forecast": {"health": {"verdict": verdict},
+                                                                               "point": [1.0]}}}
+
+
+def test_the_level_sentence_is_required_only_for_flat_expected():
+    missing = "The range is wide."
+    said = "The centre line is a level because the history shows no repeating pattern."
+    blocked = _named(contracts.check_answer(missing, [_forecast("flat_expected")]), "answer_level_sentence")
+    assert blocked and not blocked[0]["ok"] and blocked[0]["severity"] == "block"
+    ok = _named(contracts.check_answer(said, [_forecast("flat_expected")]), "answer_level_sentence")
+    assert ok and ok[0]["ok"]
+    assert _named(contracts.check_answer(missing, [_forecast("check")]), "answer_level_sentence") == []
+
+
 def test_a_forecast_on_a_short_paste_of_a_downloaded_file_blocks():
     # SciRes re-run pasted 13 rows. FinRes forecast 228 points of a file that holds thousands.
     short = [{"kind": "tool", "tool": "web_fetch", "result": {"data_file": True, "row_count": 16037,
