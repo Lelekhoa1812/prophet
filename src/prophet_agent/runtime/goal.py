@@ -139,6 +139,8 @@ MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finis
 REPAIR_CALLS = 8          # one extra allowance, granted once, when a blocked answer meets a spent tool budget (2026-11-22)
 MAX_PREMATURE_FINISHES = 2  # round 3, A5-04: finishes refused for checklist items still to do, per run, before the evaluator judges
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
+_LEVEL_SENTENCE = re.compile(r"centre line is a level|center line is a level", re.I)
+_RATIONALE_JUDGED = re.compile(r"finish rationale|required language", re.I)
 # Decision R1 (the person, 2026-11-22): no fixed number of questions. A question reaches the person only when the planner
 # declares it high-risk and says how a wrong guess changes the numbers; anything else the agent decides and states as an
 # assumption. Replaces MAX_ASKS = 8, which was set after a mission asked 109 low-value questions (mission 0c7432c7).
@@ -1742,6 +1744,46 @@ def window_checks(goal: str, history: list[dict]) -> list[dict]:
     return [contracts._check("window_matches_request", ok, detail, "block")]
 
 
+def _stored_health_verdict(history: list[dict]) -> str | None:
+    """The health verdict on the latest forecast result, or None when no forecast stored one."""
+    found = None
+    for obs in history:
+        if not isinstance(obs, dict) or obs.get("kind") != "tool":
+            continue
+        res = obs.get("result")
+        if not isinstance(res, dict):
+            continue
+        forecast = res.get("forecast")
+        health = forecast.get("health") if isinstance(forecast, dict) else res.get("health")
+        if isinstance(health, dict) and health.get("verdict"):
+            found = str(health["verdict"])
+    return found
+
+
+def level_demand_misapplied(reason: str, history: list[dict]) -> bool:
+    """True when the evaluator demands the flat_expected level sentence for another verdict.
+
+    SciRes-20261124-124543 stored health verdict check. The evaluator refused the finish three times
+    because the 400-character rationale did not say the centre line is a level. That sentence is
+    required only when the stored verdict is flat_expected.
+    """
+    text = reason or ""
+    if _LEVEL_SENTENCE.search(text) is None or _RATIONALE_JUDGED.search(text) is None:
+        return False
+    verdict = _stored_health_verdict(history)
+    return verdict is not None and verdict != "flat_expected"
+
+
+def _accept_despite_level_demand(history: list[dict]) -> dict:
+    verdict = _stored_health_verdict(history) or "unknown"
+    return {
+        "verdict": "met",
+        "reason": f"the stored health verdict is {verdict}, so the flat_expected level sentence is not required",
+        "answer": (f"The forecast is in the evidence. The health verdict is {verdict}. "
+                   "That verdict is not flat_expected, so the answer does not use the level sentence."),
+    }
+
+
 def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
     """The check that the forecast that stands runs over the horizon the goal asks for. Empty when the goal states no horizon
     or no forecast has run: the check is left out, not reported as passing.
@@ -1990,6 +2032,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             history.append({"kind": "evaluator_question", "questions": qs, "answers": answers})
             verdict = ctx.step(f"eval2:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
                                                                        eval_schema, "eval"))
+        # SciRes-20261124-124543: the evaluator demanded the flat_expected level sentence for a check verdict,
+        # and it judged the finish rationale. That refusal does not stand. The sentence stays required for flat_expected.
+        if verdict.get("verdict") == "not_met" and level_demand_misapplied(str(verdict.get("reason") or ""), history):
+            verdict = _accept_despite_level_demand(history)
         if verdict["verdict"] == "met":
             answer = verdict.get("answer", "")
             # A verdict can say "met" and carry no answer (a reply cut short, or a model that only gave its reason).

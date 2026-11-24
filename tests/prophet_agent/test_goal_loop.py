@@ -273,6 +273,9 @@ def test_prompt_contracts_are_versioned_files_and_recorded_in_the_ledger(tmp_pat
     Runtime(store, owner="t").run(mid, goal_program("g", {}, B()))
     recorded = next(s for s in store.steps(mid) if s["name"] == "contracts")["output"]
     assert recorded["planner"]["version"] == prompts.CURRENT["planner"]
+    text = prompts.current("evaluator").text
+    assert "A verdict of check is not flat_expected" in text
+    assert "finish rationale" in text and "centre line is a level" in text
 
 
 def test_a_figure_missing_from_the_evidence_is_gathered_before_it_is_repaired(store):
@@ -676,6 +679,43 @@ def test_repeated_refused_questions_change_the_planner_note():
     # A tool failure keeps the old wording.
     tool_fail = [{"kind": "tool", "error": "boom"}, {"kind": "tool", "error": "boom"}]
     assert "calls failed" in _budget_note(2, GoalConfig(max_iterations=20), tool_fail)
+
+
+# SciRes-20261124-124543: the evaluator refused a check verdict for the flat_expected level sentence.
+SCIRES_LEVEL_REFUSAL = (
+    "The forecast health verdict is 'check', not 'ok', and the answer must state plainly that the centre line is a level "
+    "because the history shows no repeating pattern at the 30-day horizon. The current finish rationale does not include "
+    "this required language, nor does it present the forecast range and trust assessment in the format specified for a "
+    "non-statistician."
+)
+
+
+def _forecast_tool(verdict: str):
+    def fn(args, key):
+        return {"forecast": {"health": {"verdict": verdict}, "point": [429.0], "config": {"horizon": 30}}}
+    return _tool("forecast_report", fn)
+
+
+def test_a_check_verdict_is_not_refused_for_the_flat_expected_level_sentence(store, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.contracts.blocking", lambda checks: [])
+    refusal = {"verdict": "not_met", "reason": SCIRES_LEVEL_REFUSAL}
+    brain = ScriptedBrain(plans=[call("forecast_report"), finish()], evals=[refusal])
+    program = goal_program("g", {"forecast_report": _forecast_tool("check")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "met"
+    assert "health verdict is check" in out["result"]["answer"]
+    assert brain.calls == {"plan": 2, "eval": 1}
+
+
+def test_a_flat_expected_verdict_still_rejects_a_missing_level_sentence(store):
+    refusal = {"verdict": "not_met", "reason": SCIRES_LEVEL_REFUSAL, "answer": "The level stands."}
+    brain = ScriptedBrain(plans=[call("forecast_report"), finish(), finish(), finish()],
+                          evals=[dict(refusal), dict(refusal), dict(refusal)])
+    program = goal_program("g", {"forecast_report": _forecast_tool("flat_expected")}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial"
+    assert "centre line is a level" in out["result"]["reason"]
+    assert brain.calls["eval"] == 3
 
 
 def test_three_rejected_finishes_in_a_row_end_as_a_partial_answer_not_a_loop(store):

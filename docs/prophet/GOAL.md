@@ -296,7 +296,7 @@ line break at a line-boundary cut. A mid-word cut still joins directly. Not veri
 spacing, which needs a live run that cuts a reply.
 
 Licence wording: locked as a permanent rule (2026-11-22). Licence and research-use wording lives only in Markdown documents;
-`tests/prophet_agent/test_licence_wording_guard.py` enforces it. The prompt and skill scrub is done. `evaluator.v9` is the
+`tests/prophet_agent/test_licence_wording_guard.py` enforces it. The prompt and skill scrub is done. `evaluator.v10` is the
 current evaluator prompt, and the older evaluator versions and two skills no longer carry the wording.
 
 ## Round 3 and 4 (2026-11-22 to 2026-11-23)
