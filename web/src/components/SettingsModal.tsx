@@ -31,7 +31,6 @@ import { Button, Card, IconButton, Spinner } from "./ui";
 const FIELDS: Record<SettingsSection, { name: string; label: string; help: string; unit: string }[]> = {
   agent: [
     { name: "part_steps", label: "Steps per part", help: "Planning steps before Prophet pauses at a checkpoint.", unit: "steps" },
-    { name: "tool_calls_per_part", label: "Tool calls per part", help: "Analyses, lookups and forecasts allowed in one part.", unit: "calls" },
     { name: "part_seconds", label: "Time per part", help: "Wall-clock time for one part. Longer work continues at the next checkpoint.", unit: "seconds" },
     { name: "sub_steps", label: "Steps for a delegated task", help: "Budget for a sub-agent that handles one self-contained piece of work.", unit: "steps" },
   ],

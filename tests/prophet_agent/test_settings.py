@@ -58,10 +58,12 @@ def test_a_refused_patch_writes_nothing_even_when_part_of_it_is_valid(env):
     assert settings.values()["agent"]["part_steps"] == 200
 
 
-def test_default_budget_follows_the_saved_allowance(env):
+def test_default_budget_is_a_time_allowance_only(env):
     settings, _, _ = env
-    settings.update({"agent": {"tool_calls_per_part": 7, "part_seconds": 120}})
-    assert settings.default_budget() == {"max_tool_calls": 7, "max_seconds": 120}
+    settings.update({"agent": {"part_seconds": 120}})
+    assert settings.default_budget() == {"max_seconds": 120}
+    with pytest.raises(ValueError, match="unknown setting"):
+        settings.update({"agent": {"tool_calls_per_part": 7}})
 
 
 def test_keys_are_written_to_dotenv_owner_only_and_never_shown_whole(env):
@@ -166,6 +168,6 @@ def test_clear_keeps_settings_and_keys_and_removes_uploads(env, tmp_path):
 
 
 def test_only_the_bounded_numbers_are_settings():
-    assert set(BOUNDS) == {("agent", "part_steps"), ("agent", "tool_calls_per_part"), ("agent", "part_seconds"),
+    assert set(BOUNDS) == {("agent", "part_steps"), ("agent", "part_seconds"),
                            ("agent", "sub_steps"), ("context", "view_chars"), ("context", "keep_recent"),
                            ("context", "memory_chars")}

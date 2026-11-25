@@ -108,6 +108,10 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
 const KIND: Record<string, { label: string; Icon: typeof File }> = {
   png: { label: "Chart", Icon: FileImage },
   svg: { label: "Chart (vector)", Icon: FileImage },
+  jpg: { label: "Image", Icon: FileImage },
+  jpeg: { label: "Image", Icon: FileImage },
+  gif: { label: "Image", Icon: FileImage },
+  webp: { label: "Image", Icon: FileImage },
   xlsx: { label: "Workbook", Icon: FileSpreadsheet },
   csv: { label: "Data", Icon: FileSpreadsheet },
   docx: { label: "Report", Icon: FileText },
@@ -147,14 +151,30 @@ function FileRow({ runId, file }: { runId: string; file: ArtifactFile }) {
   );
 }
 
-// A chart the analysis drew is shown in the answer itself, on its own white page, with the full-size image one click away.
+const RASTER = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+
+function extOf(path: string): string {
+  return path.split(".").pop()?.toLowerCase() ?? "";
+}
+
+// Every image a run made is shown. A chart saved as both a picture and a vector file is shown once, as the picture.
+export function imagesToShow(files: ArtifactFile[]): ArtifactFile[] {
+  const stem = (p: string) => p.replace(/\.[^./]+$/, "");
+  const raster = new Set(files.filter((f) => RASTER.has(extOf(f.path))).map((f) => stem(f.path)));
+  return files.filter((f) => {
+    const ext = extOf(f.path);
+    return RASTER.has(ext) || (ext === "svg" && !raster.has(stem(f.path)));
+  });
+}
+
+// An image the analysis made is shown in the answer itself, on its own white page, with the full-size image one click away.
 function ChartFigure({ runId, file }: { runId: string; file: ArtifactFile }) {
   const name = file.path.replace(/^out\//, "");
   const url = artifactUrl(runId, file.path);
   return (
     <figure className="m-0 grid gap-2">
-      <a href={url} target="_blank" rel="noopener noreferrer" title="Open the chart full size" className="block overflow-hidden rounded-xl border border-sand-2/25 bg-white">
-        <img src={url} alt={`Chart ${name}`} loading="lazy" className="block h-auto w-full" />
+      <a href={url} target="_blank" rel="noopener noreferrer" title="Open the image full size" className="block overflow-hidden rounded-xl border border-sand-2/25 bg-white">
+        <img src={url} alt={`Image ${name}`} loading="lazy" className="block h-auto w-full" />
       </a>
       <figcaption className="text-caption text-sand-2">{name}</figcaption>
     </figure>
@@ -170,10 +190,9 @@ export function Results({ runs }: { runs: ArtifactRun[] }) {
           {run.forecast?.point && run.forecast.q10 && run.forecast.q90 && (
             <ForecastChart history={run.history ?? []} fc={run.forecast} />
           )}
-          {!run.forecast &&
-            run.files
-              .filter((f) => f.path.toLowerCase().endsWith(".png"))
-              .map((f) => <ChartFigure key={f.path} runId={run.run_id} file={f} />)}
+          {imagesToShow(run.files).map((f) => (
+            <ChartFigure key={f.path} runId={run.run_id} file={f} />
+          ))}
           <div className="grid gap-2">
             <h3 className="text-lg font-bold text-sand-0">Files</h3>
             <ul className="grid gap-2 sm:grid-cols-2">

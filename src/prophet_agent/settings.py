@@ -61,13 +61,12 @@ def _forget_data_bytes(root: Path) -> None:
 
 
 DEFAULTS: dict[str, dict[str, int]] = {
-    "agent": {"part_steps": 200, "tool_calls_per_part": 20, "part_seconds": 900, "sub_steps": 12},
+    "agent": {"part_steps": 200, "part_seconds": 900, "sub_steps": 12},
     "context": {"view_chars": 16000, "keep_recent": 4, "memory_chars": 8000},
 }
 # (low, high) for every numeric setting. Anything outside is refused, never clamped silently.
 BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
     ("agent", "part_steps"): (5, 1000),
-    ("agent", "tool_calls_per_part"): (1, 500),
     ("agent", "part_seconds"): (60, 14400),
     ("agent", "sub_steps"): (1, 60),
     ("context", "view_chars"): (2000, 200000),
@@ -213,8 +212,8 @@ class Settings:
                        memory_chars=v["context"]["memory_chars"])
 
     def default_budget(self) -> dict[str, int]:
-        v = self.values()["agent"]
-        return {"max_tool_calls": v["tool_calls_per_part"], "max_seconds": v["part_seconds"]}
+        """Time for one part. The lead has no tool-call cap."""
+        return {"max_seconds": self.values()["agent"]["part_seconds"]}
 
     # -- providers and models -----------------------------------------------------------------------------------
 

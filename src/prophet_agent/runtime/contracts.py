@@ -2129,6 +2129,43 @@ def _blend_misdescribed(text: str, obs: list) -> dict | None:
                   f"the answer describes it as a per-client blend ({m.group()[:160]}); describe it as that blend")
 
 
+_NAMED_IMAGE = re.compile(r"(?<![\w./:-])((?:[\w-]+/)*[\w.-]+\.(?:png|svg|jpe?g|gif|webp))(?![\w-])", re.I)
+
+
+def _made_files(history) -> set[str]:
+    """Lower-case base names of every file a tool call in this mission (or a sub-agent's) listed as written."""
+    names: set[str] = set()
+    for h in with_delegated(history):
+        res = h.get("result") if isinstance(h, dict) and h.get("kind") == "tool" else None
+        if not isinstance(res, dict):
+            continue
+        for key in ("outputs", "files"):
+            for o in res.get(key) or []:
+                path = o.split(" (")[0] if isinstance(o, str) else o.get("path") if isinstance(o, dict) else None
+                if isinstance(path, str) and path:
+                    names.add(Path(path).name.lower())
+    return names
+
+
+def check_answer_files(answer, history) -> dict | None:
+    """An image the answer names must be a file a run made, so the person sees it.
+
+    Live NVDA diagram (2026-11-25): three sandbox_python cells failed with a SyntaxError and wrote nothing, and the answer
+    said "The diagram has been created and saved as nvda_forecast_pipeline_diagram.png". Nothing was shown. Web addresses are
+    not read as file names. None when the answer names no image."""
+    text = answer if isinstance(answer, str) else ""
+    named = list(dict.fromkeys(Path(m.group(1)).name for m in _NAMED_IMAGE.finditer(text)))
+    if not named:
+        return None
+    made = _made_files(history)
+    missing = [n for n in named if n.lower() not in made]
+    if not missing:
+        return _check("answer_file_exists", True, "every image the answer names is a file a run made")
+    return _check("answer_file_exists", False,
+                  f"the answer names {', '.join(missing[:4])}, but no run made that file (no tool result lists it). Make "
+                  "it in sandbox_python and save it under out/, or take the file name out and say the image was not made")
+
+
 def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict]:
     """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
     makes, so an answer with no such claim adds nothing.
@@ -2266,6 +2303,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(short)
     if (level := _flat_expected_level_sentence(text, obs)) is not None:
         checks.append(level)
+    if (named := check_answer_files(text, obs)) is not None:
+        checks.append(named)
     return checks
 
 

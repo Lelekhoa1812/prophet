@@ -35,7 +35,7 @@ from prophet_agent.nim.providers import CATALOG, MODELS, PROVIDERS
 
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
-DEFAULT_BUDGET = {"max_tool_calls": 20, "max_seconds": 900}
+DEFAULT_BUDGET = {"max_seconds": 900}
 AUTO_CONTINUE_PARTS = 2   # parts a mission may start by itself after the first; a proposal, set per mission with budget["auto_continue"]
 # Statuses a person can continue or answer now from. The two legacy names are missions that stopped at a limit before
 # checkpoints existed; their stored steps are intact, so they resume the same way instead of being stranded.
@@ -109,11 +109,9 @@ class MissionService:
     # -- one-off missions ----------------------------------------------------------------------------------------
 
     def _top_up(self, mission_id: str, budget: dict) -> None:
-        """A new part's allowance on each lane, counted the way the runtime counts it (round 3, A5-01): the lead's charged
-        calls plus one default part, and the sub-agents' calls plus their own grant. Counting every lane and read-only call
-        here, as before, gave the lead an allowance that did not match the check it is held to."""
-        lead = self.store.count_tool_calls(mission_id, exclude=UNCHARGED, lane="lead")
-        budget["max_tool_calls"] = lead + int(self.default_budget()["max_tool_calls"])
+        """A new part's allowance. The lead has no tool-call cap, so a stored cap from an earlier part is removed.
+        Sub-agent calls are topped up by their own grant, counted the way the runtime counts that lane (round 3, A5-01)."""
+        budget.pop("max_tool_calls", None)
         delegated = self.store.count_tool_calls(mission_id, exclude=UNCHARGED, lane="delegated")
         budget["max_delegated_calls"] = delegated + DELEGATED_CALLS
 
@@ -411,6 +409,7 @@ class MissionService:
         """The program for the mission as it stands. The notebook's provider rule applies to every start, including a resume,
         and is checked before a thread exists. Raises PolicyRefused."""
         budget = self._sharing_budget(mission)
+        budget.pop("max_tool_calls", None)   # a stored lead cap does not apply; the lead has no tool-call cap
         if budget != mission["budget"]:
             self._store_budget(mission["id"], budget)
             mission = self.store.mission(mission["id"])
@@ -592,9 +591,8 @@ class MissionService:
         return mission_id
 
     def continue_mission(self, mission_id: str) -> None:
-        """Carry a checkpointed mission into its next part. The stored steps replay; the tool allowance is topped up by
-        one part's worth from the calls already made, so a long session keeps going without a hard stop. Raises
-        ValueError unless the mission is at a checkpoint, and LeaseHeld if it is already running."""
+        """Carry a checkpointed mission into its next part. The stored steps replay. The lead has no tool-call cap.
+        Raises ValueError unless the mission is at a checkpoint, and LeaseHeld if it is already running."""
         mission = self.store.mission(mission_id)
         if mission["status"] not in RESUMABLE_AT_CHECKPOINT:
             raise ValueError("only a mission paused at a checkpoint can continue")

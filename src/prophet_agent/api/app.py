@@ -175,7 +175,7 @@ class TurnIn(BaseModel):
     model: str | None = Field(default=None, max_length=120)     # a catalog model id; omitted means the default chain
 
 
-DISPLAY_EXTS = (".png", ".svg", ".xlsx", ".docx", ".pdf")
+DISPLAY_EXTS = (".png", ".svg", ".jpg", ".jpeg", ".gif", ".webp", ".xlsx", ".docx", ".pdf")
 
 
 def _history(args: dict) -> list[float]:

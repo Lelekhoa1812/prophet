@@ -2026,6 +2026,12 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             draft = _gap_draft(verdict)
             written = _compose(ctx, brain, f"composestall:{tag}:{i}", goal, history, memo, context, draft)
             text = written if written is not None else verdict.get("answer", "")
+            named = contracts.check_answer_files(text, history)
+            if named is not None and not named["ok"] and verdict["verdict"] != "impossible":
+                fixed = _compose(ctx, brain, f"filesstall:{tag}:{i}", goal, history, memo, context, text,
+                                 fixes=contracts.summarise([named]))
+                if fixed is not None and fixed.strip():
+                    text = fixed
             # Round 7: the reason names the repeated step, and keeps the words the outcome mapping reads as reason "stalled".
             reason = ("The analysis kept repeating the same step (" + _stall_label(_run_of_same_result(history) or [obs])
                       + "), so this answer rests on what was found before that.")
@@ -2340,15 +2346,24 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
 def _ground_result(result: dict, history: list[dict], goal: str) -> dict:
     """Every exit path is checked, not only the "met" one: a stalled, budget-capped or impossible answer carries
     figures too. Figures that the evidence does not support are listed on the result. A "met" result that fails the
-    check is downgraded to partial, so it is never presented as fully grounded."""
+    check is downgraded to partial, so it is never presented as fully grounded. An image the answer names that no run made
+    is a failed check on every exit path too."""
+    out = result
+    named = contracts.check_answer_files(result.get("answer"), history)
+    if named is not None and not named["ok"]:
+        failures = list(result.get("contract_failures") or [])
+        out = {**result, "contract_failures": failures + [named["name"]] if named["name"] not in failures else failures}
+        if out.get("status") == "met":
+            out["status"] = "partial"
+            out["reason"] = "This answer states something the analysis output does not support: " + contracts.summarise([named])
     bad: list[str] = []
     for text in (result.get("answer") or "", result.get("reason") or ""):
         for token in unverified(text, history, goal):
             if token not in bad:
                 bad.append(token)
     if not bad:
-        return result
-    out = {**result, "unverified": bad}
+        return out
+    out = {**out, "unverified": bad}
     if out.get("status") == "met":
         out["status"] = "partial"
         out["reason"] = "Some figures in this answer could not be matched to the analysis output."
