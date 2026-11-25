@@ -99,6 +99,31 @@ def test_forecast_delete_removes_run_folder_and_unused_attachment(service):
         service.store.mission(mission)
 
 
+def test_forecast_delete_removes_agent_notes(service):
+    mission = service.create("forecast units")
+    _finish(service, mission)
+    service.store.note_put(mission, "a3", "final_report", "the weekly total")
+
+    service.delete(mission)
+
+    with pytest.raises(KeyError):
+        service.store.mission(mission)
+    assert service.store.note_list(mission) == []
+
+
+def test_notebook_delete_removes_turn_notes(service):
+    nid = service.notebooks.create("Sales")["id"]
+    turn = service.create_turn(nid, "forecast units")
+    _finish(service, turn)
+    service.store.note_put(turn, "a5", "final_report", "the monthly total")
+
+    service.notebooks.delete(nid)
+
+    with pytest.raises(KeyError):
+        service.store.mission(turn)
+    assert service.store.note_list(turn) == []
+
+
 def test_deleted_forecast_outputs_are_no_longer_served(service):
     mission = service.create("forecast units")
     _finish(service, mission)

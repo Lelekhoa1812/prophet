@@ -1,6 +1,6 @@
 """Round 6n, defect 4: a snapshot poll can ask for only the rows it has not seen.
 
-The console polls a running mission every 1.5 seconds. The snapshot used to load every event and every step, with each
+The console polls a running mission while it runs. The snapshot used to load every event and every step, with each
 step's full output, on each poll. A cursor (the last event seq and the last step index already seen) now returns only the
 newer rows. Without a cursor the snapshot is the full one, as before, and the response keys do not change.
 """
@@ -12,8 +12,8 @@ from prophet_agent.api import titles
 from prophet_agent.api.service import MissionService
 from prophet_agent.tools import default_tools
 
-SUMMARY_KEYS = {"id", "goal", "status", "budget", "notebook_id", "seq", "datasets", "answer", "outcome", "progress",
-                "events", "steps", "questions", "answered_questions"}
+SUMMARY_KEYS = {"id", "goal", "status", "budget", "notebook_id", "seq", "datasets", "answer", "draft", "outcome",
+                "progress", "events", "steps", "questions", "answered_questions"}
 
 
 @pytest.fixture(autouse=True)

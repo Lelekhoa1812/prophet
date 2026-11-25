@@ -80,14 +80,14 @@ function StepRow({ step }: { step: StepView }) {
   );
 }
 
-function StepsPanel({ steps, working }: { steps: StepView[]; working: boolean }) {
-  const [open, setOpen] = useState(working);
+function StepsPanel({ steps, working, startOpen }: { steps: StepView[]; working: boolean; startOpen: boolean }) {
+  const [open, setOpen] = useState(startOpen);
   const [touched, setTouched] = useState(false);
 
-  // Open while the agent works so progress is visible; fold away once done so the answer leads.
+  // Open while the agent works, and when a run stopped with no answer, so the finished steps stay visible.
   useEffect(() => {
-    if (!touched) setOpen(working);
-  }, [working, touched]);
+    if (!touched) setOpen(startOpen);
+  }, [startOpen, touched]);
 
   if (steps.length === 0) return null;
   const retried = steps.filter((s) => s.state === "failed").length;
@@ -240,6 +240,43 @@ function Decisions({ items }: { items: AnsweredQuestion[] }) {
   );
 }
 
+function InterruptedCard({ mission, onChanged }: { mission: Mission; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function resume() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.resumeMission(mission.id);
+      onChanged();
+    } catch (err) {
+      setError(errorMessage(err, "Couldn't resume. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card role="status" className="grid gap-3 border-sand-2/40 p-4 sm:p-5">
+      <p className="text-base font-bold text-sand-0">Prophet stopped before this question finished.</p>
+      <p className="text-caption text-sand-1">The app restarted while it was working. Finished steps are kept.</p>
+      <p className="text-caption text-sand-0">Resume to continue from the last finished step.</p>
+      {error && (
+        <p role="alert" className="text-caption text-bad">
+          {error}
+        </p>
+      )}
+      <div className="pt-1">
+        <Button onClick={() => void resume()} disabled={busy}>
+          {busy ? <Spinner /> : <Play aria-hidden="true" className="size-4" />}
+          Resume
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function CheckpointCard({ mission, onChanged }: { mission: Mission; onChanged: () => void }) {
   const [busy, setBusy] = useState<"continue" | "answer" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -317,6 +354,7 @@ export function Turn({
   const elapsed = now - startedAt;
   const answer = mission.answer && typeof mission.answer === "object" ? (mission.answer as Record<string, any>) : null;
   const text = (answer?.status === "met" || answer?.status === "partial") && typeof answer.answer === "string" ? answer.answer : "";
+  const draft = working && !text && typeof mission.draft === "string" ? mission.draft : "";
   // The named reasons come from the API (outcome). The planner's own text is never shown as a reason.
   const reasons = mission.outcome?.reasons ?? [];
   const problem = problemFor(mission);
@@ -324,15 +362,16 @@ export function Turn({
   // One quiet announcer for the two moments a screen reader user needs to hear: a question for them, or a finished answer.
   // The first render is skipped, so opening an old question does not announce it again.
   const [announce, setAnnounce] = useState("");
-  const seen = useRef<{ status: string; answered: boolean } | null>(null);
+  const seen = useRef<{ status: string; answered: boolean; writing: boolean } | null>(null);
   useEffect(() => {
     const prev = seen.current;
-    seen.current = { status: mission.status, answered: text !== "" };
+    seen.current = { status: mission.status, answered: text !== "", writing: draft !== "" };
     if (!prev) return;
     if (mission.status === "waiting_user" && prev.status !== "waiting_user") setAnnounce("Prophet needs your answer.");
     else if (isCheckpoint(mission.status) && !isCheckpoint(prev.status)) setAnnounce("Paused at a checkpoint. Continue or answer now.");
+    else if (draft !== "" && !prev.writing) setAnnounce("Writing the answer.");
     else if (text !== "" && !prev.answered) setAnnounce("Answer ready.");
-  }, [mission.status, text]);
+  }, [mission.status, text, draft]);
 
   return (
     <article className="grid gap-5" aria-label="Question and answer">
@@ -365,9 +404,11 @@ export function Turn({
       </div>
 
       <div className="grid gap-4">
-        <StepsPanel steps={steps} working={working} />
+        {mission.status === "interrupted" && <InterruptedCard mission={mission} onChanged={onAnswered} />}
 
         {isCheckpoint(mission.status) && <CheckpointCard mission={mission} onChanged={onAnswered} />}
+
+        <StepsPanel steps={steps} working={working} startOpen={working || mission.status === "interrupted"} />
 
         {working && (
           <div className="flex items-center gap-2.5 text-base text-sand-0">
@@ -377,7 +418,7 @@ export function Turn({
           </div>
         )}
 
-        {working && (
+        {working && !draft && (
           <p className="text-caption text-sand-2 tabular-nums">
             {mission.progress && mission.progress.checklist_total > 0 && (
               <>
@@ -423,6 +464,13 @@ export function Turn({
               ))}
             </ul>
           </Card>
+        )}
+
+        {draft && (
+          <div aria-busy="true">
+            <Markdown text={draft} className="text-lead leading-[1.7]" />
+            <span className="stream-caret" aria-hidden="true" />
+          </div>
         )}
 
         {text && <Markdown text={text} className="text-lead leading-[1.7]" />}

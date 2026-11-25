@@ -163,6 +163,24 @@ def clean_text(raw: str) -> str:
     return m.group(1).strip() if m else text
 
 
+def preview_text(raw: str) -> str:
+    """Text that can be shown while a reply is still arriving.
+
+    A closed think block is removed, as in clean_text. An open think block is held back, and so is a trailing fragment
+    that may be the start of ``<think>``. The stored answer still goes through clean_text once the reply is finished.
+    """
+    text = _THINK.sub("", raw or "")
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1]
+    open_at = text.find("<think>")
+    if open_at >= 0:
+        text = text[:open_at]
+    tail = text.rfind("<")
+    if tail >= 0 and "<think>".startswith(text[tail:]):
+        text = text[:tail]
+    return text
+
+
 def _join_continuation(carried: str, more: str) -> str:
     """Joins a free-text reply cut by the token allowance to its continuation, then cleans the whole.
 

@@ -26,7 +26,7 @@ from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
 from prophet_agent.runtime.runner import DELEGATED_CALLS, UNCHARGED, Runtime, Tool
-from prophet_agent.runtime.store import ACTIVE, LeaseHeld, LeaseLost, Store
+from prophet_agent.runtime.store import ACTIVE, LeaseHeld, LeaseLost, Store, purge_missions
 from prophet_agent.tools.notebook_tools import NotebookBinding
 from prophet_agent.tools.opendata_tools import OpenDataContext
 from prophet_agent.api.outcome import outcome_for
@@ -182,7 +182,7 @@ class MissionService:
                 raise ValueError("this forecast is still running; stop it first")
             dataset_ids = json.loads(row["budget_json"]).get("dataset_ids", [])
             run_ids = mission_run_ids(c, [mission_id])
-            _purge_missions(c, [mission_id])
+            purge_missions(c, [mission_id])
             orphans = unreferenced_datasets(c, dataset_ids)
         # Files go after the commit: the run folder (outputs, copies of inputs) and any attached file nothing else uses.
         remove_runs(run_ids)
@@ -650,6 +650,8 @@ class MissionService:
             "seq": mission.get("seq"),
             "datasets": [self.datasets.get(d) for d in mission["budget"].get("dataset_ids", []) if self._has(d)],
             "answer": mission["answer"],
+            # Text of the answer while it is still being written. Empty once the answer is stored.
+            "draft": mission.get("draft_text") or None,
             # Named reasons a mission stopped short (plain words), with the planner's own text under developer.
             "outcome": outcome_for(mission["status"], mission["answer"], mission["budget"], marked),
             # The latest status line the runtime wrote: where the work stands, for the console's progress line.
@@ -687,13 +689,3 @@ class MissionService:
                 "SELECT id, goal, COALESCE(title, goal) AS title, status, created, updated, pinned FROM missions "
                 "WHERE notebook_id IS NULL AND archived=0 ORDER BY pinned DESC, created DESC LIMIT ?", (int(limit),)).fetchall()
         return [{**dict(r), "pinned": bool(r["pinned"])} for r in rows]
-
-
-def _purge_missions(c, mission_ids: list[str]) -> None:
-    """Delete missions and everything that refers to them, children first. Caller holds the transaction."""
-    for mid in mission_ids:
-        c.execute("DELETE FROM questions WHERE mission_id=?", (mid,))
-        c.execute("DELETE FROM tool_calls WHERE mission_id=?", (mid,))
-        c.execute("DELETE FROM steps WHERE mission_id=?", (mid,))
-        c.execute("DELETE FROM events WHERE mission_id=?", (mid,))
-        c.execute("DELETE FROM missions WHERE id=?", (mid,))

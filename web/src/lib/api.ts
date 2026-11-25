@@ -42,6 +42,8 @@ export type Mission = {
   status: string;
   budget: Record<string, unknown>;
   answer: any;
+  // The answer text while the model is still writing it. Null once the stored answer is in place.
+  draft?: string | null;
   // Named reasons the mission stopped short, in plain words. developer holds the planner's own text for debugging only.
   outcome?: MissionOutcome;
   // The latest status line from the runtime: checklist counts, the next item and elapsed seconds.
@@ -244,6 +246,8 @@ export const api = {
   cancel: (missionId: string) => req<{ status: string }>(`/api/missions/${missionId}/cancel`, { method: "POST" }),
   // A checkpoint is a pause, not a failure: continue gives the work another part, answer-now writes what is established.
   continueMission: (missionId: string) => req<{ id: string; status: string }>(`/api/missions/${missionId}/continue`, { method: "POST" }),
+  // An interrupted mission keeps its finished steps. Resume reads them back and continues; it does not repeat them.
+  resumeMission: (missionId: string) => req<{ id: string; status: string }>(`/api/missions/${missionId}/resume`, { method: "POST" }),
   answerNow: (missionId: string) => req<{ id: string; status: string }>(`/api/missions/${missionId}/answer-now`, { method: "POST" }),
 
   settings: () => req<SettingsView>("/api/settings"),

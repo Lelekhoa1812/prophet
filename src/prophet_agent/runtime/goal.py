@@ -39,7 +39,7 @@ from typing import Any, Callable, Protocol
 
 from prophet_agent import prompts
 from prophet_agent.nim.errors import Exhausted, NimError, NotConfigured, redact
-from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN
+from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN, preview_text
 
 from . import contracts
 from .grounding import snap, snap_note, unverified
@@ -1148,7 +1148,18 @@ def _compose(ctx: Ctx, brain: Any, step: str, goal: str, history: list[dict], me
     write = getattr(brain, "write", None)
     if write is None or not draft.strip():
         return None
-    return ctx.step(step, lambda c: write(_compose_messages(goal, history, memo, context, draft, bad, ctx, fixes)))
+    reveal = getattr(brain, "reveal", None)
+
+    def run(_c: Ctx) -> str:
+        # Built inside the step, so a replay returns the stored answer and does not call the model again.
+        messages = _compose_messages(goal, history, memo, context, draft, bad, ctx, fixes)
+        # Only the lead's answer is shown as it arrives. A sub-agent's write and the memo compaction stay buffered.
+        if reveal is None or ctx.lane != "lead":
+            return write(messages)
+        with reveal():
+            return write(messages)
+
+    return ctx.step(step, run)
 
 
 VOLATILE_KEYS = ("run_id", "outputs", "manifest", "files")   # differ on every run of the same call, so a repeat is still a repeat
@@ -2295,6 +2306,12 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                     ctx.store.append_event(ctx.mission_id, "provider.waiting", info)
 
             bind(ctx._guard_time, note, ctx.seconds_left)
+        if hasattr(brain, "on_text"):
+            def show(text: str) -> None:
+                ctx.store.set_draft(ctx.mission_id, text)
+
+            brain.on_text = show
+            show("")                       # a draft left by a crashed run is not the answer of this run
         result = _run(ctx, brain, goal, tools, cfg, context, history)
         # Outside claims are checked against the pages first (lines whose figures no page holds are removed), then the whole
         # answer is grounded against the analysis evidence plus the text of the pages that were read.
@@ -2311,6 +2328,10 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
         if trust and isinstance(result.get("answer"), str) and result["answer"].strip() and "Accuracy check (computed" not in result["answer"]:
             # Written by code from the stored backtest, after grounding: the figures in it are the ledger's own.
             result = {**result, "answer": result["answer"].rstrip() + "\n\n" + trust, "trust": contracts.trust_facts(history)}
+        show = getattr(brain, "on_text", None)
+        final = result.get("answer")
+        if callable(show) and isinstance(final, str) and final:
+            show(final)                    # the notes added after the model finished are in the text the person sees
         return {**result, "stop_reason": STOP_REASONS.get(result.get("status", ""), "unknown")}
 
     return program
@@ -2335,6 +2356,8 @@ def _ground_result(result: dict, history: list[dict], goal: str) -> dict:
 
 
 MIN_CALL_S = 45.0   # seconds of the segment's allowance below which no model call starts: it is a checkpoint instead
+DRAFT_FLUSH_S = 0.08  # shortest gap between two updates of the text the person is watching
+DRAFT_FLUSH_CHARS = 48
 
 
 class NimBrain:
@@ -2350,6 +2373,18 @@ class NimBrain:
         self.checkpoint: Callable[[], None] | None = None
         self.on_wait: Callable[[dict], None] | None = None
         self.remaining: Callable[[], float | None] | None = None
+        # Set by the goal program. Called with the full visible answer so far, only while reveal() is active.
+        self.on_text: Callable[[str], None] | None = None
+        self._reveal = False
+
+    @contextlib.contextmanager
+    def reveal(self):
+        """Let write() pass arriving text to on_text. Planner calls stay buffered: they use decide(), not write()."""
+        self._reveal = True
+        try:
+            yield
+        finally:
+            self._reveal = False
 
     def bind(self, checkpoint: Callable[[], None] | None, on_wait: Callable[[dict], None] | None = None,
              remaining: Callable[[], float | None] | None = None) -> None:
@@ -2376,11 +2411,13 @@ class NimBrain:
         import sys
         return str(sys.exc_info()[1] or "the model service gave no usable answer")
 
-    def _complete(self, messages: list[dict], **kw: Any) -> Any:
+    def _models(self) -> list:
+        return list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN)
+
+    def _guarded(self, fn: Callable[[dict], Any]) -> Any:
         extra = self._extra()
         try:
-            return self.client.complete(list(self.models or getattr(self.client, "chain", None) or DEFAULT_CHAIN), messages,
-                                        **kw, **extra)
+            return fn(extra)
         except NotConfigured:
             raise                       # no key or provider: continuing cannot help, so the mission fails and says why
         except Exhausted:
@@ -2396,9 +2433,45 @@ class NimBrain:
             # up to its auto_continue limit, then the person decides.
             raise BudgetExceeded("model_service", redact(str(exc))) from None
 
+    def _complete(self, messages: list[dict], **kw: Any) -> Any:
+        def run(extra: dict) -> Any:
+            return self.client.complete(self._models(), messages, **kw, **extra)
+        return self._guarded(run)
+
+    def _stream_text(self, messages: list[dict], extra: dict) -> str:
+        """Read a free-text stream and hand the visible text to on_text as it grows. Returns the finished text."""
+        parts: list[str] = []
+        shown, last = "", 0.0
+        reply = None
+        for kind, value in self.client.stream(self._models(), messages, thinking=False, max_tokens=self.write_tokens, **extra):
+            if kind == "delta":
+                parts.append(value)
+                visible = preview_text("".join(parts))
+                now = time.monotonic()
+                if not visible or visible == shown:
+                    continue
+                if shown and now - last < DRAFT_FLUSH_S and len(visible) - len(shown) < DRAFT_FLUSH_CHARS:
+                    continue
+                self.on_text(visible)
+                shown, last = visible, now
+            elif kind == "done":
+                reply = value
+        if reply is None:
+            raise NimError("stream ended without an answer")
+        if reply.text != shown:
+            self.on_text(reply.text)
+        return reply.text
+
     def write(self, messages: list[dict]) -> str:
-        """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line)."""
-        return self._complete(messages, thinking=False, max_tokens=self.write_tokens).text
+        """Free text, no schema, so Markdown keeps its line breaks (a schema-bound string comes back on one line).
+
+        Inside reveal(), the text is passed to on_text as tokens arrive. Outside it, the call waits for the whole reply,
+        which is what the memo compaction and every scripted brain do.
+        """
+        if self._reveal and self.on_text is not None and hasattr(self.client, "stream"):
+            return self._guarded(lambda extra: self._stream_text(messages, extra))
+        reply = self._complete(messages, thinking=False, max_tokens=self.write_tokens)
+        return reply.text
 
     def decide(self, messages: list[dict], schema: dict, name: str) -> dict:
         reply = self._complete(messages, thinking=self.thinking, max_tokens=self.max_tokens, schema=schema, schema_name=name)

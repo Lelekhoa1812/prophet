@@ -30,7 +30,7 @@ from typing import Any
 from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, run_ids_in, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore, MAX_BYTES
 from prophet_agent.mentions import plain
-from prophet_agent.runtime.store import ACTIVE, Store
+from prophet_agent.runtime.store import ACTIVE, Store, purge_missions
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
 
 TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -163,10 +163,7 @@ class Notebooks:
                 "SELECT v.lineage_json FROM derived_versions v JOIN derived_tables t ON t.id=v.table_id WHERE t.notebook_id=?", (nid,))))
             run_ids |= {r[0] for r in c.execute("SELECT run_id FROM sources WHERE notebook_id=? AND run_id IS NOT NULL", (nid,))}
             dataset_ids = [r[0] for r in c.execute("SELECT dataset_id FROM sources WHERE notebook_id=?", (nid,)).fetchall()]
-            for mid in mission_ids:
-                for table in ("questions", "tool_calls", "steps", "events"):
-                    c.execute(f"DELETE FROM {table} WHERE mission_id=?", (mid,))
-                c.execute("DELETE FROM missions WHERE id=?", (mid,))
+            purge_missions(c, mission_ids)
             c.execute("DELETE FROM derived_versions WHERE table_id IN (SELECT id FROM derived_tables WHERE notebook_id=?)", (nid,))
             c.execute("DELETE FROM derived_tables WHERE notebook_id=?", (nid,))
             c.execute("DELETE FROM sources WHERE notebook_id=?", (nid,))

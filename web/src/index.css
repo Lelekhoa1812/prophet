@@ -85,6 +85,21 @@
   animation: prophet-spin 0.9s linear infinite;
 }
 
+.stream-caret {
+  display: inline-block;
+  width: 0.45rem;
+  height: 1.05rem;
+  margin-top: 0.35rem;
+  background: var(--color-ember);
+  animation: prophet-caret 1s steps(1) infinite;
+}
+
+@keyframes prophet-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

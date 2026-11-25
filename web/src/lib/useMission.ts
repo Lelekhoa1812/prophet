@@ -83,7 +83,8 @@ export function useMission(id: string | null) {
         setError(null);
         const live = snap.status === "created" || snap.status === "running";
         const waiting = snap.status === "waiting_user";
-        if (live) timer = setTimeout(run, 1500);
+        // Short while the mission runs, so answer text appears as the model writes it.
+        if (live) timer = setTimeout(run, 300);
         else if (waiting) timer = setTimeout(run, 4000);
       } catch (err) {
         if (cancelled) return;

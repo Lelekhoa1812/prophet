@@ -1,4 +1,4 @@
-import type { Mission, ToolInfo } from "./api";
+import type { Mission, StepRow, ToolInfo } from "./api";
 import { formatNumber, humanise, truncate } from "./format";
 import { isWorking } from "./utils";
 
@@ -47,45 +47,93 @@ function toolTitle(name: string, tools: Record<string, ToolInfo>): string {
   return tools[name]?.title || humanise(name);
 }
 
+// Ledger names are plan:d0:3 (depth, then the loop index). Older ledgers used plan:3. A harness decision is auto:d0:3.
+const STEP_NAME = /^(composestall|evalstall|evalask|eval2|plan|act|eval|ask|auto):(?:d(\d+):)?(\d+)$/;
+
+type ParsedStep = { kind: string; depth: number; index: number };
+
+function parseStepName(name: string): ParsedStep | null {
+  const match = STEP_NAME.exec(name);
+  if (!match) return null;
+  return { kind: match[1], depth: match[2] === undefined ? 0 : Number(match[2]), index: Number(match[3]) };
+}
+
+// One planner pass: the decision, the tool call, the question and the judgement. Ordered by when they were written.
+type Pass = {
+  key: string;
+  order: number;
+  plan?: StepRow;
+  act?: StepRow;
+  eval?: StepRow;
+  ask?: StepRow;
+};
+
+function passes(steps: StepRow[]): Pass[] {
+  const grouped = new Map<string, Pass>();
+  for (const row of steps) {
+    const parsed = parseStepName(row.name);
+    if (!parsed || parsed.kind === "composestall") continue;
+    const key = `${parsed.depth}:${parsed.index}`;
+    const pass = grouped.get(key) ?? { key, order: row.idx };
+    pass.order = Math.min(pass.order, row.idx);
+    if (parsed.kind === "plan" || parsed.kind === "auto") {
+      if (!pass.plan) pass.plan = row;
+    } else if (parsed.kind === "act") pass.act = row;
+    else if (parsed.kind === "ask" || parsed.kind === "evalask") pass.ask = row;
+    else pass.eval = row;
+    grouped.set(key, pass);
+  }
+  return [...grouped.values()].filter((pass) => pass.plan).sort((a, b) => a.order - b.order);
+}
+
 export function buildSteps(mission: Mission, tools: Record<string, ToolInfo>): StepView[] {
-  const byName = new Map(mission.steps.map((s) => [s.name, s]));
   const working = isWorking(mission.status);
+  const groups = passes(mission.steps);
   const views: StepView[] = [];
 
-  for (let i = 0; ; i++) {
-    const planRow = byName.get(`plan:${i}`);
-    if (!planRow) break;
-    const plan: Obj = planRow.output ?? {};
-    const evalRow = byName.get(`eval:${i}`);
-    const verdict: Obj | undefined = evalRow?.output;
+  groups.forEach((group, n) => {
+    const plan: Obj = group.plan?.output ?? {};
+    const verdict: Obj | undefined = group.eval?.output;
     const followUp = verdict && verdict.verdict === "not_met" && typeof verdict.reason === "string" ? verdict.reason : undefined;
     const note = typeof plan.rationale === "string" ? plan.rationale : "";
+    const later = groups.slice(n + 1).some((item) => item.plan);
 
     if (plan.action === "ask_user") {
-      const ask = byName.get(`ask:${i}`);
       views.push({
-        key: `q${i}`,
+        key: `q${group.key}`,
         title: "Asked you a question",
         note,
-        state: ask ? "done" : "running",
-        facts: ask?.output && typeof ask.output === "object" ? factsFrom(ask.output) : [],
+        state: group.ask ? "done" : "running",
+        facts: group.ask?.output && typeof group.ask.output === "object" ? factsFrom(group.ask.output) : [],
         followUp,
-        raw: { plan, answers: ask?.output },
+        raw: { plan, answers: group.ask?.output },
       });
     } else if (plan.action === "finish") {
-      views.push({ key: `f${i}`, title: "Wrapped up", note, state: "done", facts: [], raw: plan });
+      views.push({ key: `f${group.key}`, title: "Wrapped up", note, state: "done", facts: [], raw: plan });
+    } else if (plan.action === "delegate") {
+      const task = typeof plan.task === "string" ? plan.task : "";
+      views.push({
+        key: `d${group.key}`,
+        title: "Asked a specialist",
+        note: note || task,
+        state: "done",
+        facts: [],
+        followUp,
+        raw: plan,
+      });
     } else {
       const name = String(plan.tool ?? "");
-      const act = byName.get(`act:${i}`);
-      const out: Obj | undefined = act?.output;
-      const error = typeof out?.error === "string" ? out.error : !act && !working ? "This step did not run." : undefined;
+      const out: Obj | undefined = group.act?.output;
+      // A repeated call is not stored again. A later pass means this one was skipped on purpose.
+      const skippedRepeat = !group.act && later;
+      const error = typeof out?.error === "string" ? out.error : !group.act && !working && !skippedRepeat ? "This step did not run." : undefined;
       const args: Obj = (out?.args as Obj) ?? (plan.args as Obj) ?? {};
       const result: Obj = out?.result && typeof out.result === "object" ? (out.result as Obj) : {};
       views.push({
-        key: `a${i}`,
+        key: `a${group.key}`,
         title: toolTitle(name, tools),
         note,
-        state: error ? "failed" : act ? "done" : "running",
+        state: error ? "failed" : group.act || skippedRepeat ? "done" : "running",
         facts: factsFrom(args, result),
         code: typeof args.code === "string" ? args.code : undefined,
         output: typeof result.stdout === "string" && result.stdout.trim() ? result.stdout : undefined,
@@ -94,25 +142,22 @@ export function buildSteps(mission: Mission, tools: Record<string, ToolInfo>): S
         raw: { plan, result: out },
       });
     }
-  }
+  });
   return views;
 }
 
 // One plain sentence about what is happening right now. Never a tool's code name.
 export function currentActivity(mission: Mission, tools: Record<string, ToolInfo>): string {
-  const names = new Set(mission.steps.map((s) => s.name));
-  let last = -1;
-  while (names.has(`plan:${last + 1}`)) last++;
-  if (last < 0) return "Reading your request";
-  const plan: Obj = mission.steps.find((s) => s.name === `plan:${last}`)?.output ?? {};
-  const hasAct = names.has(`act:${last}`);
-  const hasEval = names.has(`eval:${last}`);
-  if (hasEval) return "Planning the next step";
-  if (hasAct) return "Checking the result";
+  const last = passes(mission.steps).at(-1);
+  if (!last) return "Reading your request";
+  const plan: Obj = last.plan?.output ?? {};
+  if (last.eval) return "Planning the next step";
+  if (last.act) return "Checking the result";
   if (plan.action === "call_tool") {
     const name = String(plan.tool ?? "");
     return tools[name]?.activity || `${toolTitle(name, tools)}…`;
   }
   if (plan.action === "ask_user") return "Waiting for your answer";
+  if (plan.action === "delegate") return "A specialist is working on one part";
   return "Wrapping up";
 }

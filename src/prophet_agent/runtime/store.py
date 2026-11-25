@@ -147,6 +147,8 @@ _MISSION_COLUMNS_V2 = {
     "parent_turn_id": "TEXT",
     "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
     "archived": "INTEGER NOT NULL DEFAULT 0",
+    # The answer text while a free-text reply is still arriving. Not a step result: replay never reads it.
+    "draft_text": "TEXT",
 }
 ACTIVE = ("created", "running", "waiting_user")
 # A turn that is "created" with no lease has not been started yet. The sweep leaves it alone until it has waited this long
@@ -156,6 +158,20 @@ STARTUP_GRACE_S = 300.0
 
 def canonical(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def purge_missions(c: sqlite3.Connection, mission_ids: list[str]) -> None:
+    """Delete these missions and every row that refers to them. The caller holds the transaction.
+
+    A question refers to a tool call, so questions go first. Agent notes refer to the mission and must go before it.
+    """
+    for mid in mission_ids:
+        c.execute("DELETE FROM questions WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM tool_calls WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM steps WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM events WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM agent_notes WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM missions WHERE id=?", (mid,))
 
 
 def idem_key(mission_id: str, step_idx: int, tool: str, args: Any) -> str:
@@ -328,8 +344,18 @@ class Store:
     def set_answer(self, mission_id: str, answer: Any) -> None:
         with self._tx() as c:
             self._fence(c, mission_id)
-            c.execute("UPDATE missions SET answer_json=?, updated=? WHERE id=?",
+            c.execute("UPDATE missions SET answer_json=?, draft_text=NULL, updated=? WHERE id=?",
                       (canonical(answer), time.time(), mission_id))
+
+    def set_draft(self, mission_id: str, text: str) -> None:
+        """Replace the text the console shows while a free-text answer is still being written.
+
+        Empty text clears it. This is not a step and not an event: a resumed run does not read it, and it does not
+        change the mission's updated time. ``set_answer`` clears it when the answer is stored.
+        """
+        with self._tx() as c:
+            self._fence(c, mission_id)
+            c.execute("UPDATE missions SET draft_text=? WHERE id=?", (text or None, mission_id))
 
     def _fence(self, c: sqlite3.Connection, mission_id: str) -> None:
         """Refuse a write to a mission whose lease this runtime no longer holds.
