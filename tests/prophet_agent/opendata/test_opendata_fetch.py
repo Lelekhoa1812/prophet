@@ -72,16 +72,28 @@ def test_octet_stream_is_accepted_when_the_body_parses_as_csv(serve):
     assert got["content_type"] == "application/octet-stream" and got["bytes"] == CSV_BYTES
 
 
-def test_an_sdmx_specific_type_is_not_on_the_list_since_the_live_endpoint_sends_text_csv(serve):
-    # Checked live 2026-11-24: the ECB csvdata endpoint answers text/csv, so the unverified SDMX type is refused.
-    serve(lambda request: ok(CSV_BYTES, content_type="application/vnd.sdmx.data+csv"))
-    with pytest.raises(fetch.DownloadError):
-        fetch.download(API, resolver=public_resolver)
+def test_an_sdmx_csv_type_is_accepted(serve):
+    # OECD and ABS answer application/vnd.sdmx.data+csv. The body is still a CSV table.
+    serve(lambda request: ok(CSV_BYTES, content_type="application/vnd.sdmx.data+csv;version=1.0.0"))
+    got = fetch.download(API, resolver=public_resolver)
+    assert got["content_type"] == "application/vnd.sdmx.data+csv" and got["bytes"] == CSV_BYTES
 
 
 def test_octet_stream_is_accepted_when_the_body_parses_as_json(serve):
     serve(lambda request: ok(JSON_BYTES, content_type="application/octet-stream"))
     assert fetch.download(API, resolver=public_resolver)["bytes"] == JSON_BYTES
+
+
+def test_a_zip_content_type_is_accepted_when_the_body_is_a_zip(serve):
+    serve(lambda request: ok(b"PK\x03\x04rest-of-zip", content_type="application/zip"))
+    got = fetch.download(API, resolver=public_resolver)
+    assert got["content_type"] == "application/zip" and got["bytes"].startswith(b"PK")
+
+
+def test_a_zip_content_type_with_a_text_body_is_refused(serve):
+    serve(lambda request: ok(b"a,b\n1,2\n", content_type="application/zip"))
+    with pytest.raises(fetch.DownloadError, match="only when the body is a ZIP"):
+        fetch.download(API, resolver=public_resolver)
 
 
 def test_octet_stream_with_a_binary_body_is_refused(serve):

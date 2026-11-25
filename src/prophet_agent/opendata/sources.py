@@ -25,6 +25,17 @@ FLOW = re.compile(r"[A-Z0-9_]{1,30}")
 DATA_KEY = re.compile(r"[A-Za-z0-9_.+]{1,120}")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 MAX_SPAN_YEARS = 20
+PERIOD = re.compile(r"\d{4}(?:-\d{2}(?:-\d{2})?|-Q[1-4])?")
+YEAR_SPAN = re.compile(r"\d{4}:\d{4}")
+BOE_DATE = re.compile(r"\d{2}/[A-Z][a-z]{2}/\d{4}")
+BOE_CODE = re.compile(r"[A-Z0-9]{2,16}")
+GFZ_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+SDMX_FLOW = re.compile(r"[A-Za-z0-9._,@-]{1,80}")
+VERSION = re.compile(r"[0-9]+\.[0-9]+")
+LOWER_CODE = re.compile(r"[A-Za-z0-9_]{1,40}")
+DIM_SEL = re.compile(r"[A-Z0-9(),]{1,80}")
+CUBE = re.compile(r"[a-z0-9]{1,20}")
+SERIES_ID = re.compile(r"[A-Za-z0-9._-]{1,80}")
 
 
 @dataclass(frozen=True)
@@ -44,6 +55,9 @@ class Source:
     params: dict               # name -> Param, in the order they appear in the URL
     licence_key: str           # must name a row in docs/prophet/DATASET_LICENCES.md
     cross_check: Callable[[dict], None] = lambda canonical: None
+    body_kind: str = "csv"     # csv, json, text, zip or xlsx. zip and xlsx are stored as csv
+    local_params: tuple = ()   # checked and stored, never placed on the URL
+    defaults: tuple = ()       # ((name, value), ...) filled in when the caller omits an optional parameter
 
     @property
     def path_params(self) -> tuple:
@@ -141,6 +155,102 @@ def _years_after(start: date, years: int) -> date:
         return start.replace(year=start.year + years, day=28)
 
 
+def _period(value: Any) -> str:
+    if not isinstance(value, str) or not PERIOD.fullmatch(value):
+        raise ValueError("must be YYYY, YYYY-MM, YYYY-MM-DD, or YYYY-Q1 to YYYY-Q4")
+    if len(value) == 4:
+        return value
+    if value[4:6] == "-Q":
+        return value
+    try:
+        if len(value) == 7:
+            date.fromisoformat(value + "-01")
+        else:
+            date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("is not a real calendar period") from None
+    return value
+
+
+def _year_span(value: Any) -> str:
+    if not isinstance(value, str) or not YEAR_SPAN.fullmatch(value):
+        raise ValueError("must be a year span YYYY:YYYY")
+    start, end = (int(part) for part in value.split(":"))
+    if not 1900 <= start <= end <= 2100:
+        raise ValueError("must run from 1900 to 2100, with the end year not before the start year")
+    return value
+
+
+def _wb_country(value: Any) -> str:
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z]{2,3}", value):
+        return value.upper()
+    raise ValueError("must be a 2 or 3 letter country code")
+
+
+def _wb_indicator(value: Any) -> str:
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9.]{2,40}", value) and ".." not in value:
+        return value.upper()
+    raise ValueError("is not a valid indicator code")
+
+
+def _boe_date(value: Any) -> str:
+    if value == "now":
+        return "now"
+    if not isinstance(value, str) or not BOE_DATE.fullmatch(value):
+        raise ValueError("must be DD/Mon/YYYY or now")
+    try:
+        datetime.strptime(value, "%d/%b/%Y")
+    except ValueError:
+        raise ValueError("is not a real calendar date") from None
+    return value
+
+
+def _boe_codes(value: Any) -> str:
+    if isinstance(value, str):
+        codes = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple)) and all(isinstance(part, str) for part in value):
+        codes = [part.strip() for part in value]
+    else:
+        raise ValueError("must be a comma-separated string or a list of series codes")
+    if not codes or len(codes) > 40 or not all(BOE_CODE.fullmatch(code) for code in codes):
+        raise ValueError("must be 1 to 40 series codes of 2 to 16 letters and digits")
+    return ",".join(codes)
+
+
+def _gfz_time(value: Any) -> str:
+    if not isinstance(value, str) or not GFZ_TIME.fullmatch(value):
+        raise ValueError("must be a UTC time YYYY-MM-DDThh:mm:ssZ")
+    try:
+        date.fromisoformat(value[:10])
+    except ValueError:
+        raise ValueError("is not a real calendar date") from None
+    hour, minute, second = (int(part) for part in value[11:19].split(":"))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        raise ValueError("must be a real UTC time")
+    return value
+
+
+def _check_periods(canonical: dict) -> None:
+    start = canonical.get("start_period")
+    end = canonical.get("end_period")
+    if start and end and len(start) == len(end) and end < start:
+        raise ValueError("end_period is before start_period")
+
+
+def _check_gfz(canonical: dict) -> None:
+    if canonical["end"] < canonical["start"]:
+        raise ValueError("end is before start")
+
+
+def _check_boe(canonical: dict) -> None:
+    if canonical["Dateto"] == "now":
+        return
+    start = datetime.strptime(canonical["Datefrom"], "%d/%b/%Y")
+    end = datetime.strptime(canonical["Dateto"], "%d/%b/%Y")
+    if end < start:
+        raise ValueError("Dateto is before Datefrom")
+
+
 def _check_span(canonical: dict) -> None:
     start = date.fromisoformat(canonical["start_date"])
     end = date.fromisoformat(canonical["end_date"])
@@ -198,6 +308,215 @@ SOURCES: dict[str, Source] = {
         },
         licence_key="ecb",
     ),
+    "bis_sdmx": Source(
+        key="bis_sdmx",
+        title="BIS statistics, one dataflow, version and key, as CSV",
+        url_template="https://stats.bis.org/api/v2/data/dataflow/BIS/{flow}/{version}/{key}",
+        fixed_query=(("format", "csv"),),
+        params={
+            "flow": Param("code", True, "Dataflow id, for example WS_CBPOL or WS_XRU.", _code(FLOW, "dataflow id")),
+            "version": Param("code", True, "Dataflow version, for example 1.0.", _code(VERSION, "version")),
+            "key": Param("code", True, "Series key, for example M.US or D.AU..", _code(DATA_KEY, "series key")),
+            "start_period": Param("code", False, "First period: YYYY, YYYY-MM, YYYY-MM-DD, or YYYY-Q1.", _period),
+            "end_period": Param("code", False, "Last period, same form as start_period.", _period),
+        },
+        licence_key="bis",
+        cross_check=_check_periods,
+    ),
+    "oecd_sdmx": Source(
+        key="oecd_sdmx",
+        title="OECD statistics, one dataflow and key, as CSV",
+        url_template="https://sdmx.oecd.org/public/rest/data/{dataflow}/{key}",
+        fixed_query=(("format", "csvfile"),),
+        params={
+            "dataflow": Param("code", True, "Agency and dataflow, for example OECD.SDD.STES,DSD_STES@DF_CLI.",
+                              _code(SDMX_FLOW, "dataflow id")),
+            "key": Param("code", True, "Dimension key. Dots separate dimensions and + joins codes.",
+                         _code(DATA_KEY, "series key")),
+            "start_period": Param("code", False, "First period: YYYY, YYYY-MM, YYYY-MM-DD, or YYYY-Q1.", _period),
+            "end_period": Param("code", False, "Last period, same form as start_period.", _period),
+        },
+        licence_key="oecd",
+        cross_check=_check_periods,
+    ),
+    "eurostat_sdmx": Source(
+        key="eurostat_sdmx",
+        title="Eurostat statistics, one dataset and key, as CSV",
+        url_template="https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/{dataset}/{key}",
+        fixed_query=(("format", "SDMX-CSV"),),
+        params={
+            "dataset": Param("code", True, "Dataset code, for example prc_hicp_manr or env_wat_use.",
+                             _code(LOWER_CODE, "dataset code")),
+            "key": Param("code", True, "Dimension key, for example M.RCH_A.CP00.EA.", _code(DATA_KEY, "series key")),
+            "start_period": Param("code", False, "First period: YYYY, YYYY-MM, YYYY-MM-DD, or YYYY-Q1.", _period),
+            "end_period": Param("code", False, "Last period, same form as start_period.", _period),
+        },
+        licence_key="eurostat",
+        cross_check=_check_periods,
+    ),
+    "abs_sdmx": Source(
+        key="abs_sdmx",
+        title="ABS statistics, one dataflow and key, as CSV",
+        url_template="https://data.api.abs.gov.au/rest/data/{flow}/{key}",
+        fixed_query=(("format", "csv"),),
+        params={
+            "flow": Param("code", True, "Agency, dataflow and version, for example ABS,CPI,1.1.0.",
+                          _code(SDMX_FLOW, "dataflow id")),
+            "key": Param("code", True, "Dimension key, for example 1.10001.10.50.Q.", _code(DATA_KEY, "series key")),
+            "start_period": Param("code", False, "First period: YYYY, YYYY-MM, YYYY-MM-DD, or YYYY-Q1.", _period),
+            "end_period": Param("code", False, "Last period, same form as start_period.", _period),
+        },
+        licence_key="abs",
+        cross_check=_check_periods,
+    ),
+    "boe_database": Source(
+        key="boe_database",
+        title="Bank of England Database, up to 40 series, as CSV",
+        url_template="https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp",
+        fixed_query=(("csv.x", "yes"), ("UsingCodes", "Y"), ("CSVF", "TN")),
+        params={
+            "Datefrom": Param("date", True, "First day, DD/Mon/YYYY.", _boe_date),
+            "Dateto": Param("date", True, "Last day, DD/Mon/YYYY, or now.", _boe_date),
+            "SeriesCodes": Param("code", True, "One to 40 series codes, for example LPMAUZI.", _boe_codes),
+        },
+        licence_key="boe",
+        cross_check=_check_boe,
+    ),
+    "boc_overnight": Source(
+        key="boc_overnight",
+        title="Bank of Canada target for the overnight rate, series V39079, as CSV",
+        url_template="https://www.bankofcanada.ca/valet/observations/V39079/csv",
+        fixed_query=(),
+        params={
+            "recent": Param("integer", False, "How many latest observations to keep, from 1 to 100. Omit for the full series.",
+                            _integer(1, 100)),
+        },
+        licence_key="boc",
+    ),
+    "rba_cash_rate": Source(
+        key="rba_cash_rate",
+        title="Reserve Bank of Australia cash-rate table F1.1, as CSV",
+        url_template="https://www.rba.gov.au/statistics/tables/csv/f1.1-data.csv",
+        fixed_query=(),
+        params={},
+        licence_key="rba",
+    ),
+    "fhfa_hpi": Source(
+        key="fhfa_hpi",
+        title="FHFA monthly house price index master file, as CSV",
+        url_template="https://www.fhfa.gov/hpi/download/monthly/hpi_master.csv",
+        fixed_query=(),
+        params={},
+        licence_key="fhfa",
+    ),
+    "fao_food_price": Source(
+        key="fao_food_price",
+        title="FAO food price index, monthly, as CSV",
+        url_template="https://www.fao.org/media/docs/worldfoodsituationlibraries/wfs-library/food_price_indices_data.csv",
+        fixed_query=(),
+        params={},
+        licence_key="fao",
+    ),
+    "swpc_json": Source(
+        key="swpc_json",
+        title="NOAA SWPC JSON index file",
+        url_template="https://services.swpc.noaa.gov/json/{name}.json",
+        fixed_query=(),
+        params={
+            "name": Param("choice", True, "File name without the extension: planetary_k_index_1m or f107_cm_flux.",
+                          _choice("planetary_k_index_1m", "f107_cm_flux")),
+        },
+        licence_key="nws",
+        body_kind="json",
+    ),
+    "cpc_oni": Source(
+        key="cpc_oni",
+        title="NOAA CPC Oceanic Nino Index, as a plain-text table",
+        url_template="https://cpc.ncep.noaa.gov/data/indices/oni.ascii.txt",
+        fixed_query=(),
+        params={},
+        licence_key="nws",
+        body_kind="text",
+    ),
+    "gfz_kp": Source(
+        key="gfz_kp",
+        title="GFZ geomagnetic index for one window, as JSON",
+        url_template="https://kp.gfz.de/app/json/",
+        fixed_query=(),
+        params={
+            "start": Param("date", True, "Window start, UTC, YYYY-MM-DDThh:mm:ssZ.", _gfz_time),
+            "end": Param("date", True, "Window end, UTC, YYYY-MM-DDThh:mm:ssZ.", _gfz_time),
+            "index": Param("choice", True, "Index name.",
+                           _choice("Kp", "ap", "Ap", "Cp", "C9", "Hp30", "Hp60", "ap30", "ap60")),
+            "status": Param("choice", False, "def for definitive values, or pre for preliminary.",
+                            _choice("def", "pre")),
+        },
+        licence_key="gfz",
+        cross_check=_check_gfz,
+        body_kind="json",
+    ),
+    "hadcrut_monthly": Source(
+        key="hadcrut_monthly",
+        title="HadCRUT 5.2.0.0 global monthly summary series, as CSV",
+        url_template=("https://www.metoffice.gov.uk/hadobs/hadcrut5/data/HadCRUT.5.2.0.0/analysis/diagnostics/"
+                      "HadCRUT.5.2.0.0.analysis.summary_series.global.monthly.csv"),
+        fixed_query=(),
+        params={},
+        licence_key="hadcrut",
+    ),
+    "snb_cube": Source(
+        key="snb_cube",
+        title="Swiss National Bank data cube, as CSV",
+        url_template="https://data.snb.ch/api/cube/{cube}/data/csv/{lang}",
+        fixed_query=(),
+        params={
+            "cube": Param("code", True, "Cube id, for example devkum.", _code(CUBE, "cube id")),
+            "lang": Param("choice", True, "Language of the file: de, en, fr or it.", _choice("de", "en", "fr", "it")),
+            "dimSel": Param("code", True, "Dimension selection, for example D0(M1),D1(EUR1,USD1).",
+                            _code(DIM_SEL, "dimension selection")),
+        },
+        licence_key="snb",
+    ),
+    "world_bank": Source(
+        key="world_bank",
+        title="World Bank indicator for one country, as JSON",
+        url_template="https://api.worldbank.org/v2/country/{country}/indicator/{indicator}",
+        fixed_query=(("format", "json"),),
+        params={
+            "country": Param("code", True, "Country code of 2 or 3 letters, for example US.", _wb_country),
+            "indicator": Param("code", True, "Indicator code, for example FP.CPI.TOTL.ZG.", _wb_indicator),
+            "date": Param("code", False, "Year span YYYY:YYYY.", _year_span),
+            "per_page": Param("integer", False, "Observations per page, 1 to 2000. Defaults to 1000.",
+                              _integer(1, 2000)),
+        },
+        licence_key="world_bank",
+        body_kind="json",
+        defaults=(("per_page", 1000),),
+    ),
+    "eia_bulk": Source(
+        key="eia_bulk",
+        title="EIA bulk file, one series taken out of the ZIP",
+        url_template="https://www.eia.gov/opendata/bulk/{dataset}.zip",
+        fixed_query=(),
+        params={
+            "dataset": Param("choice", True, "Bulk dataset: ELEC, NG or EBA.", _choice("ELEC", "NG", "EBA")),
+            "series_id": Param("code", True, "Series id inside the file, for example ELEC.PRICE.US-ALL.A.",
+                               _code(SERIES_ID, "series id")),
+        },
+        licence_key="eia",
+        body_kind="zip",
+        local_params=("series_id",),
+    ),
+    "world_bank_pink_sheet": Source(
+        key="world_bank_pink_sheet",
+        title="World Bank monthly commodity price workbook",
+        url_template=("https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/related/"
+                      "CMO-Historical-Data-Monthly.xlsx"),
+        fixed_query=(),
+        params={},
+        licence_key="world_bank",
+        body_kind="xlsx",
+    ),
 }
 
 
@@ -242,6 +561,9 @@ def normalise(source_key: str, params: dict) -> dict:
             canonical[name] = param.check(given[name])
         except ValueError as exc:
             raise ValueError(f"parameter {name!r} {exc}") from None
+    for name, value in source.defaults:
+        if name not in canonical:
+            canonical[name] = source.params[name].check(value)
     # Open-Meteo answers JSON when no format is named, while the store reads a download without one as CSV. The default is
     # therefore written into the request and the provenance: a download always says which format it asked for.
     if "format" in source.params and "format" not in canonical:
@@ -256,8 +578,9 @@ def build_url(source_key: str, params: dict) -> str:
     canonical = normalise(source_key, params)
     base = source.url_template.format(**{name: canonical[name] for name in source.path_params})
     query = list(source.fixed_query) + [
-        (name, canonical[name]) for name in source.params if name in canonical and name not in source.path_params
+        (name, canonical[name]) for name in source.params
+        if name in canonical and name not in source.path_params and name not in source.local_params
     ]
     if not query:
         return base
-    return f"{base}?{urlencode(query, safe=',/', quote_via=quote)}"
+    return f"{base}?{urlencode(query, safe=',/()', quote_via=quote)}"

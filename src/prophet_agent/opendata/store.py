@@ -16,7 +16,7 @@ import json
 from typing import Any
 
 from prophet_agent.datasets import DatasetStore
-from prophet_agent.opendata import fetch, sources
+from prophet_agent.opendata import containers, fetch, sources
 
 PREVIEW_ROWS = 5
 
@@ -26,8 +26,15 @@ def params_digest(canonical: dict) -> str:
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _format_of(canonical: dict) -> str:
-    return "json" if canonical.get("format") == "json" else "csv"
+def _format_of(source_key: str, canonical: dict) -> str:
+    source = sources.get(source_key)
+    if canonical.get("format") in ("json", "csv"):
+        return canonical["format"]
+    if source.body_kind == "json":
+        return "json"
+    if source.body_kind == "text":
+        return "text"
+    return "csv"
 
 
 def _is_column_block(value: Any) -> bool:
@@ -38,8 +45,22 @@ def _is_column_block(value: Any) -> bool:
     return len({len(column) for column in value.values()}) == 1
 
 
+def _flatten_record(record: dict) -> dict:
+    flat = {}
+    for key, value in record.items():
+        if isinstance(value, dict):
+            flat[key] = value.get("id", value.get("value"))
+        elif isinstance(value, (str, int, float)) or value is None:
+            flat[key] = value
+    return flat
+
+
 def _json_table(text: str) -> tuple[list, int, list]:
     data = json.loads(text)
+    # The World Bank indicator call returns [page metadata, list of observations].
+    if (isinstance(data, list) and len(data) == 2 and isinstance(data[0], dict) and "page" in data[0]
+            and isinstance(data[1], list)):
+        data = [_flatten_record(record) for record in data[1] if isinstance(record, dict)]
     if isinstance(data, list) and data and all(isinstance(record, dict) for record in data):
         columns = list(dict.fromkeys(key for record in data for key in record))
         rows = [[record.get(column) for column in columns] for record in data]
@@ -57,6 +78,26 @@ def _json_table(text: str) -> tuple[list, int, list]:
     raise ValueError("the JSON does not hold a table of equal-length columns or a list of records")
 
 
+def _filled(row: list) -> list:
+    return [cell for cell in row if str(cell).strip()]
+
+
+def _table_start(rows: list) -> int:
+    """The header row. A title block of single-cell rows is skipped. An Open-Meteo location block starts at latitude
+    and the table then starts at the first time or date row."""
+    start = 0
+    while start < len(rows) and len(_filled(rows[start])) < 2:
+        start += 1
+    if start >= len(rows):
+        raise ValueError("the CSV has no header row")
+    if rows[start][0].strip().lower() == "latitude":
+        headers = [index for index, row in enumerate(rows) if row and row[0].strip().lower() in ("time", "date")]
+        if not headers:
+            raise ValueError("no time or date header follows the location block")
+        return headers[0]
+    return start
+
+
 def _csv_table(text: str) -> tuple[list, int, list]:
     if text.lstrip()[:1] in ("{", "["):
         # Without this, a JSON body parses as a one-column CSV and is stored as a table. Live, 2026-11-24: a request with
@@ -68,12 +109,7 @@ def _csv_table(text: str) -> tuple[list, int, list]:
     rows = [row for row in csv.reader(lines) if any(cell.strip() for cell in row)]
     if not rows:
         raise ValueError("the CSV has no rows")
-    start = 0
-    if rows[0][0].strip().lower() == "latitude":
-        headers = [index for index, row in enumerate(rows) if row[0].strip().lower() in ("time", "date")]
-        if not headers:
-            raise ValueError("no time or date header follows the location block")
-        start = headers[0]
+    start = _table_start(rows)
     columns = [cell.strip() for cell in rows[start]]
     if not any(columns):
         raise ValueError("the CSV header row is empty")
@@ -82,16 +118,25 @@ def _csv_table(text: str) -> tuple[list, int, list]:
 
 
 def split_csv(text: str) -> tuple[str, str]:
-    """Split a CSV text into (preamble, table). Open-Meteo puts a 'latitude' location block before its table; the table
-    starts at the first 'time' or 'date' row. A text without that block is returned whole, with an empty preamble."""
+    """Split a CSV text into (preamble, table). A title of single-cell rows, and an Open-Meteo 'latitude' block, stay in
+    the preamble. The table starts at the header row. A text that already starts at the header is returned whole."""
     lines = text.splitlines(keepends=True)
-    first = next((line for line in lines if line.strip() and not line.startswith("#")), None)
-    if first is None or first.split(",")[0].strip().lower() != "latitude":
-        return "", text
+    kept = []
     for index, line in enumerate(lines):
-        if not line.startswith("#") and line.split(",")[0].strip().lower() in ("time", "date"):
-            return "".join(lines[:index]), "".join(lines[index:])
-    raise ValueError("no time or date header follows the location block")
+        if line.startswith("#") or not line.strip():
+            continue
+        try:
+            row = next(csv.reader([line]))
+        except csv.Error:
+            row = [line]
+        kept.append((index, row))
+    if not kept:
+        return "", text
+    start = _table_start([row for _, row in kept])
+    cut = kept[start][0]
+    if cut == 0:
+        return "", text
+    return "".join(lines[:cut]), "".join(lines[cut:])
 
 
 def _numeric_cell(cell: str) -> bool:
@@ -187,19 +232,24 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
     url = sources.build_url(source_key, params)          # validates every parameter first
     canonical = sources.normalise(source_key, params)
     digest = params_digest(canonical)
-    fmt = _format_of(canonical)
+    source = sources.get(source_key)
+    fmt = _format_of(source_key, canonical)
     existing = _find_existing(datasets, source_key, digest)
     if existing is not None:
         body = datasets.path(existing["id"]).read_bytes()
         return dict(existing, preview=preview(body, fmt))
     fetched = fetch.download(url)
-    raw = fetched["bytes"]
-    table = preview(raw, fmt)     # nothing is stored unless the body parses as the table it claims to be
+    downloaded = fetched["bytes"]
+    table_bytes = downloaded
+    if source.body_kind in ("zip", "xlsx"):
+        table_bytes = containers.to_csv(downloaded, source.body_kind, canonical.get("series_id"))
+        fmt = "csv"
+    table = preview(table_bytes, fmt)     # nothing is stored unless the body parses as the table it claims to be
     # The stored file is the table alone, so a reader of the file sees the header first. The location block that came
     # before it is kept as text in provenance, and the hash of the raw download is kept too.
-    preamble, body = "", raw
+    preamble, body = "", table_bytes
     if fmt == "csv":
-        preamble, table_text = split_csv(raw.decode("utf-8-sig"))
+        preamble, table_text = split_csv(table_bytes.decode("utf-8-sig"))
         body = table_text.encode("utf-8")
     provenance = {
         "source": source_key,
@@ -211,10 +261,11 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
         "content_type": fetched["content_type"],
         "sha256": hashlib.sha256(body).hexdigest(),
         "bytes": len(body),
-        "raw_sha256": hashlib.sha256(raw).hexdigest(),
-        "raw_bytes": len(raw),
+        "raw_sha256": hashlib.sha256(downloaded).hexdigest(),
+        "raw_bytes": len(downloaded),
         "preamble": preamble,
         "licence_key": sources.get(source_key).licence_key,
     }
-    meta = datasets.add(name or f"{source_key}.{fmt}", body, provenance=provenance)
+    suffix = {"json": "json", "csv": "csv", "text": "txt"}[fmt]
+    meta = datasets.add(name or f"{source_key}.{suffix}", body, provenance=provenance)
     return dict(meta, preview=table)

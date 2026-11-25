@@ -10,7 +10,7 @@ import pytest
 
 from prophet_agent.api.service import MissionService
 from prophet_agent.datasets import DatasetStore
-from prophet_agent.opendata import fetch
+from prophet_agent.opendata import fetch, sources
 from prophet_agent.research import netguard
 from prophet_agent.runtime.runner import ArgumentRejected
 from prophet_agent.tools import default_tools
@@ -23,7 +23,6 @@ PUBLIC = "93.184.216.34"
 FORECAST = {"latitude": 52.52, "longitude": 13.41, "daily": "temperature_2m_max,precipitation_sum",
             "timezone": "Europe/Berlin", "forecast_days": 7}
 ARCHIVE = {"latitude": 52.52, "longitude": 13.41, "start_date": "2024-01-01", "end_date": "2024-01-07"}
-SOURCE_KEYS = {"open_meteo_forecast", "open_meteo_archive", "ecb_sdmx"}
 WEB_URL = "https://data.example.org/files/daily.csv"
 
 
@@ -63,7 +62,7 @@ def mission(tmp_path):
 def test_list_open_data_sources_returns_the_three_source_keys():
     tool = default_tools()["list_open_data_sources"]
     out = tool.fn({}, "k")
-    assert {source["key"] for source in out["sources"]} == SOURCE_KEYS
+    assert {source["key"] for source in out["sources"]} == set(sources.SOURCES)
     assert tool.idempotent is True
 
 

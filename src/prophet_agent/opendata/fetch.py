@@ -5,9 +5,10 @@ Motivation: the platform downloads public series without a person in the loop. E
 time, must not be steered to an internal address by a redirect, and must hand back only data the agent can parse.
 Logic: each hop goes through netguard, which checks the scheme, port and name and then connects to a checked address
 (open_pinned), so a DNS change cannot move the connection. Redirects are followed by hand, at most MAX_REDIRECTS, with
-the same limit the research fetch uses. The body is streamed and cut at max_bytes. Only CSV, plain text and JSON types
-are accepted; an octet-stream body is accepted only when it parses as CSV or JSON. The one network seam is open_client(),
-which tests replace, so the suite never touches the network.
+the same limit the research fetch uses. The body is streamed and cut at max_bytes. CSV, plain text, JSON and SDMX CSV
+are accepted. A ZIP or XLSX body is accepted as bytes and turned into a table later. An octet-stream body is accepted
+only when it parses as CSV or JSON, or when it is a ZIP. The one network seam is open_client(), which tests replace,
+so the suite never touches the network.
 """
 from __future__ import annotations
 
@@ -25,10 +26,15 @@ from prophet_agent.research.netguard import Resolver, UnsafeURL, open_pinned, re
 
 USER_AGENT = "ProphetOpenData/1.0"
 DEFAULT_MAX_BYTES = 25 * 1024 * 1024
-TEXT_TYPES = ("text/csv", "application/csv", "text/plain", "application/json")
-# A generic binary type is accepted only when the body parses as CSV or JSON. The ECB SDMX csvdata endpoint answers
-# text/csv. FRED's graph CSV answered application/csv on 2026-11-24, so that type is listed too.
+TEXT_TYPES = ("text/csv", "application/csv", "text/plain", "application/json", "application/vnd.sdmx.data+csv")
+# A generic binary type is accepted only when the body parses as CSV or JSON, or when it is a ZIP (an XLSX is a ZIP).
+# The ECB SDMX csvdata endpoint answers text/csv. OECD and ABS answer the SDMX CSV type above.
 SNIFF_TYPES = ("application/octet-stream",)
+CONTAINER_TYPES = (
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 
 class DownloadError(ValueError):
@@ -89,8 +95,8 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
     if response.status_code != 200:
         raise DownloadError(f"HTTP {response.status_code}; only a 200 response is used")
     media = media_type(response.headers.get("content-type", ""))
-    if media not in TEXT_TYPES and media not in SNIFF_TYPES:
-        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text or JSON")
+    if media not in TEXT_TYPES and media not in SNIFF_TYPES and media not in CONTAINER_TYPES:
+        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, ZIP or XLSX")
     declared = response.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > max_bytes:
         raise DownloadError(f"the response is {int(declared)} bytes; the limit is {max_bytes}")
@@ -101,6 +107,10 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
         raise DownloadError("the response did not finish in time")
     if not body:
         raise DownloadError("the response body is empty")
+    if media in CONTAINER_TYPES or (media in SNIFF_TYPES and body[:2] == b"PK"):
+        if body[:2] != b"PK":
+            raise DownloadError(f"content type {media} is accepted only when the body is a ZIP or XLSX")
+        return {"bytes": body, "content_type": media, "final_url": final_url, "retrieved_at": _now()}
     text = _decoded(body)
     if media in SNIFF_TYPES:
         if text is None or not (_csv_like(text) or _json_like(text)):

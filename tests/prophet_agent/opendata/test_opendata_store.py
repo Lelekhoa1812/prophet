@@ -2,11 +2,14 @@
 network is replaced: fetch.open_client returns an httpx.MockTransport, and the default name resolver is pinned to a public
 address, so nothing is resolved or sent."""
 import hashlib
+import io
 import json
 from pathlib import Path
+from zipfile import ZipFile
 
 import httpx
 import pytest
+from openpyxl import Workbook
 
 from prophet_agent.datasets import DatasetStore
 from prophet_agent.opendata import fetch, sources, store
@@ -238,6 +241,63 @@ def test_a_body_that_is_not_the_requested_format_is_not_stored(served, tmp_path)
     with pytest.raises(ValueError, match="does not parse as a JSON table"):
         store.download_to_dataset("open_meteo_forecast", {**FORECAST, "format": "json"}, datasets)
     assert not datasets.root.exists() or list(datasets.root.iterdir()) == []
+
+
+def test_a_title_row_is_left_out_of_the_stored_csv():
+    text = "Cash rate table\ndate,rate\n2024-01-01,4.35\n2024-02-01,4.35\n"
+    table = store.preview(text.encode(), "csv")
+    assert table["columns"] == ["date", "rate"] and table["row_count"] == 2
+    preamble, kept = store.split_csv(text)
+    assert preamble.startswith("Cash rate table") and kept.startswith("date,rate")
+
+
+def test_a_world_bank_envelope_becomes_a_table_of_records():
+    payload = [{"page": 1, "pages": 1, "total": 1},
+               [{"country": {"id": "US", "value": "United States"}, "date": "2023", "value": 4.1}]]
+    table = store.preview(json.dumps(payload).encode(), "json")
+    assert table["columns"] == ["country", "date", "value"]
+    assert table["rows"] == [["US", "2023", 4.1]]
+
+
+def test_a_zip_download_keeps_one_series_and_the_archive_hash(served, tmp_path):
+    buf = io.BytesIO()
+    with ZipFile(buf, "w") as archive:
+        archive.writestr("ELEC.txt", "\n".join([
+            json.dumps({"series_id": "OTHER", "data": [["2020", 1]]}),
+            json.dumps({"series_id": "ELEC.A", "data": [["2020", 9], ["2021", None]]}),
+        ]))
+    served.update(body=buf.getvalue(), content_type="application/zip")
+    datasets = store_at(tmp_path)
+    meta = store.download_to_dataset("eia_bulk", {"dataset": "ELEC", "series_id": "ELEC.A"}, datasets)
+    assert meta["preview"]["columns"] == ["period", "value"]
+    assert meta["preview"]["row_count"] == 2
+    assert meta["provenance"]["raw_sha256"] == hashlib.sha256(buf.getvalue()).hexdigest()
+    assert meta["provenance"]["url"] == "https://www.eia.gov/opendata/bulk/ELEC.zip"
+    assert datasets.path(meta["id"]).read_text().splitlines() == ["period,value", "2020,9", "2021,"]
+
+
+def test_an_xlsx_download_stores_the_first_sheet(served, tmp_path):
+    book = Workbook()
+    sheet = book.active
+    sheet.append(["Monthly prices"])
+    sheet.append(["date", "oil"])
+    sheet.append(["2020-01", 50])
+    buf = io.BytesIO()
+    book.save(buf)
+    served.update(body=buf.getvalue(),
+                  content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    meta = store.download_to_dataset("world_bank_pink_sheet", {}, store_at(tmp_path))
+    assert meta["preview"]["columns"] == ["date", "oil"]
+    assert meta["preview"]["rows"] == [["2020-01", "50"]]
+
+
+def test_a_plain_text_source_is_stored_as_text(served, tmp_path):
+    body = b"# comment\nSEAS YR TOTAL ANOM\nDJF 1950 1.2 -0.1\nJFM 1950 1.3 -0.2\n"
+    served.update(body=body, content_type="text/plain")
+    meta = store.download_to_dataset("cpc_oni", {}, store_at(tmp_path))
+    assert meta["name"] == "cpc_oni.txt"
+    assert meta["preview"]["columns"] == ["SEAS", "YR", "TOTAL", "ANOM"]
+    assert meta["preview"]["row_count"] == 2
 
 
 def test_a_refused_download_is_not_stored(served, tmp_path):

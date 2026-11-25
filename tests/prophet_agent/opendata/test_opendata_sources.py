@@ -9,7 +9,7 @@ ARCHIVE_OK = {"latitude": 52, "longitude": 13, "start_date": "2024-01-01", "end_
 
 def test_describe_lists_the_three_sources_with_their_parameters():
     listed = {item["key"]: item for item in sources.describe()}
-    assert set(listed) == {"open_meteo_forecast", "open_meteo_archive", "ecb_sdmx"}
+    assert set(listed) == set(sources.SOURCES)
     forecast = listed["open_meteo_forecast"]["params"]
     assert set(forecast) == {"latitude", "longitude", "daily", "hourly", "timezone", "format", "forecast_days"}
     assert forecast["latitude"] == {"type": "number", "required": True,
@@ -98,6 +98,13 @@ def test_ecb_url_puts_flow_and_key_in_the_path_and_fixes_the_format():
     ("ecb_sdmx", {"flow": "EXR", "key": ""}, "is not a valid series key"),
     ("ecb_sdmx", {"flow": "EXR", "key": "D?format=xml"}, "is not a valid series key"),
     ("ecb_sdmx", {"flow": "EXR", "key": "D/X"}, "is not a valid series key"),
+    ("world_bank", {"country": "US", "indicator": "FP.CPI.TOTL.ZG", "date": "2020:2019"}, "end year not before"),
+    ("world_bank", {"country": "../US", "indicator": "FP.CPI.TOTL.ZG"}, "must be a 2 or 3 letter"),
+    ("eia_bulk", {"dataset": "PET", "series_id": "ELEC.A"}, "must be one of"),
+    ("boe_database", {"Datefrom": "01/Feb/2020", "Dateto": "01/Jan/2020", "SeriesCodes": "LPMAUZI"},
+     "Dateto is before Datefrom"),
+    ("snb_cube", {"cube": "devkum", "lang": "en", "dimSel": "D0(M1)&format=json"}, "is not a valid dimension"),
+    ("gfz_kp", {"start": "2020-01-02T00:00:00Z", "end": "2020-01-01T00:00:00Z", "index": "Kp"}, "end is before start"),
 ])
 def test_every_validation_rule_refuses_with_the_parameter_named(source_key, params, message):
     with pytest.raises(ValueError, match=message):
@@ -121,6 +128,48 @@ def test_params_must_be_a_mapping():
         sources.build_url("open_meteo_forecast", ["latitude", 52])
 
 
+def test_new_sources_build_checked_urls_and_keep_local_parameters_off_the_query():
+    assert sources.build_url("bis_sdmx", {
+        "flow": "WS_CBPOL", "version": "1.0", "key": "M.US", "start_period": "2024", "end_period": "2024",
+    }) == "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.US?format=csv&start_period=2024&end_period=2024"
+    assert sources.build_url("oecd_sdmx", {
+        "dataflow": "OECD.SDD.STES,DSD_STES@DF_CLI", "key": "USA.M.LI...AA...H",
+    }) == ("https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI/USA.M.LI...AA...H?format=csvfile")
+    assert sources.build_url("eurostat_sdmx", {"dataset": "prc_hicp_manr", "key": "M.RCH_A.CP00.EA"}) == (
+        "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/prc_hicp_manr/M.RCH_A.CP00.EA?format=SDMX-CSV")
+    bank = sources.build_url("world_bank", {"country": "us", "indicator": "fp.cpi.totl.zg"})
+    assert bank == ("https://api.worldbank.org/v2/country/US/indicator/FP.CPI.TOTL.ZG?format=json&per_page=1000")
+    eia = sources.build_url("eia_bulk", {"dataset": "ELEC", "series_id": "ELEC.PRICE.US-ALL.A"})
+    assert eia == "https://www.eia.gov/opendata/bulk/ELEC.zip"
+    assert "series_id" not in eia
+    assert sources.normalise("eia_bulk", {"dataset": "ELEC", "series_id": "ELEC.PRICE.US-ALL.A"})["series_id"] == \
+        "ELEC.PRICE.US-ALL.A"
+    assert sources.build_url("snb_cube", {"cube": "devkum", "lang": "en", "dimSel": "D0(M1),D1(EUR1,USD1)"}) == (
+        "https://data.snb.ch/api/cube/devkum/data/csv/en?dimSel=D0(M1),D1(EUR1,USD1)")
+    assert sources.build_url("rba_cash_rate", {}) == "https://www.rba.gov.au/statistics/tables/csv/f1.1-data.csv"
+    assert sources.build_url("boc_overnight", {}) == "https://www.bankofcanada.ca/valet/observations/V39079/csv"
+
+
 def test_every_source_names_a_licence_key():
     assert {source.key: source.licence_key for source in sources.SOURCES.values()} == {
-        "open_meteo_forecast": "open_meteo", "open_meteo_archive": "open_meteo", "ecb_sdmx": "ecb"}
+        "open_meteo_forecast": "open_meteo",
+        "open_meteo_archive": "open_meteo",
+        "ecb_sdmx": "ecb",
+        "bis_sdmx": "bis",
+        "oecd_sdmx": "oecd",
+        "eurostat_sdmx": "eurostat",
+        "abs_sdmx": "abs",
+        "boe_database": "boe",
+        "boc_overnight": "boc",
+        "rba_cash_rate": "rba",
+        "fhfa_hpi": "fhfa",
+        "fao_food_price": "fao",
+        "swpc_json": "nws",
+        "cpc_oni": "nws",
+        "gfz_kp": "gfz",
+        "hadcrut_monthly": "hadcrut",
+        "snb_cube": "snb",
+        "world_bank": "world_bank",
+        "eia_bulk": "eia",
+        "world_bank_pink_sheet": "world_bank",
+    }
