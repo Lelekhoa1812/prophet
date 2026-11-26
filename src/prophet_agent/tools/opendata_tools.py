@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from prophet_agent.datasets import DatasetStore, clean_name
-from prophet_agent.opendata import fetch, sources
+from prophet_agent.opendata import containers, fetch, sources
 from prophet_agent.opendata.store import download_to_dataset, preview
 from prophet_agent.runtime.runner import ArgumentRejected, Tool
 from prophet_agent.tools.sandbox_tool import SANDBOX_PYTHON_SPEC, make_run, sandbox_python_tool
@@ -140,6 +140,20 @@ def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
     return Tool("download_open_data", run, idempotent=True)
 
 
+def _as_table(fetched: dict) -> tuple[bytes, str]:
+    """CSV or JSON bytes. A ZIP or a workbook becomes one CSV. The original content type is kept on the record."""
+    media = fetch.media_type(fetched["content_type"])
+    body = fetched["bytes"]
+    if media in fetch.CONTAINER_TYPES:
+        kind = "xlsx" if media.endswith("sheet") else "zip"
+        try:
+            body = containers.to_csv(body, kind)
+        except containers.ContainerError as exc:
+            raise ValueError(str(exc)) from None
+        media = "text/csv"
+    return body, media
+
+
 def _web_format(media: str, body: bytes) -> str:
     head = body.lstrip()[:1]
     if head == b"<":
@@ -223,17 +237,22 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
                                                   existing["provenance"]["format"]))
         else:
             fetched = fetch.download(url)          # refuses private addresses, redirects to them, and types or sizes it does not accept
-            body = fetched["bytes"]
-            fmt = _web_format(fetched["content_type"], body)
+            body, media = _as_table(fetched)
+            fmt = _web_format(media, body)
             table, fmt = _web_table(body, fmt)
             provenance = {"source": "web", "format": fmt, "url": url, "final_url": fetched["final_url"],
                           "content_type": fetched["content_type"], "retrieved_at": fetched["retrieved_at"],
-                          "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": key}
-            meta = dict(store.add(_web_name(url, name, fmt), body, provenance=provenance), preview=table)
+                          "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": key,
+                          "series_bound": False}
+            # The caller's name is not the series. The address supplies the working file name.
+            meta = dict(store.add(_web_name(url, None, fmt), body, provenance=provenance), preview=table)
         mount = _mount(ctx, live, meta)
         provenance = meta["provenance"]
-        return _result(meta, mount, {"source": "web", "url": provenance["url"], "final_url": provenance["final_url"],
-                                     "licence_key": provenance["licence_key"]})
+        extra = {"source": "web", "url": provenance["url"], "final_url": provenance["final_url"],
+                 "licence_key": provenance["licence_key"], "series_bound": False}
+        if isinstance(name, str) and name.strip():
+            extra["caller_name_ignored"] = True
+        return _result(meta, mount, extra)
     return Tool("download_web_data", run, idempotent=True)
 
 
@@ -261,14 +280,13 @@ DOWNLOAD_WEB_DATA_SPEC = {
     "name": "download_web_data",
     "title": "Web data download",
     "activity": "Downloading a web file",
-    "description": "Download one CSV, JSON or plain-text numeric table from an https address into the mission's files. "
-                   "The full file is stored (not a clipped passage) and mounted at sandbox_file (in/<name>) for "
-                   "sandbox_python. A plain-text table has space-separated columns; lines that start with # stay in the "
-                   "file and are left out of the preview. Pages and other content types are refused, and so are addresses "
-                   "that are not public. Use this, not web_fetch, when the URL is the data file. Its licence_key is "
-                   "unverified unless a known key is given.",
-    "args": {"url": "https address of a CSV, JSON or plain-text data file",
-             "name": "optional file name to store it under",
+    "description": "Download one CSV, JSON, plain-text table, ZIP or workbook from an https address into the mission's "
+                   "files. The stored name comes from the address. A name you pass is ignored, and series_bound stays "
+                   "false until bind_series accepts the file. The full file is mounted at sandbox_file (in/<name>) for "
+                   "sandbox_python. Pages are refused: call web_fetch and extract_page_tables for those. Use this, not "
+                   "web_fetch, when the URL is the data file. Its licence_key is unverified unless a known key is given.",
+    "args": {"url": "https address of a CSV, JSON, plain-text, ZIP or workbook file",
+             "name": "optional; ignored. The stored name comes from the address",
              "licence_key": f"optional known key ({', '.join(sorted(KNOWN_LICENCE_KEYS))}); leave out when unknown"},
 }
 
@@ -282,4 +300,6 @@ def open_data_tools(datasets: dict[str, Path] | None, context: OpenDataContext |
         pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)
         pairs["download_open_data"] = (download_open_data_tool(context, live), DOWNLOAD_OPEN_DATA_SPEC)
         pairs["download_web_data"] = (download_web_data_tool(context, live), DOWNLOAD_WEB_DATA_SPEC)
+        from prophet_agent.tools.source_table_tools import source_table_tools
+        pairs.update(source_table_tools(context, live))
     return pairs

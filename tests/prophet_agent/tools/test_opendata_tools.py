@@ -149,6 +149,16 @@ def test_download_web_data_stores_a_csv_with_an_unverified_licence_key_and_prove
     assert provenance["retrieved_at"] and provenance["licence_key"] == "unverified"
     assert mission.store.path(out["dataset_id"]).read_bytes() == CSV_BYTES
     assert mission.ids == [out["dataset_id"]]
+    assert out["series_bound"] is False
+
+
+def test_a_caller_supplied_name_is_not_the_stored_file_name(served, mission):
+    tool = default_tools(opendata=mission.context())["download_web_data"]
+    out = tool.fn({"url": WEB_URL, "name": "other_series.csv"}, "k1")
+    assert out["caller_name_ignored"] is True
+    assert out["name"] == "daily.csv"
+    assert out["series_bound"] is False
+    assert "bind_series" in default_tools(opendata=mission.context())
 
 
 def test_download_web_data_returns_the_stored_copy_for_the_same_url(served, mission):

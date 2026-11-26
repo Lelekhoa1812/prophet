@@ -73,6 +73,7 @@ class Page:
     cached: bool = False
     media: str = ""
     file_links: list = field(default_factory=list)
+    tables: list = field(default_factory=list)
 
 
 PAGE_FIELDS = {f.name for f in fields(Page)}
@@ -81,6 +82,18 @@ PAGE_FIELDS = {f.name for f in fields(Page)}
 def _failed(url: str, note: str, *, final_url: str | None = None, status: int | None = None) -> Page:
     return Page(url=url, final_url=final_url or url, status=status, note=note, ok=False,
                 fetched_at=_now())
+
+
+def stored_page(url: str, cache_dir=None) -> dict | None:
+    """A page already written by fetch_page, including one past the cache time limit. None when it was never stored."""
+    path = (cache_dir or cache_root()) / "pages" / f"{cache_key('page', url)}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+    return {key: data[key] for key in PAGE_FIELDS if key in data}
 
 
 def _now() -> str:
@@ -306,7 +319,7 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
         cached = read_cache(path, CACHE_TTL_S)
         if cached and cached.get("ok"):
             # An HTML page cached before file_links existed has no data-file addresses. Refetch it once.
-            if (cached.get("media") or "") in HTML_MEDIA and "file_links" not in cached:
+            if (cached.get("media") or "") in HTML_MEDIA and ("file_links" not in cached or "tables" not in cached):
                 cached = None
             else:
                 return Page(**{**{k: v for k, v in cached.items() if k in PAGE_FIELDS}, "cached": True})
@@ -405,10 +418,14 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
         notes.append(f"text clipped to {cap} characters from {full}")
     date, date_source = publication_date(decoded, final_url, extracted, media or "text/html")
     links = data_file_links(decoded, final_url) if (media or "") in HTML_MEDIA else []
+    tables = []
+    if (media or "") in HTML_MEDIA:
+        from prophet_agent.research.tables import html_tables
+        tables = html_tables(decoded, base_url=final_url)["candidates"]
     page = Page(url=url, final_url=final_url, title=" ".join(title.split())[:300], date=date,
                 date_source=date_source, text=text,
                 sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), fetched_at=_now(), status=status,
-                note="; ".join(notes), ok=True, media=media or "", file_links=links)
+                note="; ".join(notes), ok=True, media=media or "", file_links=links, tables=tables)
     if use_cache:
         write_cache(path, asdict(page))
     return page

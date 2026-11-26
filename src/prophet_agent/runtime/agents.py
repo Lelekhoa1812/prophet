@@ -67,10 +67,27 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
         "verifier",
         "A sceptical second reader. Re-computes the figures and checks the claims of a draft answer or another agent's "
         "report against the data and tool outputs, and returns what holds and what does not.",
-        tools=("sandbox_python", "inspect_data", "backtest_series", *_COMMON), steps=10,
+        tools=("sandbox_python", "inspect_data", "backtest_series", "validate_table", "bind_series", *_COMMON), steps=10,
         role="You are a verification sub-agent. You do not build anything new. For each claim you were given, re-compute "
              "it from the data or from a stored output (carry the earlier run's file), and report holds, fails or cannot "
-             "check, with the number you got. A claim you cannot reproduce is reported as such, never as holding."),
+             "check, with the number you got. A claim you cannot reproduce is reported as such, never as holding. "
+             "bind_series only when validate_table has accepted that same file."),
+    AgentType(
+        "principal_analyst",
+        "States what table the question needs, collects pages, and reads why a download failed. It does not bind the "
+        "series name and it does not forecast.",
+        tools=("web_search", "web_fetch", "web_research", "state_table_claim", "diagnose_source", "extract_page_tables",
+               "download_web_data", *_COMMON),
+        steps=12,
+        role="You state the table claim, collect pages, and read each diagnosis. A file name is not the series. "
+             "You do not bind a series and you do not forecast. Report the claim, the signals, and the candidate ids."),
+    AgentType(
+        "data_scientist",
+        "Maps columns, reshapes a candidate in the sandbox, and checks it. A cell that runs is not an accepted table.",
+        tools=("sandbox_python", "inspect_data", "validate_table", "fuse_sources", "calibrate_overlap", *_COMMON),
+        steps=12,
+        role="You map columns to the claim, reshape bytes in the sandbox, and call validate_table. You do not download "
+             "and you do not bind. Report the verdict and the files the cells wrote."),
 )}
 
 

@@ -654,6 +654,18 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                     "deliverable": "The run id and the files the working cell wrote, what each holds, the key figures it "
                                    "printed, and one sentence on what was wrong before.",
                     "constraints": "Do not forecast. Keep printed output short. Do not rewrite unrelated analysis."}
+    if "table-claim" not in kinds and "state_table_claim" in tools:
+        download_failed = any(h.get("kind") == "tool" and h.get("tool") == "download_web_data" and h.get("error") for h in history)
+        claimed = any(h.get("kind") == "tool" and h.get("tool") == "state_table_claim" and not h.get("error") for h in history)
+        if download_failed and not claimed:
+            return {"action": "delegate", "auto": "table-claim", "agent_type": "principal_analyst",
+                    "rationale": "a file download failed; the series name stays unbound until a claim is checked",
+                    "task": "A file download failed while working on this goal: " + goal + "\nState the table claim "
+                            "(entity, series name, measure). Diagnose each failed download. Fetch the page when the signal "
+                            "is html_page, then extract its tables. Do not store a different series under the requested name. "
+                            "Do not invent an address that no page listed.",
+                    "deliverable": "The claim, each signal, and any candidate dataset id. Say when the series is still unbound.",
+                    "constraints": "Do not forecast. Do not call bind_series."}
     if not inspected:
         return None
     if "research" not in kinds and EXTERNAL_GOAL.search(goal) and "web_research" in tools and not contracts.researched(history):
