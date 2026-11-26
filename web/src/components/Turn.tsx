@@ -2,10 +2,12 @@ import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, Download, FileTex
 import { useEffect, useRef, useState } from "react";
 import { api, datasetFileUrl, reproBundleUrl, sessionDataUrl, type AnsweredQuestion, type ArtifactRun, type DatasetRef, type Mission, type ToolInfo } from "../lib/api";
 import { errorMessage, formatDuration, truncate } from "../lib/format";
+import { plainGoal } from "../lib/mentions";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
 import { cn, formatBytes, isCheckpoint, isWorking } from "../lib/utils";
 import { Markdown } from "./Markdown";
 import { MentionText } from "./MentionChip";
+import { MessageActions, type Checkpoint } from "./MessageActions";
 import { QuestionCard, SKIPPED } from "./QuestionCard";
 import { PanelTable } from "./PanelTable";
 import { ImagePreview, Results, isImagePath } from "./Results";
@@ -330,6 +332,7 @@ export function Turn({
   onAnswered,
   onRetry,
   onEdit,
+  checkpoint,
 }: {
   mission: Mission;
   tools: Record<string, ToolInfo>;
@@ -338,6 +341,8 @@ export function Turn({
   // A retry or an edit keeps the files the forecast was made from, so they are not silently dropped.
   onRetry: (goal: string, datasetIds: string[]) => void;
   onEdit: (goal: string, datasets: DatasetRef[]) => void;
+  // Fork and Rewind under the sent message. Without it only Copy is shown.
+  checkpoint?: Checkpoint;
 }) {
   const working = isWorking(mission.status);
   const steps = buildSteps(mission, tools);
@@ -403,8 +408,11 @@ export function Turn({
             ))}
           </ul>
         )}
-        <div className="max-w-[88%] rounded-3xl bg-night-2 px-5 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap sm:max-w-[80%]">
-          <MentionText text={mission.goal} />
+        <div className="group/msg grid max-w-[88%] justify-items-end gap-0.5 sm:max-w-[80%]">
+          <div className="max-w-full rounded-3xl bg-night-2 px-5 py-3 text-sand-0 [overflow-wrap:anywhere] whitespace-pre-wrap">
+            <MentionText text={mission.goal} />
+          </div>
+          <MessageActions text={plainGoal(mission.goal)} checkpoint={checkpoint} />
         </div>
       </div>
 

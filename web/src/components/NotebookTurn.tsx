@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ArtifactRun, type ToolInfo } from "../lib/api";
 import { useMission } from "../lib/useMission";
+import type { Checkpoint } from "./MessageActions";
 import { Turn } from "./Turn";
 import { Spinner } from "./ui";
 
@@ -10,11 +11,13 @@ export function NotebookTurn({
   tools,
   onRetry,
   onEdit,
+  checkpoint,
 }: {
   missionId: string;
   tools: Record<string, ToolInfo>;
   onRetry: (goal: string) => void;
   onEdit: (goal: string) => void;
+  checkpoint?: Checkpoint;
 }) {
   const { mission, error, refresh } = useMission(missionId);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
@@ -38,5 +41,5 @@ export function NotebookTurn({
       </p>
     );
   }
-  return <Turn mission={mission} tools={tools} runs={runs} onAnswered={refresh} onRetry={onRetry} onEdit={onEdit} />;
+  return <Turn mission={mission} tools={tools} runs={runs} onAnswered={refresh} onRetry={onRetry} onEdit={onEdit} checkpoint={checkpoint} />;
 }

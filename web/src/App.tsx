@@ -8,7 +8,8 @@ import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar, type ItemKind } from "./components/Sidebar";
 import { Turn } from "./components/Turn";
 import { Button, Card, IconButton, Spinner } from "./components/ui";
-import { api, type ArtifactRun, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
+import { api, type ArtifactRun, type DatasetRef, type Mission, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
+import { offerDraft } from "./lib/checkpoint";
 import { errorMessage } from "./lib/format";
 import { SKILLS } from "./lib/skills";
 import { useMission } from "./lib/useMission";
@@ -283,6 +284,56 @@ export default function App() {
     setNavOpen(false);
   };
 
+  // Fork and Rewind on a quick forecast, which has one message and nothing before it. Both give the message and its files back
+  // in a fresh box. A fork leaves the forecast as it is; a rewind hides it (as Hide does) and offers Undo.
+  const filesBack = (ds: DatasetRef[]) =>
+    setAttachments(ds.map((d) => ({ key: `att-${++attachSeq.current}`, name: d.name, status: "ready" as const, datasetId: d.id })));
+
+  const forkForecast = (m: Mission) => {
+    newForecast();
+    setDraft(m.goal);
+    filesBack(m.datasets ?? []);
+    setNotice({ id: Date.now(), message: "Forked. The original forecast is unchanged.", tone: "info", ttlMs: 4000 });
+  };
+
+  const rewindForecast = async (m: Mission) => {
+    try {
+      const out = await api.rewindMission(m.id);
+      newForecast();
+      setDraft(out.prefill);
+      filesBack(m.datasets ?? []);
+      refreshList();
+      setNotice({
+        id: Date.now(),
+        message: "Rewound. The forecast is hidden.",
+        tone: "info",
+        action: {
+          label: "Undo",
+          run: () => {
+            api
+              .undoRewind(out.rewind_id)
+              .then(() => {
+                refreshList();
+                setNotice(null);
+                openMission(m.id);
+              })
+              .catch((err) => showError(errorMessage(err, "Couldn't undo that rewind.")));
+          },
+        },
+      });
+    } catch (err) {
+      showError(errorMessage(err, "Couldn't rewind. Try again."));
+    }
+  };
+
+  // Fork from a notebook: the new notebook opens with the forked message in its box.
+  const openForked = (id: string, prefill: string) => {
+    offerDraft(id, prefill);
+    openNotebook(id);
+    refreshList();
+    setNotice({ id: Date.now(), message: "Forked. The original notebook is unchanged.", tone: "info", ttlMs: 4000 });
+  };
+
   const stopForecast = async () => {
     if (!selectedId) return;
     setStopping(true);
@@ -447,6 +498,7 @@ export default function App() {
               model={model}
               onSelectModel={chooseModel}
               onOpenSettings={() => setSettingsOpen(true)}
+              onOpenNotebook={openForked}
             />
           </main>
         ) : (
@@ -507,6 +559,11 @@ export default function App() {
                   runs={runs}
                   onAnswered={refresh}
                   onRetry={(g, ids) => void start(g, ids).catch((err) => showError(errorMessage(err, "Couldn't start the forecast. Try again.")))}
+                  checkpoint={{
+                    onFork: () => forkForecast(current),
+                    onRewind: () => rewindForecast(current),
+                    rewindBlocked: isWorking(current.status) || current.status === "waiting_user" ? "Rewind is off while Prophet is working. Press Stop first." : null,
+                  }}
                   onEdit={(g, ds) => {
                     setDraft(g);
                     // The files come back as attachments, so the person can see them and send them again.

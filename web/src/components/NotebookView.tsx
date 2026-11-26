@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, SlidersHorizontal, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { api, datasetFileUrl, notebookDataUrl, type Source, type ToolInfo } from "../lib/api";
+import { api, datasetFileUrl, notebookDataUrl, type RewindResult, type Source, type ToolInfo } from "../lib/api";
+import { clearDraft, offerDraft, peekDraft } from "../lib/checkpoint";
 import { errorMessage } from "../lib/format";
 import { SKILLS } from "../lib/skills";
 import { useNotebook } from "../lib/useNotebook";
@@ -51,6 +52,7 @@ export function NotebookView({
   model,
   onSelectModel,
   onOpenSettings,
+  onOpenNotebook,
 }: {
   notebookId: string;
   tools: Record<string, ToolInfo>;
@@ -61,12 +63,16 @@ export function NotebookView({
   model: SelectableModel | null;
   onSelectModel: (id: string) => void;
   onOpenSettings: () => void;
+  // Opens another notebook, with the text a fork offers back in its message box.
+  onOpenNotebook: (id: string, prefill: string) => void;
 }) {
   const { notebook, error, refresh } = useNotebook(notebookId);
   const [stopping, setStopping] = useState(false);
   const [manage, setManage] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [draft, setDraft] = useState<string | undefined>(undefined);
+  // The latest rewind, while it can still be undone: until the next question is sent.
+  const [rewound, setRewound] = useState<RewindResult | null>(null);
   // True while a question is being sent, so the send button cannot fire a second copy of the same question.
   const [sending, setSending] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -86,9 +92,11 @@ export function NotebookView({
     el?.scrollTo({ top: el.scrollHeight, behavior: reduceMotion ? "auto" : "smooth" });
   }, [turnCount]);
 
+  // A notebook opened by a fork starts with the forked message in the box.
   useEffect(() => {
-    setDraft(undefined);
+    setDraft(peekDraft(notebookId));
     setManage(false);
+    setRewound(null);
   }, [notebookId]);
 
   if (!notebook) {
@@ -124,7 +132,45 @@ export function NotebookView({
       setSending(false);
     }
     setDraft(undefined);
+    setRewound(null);
+    clearDraft(notebookId);
     changed();
+  }
+
+  // Rewind: the later questions are hidden (not deleted) and this one goes back in the box. Undo restores them.
+  async function rewindTo(turnId: string) {
+    try {
+      const out = await api.rewindTurn(notebookId, turnId);
+      setRewound(out);
+      setDraft(out.prefill);
+      changed();
+    } catch (err) {
+      onError(errorMessage(err, "Couldn't rewind. Try again."));
+    }
+  }
+
+  async function undoRewind() {
+    if (!rewound) return;
+    try {
+      await api.undoRewind(rewound.rewind_id);
+      setRewound(null);
+      setDraft("");
+      changed();
+    } catch (err) {
+      setRewound(null);
+      onError(errorMessage(err, "Couldn't undo that rewind."));
+    }
+  }
+
+  // Fork: a new notebook that starts before this question. This one is left as it is.
+  async function forkFrom(turnId: string) {
+    try {
+      const out = await api.forkTurn(notebookId, turnId);
+      offerDraft(out.notebook_id, out.prefill);
+      onOpenNotebook(out.notebook_id, out.prefill);
+    } catch (err) {
+      onError(errorMessage(err, "Couldn't fork. Try again."));
+    }
   }
 
   async function stop() {
@@ -331,6 +377,11 @@ export function NotebookView({
                     tools={tools}
                     onRetry={(goal) => void send(goal).catch((err) => onError(errorMessage(err, "Couldn't send that. Try again.")))}
                     onEdit={setDraft}
+                    checkpoint={{
+                      onFork: () => forkFrom(t.id),
+                      onRewind: () => rewindTo(t.id),
+                      rewindBlocked: working || waiting ? "Rewind is off while Prophet is working. Press Stop first." : null,
+                    }}
                   />
                 </li>
               ))}
@@ -341,6 +392,19 @@ export function NotebookView({
 
       <div className="px-4 pt-1 pb-3 sm:px-6">
         <div className="mx-auto w-full max-w-3xl">
+          {rewound && (
+            <p role="status" className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sand-2/25 bg-night-1 px-4 py-2 text-caption text-sand-1">
+              <span>
+                Rewound to before that question.{" "}
+                {rewound.dropped.length === 1 ? "1 question is" : `${rewound.dropped.length} questions are`} hidden
+                {rewound.tables_hidden.length > 0 && `, with ${rewound.tables_hidden.length === 1 ? "1 table version" : `${rewound.tables_hidden.length} table versions`}`}. Sending a
+                question makes it final.
+              </span>
+              <button type="button" onClick={() => void undoRewind()} className="rounded-md px-2 py-1 font-semibold text-sand-0 underline underline-offset-2 hover:bg-night-2">
+                Undo
+              </button>
+            </p>
+          )}
           <Composer
             onSend={send}
             busy={sending}

@@ -296,6 +296,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ goal, ...(model ? { model } : {}) }),
     }),
+  // Fork and Rewind at a user message. A rewind hides the later questions (Undo brings them back until a question is sent);
+  // a fork is a new notebook that starts from the point before the question. Both return the text to offer back as a draft.
+  rewindTurn: (notebookId: string, turnId: string) =>
+    req<RewindResult>(`/api/notebooks/${notebookId}/turns/${turnId}/rewind`, { method: "POST" }),
+  forkTurn: (notebookId: string, turnId: string) =>
+    req<ForkResult>(`/api/notebooks/${notebookId}/turns/${turnId}/fork`, { method: "POST" }),
+  rewindMission: (missionId: string) => req<RewindResult>(`/api/missions/${missionId}/rewind`, { method: "POST" }),
+  undoRewind: (rewindId: string) => req<{ rewind_id: string; restored: string[] }>(`/api/rewinds/${rewindId}/undo`, { method: "POST" }),
+};
+
+export type RewindResult = {
+  rewind_id: string;
+  notebook_id: string | null;
+  to_turn_id: string;
+  prefill: string;
+  dropped: string[];
+  tables_hidden: { name: string; version: number }[];
+};
+export type ForkResult = {
+  notebook_id: string;
+  title: string;
+  forked_from: string;
+  to_turn_id: string;
+  prefill: string;
+  copied_turns: number;
 };
 
 export type SettingsSection = "agent" | "context";
