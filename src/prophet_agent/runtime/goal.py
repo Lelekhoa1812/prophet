@@ -44,7 +44,7 @@ from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN, preview_text
 from . import contracts
 from .grounding import snap, snap_note, unverified
 from . import agents
-from .questions import QUESTIONS_SCHEMA, validate_questions
+from .questions import QUESTIONS_SCHEMA, expected_shape, repair_questions, validate_questions
 from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import LeaseLost, OutcomeUnknown, canonical
 
@@ -2113,7 +2113,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
         elif plan["action"] == "ask_user":
-            open_qs, repeated = _already_asked(plan.get("questions", []) or [], history)
+            # Mission 9 (M9-7): one question object, or more than four, is repaired in place; the notes ride on the observation.
+            raw_qs, repair_notes = repair_questions(plan.get("questions", []))
+            items = raw_qs if isinstance(raw_qs, list) else []
+            open_dicts, repeated = _already_asked([q for q in items if isinstance(q, dict)], history)
+            open_qs = open_dicts + [q for q in items if not isinstance(q, dict)]    # a non-object is left for the validator
             payload = {"questions": open_qs}
             problems = (validate_questions(payload) if open_qs or not repeated
                         else ["every question was already asked and answered"])
@@ -2121,7 +2125,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 obs = {"kind": "ask_user", "error": "not asked again, the person already answered: " + "; ".join(repeated)
                        + ". The decision is in the decisions list; act on it."}
             elif problems:
-                obs = {"kind": "ask_user", "error": "invalid questions: " + "; ".join(problems)}
+                obs = {"kind": "ask_user", "error": "invalid questions: " + "; ".join(problems) + ". " + expected_shape()
+                       + ("" if not repair_notes else " Repairs made: " + "; ".join(repair_notes) + ".")}
             elif not HIGH_RISK.search(str(plan.get("rationale", ""))):
                 obs = {"kind": "ask_user", "error": "not asked: a question goes to the person only for a high-risk decision, "
                        "one that changes the delivered numbers materially, that the data cannot settle and where a wrong guess "
@@ -2135,6 +2140,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 obs = {"kind": "ask_user", "questions": open_qs, "answers": answers}
                 if repeated:
                     obs["not_asked_again"] = repeated
+                if repair_notes:
+                    obs["repair"] = repair_notes
         elif plan["action"] == "delegate":
             delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
             if plan.get("auto"):

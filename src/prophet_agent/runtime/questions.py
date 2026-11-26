@@ -8,6 +8,7 @@ the authority; the schema only helps the model produce valid output on the first
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -52,6 +53,48 @@ QUESTIONS_SCHEMA: dict[str, Any] = {
         }
     },
 }
+
+
+EXAMPLE_QUESTIONS: list[dict[str, Any]] = [{
+    "question": "Which horizon should the forecast cover?", "header": "Horizon", "multiSelect": False,
+    "options": [{"label": "4 weeks", "description": "Short range"}, {"label": "12 weeks", "description": "One quarter"}]}]
+
+
+def expected_shape() -> str:
+    """The shape an ask_user call must take, with a minimal example, for an error the planner can act on in one step."""
+    return ("Send the questions as a list of 1 to 4 objects, each with question (ending in '?'), header (12 characters or "
+            "fewer), multiSelect (true or false) and options (2 to 4 objects with label and description). For example: "
+            + json.dumps({"questions": EXAMPLE_QUESTIONS}, separators=(",", ":")))
+
+
+def repair_questions(raw: Any) -> tuple[Any, list[str]]:
+    """The questions of an ask_user call with the easy shape errors fixed, and a note for each fix.
+
+    Motivation vs Logic
+    Motivation: live Nvidia mission (2026-11-26), an ask_user call failed with "questions must be a list of 1 to 4 items" because
+    the planner sent one question object, not a list. The person was not asked and a planner step was spent. A single object, a
+    JSON string of either, or more than four questions are shape errors the runtime can repair without another model call.
+    Logic: a JSON string is decoded; a single object (or one holding a "questions" value) becomes a list of one; a list longer
+    than MAX_QUESTIONS keeps its first four and notes the rest. Anything else is returned unchanged for validate_questions to
+    explain, with expected_shape() in the error.
+    """
+    notes: list[str] = []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return raw, notes
+        notes.append("the questions were sent as text and decoded")
+    if isinstance(raw, dict) and isinstance(raw.get("questions"), (list, dict)):
+        raw = raw["questions"]                  # the payload itself was sent instead of its questions
+    if isinstance(raw, dict):
+        raw = [raw]
+        notes.append("a single question object was wrapped in a list")
+    if isinstance(raw, list) and len(raw) > MAX_QUESTIONS:
+        notes.append(f"{len(raw)} questions were sent; the first {MAX_QUESTIONS} are asked, and the others can be asked "
+                     "after these answers")
+        raw = raw[:MAX_QUESTIONS]
+    return raw, notes
 
 
 def validate_questions(payload: Any) -> list[str]:
