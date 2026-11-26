@@ -23,3 +23,12 @@ def test_substitute_series_cannot_keep_the_requested_name(tmp_path):
     names = [path.name for path in Path(tmp_path).rglob("*") if path.is_file()]
     assert "alpha_daily.csv" not in names
     assert claim["series_name"] == "alpha_daily"
+
+
+def test_an_api_address_that_names_the_ticker_is_not_a_rival():
+    """Live NVDA 2026-11-26: api.nasdaq.com/api/quote/NVDA/historical was refused as naming API and QUOTE."""
+    from prophet_agent.tools.opendata_tools import name_entity_refusal
+    body = b"date,close\n2026-11-24,181.2\n2026-11-25,183.0\n"
+    url = "https://api.nasdaq.com/api/quote/NVDA/historical?assetclass=stocks"
+    assert name_entity_refusal("NVDA_daily.csv", body, url) is None
+    assert name_entity_refusal("NVDA_daily.csv", body, "https://api.nasdaq.com/api/quote/AAPL/historical") is not None

@@ -27,6 +27,8 @@ GENERIC = frozenset({
     "history", "data", "file", "files", "csv", "json", "xlsx", "table", "download", "export",
     "public", "datasets", "dataset", "raw", "master", "blob", "content", "charts", "chart",
     "finance", "adj", "adjusted",
+    # API address words (live NVDA 2026-11-26: api.nasdaq.com/api/quote/NVDA/historical gave rivals API and QUOTE).
+    "api", "apis", "quote", "quotes", "stock", "stocks", "query", "rest", "latest", "assets",
 })
 _TICKER = re.compile(r"^[A-Za-z]{2,5}$")
 _COMMENT = re.compile(r"^\s*#")
@@ -50,7 +52,7 @@ def validate_table(claim: dict, csv_bytes: bytes, *, final_url: str = "", page_t
         matched = _league_matches(claim, page_text, final_url)
         tokens, rivals, observed = set(), [], (matched[0] if matched else "")
     else:
-        tokens, observed = _identity(parsed, mapping, final_url)
+        tokens, observed = _identity(parsed, mapping, final_url, aliases)
         rivals = sorted(token for token in tokens if token not in aliases and token not in GENERIC)
         matched = sorted(token for token in tokens if token in aliases)
     status, detail = _entity_refusal(league, tokens, rivals, matched) or ("", "")
@@ -213,7 +215,7 @@ def _parse(csv_bytes: bytes) -> dict:
     return {"error": "", "headers": rows[0], "rows": rows[1:], "comments": comments}
 
 
-def _identity(parsed: dict, mapping: dict, final_url: str) -> tuple[set[str], str]:
+def _identity(parsed: dict, mapping: dict, final_url: str, aliases: set[str] = frozenset()) -> tuple[set[str], str]:
     headers = parsed["headers"]
     entity_indexes = _entity_indexes(headers, mapping)
     name_indexes = [i for i, header in enumerate(headers) if normalise(header) == "name"]
@@ -246,10 +248,14 @@ def _identity(parsed: dict, mapping: dict, final_url: str) -> tuple[set[str], st
             tokens.add(token)
             observed = observed or header.strip()
     path = urlsplit(final_url or "").path or (final_url or "")
-    for segment in re.split(r"[^A-Za-z0-9]+", path):
-        if _TICKER.match(segment) and normalise(segment) not in GENERIC:
-            tokens.add(normalise(segment))
-            observed = observed or segment
+    path_tokens = [segment for segment in re.split(r"[^A-Za-z0-9]+", path)
+                   if _TICKER.match(segment) and normalise(segment) not in GENERIC]
+    if any(normalise(segment) in aliases for segment in path_tokens):
+        # The address names the claimed entity; its other words are route parts (api, quote, v8), not rival entities.
+        path_tokens = [segment for segment in path_tokens if normalise(segment) in aliases]
+    for segment in path_tokens:
+        tokens.add(normalise(segment))
+        observed = observed or segment
     return tokens, observed
 
 
