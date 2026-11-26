@@ -1061,8 +1061,10 @@ pages were counted as fetched, and the stall rule fired at step 63 of 196. The e
 never called.
 
 **Owner decisions (2026-11-26, asked through questions).**
-- Price data: keyless public endpoints (for example Yahoo chart JSON, Nasdaq historical JSON, Stooq), research use only,
-  each tagged with its source and terms. No keyed price provider.
+- Price data: keyless public endpoints (for example Yahoo chart JSON, Nasdaq historical JSON, Stooq), on by default, each
+  result tagged with its source and endpoint. No keyed price provider. Revised the same day after the research report:
+  the owner accepts the endpoints' terms and keeps FRED as it is. Data-source terms live in `DATASET_LICENCES.md` and other
+  Markdown docs only, never in tool outputs, prompts, briefs or chat.
 - Search: no keyed search API. Harden the ddgs cascade instead.
 - JavaScript pages: add Playwright Chromium rendering. Pages behind bot checks or CAPTCHAs stay refused; they are never
   bypassed.

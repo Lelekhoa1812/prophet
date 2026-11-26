@@ -38,6 +38,15 @@ Research-use labelling (owner decision, Liam, 2026-11-23): this project is resea
 key is `open_meteo` carry the research-use label and its attribution in documents and reports only. The label is never
 written into agent prompts, contracts, tools or the UI, and the code refers to the dataset by its key alone.
 
-Stock data (owner decision, 2026-11-23): no stock source with a no-key download and clear terms was found. Yahoo Finance and
-FRED terms prohibit automated extraction, and Stooq's terms could not be verified, so none of them is downloaded automatically.
-Stock series come from a user upload until a source with a verified licence is added as a row above.
+Stock data (owner decision, 2026-11-26, replaces the 2026-11-23 decision): the keyless price connector
+(`download_market_prices`) is on by default and downloads daily prices from Yahoo's chart endpoint, Nasdaq's historical
+endpoint and Stooq. The owner has read and accepts their terms, as checked in the research report
+`reports/Multi signal data acquisition for forecasting.md`: Yahoo's terms forbid automated collection without permission,
+Stooq limits its files to personal use, and Nasdaq treats API redistribution as a data feed needing approval.
+
+FRED (owner decision, 2026-11-26): FRED series stay as they are, including the local cache, although FRED's legal page
+forbids storing, caching or archiving its content in a database.
+
+Where terms live (owner decision, 2026-11-26): data-source terms are recorded in this file and other Markdown docs only.
+They are never written into tool outputs, provenance fields, agent prompts, sub-agent briefs, the UI or chat reports, so
+they do not take space in the research context.
