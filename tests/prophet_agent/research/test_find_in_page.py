@@ -116,7 +116,15 @@ def test_result_stays_within_the_observation_budget(monkeypatch):
     out = rt.find_in_page_tool({"url": URL, "regex": r"million barrels"}, "k")
     seen = rt.observe(out)
     assert len(json.dumps(seen, ensure_ascii=False)) <= rt.OBSERVE_CHARS + 500
-    assert all(len(p["text"]) <= rt.PASSAGE_SEEN_CHARS + 3 for p in seen["passages"])
+    assert seen["passages"], "the budget drops passages from the end, it does not empty the result"
+
+
+def test_page_level_passages_are_not_clipped_to_the_research_cap():
+    """web_fetch and find_in_page passages are what the planner asked to read (a table, often): only the size bound applies."""
+    text = "Club Played Points " + " ".join(f"Team{i} 13 {30 - i}" for i in range(80))
+    out = {"url": URL, "passages": [{"text": text, "start": 0, "end": len(text), "reason": "query"}]}
+    seen = rt.observe(out)
+    assert seen["passages"][0]["text"] == text and len(text) > rt.PASSAGE_SEEN_CHARS
 
 
 def test_web_fetch_lists_the_page_tables(monkeypatch):

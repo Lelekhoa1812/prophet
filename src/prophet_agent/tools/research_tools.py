@@ -523,10 +523,16 @@ def web_research_tool(args: Any, _key: str) -> dict:
 
 
 def _clip_passages(data: dict) -> int:
+    """Clip web_research passages to PASSAGE_SEEN_CHARS.
+
+    Motivation: web_research returns passages from many sources, so each is clipped to keep the round readable. A
+    page-level read (web_fetch with queries, find_in_page) returns passages at the top level: those are the text the
+    planner asked for, often a table, and clipping them at 500 characters cut the EPL standings again.
+    Logic: only passages under `sources` are clipped; top-level passages are bounded by the observation size alone.
+    """
     clipped = 0
-    groups = [source.get("passages", []) for source in data.get("sources", [])] + [data.get("passages") or []]
-    for passages in groups:
-        for passage in passages:
+    for source in data.get("sources", []):
+        for passage in source.get("passages", []):
             if len(passage["text"]) > PASSAGE_SEEN_CHARS:
                 passage["text"] = passage["text"][:PASSAGE_SEEN_CHARS] + "..."
                 clipped += 1
