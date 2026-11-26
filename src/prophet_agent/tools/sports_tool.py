@@ -238,8 +238,9 @@ def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dic
     if "backtest" in result:
         out["backtest"] = _compact_backtest(result["backtest"])
     out["note"] = ("every figure the answer needs is in this view: the teams table (final total p10, median, p90 and "
-                   "probabilities), the backtest verdicts and points_path_summary ([game, median, p10, p90] every tenth "
-                   "unplayed game and the last); do not page through the full result. Do not sum ranges across teams.")
+                   "probabilities), the backtest verdicts and points_path_summary ([game, median, p10, p90], where game is "
+                   "the team's game number in the season, played games included; every tenth game and the last); do not "
+                   "page through the full result. Do not sum ranges across teams.")
     paths = [(t, compact_path(paths_all[t], every=10)) for t in [r.get("team") for r in shown] if t in paths_all][:VIEW_PATHS]
     if len(shown) < len(rows):
         ext = extremes(rows)

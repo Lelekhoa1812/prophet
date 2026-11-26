@@ -1634,3 +1634,40 @@ What was changed (cf5318c and 871e353):
   sentence ("They were kept because they reflect ..."), count as causes and need a source id or test.
 Not yet changed: a scheduled release date one day off in a section other than Outside context (CPI), a probability
 rounded the wrong way when the same figure appears elsewhere (EPL), and the count of filled days misreported in prose (CO2).
+
+### Panel round 13 (measured, run 20261127-081044, API on 761f6e8, planner v32, evaluator v12, composer v7, 2026-11-27)
+Seven of ten completed by status (CO2, CPI, EPL, NBA, NGSTORAGE, NVDA, SPX), the most so far; AUUNEMP, GISTEMP and NEM
+ended partial. **M9-8 is not met.** The independent read-only audit marked all seven completed answers not clean.
+Why the three ended partial:
+- GISTEMP: a false block. The annual-cycle check read the word "annual" inside a quoted BOM passage.
+- AUUNEMP: both composer rewrites kept "kept as genuine regime changes" (an uncited cause).
+- NEM: the download note worked (seven AEMO months). The run was refused on 8,301 MW, a figure a research sub-agent
+  fetched: the page's "Demand\n8,301 MW" was dumped as JSON, the escaped newline glued "n" to the figure, and the figure was
+  never read from the evidence. This affected every fetched page.
+Audit findings in the completed answers (wrong or unsupported):
+- NGSTORAGE: "No level shifts or regime changes detected" against five scan breaks. The acknowledgement rule read the
+  denial as its own acknowledgement, because its negation test was case-sensitive and missed the capital "No". Replaying
+  the fixed rule over rounds 9 to 13 also stops eight earlier answers that denied flagged shifts or gaps.
+- SPX: "Two unexplained regime shifts" against five breaks (an adjective sat between count and noun).
+- NVDA: "winsorised the 2 outliers" where the ledger only planned a test and control_lab found no evidence; a variance
+  change and a trend bend no scan reported; "(real regime moves)"; 521 closes that include 21 interpolated days; a
+  MarketWatch passage given a meaning it does not carry; an earnings month no source gives.
+- NBA: Spurs playoff 74 % where the result holds 0.7347; "708 team-games remaining" mixes games and team-games; the 1,230
+  game season is a constant in the code, not the downloaded 1,207 fixtures.
+- EPL: the points path's game numbers labelled "after 21 unplayed matches" (they count played games too); Brentford left
+  out of "the main contenders" although the view listed it as a better team not named; the person had chosen Arsenal only.
+- CO2: "left 12 long gaps unfilled" where all 3,141 gaps were filled; a band half-width of 0.5 to 1.0 where it reaches 1.6.
+- CPI: a BLS notice quoted with the date of the entry beside it.
+What was changed (36f30ae, 80fbaee and the batch after it):
+- An uncited cause that two rewrites kept is taken out of the sentence ("(cause not established)"), and only a bracket is
+  removed when the cause is in one.
+- The annual check ignores quoted passages.
+- Escaped newlines, tabs and returns in evidence text are read as spaces.
+- The negation before an acknowledgement is read case-insensitively and within two words.
+- A shift count may carry up to two adjectives ("two unexplained regime shifts").
+- An answer that says outliers were winsorised, clipped, capped, replaced or removed needs analysis code (outside string
+  literals) or a forecast call that applied it; control_lab only tests.
+- A team's probability is checked on rows under a legend line that names the probability, and a table row names its own team.
+- The simulation view says points-path game numbers count played games too.
+Not yet changed: fabricated scan categories (a variance change or trend bend no scan reports), a passage's meaning when
+its words are quoted correctly (NVDA), and a team list the person narrowed (EPL).
