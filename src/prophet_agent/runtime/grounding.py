@@ -202,8 +202,11 @@ def _as_text(obj) -> str:
 def _string_literals(code: str) -> list[str]:
     """The text of every string literal in Python code, with the literal parts of f-strings (not their computed fields)."""
     import ast
+    import warnings
     try:
-        tree = ast.parse(code)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")      # "invalid escape sequence" in the model's code is not ours to report
+            tree = ast.parse(code)
     except (SyntaxError, ValueError):
         return [m[1] for m in re.findall(r"([\"'])((?:(?!\1).){1,400})\1", code)]
     out: list[str] = []
@@ -665,7 +668,10 @@ def claimed_shift_dates(answer: str) -> list[tuple[int, str, "date | None"]]:
     return out
 
 
-_CAUSE = re.compile(r"\b(?:correspond(?:s|ed)? to|caused by|due to|driven by|because of|reflects?|reflecting|as a result of)\b", re.I)
+# "each aligns with known recessions or COVID" (round 11, AUUNEMP) attributes as surely as "due to".
+_CAUSE = re.compile(r"\b(?:correspond(?:s|ed)? to|caused by|due to|driven by|because of|reflects?|reflecting|as a result of|"
+                    r"align(?:s|ed)? with|coincid(?:es|ed|ing) with|linked to|attributable to|tied to|associated with|"
+                    r"explained by|triggered by)\b", re.I)
 _SHIFT_WORD = re.compile(r"\b(?:level[- ]shifts?|shifts?|breaks?|changepoints?|regimes?|spikes?|outliers?)\b", re.I)
 _CITED = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b", re.I)
 

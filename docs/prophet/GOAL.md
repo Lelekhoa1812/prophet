@@ -1551,3 +1551,42 @@ Not yet changed: an outside claim with no figure (GISTEMP's reversed ENSO outloo
   meaning must follow the quote. A bullet whose quote is missing, or not in the text of the site it cites (accents, dashes,
   quote marks and case folded), is left out with the other unsupported lines. This answers claims with no figure, such as
   GISTEMP's reversed ENSO outlook; whether the composer quotes reliably is measured in the next round.
+
+### Panel round 11 (measured, run 20261127-065441, API on 6dd493c, planner v32, evaluator v11, composer v7, 2026-11-27)
+Six of ten completed by status (AUUNEMP, CO2, CPI, GISTEMP, NBA, SPX); EPL, NEM, NGSTORAGE and NVDA ended partial.
+**M9-8 is not met.** The independent read-only audit of the six completed answers found only SPX clean. (The reviewer
+questioned SPX's count of five level shifts; the saved scan holds five, which the reviewer could not see.)
+Audit findings (each a wrong or unsupported claim in an answer that finished):
+- AUUNEMP: "moderate annual cycle (strength 0.34)" and "outliers: 1.7% of points", where the scan measured seasonal strength
+  0.0 and outlier shares of 4.4 % (Hampel) and 5.6 %. Both numbers were typed into a ledger line in the model's own code;
+  the sandbox printed the ledger, so they came back as tool output and passed grounding. The level shifts were said to
+  "align with known recessions or COVID", with no source.
+- CO2: "no missing values after cleaning", where 3,141 days had been filled; the season was given as 312 steps where the
+  backtest used 362; the five break dates do match the saved scan (the audit could not see it).
+- CPI: "forecast to stay near 337.5", where the median rose from 337.9 to 341.7 over six months. The health test measures
+  curvature, so it called the straight rising median flat (flat_expected), and the level sentence followed.
+- GISTEMP: "a clear annual cycle (period ~12 months)", where the forecast measured 24; the cycle check did not read "~12".
+  "A level shift around 1979 (Pacific regime shift / satellite era)" gave a cause from memory with no cue word.
+- NBA: the view held the 14 teams the call named; the answer said playoff probabilities "range from 72% (Lakers)" while an
+  unnamed team (Spurs) had 73.5 %.
+- EPL ended partial after the evaluator asked for files the request did not ask for (evaluator v12 addresses this).
+  NEM downloaded two months (58 days) and stalled; NGSTORAGE and NVDA were blocked by the latest-value check reading a day
+  ("20 Nov") and a point count (521) as the value, which 4ae90ae fixed.
+What was changed (4ae90ae, 5276074 and the batch after it):
+- A number the model types inside a string literal of its own sandbox code, which no earlier tool output held, is not
+  evidence: it is blanked from that run's output before grounding. A number copied from earlier output (the 3,141 filled
+  days written again into a ledger line) is not typed.
+- A cycle strength written next to cycle or season must be a value a tool kept under a "strength" key or printed after
+  "strength"; an outlier percentage must be a measured share. Over rounds 8 to 11 this blocks AUUNEMP (0.34, 1.7 %),
+  NGSTORAGE r11 (1.7 %), CPI r8 (2.3 %) and SPX r8 (0.7 %); each was checked against its run and is wrong.
+- "period ~12", "about 7 days" and "roughly", "around", "approximately" are read as period claims.
+- The simulation view gives all_teams_extremes: the highest and lowest expected_final and probability over every team, named
+  or not, as [team, value].
+- An event named in a bracket or an after/during phrase next to a shift ("(COVID crash)", "after the COVID lockdown") is a
+  cause, as are "aligns with", "coincides with", "linked to" and similar. A cause with no S-id or test now blocks (it was a
+  warning); the composer rewrite removes it or cites the passage. Over rounds 7 to 11 this flags eight sentences, all
+  causes from memory; an example in brackets ("(e.g., oil spike)") after a risk is not read as a cause.
+- Health: a shape-flat median that moves by half its mean 10-90 band or more, and ends more than two typical steps from the
+  last value, is a trend: verdict ok with median_path_note giving its start, end and change, not flat_expected.
+- The AEMO source title says timestamps are interval-ending, asks for at least six months, and names
+  pl.build_series(..., freq='D', agg='mean'), which drops a partial first or last day.

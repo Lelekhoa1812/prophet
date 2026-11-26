@@ -356,3 +356,18 @@ def test_the_simulation_view_names_the_extremes_over_every_team():
 ])
 def test_an_event_glossed_next_to_a_shift_is_a_cause(text, flagged):
     assert bool(grounding.uncited_causes(text)) is flagged
+
+
+# Round 11 (CPI): a straight rising median was called flat (the shape test measures curvature), so the answer said the
+# index would "stay near 337.5" while the median rose to 341.7.
+def test_a_straight_median_that_moves_by_half_its_band_is_a_trend():
+    import numpy as np
+    from prophet_agent.forecast import health
+    x = np.linspace(30, 337.476, 958) + np.random.default_rng(0).normal(0, 0.3, 958)
+    p = [337.864, 338.676, 339.442, 340.348, 340.865, 341.720]
+    q10 = [336.57, 336.37, 336.38, 336.27, 336.35, 336.59]
+    q90 = [339.1, 340.6, 342.2, 343.9, 345.4, 347.2]
+    out = health.assess(x, p, q10, q90)
+    assert out["verdict"] == "ok" and "337.864 to 341.72" in out["median_path_note"]
+    level = [337.5, 337.6, 337.5, 337.6, 337.5, 337.6]
+    assert health.assess(np.r_[x[:-1], 337.5], level, q10, q90)["verdict"] == "flat_expected"

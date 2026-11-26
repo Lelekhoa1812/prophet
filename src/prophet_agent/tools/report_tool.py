@@ -178,6 +178,8 @@ def _health_note(health: dict | None) -> str:
         return " Warning: the history repeats on a cycle that this forecast does not reproduce: " + "; ".join(health.get("causes", [])[:2]) + "."
     if v == "check" and health.get("causes"):
         return " Check: " + "; ".join(health["causes"][:2]) + "."
+    if v == "ok" and health.get("median_path_note"):          # a trend with no cycle (panel round 11, CPI)
+        return " The median follows the history's trend in a near-straight line; read the shaded interval for how far values can move."
     return ""
 
 

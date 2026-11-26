@@ -28,6 +28,8 @@ MIN_CYCLES = 3                # cycles of history the model needs to see to pick
 RECENT_CYCLES = 8             # cycles the expected cycle is averaged over
 SHAPE_FLAT = 0.5              # forecast shape below this share of the expected shape is flat
 LEVEL_FLAT = 0.30             # without a cycle: forecast moves less than this share of the recent history's own movement
+TREND_BAND = 0.5              # a shape-flat median that moves this share of its mean 10-90 band or more is a trend (CPI, round 11)
+TREND_STEPS = 2.0             # ... and ends more than this many typical one-step moves from the last value
 SHORT_WINDOW = 0.25           # a horizon under this share of a cycle shows too little of it to judge the forecast's shape
 CONST_RUN = 7                 # identical consecutive values at the end of a history that suggest a filled gap
 
@@ -200,11 +202,15 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
                 out["vs_last_value_note"] = (f"the median sits {out['vs_last_value']:.1f} typical one-step moves from the last "
                                              "value, so it does carry a level view even though its shape is flat")
 
+    band = None
     if q10 is not None and q90 is not None:
         band = float(np.mean(np.asarray(q90, dtype=float) - np.asarray(q10, dtype=float)))
         spread = float(np.std(x[-min(n, 365):]))
         out["interval_vs_spread"] = round(band / spread, 2) if spread > 1e-12 else None
 
+    drift = float(abs(p[-1] - p[0]))
+    trending = (not structured and band is not None and band > 1e-12 and drift >= TREND_BAND * band
+                and step > 1e-12 and abs(p[-1] - x[-1]) > TREND_STEPS * step)
     if period:
         cycles_in_ctx = ctx / period
         out["cycles_in_context"] = round(cycles_in_ctx, 1)
@@ -249,6 +255,15 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
         if not had_fixes:
             fixes.append("check how the series was prepared (aggregation, gap filling, rounding) and run backtest_series to see "
                          "whether a seasonal baseline beats it")
+    elif flat and trending:
+        # Panel round 11 (CPI): the median rose from 337.9 to 341.7 over six months (the band was about 6 wide), and the
+        # shape test, which measures curvature, called it flat; the answer then said the index would "stay near 337.5". A
+        # straight median that moves by half its band or more is a trend, not a level.
+        verdict = "ok"
+        out.pop("vs_last_value_note", None)
+        out["median_path_note"] = (f"no repeating pattern stands out, and the median moves in a near-straight line from "
+                                   f"{p[0]:.6g} to {p[-1]:.6g} ({p[-1] - p[0]:+.4g}) over {horizon} steps: state that "
+                                   "direction with the interval; do not call the forecast flat or a level")
     elif flat:
         verdict = "flat_expected"
         causes = ["no repeating pattern stands out in the history, so a flat median is the honest forecast"] + causes
