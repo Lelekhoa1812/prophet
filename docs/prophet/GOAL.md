@@ -1098,3 +1098,46 @@ never called.
 - **M9-9 Gate.** `scripts/check.sh` passes on main after every merged batch.
 
 **Evidence.** Added below as each batch lands.
+
+### Batch 1 (merged to main d6066ae, 2026-11-26)
+
+- **Landed.** HTML and embedded-JSON tables through `download_web_data` (`html_landing`), the keyless price connector
+  `download_market_prices`, the name and ticker entity guard, Playwright rendering with interstitial detection, chart
+  extraction (embedded data, then NIM vision with ticks found by code), ddgs hardening (query variants, backend
+  cooldown, `discover()`), the near-duplicate stall rule, ask_user repair, today's date in the planner context, planner
+  v27 routing, and an event table with backtest-gated event features.
+- **M9-3 (measured, live NIM).** A synthetic chart image digitised with a median absolute error of 0.149% of the axis
+  range (criterion: under 2%). Embedded chart series match their embedded values exactly in the tests.
+- **M9-4 (synthetic).** In a synthetic backtest the event feature gate kept a real event feature in 20 of 20 runs and a
+  null feature in 1 of 20.
+- **M9-5 (measured, live ddgs).** The 20-query search panel returned a relevant non-registry hit for 20 of 20 queries
+  before and after batch 1, so the panel rule is too loose to show a gain. A stricter rule is still to be written.
+- **M9-9.** `scripts/check.sh` passed on the integration branches (2,912 and then 3,101 tests).
+- **Owner decisions (2026-11-26).** PDF tables use pdfplumber. Sports forecasts use Poisson goal ratings with Monte Carlo
+  season simulation.
+
+### Baseline panel (measured, run 20261126-210729, API started on dbfafab, 2026-11-26)
+
+Ten missions (`scripts/workflows/research_panel.py`), web research on, no uploads, questions answered unattended.
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| GISTEMP | completed | none | 7 |
+| CO2 | partial | unverified_figures | 17 |
+| CPI | partial | unverified_figures, stalled | 4 |
+| AUUNEMP | partial | unverified_figures, stalled | 14 |
+| EPL | partial | unverified_figures, stalled | 18 |
+| NBA | partial | blocked_by_check, unverified_figures | 23 |
+| NEM | partial | stalled | 10 |
+| NGSTORAGE | partial | unverified_figures, stalled | 11 |
+| SPX | partial | blocked_by_check (answer_level_sentence) | 4 |
+| NVDA | waiting_user | none | 3 |
+
+One of ten met (criterion M9-8: six of eight or more). Defects read from the stored runs:
+- `list_open_data_sources` called with `{"": {}}` was refused as an unknown argument (CPI, NEM, AUUNEMP).
+- `download_web_data` refused a FRED CSV because the planner passed a licence key not in the list (CPI, twice).
+- `web_fetch` with nine queries was refused five times in a row with the same error (NEM); the cap is eight.
+- ABS SDMX: the planner guessed the dataflow `ABS,LM,1.0.0`, which does not exist (`ABS,LF,1.0.0` answers 200).
+- NVDA: the planner offered "Use synthetic data based on known NVDA price ranges" as an answer option.
+- NBA: 23 sandbox cells re-parsing one page, and the answer summed win-total ranges across teams.
+- SPX: a random-walk index got the flat_expected verdict and the answer missed the required level sentence.
