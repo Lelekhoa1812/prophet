@@ -1,6 +1,6 @@
-import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, FileText, Play, RotateCcw, SkipForward } from "lucide-react";
+import { AlertTriangle, Check, CheckCheck, ChevronRight, Copy, Download, FileText, Play, RotateCcw, SkipForward } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, reproBundleUrl, type AnsweredQuestion, type ArtifactRun, type DatasetRef, type Mission, type ToolInfo } from "../lib/api";
+import { api, datasetFileUrl, reproBundleUrl, sessionDataUrl, type AnsweredQuestion, type ArtifactRun, type DatasetRef, type Mission, type ToolInfo } from "../lib/api";
 import { errorMessage, formatDuration, truncate } from "../lib/format";
 import { buildSteps, currentActivity, type StepView } from "../lib/steps";
 import { cn, formatBytes, isCheckpoint, isWorking } from "../lib/utils";
@@ -8,8 +8,8 @@ import { Markdown } from "./Markdown";
 import { MentionText } from "./MentionChip";
 import { QuestionCard, SKIPPED } from "./QuestionCard";
 import { PanelTable } from "./PanelTable";
-import { Results } from "./Results";
-import { Button, Card, Spinner } from "./ui";
+import { ImagePreview, Results, isImagePath } from "./Results";
+import { Button, Card, Spinner, buttonVariants } from "./ui";
 
 function StepIcon({ state }: { state: StepView["state"] }) {
   if (state === "running") return <Spinner className="text-ember" />;
@@ -379,21 +379,26 @@ export function Turn({
         {datasets.length > 0 && (
           <ul aria-label="Attached files" className="flex max-w-[88%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
             {datasets.map((d) => (
-              <li
-                key={d.id}
-                className="flex min-w-0 max-w-full items-center gap-2.5 rounded-2xl border border-sand-2/30 bg-night-1 py-2 pr-3.5 pl-2.5"
-              >
-                <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-lg bg-night-2 text-sand-1">
-                  <FileText className="size-4" />
-                </span>
-                <span className="grid min-w-0 gap-0.5">
-                  <span className="truncate text-caption text-sand-0" title={d.name}>
-                    {d.name}
+              <li key={d.id}>
+                <a
+                  href={datasetFileUrl(d.id)}
+                  download={d.name}
+                  title={`Download ${d.name}`}
+                  className="flex min-w-0 max-w-full items-center gap-2.5 rounded-2xl border border-sand-2/30 bg-night-1 py-2 pr-3.5 pl-2.5 hover:border-sand-1"
+                >
+                  <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-lg bg-night-2 text-sand-1">
+                    <FileText className="size-4" />
                   </span>
-                  <span className="text-micro text-sand-2 tabular-nums">
-                    {fileKind(d.name)} · {formatBytes(d.bytes)}
+                  <span className="grid min-w-0 gap-0.5">
+                    <span className="truncate text-caption text-sand-0" title={d.name}>
+                      {d.name}
+                    </span>
+                    <span className="text-micro text-sand-2 tabular-nums">
+                      {fileKind(d.name)} · {formatBytes(d.bytes)}
+                    </span>
                   </span>
-                </span>
+                  <Download aria-hidden="true" className="size-4 shrink-0 text-sand-1" />
+                </a>
               </li>
             ))}
           </ul>
@@ -475,7 +480,20 @@ export function Turn({
 
         {text && <Markdown text={text} className="text-lead leading-[1.7]" />}
 
+        {datasets.some((d) => isImagePath(d.name)) && (
+          <div className="grid gap-4">
+            {datasets.filter((d) => isImagePath(d.name)).map((d) => (
+              <ImagePreview key={d.id} src={datasetFileUrl(d.id)} name={d.name} />
+            ))}
+          </div>
+        )}
+
         <Results runs={runs} />
+
+        <a className={buttonVariants({ variant: "secondary", size: "sm" })} href={sessionDataUrl(mission.id)} download>
+          <Download aria-hidden="true" className="size-4" />
+          Download all files
+        </a>
 
         <PanelTable missionId={mission.id} working={working} />
 

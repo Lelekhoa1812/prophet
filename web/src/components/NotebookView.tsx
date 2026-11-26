@@ -1,6 +1,6 @@
-import { AlertCircle, CheckCircle2, FileSpreadsheet, SlidersHorizontal, Upload, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, SlidersHorizontal, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { api, type Source, type ToolInfo } from "../lib/api";
+import { api, datasetFileUrl, notebookDataUrl, type Source, type ToolInfo } from "../lib/api";
 import { errorMessage } from "../lib/format";
 import { SKILLS } from "../lib/skills";
 import { useNotebook } from "../lib/useNotebook";
@@ -10,9 +10,10 @@ import { cn, isWorking } from "../lib/utils";
 import { Composer } from "./Composer";
 import { ComposerControls } from "./ComposerControls";
 import { NotebookTurn } from "./NotebookTurn";
+import { ImagePreview, isImagePath } from "./Results";
 import { SharingPanel } from "./SharingPanel";
 import { SourcesPanel } from "./SourcesPanel";
-import { IconButton, Spinner } from "./ui";
+import { IconButton, Spinner, buttonVariants } from "./ui";
 
 export const THREAD_SCROLL_ID = "thread-scroll";
 
@@ -196,7 +197,13 @@ export function NotebookView({
       <div id={THREAD_SCROLL_ID} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto grid w-full max-w-3xl gap-6 px-4 pt-6 pb-8 sm:px-6">
           <header className="grid gap-3">
-            <h1 className="text-2xl leading-tight font-bold [overflow-wrap:anywhere] sm:text-3xl">{notebook.title}</h1>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <h1 className="min-w-0 flex-1 text-2xl leading-tight font-bold [overflow-wrap:anywhere] sm:text-3xl">{notebook.title}</h1>
+              <a className={buttonVariants({ variant: "secondary", size: "sm" })} href={notebookDataUrl(notebookId)} download>
+                <Download aria-hidden="true" className="size-4" />
+                Download all files
+              </a>
+            </div>
 
             {hasFiles && (
               <div className="flex flex-wrap items-center gap-2" aria-label="Files">
@@ -210,7 +217,7 @@ export function NotebookView({
                       title={`${s.name} · ${st.text}${s.included ? "" : " · not in use"}`}
                       className={cn(
                         "inline-flex min-h-10 max-w-full items-center gap-2 rounded-full border border-sand-2/30 bg-night-1 px-3.5 text-caption text-sand-0 transition-colors hover:border-sand-1 hover:bg-night-2",
-                        !s.included && "opacity-55",
+                        !s.included && "opacity-80",
                       )}
                     >
                       <FileSpreadsheet aria-hidden="true" className="size-4 shrink-0 text-sand-1" />
@@ -230,6 +237,14 @@ export function NotebookView({
                   onClick={() => setManage((v) => !v)}
                   className={cn(manage && "bg-night-2 text-sand-0")}
                 />
+              </div>
+            )}
+
+            {notebook.sources.some((s) => isImagePath(s.name)) && (
+              <div className="grid gap-4">
+                {notebook.sources.filter((s) => isImagePath(s.name)).map((s) => (
+                  <ImagePreview key={s.id} src={datasetFileUrl(s.dataset_id)} name={s.name} />
+                ))}
               </div>
             )}
           </header>

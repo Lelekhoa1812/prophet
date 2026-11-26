@@ -70,22 +70,22 @@ export function ForecastChart({ history, fc }: { history: number[]; fc: Fc }) {
       <svg viewBox={`0 0 ${W} ${H}`} aria-hidden="true" className="h-auto w-full" style={{ fontFamily: "inherit" }}>
         {ticks.map((t, i) => (
           <g key={i}>
-            <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} stroke="#2b241c" strokeWidth="1" />
-            <text x={PAD.l - 8} y={y(t) + 6} textAnchor="end" fontSize={LABEL} fill="#c2b392">
+            <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} className="stroke-night-3" strokeWidth="1" />
+            <text x={PAD.l - 8} y={y(t) + 6} textAnchor="end" fontSize={LABEL} className="fill-sand-1">
               {formatNumber(t)}
             </text>
           </g>
         ))}
-        {hist.length > 0 && <line x1={x(off)} x2={x(off)} y1={PAD.t} y2={H - PAD.b} stroke="#8d7e65" strokeDasharray="3 4" />}
-        <path d={band} fill="#e8793a" fillOpacity="0.2" />
-        {hist.length > 1 && <path d={path(hist, 0)} fill="none" stroke="#c2b392" strokeWidth="1.75" strokeLinejoin="round" />}
-        <path d={path([...bridge, ...point.slice(0, n)], bridge.length ? off - 1 : off)} fill="none" stroke="#e8793a" strokeWidth="2.5" strokeLinejoin="round" />
+        {hist.length > 0 && <line x1={x(off)} x2={x(off)} y1={PAD.t} y2={H - PAD.b} className="stroke-sand-2" strokeDasharray="3 4" />}
+        <path d={band} className="fill-ember/20" />
+        {hist.length > 1 && <path d={path(hist, 0)} className="fill-none stroke-sand-1" strokeWidth="1.75" strokeLinejoin="round" />}
+        <path d={path([...bridge, ...point.slice(0, n)], bridge.length ? off - 1 : off)} className="fill-none stroke-ember" strokeWidth="2.5" strokeLinejoin="round" />
         <text
           x={flip ? x(off) - 6 : x(off) + (hist.length ? 6 : 0)}
           y={H - 12}
           textAnchor={flip ? "end" : "start"}
           fontSize={LABEL}
-          fill="#c2b392"
+          className="fill-sand-1"
         >
           {hist.length ? "Forecast starts" : "Forecast"}
         </text>
@@ -151,34 +151,34 @@ function FileRow({ runId, file }: { runId: string; file: ArtifactFile }) {
   );
 }
 
-const RASTER = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
-function extOf(path: string): string {
-  return path.split(".").pop()?.toLowerCase() ?? "";
+export function isImagePath(path: string): boolean {
+  const dot = path.lastIndexOf(".");
+  if (dot <= 0 || dot === path.length - 1) return false;
+  return IMAGE_EXT.has(path.slice(dot + 1).toLowerCase());
 }
 
-// Every image a run made is shown. A chart saved as both a picture and a vector file is shown once, as the picture.
+// Every image a run made is shown, including a picture and its vector file side by side.
 export function imagesToShow(files: ArtifactFile[]): ArtifactFile[] {
-  const stem = (p: string) => p.replace(/\.[^./]+$/, "");
-  const raster = new Set(files.filter((f) => RASTER.has(extOf(f.path))).map((f) => stem(f.path)));
-  return files.filter((f) => {
-    const ext = extOf(f.path);
-    return RASTER.has(ext) || (ext === "svg" && !raster.has(stem(f.path)));
-  });
+  return files.filter((f) => isImagePath(f.path));
 }
 
-// An image the analysis made is shown in the answer itself, on its own white page, with the full-size image one click away.
-function ChartFigure({ runId, file }: { runId: string; file: ArtifactFile }) {
-  const name = file.path.replace(/^out\//, "");
-  const url = artifactUrl(runId, file.path);
+// An image is shown on a white page. A click opens the full-size file.
+export function ImagePreview({ src, name }: { src: string; name: string }) {
   return (
     <figure className="m-0 grid gap-2">
-      <a href={url} target="_blank" rel="noopener noreferrer" title="Open the image full size" className="block overflow-hidden rounded-xl border border-sand-2/25 bg-white">
-        <img src={url} alt={`Image ${name}`} loading="lazy" className="block h-auto w-full" />
+      <a href={src} target="_blank" rel="noopener noreferrer" title={`Open ${name}`} className="block overflow-hidden rounded-xl border border-sand-2/50 bg-white shadow-[var(--shadow-composer)]">
+        <img src={src} alt={`Image ${name}`} loading="lazy" className="block h-auto w-full" />
       </a>
       <figcaption className="text-caption text-sand-2">{name}</figcaption>
     </figure>
   );
+}
+
+function ChartFigure({ runId, file }: { runId: string; file: ArtifactFile }) {
+  const name = file.path.replace(/^out\//, "");
+  return <ImagePreview src={artifactUrl(runId, file.path)} name={name} />;
 }
 
 export function Results({ runs }: { runs: ArtifactRun[] }) {

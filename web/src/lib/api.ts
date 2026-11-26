@@ -447,3 +447,15 @@ export function tableDownloadUrl(notebookId: string, name: string, version?: num
 export function reproBundleUrl(missionId: string): string {
   return `/api/missions/${missionId}/repro`;
 }
+
+export function sessionDataUrl(missionId: string): string {
+  return `/api/missions/${encodeURIComponent(missionId)}/data`;
+}
+
+export function notebookDataUrl(notebookId: string): string {
+  return `/api/notebooks/${encodeURIComponent(notebookId)}/data`;
+}
+
+export function datasetFileUrl(datasetId: string): string {
+  return `/api/datasets/${encodeURIComponent(datasetId)}/file`;
+}
