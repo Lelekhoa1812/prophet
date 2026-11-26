@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .data_tools import BACKTEST_SPEC, INSPECT_DATA_SPEC, backtest_tool, inspect_data_tool
 from .calibrate_tool import CALIBRATE_SPEC, calibrate_tool
+from .chart_tools import chart_tool_pair
 from .panel_tool import PANEL_BACKTEST_SPEC, panel_backtest_tool
 from .reconcile_tool import RECONCILE_FORECASTS_SPEC, reconcile_forecasts_tool
 from .lab_tool import LAB_TOOL_SPEC
@@ -50,6 +51,7 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
     if binding is not None:
         specs["save_table"] = (save_table_tool(binding), SAVE_TABLE_SPEC)
     specs.update(open_data_tools(datasets, opendata))
+    specs.update(chart_tool_pair(datasets, opendata))
     download = specs.get("download_web_data")
     if download is not None and opendata is not None and opendata.store is not None:
         # SciRes re-run 2026-11-24 was told to call download_web_data and pasted the preview instead. Landing the file
