@@ -15,7 +15,9 @@ read it in the current run, since the sandbox's inputs are otherwise fixed when 
 """
 from __future__ import annotations
 
+import csv
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -23,9 +25,10 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from prophet_agent.datasets import DatasetStore, clean_name
-from prophet_agent.opendata import containers, fetch, html_landing, sources
+from prophet_agent.opendata import containers, fetch, html_landing, market, sources
 from prophet_agent.opendata.store import download_to_dataset, preview
 from prophet_agent.runtime.runner import ArgumentRejected, Tool
+from prophet_agent.source_table.validate import GENERIC, validate_table
 from prophet_agent.tools.sandbox_tool import SANDBOX_PYTHON_SPEC, make_run, sandbox_python_tool
 
 MAX_MISSION_FILES = 10          # the most files one mission may hold, uploaded or downloaded (the request allows ten)
@@ -215,6 +218,62 @@ def _existing_web(store: DatasetStore, url: str, table_request: str | None = Non
     return max(matches, key=lambda meta: meta["created"]) if matches else None
 
 
+TICKER_TOKEN = re.compile(r"[A-Z]{2,5}")
+PREFIX_TICKER = re.compile(r"[A-Za-z]{2,5}")
+
+
+def _name_ticker(name: str | None) -> str | None:
+    """The first all-capitals token of 2 to 5 letters in a file name that is not a generic word: NVDA in NVDA_daily.csv."""
+    for token in re.findall(r"[A-Za-z0-9]+", name or ""):
+        if TICKER_TOKEN.fullmatch(token) and token.lower() not in GENERIC:
+            return token
+    return None
+
+
+def _dotted_column_tickers(body: bytes) -> set[str]:
+    """Tickers that lead a column header such as AAPL.Close. validate_table reads only bare ticker headers, so these are
+    read here, with the same comment and blank-line rules."""
+    try:
+        lines = [line for line in body.decode("utf-8-sig").splitlines() if line.strip() and not line.startswith("#")]
+        header = next(csv.reader(lines[:1]), [])
+    except (UnicodeDecodeError, csv.Error):
+        return set()
+    tickers = set()
+    for cell in header:
+        head, dot, _ = cell.strip().partition(".")
+        if dot and PREFIX_TICKER.fullmatch(head):
+            tickers.add(head.upper())
+    return tickers
+
+
+def name_entity_refusal(name: str | None, body: bytes, final_url: str = "") -> str | None:
+    """Why the bytes contradict the ticker in the name, or None.
+
+    Motivation vs Logic
+    Motivation: a file saved as NVDA_daily.csv held Apple's columns on 2026-11-26 and the planner used it for a forecast.
+    Logic: the name's ticker is checked against the file's own tickers. Column headers such as AAPL.Close are read first,
+    then validate_table (commit 8eb4342) reads the entity cells, comments and address. Only a rival ticker refuses; a file
+    that names no entity is not refused, as validate_table decides."""
+    ticker = _name_ticker(name)
+    if ticker is None:
+        return None
+    rivals = sorted(_dotted_column_tickers(body) - {ticker})
+    if not rivals:
+        verdict = validate_table({"claim_id": "download", "entity": ticker, "aliases": [ticker], "series_name": name},
+                                 body, final_url=final_url)
+        if verdict["status"] != "wrong_entity":
+            return None
+        rivals = sorted(item.upper() for item in (verdict["rivals"] or [verdict["observed_entity"]]))
+    return (f"the name {name!r} names {ticker}, but the file names {', '.join(rivals)}; refused, nothing was stored")
+
+
+def _guard_name(name, body: bytes, url: str) -> None:
+    if isinstance(name, str) and name.strip():
+        reason = name_entity_refusal(name, body, url)
+        if reason:
+            raise ValueError(reason)
+
+
 def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
     def run(args: dict, _key: str) -> dict:
         args = _arguments(args, {"url", "name", "licence_key", "table"}, {"url"})
@@ -238,18 +297,24 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         table_request = None if table is None else str(table)
         existing = _existing_web(store, url, table_request)
         if existing is not None:
-            meta = dict(existing, preview=preview(store.path(existing["id"]).read_bytes(),
-                                                  existing["provenance"]["format"]))
+            body = store.path(existing["id"]).read_bytes()
+            _guard_name(name, body, url)
+            meta = dict(existing, preview=preview(body, existing["provenance"]["format"]))
         else:
             fetched = fetch.download(url)          # refuses private addresses, redirects to them, and types or sizes it does not accept
             if fetch.media_type(fetched["content_type"]) in fetch.HTML_TYPES:
                 # A page lands its best table (or the one named by table), with the other candidates listed on the result.
                 meta, _ = html_landing.land_html(fetched, store=store, name=_web_name(url, None, "csv"), url=url,
                                                  licence_key=key, table=table)
+                reason = (name_entity_refusal(name, store.path(meta["id"]).read_bytes(), url)
+                          if isinstance(name, str) and name.strip() else None)
+                if reason:
+                    raise ValueError(reason.replace("nothing was stored", "the table was not mounted"))
             else:
                 body, media = _as_table(fetched)
                 fmt = _web_format(media, body)
                 table_info, fmt = _web_table(body, fmt)
+                _guard_name(name, body, url)
                 provenance = {"source": "web", "format": fmt, "url": url, "final_url": fetched["final_url"],
                               "content_type": fetched["content_type"], "retrieved_at": fetched["retrieved_at"],
                               "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": key,
@@ -309,6 +374,102 @@ DOWNLOAD_WEB_DATA_SPEC = {
 }
 
 
+MARKET_PRICES_SPEC = {
+    "name": "download_market_prices",
+    "title": "Daily market prices",
+    "activity": "Downloading daily prices",
+    "description": "Download daily open, high, low, close and volume for one stock, ETF or index between two dates. The "
+                   "endpoints are tried in order (Yahoo, Nasdaq, Stooq). The first table whose symbol matches the request "
+                   "is stored in the mission's files. The result names the endpoint that answered and each endpoint that "
+                   "failed, with its reason. The file is mounted at sandbox_file (in/<name>) for sandbox_python. Pages and "
+                   "bot checks are not passed. A name for another ticker is refused.",
+    "args": {"symbol": "ticker such as NVDA, SPY or ^GSPC",
+             "start": "first day, YYYY-MM-DD",
+             "end": "last day, YYYY-MM-DD",
+             "name": "optional file name; refused when it names another ticker. Left out, the file is SYMBOL_daily.csv"},
+}
+
+
+def _market_file(name, symbol: str) -> str:
+    if isinstance(name, str) and name.strip():
+        base = clean_name(name)
+    else:
+        base = f"{re.sub(r'[^A-Za-z0-9]', '', symbol)}_daily.csv"
+    return base if base.lower().endswith(".csv") else f"{base}.csv"
+
+
+def _market_refusal(symbol: str, failed: list[dict]) -> str:
+    reasons = "; ".join(f"{item['source']}: {item['reason']}" for item in failed) or "no endpoint was tried"
+    return f"no keyless endpoint returned a matching table for {symbol} ({reasons}); nothing was stored"
+
+
+def _existing_market(store: DatasetStore, symbol: str, start: str, end: str) -> dict | None:
+    if not store.root.is_dir():
+        return None
+    matches = []
+    for folder in store.root.iterdir():
+        try:
+            meta = store.get(folder.name)
+        except KeyError:
+            continue
+        provenance = meta.get("provenance") or {}
+        if (provenance.get("source") == "market" and provenance.get("symbol") == symbol
+                and provenance.get("start") == start and provenance.get("end") == end):
+            matches.append(meta)
+    return max(matches, key=lambda meta: meta["created"]) if matches else None
+
+
+def download_market_prices_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
+    """Daily prices for one symbol through market.fetch_daily_prices, stored with the endpoint that answered. The name is
+    checked against the symbol before anything is stored, so a file cannot carry another ticker's name."""
+    def run(args: dict, _key: str) -> dict:
+        args = _arguments(args, {"symbol", "start", "end", "name"}, {"symbol", "start", "end"})
+        symbol = market.normalise_symbol(args["symbol"])
+        first, last = market.parse_range(args["start"], args["end"])
+        start, end = first.isoformat(), last.isoformat()
+        name = args.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ArgumentRejected("name must be text")
+        store = _store(ctx)
+        _room(live)
+        existing = _existing_market(store, symbol, start, end)
+        if existing is not None:
+            meta = existing
+            body = store.path(existing["id"]).read_bytes()
+            endpoint = existing["provenance"]["endpoint"]
+        else:
+            got = market.fetch_daily_prices(symbol, start, end)
+            if not got["ok"]:
+                raise ValueError(_market_refusal(symbol, got["failed"]))
+            body, endpoint = got["csv"], got["endpoint"]
+            meta = None
+            provenance = {"source": "market", "endpoint_source": got["source"], "endpoint": endpoint, "symbol": symbol,
+                          "start": start, "end": end, "retrieved_at": got["retrieved_at"],
+                          "returned_symbol": got["returned_symbol"], "entity_check": got["entity_check"],
+                          "currency": got["currency"], "exchange": got["exchange"], "failed": got["failed"],
+                          "row_count": got["row_count"], "first_date": got["first_date"],
+                          "last_date": got["last_date"], "format": "csv",
+                          "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body),
+                          "licence_key": market.LICENCE_KEY, "series_bound": False}
+        if isinstance(name, str) and name.strip():
+            claimed = _name_ticker(name)
+            if claimed is not None and claimed != symbol.lstrip("^"):
+                raise ValueError(f"the name {name!r} names {claimed}, but the download is {symbol}; refused, nothing "
+                                 "was stored")
+        _guard_name(name, body, endpoint)
+        if meta is None:
+            meta = store.add(_market_file(name, symbol), body, provenance=provenance)
+        provenance = meta["provenance"]
+        meta = dict(meta, preview=preview(body, "csv"))
+        mount = _mount(ctx, live, meta)
+        extra = {"source": "market", "symbol": symbol, "endpoint": provenance["endpoint"],
+                 "endpoint_source": provenance["endpoint_source"], "entity_check": provenance["entity_check"],
+                 "currency": provenance["currency"], "exchange": provenance["exchange"], "series_bound": False,
+                 "provenance": provenance}
+        return _result(meta, mount, extra)
+    return Tool("download_market_prices", run, idempotent=True)
+
+
 def open_data_tools(datasets: dict[str, Path] | None, context: OpenDataContext | None) -> dict[str, tuple[Tool, dict]]:
     """The open-data tools as (tool, spec) pairs for default_tools. list_open_data_sources is always offered. The downloads
     and the live-mount sandbox are offered only with a mission context; the sandbox then reads the downloads of this run."""
@@ -318,6 +479,7 @@ def open_data_tools(datasets: dict[str, Path] | None, context: OpenDataContext |
         pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)
         pairs["download_open_data"] = (download_open_data_tool(context, live), DOWNLOAD_OPEN_DATA_SPEC)
         pairs["download_web_data"] = (download_web_data_tool(context, live), DOWNLOAD_WEB_DATA_SPEC)
+        pairs["download_market_prices"] = (download_market_prices_tool(context, live), MARKET_PRICES_SPEC)
         from prophet_agent.tools.source_table_tools import source_table_tools
         pairs.update(source_table_tools(context, live))
     return pairs

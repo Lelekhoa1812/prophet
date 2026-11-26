@@ -33,6 +33,7 @@ this table stops the script with an error rather than writing a blank licence.
 | `snb` | Swiss National Bank data may be saved and transmitted for non-commercial purposes with a source reference. |
 | `world_bank` | CC BY 4.0 for World Bank datasets unless the indicator metadata says otherwise. Some indicators are supplied by another publisher and may not be redistributed. Attribute the World Bank. |
 | `eia` | US Energy Information Administration publications on its site are in the public domain and may be used and distributed. Acknowledge the EIA. |
+| `market` | Keyless public daily price endpoints tried in order: Yahoo chart JSON, Nasdaq historical JSON and Stooq CSV (opendata/market.py). No licence for these endpoints has been checked, and none is granted by this project. Research use only in this project. Each stored file records the endpoint that answered. Check the endpoint's own terms before any other use. |
 
 Research-use labelling (owner decision, Liam, 2026-11-23): this project is research use. Outputs built from a dataset whose
 key is `open_meteo` carry the research-use label and its attribution in documents and reports only. The label is never
