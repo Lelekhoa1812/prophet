@@ -884,24 +884,39 @@ def extract_target_urls(history) -> list[str]:
     return (matched or stored)[:3]
 
 
-def _profile_has_time_and_number(res: Any) -> bool:
+def _column_kinds(res: Any) -> set[str]:
     if not isinstance(res, dict):
-        return False
+        return set()
     prof = res.get("profile") if isinstance(res.get("profile"), dict) else {}
     cols = prof.get("columns") if isinstance(prof.get("columns"), list) else res.get("columns")
     if not isinstance(cols, list):
-        return False
-    has_time = has_number = False
+        return set()
+    kinds: set[str] = set()
     for col in cols:
         if isinstance(col, dict):
             kind = col.get("kind")
-        elif isinstance(col, str):
-            kind = col.split(":", 1)[1].strip().split(",", 1)[0].strip() if ":" in col else ""
+        elif isinstance(col, str) and ":" in col:
+            kind = col.split(":", 1)[1].strip().split(",", 1)[0].strip()
         else:
             kind = ""
-        has_time = has_time or kind == "time"
-        has_number = has_number or kind == "number"
-    return has_time and has_number
+        if isinstance(kind, str) and kind:
+            kinds.add(kind)
+    return kinds
+
+
+def _profile_has_time_and_number(res: Any) -> bool:
+    kinds = _column_kinds(res)
+    return "time" in kinds and "number" in kinds
+
+
+def _table_has_numbers_and_no_time(history) -> bool:
+    """An inspected table has a number column and no time column. One shared date is not stored as a time column."""
+    saw_number = saw_time = False
+    for h in _observations(history):
+        kinds = _column_kinds(_ok_result(h, "inspect_data"))
+        saw_number = saw_number or "number" in kinds
+        saw_time = saw_time or "time" in kinds
+    return saw_number and not saw_time
 
 
 def _saved_series_file(h: Any) -> bool:
@@ -911,13 +926,61 @@ def _saved_series_file(h: Any) -> bool:
     return any(SERIES_FILE.fullmatch(_output_path(o)) for o in (res.get("outputs") or []))
 
 
-def numeric_series_ready(history) -> bool:
+def _series_documents(history, run_root) -> list:
+    """Parsed series files. None means the name was saved and the bytes could not be read."""
+    docs: list = []
+    for h in _observations(history):
+        res = _ok_result(h, "sandbox_python")
+        if not isinstance(res, dict) or not isinstance(res.get("run_id"), str):
+            continue
+        run_id = res["run_id"]
+        if "/" in run_id or ".." in run_id:
+            continue
+        for output in res.get("outputs") or []:
+            path = _output_path(output)
+            if not SERIES_FILE.fullmatch(path):
+                continue
+            if run_root is None:
+                docs.append(None)
+                continue
+            try:
+                doc = json.loads((Path(run_root) / run_id / path).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                docs.append(None)
+                continue
+            docs.append(doc if isinstance(doc, dict) else None)
+    return docs
+
+
+def _has_two_distinct_dates(doc: dict) -> bool:
+    series, dates = doc.get("series"), doc.get("dates")
+    pairs: list[tuple] = []
+    if isinstance(series, list):
+        pairs.append((series, dates if isinstance(dates, list) else []))
+    elif isinstance(series, dict) and isinstance(dates, dict):
+        pairs.extend((vals, dates.get(name) or []) for name, vals in series.items() if isinstance(vals, list))
+    for vals, stamps in pairs:
+        if isinstance(stamps, list) and len(stamps) == len(vals) and len({str(item) for item in stamps}) > 1:
+            return True
+    return False
+
+
+def _undated_list_is_not_a_path(history, run_root) -> bool:
+    """A number table with no time column, saved as a list with no dates, is not a path through time."""
+    if not _table_has_numbers_and_no_time(history):
+        return False
+    docs = [doc for doc in _series_documents(history, run_root) if isinstance(doc, dict)]
+    return bool(docs) and not any(_has_two_distinct_dates(doc) for doc in docs)
+
+
+def numeric_series_ready(history, run_root=None) -> bool:
     """True when the evidence holds a numeric series the model tools can read.
 
-    A scan or a ledger does not count. A one-row profile can still pass: this check looks for a time column and a
-    number column, not for how many distinct times that column holds."""
+    A scan or a ledger does not count. A profile with a time column and a number column can pass on one row.
+    A table with numbers and no time column does not make an undated list a path."""
+    skip_undated = _undated_list_is_not_a_path(history, run_root)
     for h in _observations(history):
-        if _saved_series_file(h):
+        if _saved_series_file(h) and not skip_undated:
             return True
         bound = _ok_result(h, "bind_series")
         if isinstance(bound, dict) and bound.get("status") == "accepted":
@@ -938,8 +1001,11 @@ def _extract_found_a_table(history) -> bool:
     return False
 
 
-def series_item_detail(history) -> str:
+def series_item_detail(history, run_root=None) -> str:
     """What to do before a model comparison. The url is one web_fetch already stored."""
+    if _undated_list_is_not_a_path(history, run_root):
+        return ("the table has no time column, so a list of its numbers is not a path. "
+                "Save one entity across dates, or say the path is not in the table.")
     urls = extract_target_urls(history)
     if html_download_urls(history) and urls and not _extract_found_a_table(history):
         named = ", ".join(f"'{url}'" for url in urls)
@@ -979,9 +1045,9 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
                               "(agent_type researcher) for the regime, scheduled events in the horizon and the main risks, or say "
                               "plainly why web research could not be used",
                       "status": "done" if researched(obs) else "todo"})
-    ready = numeric_series_ready(obs)
+    ready = numeric_series_ready(obs, run_root)
     items.append({"item": SERIES_ITEM, "status": "done" if ready else "todo",
-                  **({} if ready else {"detail": series_item_detail(obs)})})
+                  **({} if ready else {"detail": series_item_detail(obs, run_root)})})
     if not ready:
         # A scan and a ledger are not the series the model tools read. Asking for a backtest here sends a modeler
         # at a file that does not exist (measured mission 56465803efa547009cc7e054312ea7ab).

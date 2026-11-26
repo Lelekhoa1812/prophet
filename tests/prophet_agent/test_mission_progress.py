@@ -46,6 +46,23 @@ def test_a_flat_unexpected_forecast_leaves_the_health_item_undone(tmp_path):
     assert health["status"] == "todo" and "flat_unexpected" in health["detail"]
 
 
+def test_an_undated_list_beside_a_table_with_no_time_column_is_not_a_forecast_path(tmp_path):
+    folder = tmp_path / "r1" / "out"
+    folder.mkdir(parents=True)
+    (folder / "series.json").write_text(json.dumps({"series": [28, 22, 21], "dates": []}))
+    history = [
+        {"kind": "tool", "tool": "inspect_data", "result": {"file": "table.csv", "profile": {"columns": [
+            {"name": "name", "kind": "text"}, {"name": "points", "kind": "number"}]}}},
+        {"kind": "tool", "tool": "sandbox_python", "result": {"run_id": "r1", "outputs": ["out/series.json"]}},
+    ]
+    text = " ".join(f"{it['item']} {it.get('detail', '')}" for it in contracts.progress(history, run_root=tmp_path))
+    assert "backtest_series" not in text and "no time column" in text
+    (folder / "series.json").write_text(json.dumps({
+        "series": [1, 2, 3], "dates": ["2020-01-01", "2020-02-01", "2020-03-01"]}))
+    later = " ".join(it["item"] for it in contracts.progress(history, run_root=tmp_path))
+    assert "backtest_series" in later
+
+
 def test_files_are_on_the_list_only_when_the_goal_asks_for_them(tmp_path):
     assert not any("charts" in it["item"] for it in contracts.progress([], run_root=tmp_path))
     assert not any("charts" in it["item"] for it in contracts.progress([], run_root=tmp_path, wants_files=True))
