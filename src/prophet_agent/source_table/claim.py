@@ -44,8 +44,40 @@ def build_claim(raw: dict) -> dict:
         "measure_aliases": _names(raw.get("measure_aliases"), (_text(raw.get("measure")),) if _text(raw.get("measure")) else ()),
         "tolerance": _tolerance(raw.get("tolerance")),
     }
+    claim.update(_cardinality(raw))
     claim["claim_id"] = hashlib.sha256(json.dumps(claim, sort_keys=True).encode("utf-8")).hexdigest()
     return claim
+
+
+def _cardinality(raw: dict) -> dict:
+    """The optional expected-size fields. A key is stored only when it is given, so an older claim keeps its id.
+
+    Motivation vs Logic
+    Motivation: a league table of 11 clubs passed as the table of 20, because nothing said how many rows to expect.
+    Logic: expected_rows is a positive whole number, expected_entities is a list of names (their count is the expected
+    size when no count is given), and table_kind "league" turns on the league checks. Two counts that disagree are refused.
+    """
+    out: dict = {}
+    rows = raw.get("expected_rows")
+    if rows is not None and rows != "":
+        if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
+            raise ValueError("expected_rows must be a whole number of at least 1")
+        out["expected_rows"] = rows
+    names: list[str] = []
+    for item in raw.get("expected_entities") or []:
+        text = _text(item)
+        if text and text not in names:
+            names.append(text)
+    if names:
+        out["expected_entities"] = names
+    if "expected_rows" in out and names and out["expected_rows"] != len(names):
+        raise ValueError("expected_rows and expected_entities disagree on the number of rows")
+    kind = _text(raw.get("table_kind")).lower()
+    if kind:
+        if kind != "league":
+            raise ValueError("table_kind must be league when it is given")
+        out["table_kind"] = kind
+    return out
 
 
 def _text(value) -> str:

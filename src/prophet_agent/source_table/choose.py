@@ -37,8 +37,9 @@ def choose_columns(claim: dict, headers: list[str]) -> dict:
 
 
 def _required(claim: dict, role: str) -> bool:
+    """A league table has one row per club and no date column, so only its measure is required."""
     if role == "time":
-        return True
+        return claim.get("table_kind") != "league"
     if role == "measure":
         return bool(claim.get("measure"))
     return False
