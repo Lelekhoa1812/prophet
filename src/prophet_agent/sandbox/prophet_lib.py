@@ -1222,9 +1222,22 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
         else:
             vals = [float(v) for v in s]
         if any(v != v for v in vals):
+            # Panel round 12 (SPX): FRED marks market holidays as empty rows; build_series(freq='D') then added every weekend
+            # as well (785 gaps), and the planner retried the same save seven times. A trading series keeps its observed days.
+            hint = ""
+            if isinstance(s, pd.Series) and isinstance(s.index, pd.DatetimeIndex):
+                gaps = s.index[s.isna().to_numpy()]
+                weekend = int((gaps.dayofweek >= 5).sum())
+                if gaps.size and weekend >= 0.5 * gaps.size:
+                    hint = (f" {weekend} of the gaps fall on weekends, so a daily grid added days the market never trades: for "
+                            "a trading-day series call pl.build_series(df, value=..., time=...) without freq, which keeps only "
+                            "the observed days, or save s.dropna().")
+                elif gaps.size:
+                    hint = (" If these are days with no trading (holidays), save s.dropna(); if they are real gaps, fill them "
+                            "(build_series(..., fill='interpolate')) and say so.")
             raise ValueError(f"series {name!r} still has {sum(v != v for v in vals)} missing values; fill or drop them before saving "
                              "(the choice affects the forecast, so make it explicitly). Closed days from prepare_series(closed=...) "
-                             "are dropped with s.dropna(), which keeps every remaining date")
+                             "are dropped with s.dropna(), which keeps every remaining date." + hint)
         out["series"][name] = vals
     only = next(iter(items)) if len(items) == 1 else None
     if only is not None and (only == "series" or name is not None):

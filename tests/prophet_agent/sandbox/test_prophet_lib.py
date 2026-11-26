@@ -100,3 +100,17 @@ def test_the_prompts_tell_the_planner_to_print_and_the_composer_to_quote_as_prin
     assert planner.version == "planner.v32" and composer.version == "composer.v7"
     assert "pl.result" in planner.text and "per-day edges" in planner.text and "total_range_80" in planner.text
     assert "written as the evidence prints it" in composer.text and "per-day" in composer.text
+
+
+def test_a_daily_grid_over_a_trading_series_names_the_fix(tmp_path):
+    """Panel round 12 (SPX): build_series(freq='D') over trading days added the weekends, and save_series's error did not
+    say how to keep only observed days; the planner repeated the save seven times."""
+    import pandas as pd
+    import pytest
+    from prophet_agent.sandbox import prophet_lib as pl
+    days = pd.bdate_range("2026-01-05", periods=30)
+    df = pd.DataFrame({"d": days.strftime("%Y-%m-%d"), "v": [str(100 + i) for i in range(30)]})
+    s = pl.build_series(df, value="v", time="d", freq="D")
+    with pytest.raises(ValueError, match="without freq"):
+        pl.save_series(s, str(tmp_path / "s.json"))
+    pl.save_series(pl.build_series(df, value="v", time="d"), str(tmp_path / "s.json"))

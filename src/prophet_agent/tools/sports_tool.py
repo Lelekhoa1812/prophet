@@ -187,6 +187,22 @@ def extremes(rows: list[dict]) -> dict:
     return out
 
 
+def skipped_leaders(rows: list[dict], shown: list[dict], limit: int = 6) -> list[list]:
+    """Teams not shown whose expected_final is above the lowest shown team's, best first, as compact rows."""
+    named = {r.get("team") for r in shown}
+    floor = min((r["expected_final"] for r in shown if isinstance(r.get("expected_final"), (int, float))), default=None)
+    if floor is None:
+        return []
+    better = sorted((r for r in rows if r.get("team") not in named and isinstance(r.get("expected_final"), (int, float))
+                     and r["expected_final"] > floor), key=lambda r: -r["expected_final"])[:limit]
+    out = []
+    for r in better:
+        final = r.get("final") if isinstance(r.get("final"), dict) else {}
+        out.append([r.get("team"), _cell(r.get("current")), _cell(round(r["expected_final"], 1)), _cell(final.get("p10")),
+                    _cell(final.get("p90"))])
+    return out
+
+
 def _size(view: dict) -> int:
     return len(json.dumps(view, ensure_ascii=False, separators=(",", ":")))
 
@@ -229,8 +245,14 @@ def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dic
         ext = extremes(rows)
         if ext:
             out["all_teams_extremes"] = ext
-            out["note"] += (" all_teams_extremes gives, over every team (named or not), the highest and lowest of each "
-                            "probability and of expected_final as [team, value]; a range or a leader across teams uses it.")
+        missed = skipped_leaders(rows, shown)
+        if missed:
+            # Panel round 12 (NBA): the call named ten teams from memory; the current leaders (Spurs, Lakers, 76ers) were
+            # not among them and the evaluator refused the answer for "the top teams in each conference".
+            out["better_teams_not_named"] = missed
+            out["note"] += (" better_teams_not_named: unnamed teams above a named one [team, current, expected_final, p10, "
+                            "p90]; a top-teams ranking includes them.")
+            out["note"] += " all_teams_extremes: [team, value] high and low over every team; use it for any range across teams."
     left_out: list[str] = []
     while True:
         out["teams"] = team_table(shown)
@@ -241,13 +263,12 @@ def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dic
             out["named_teams_not_shown"] = left_out
         if _size(out) <= VIEW_BUDGET or (not paths and len(shown) <= 1):
             break
-        if len(paths) > 1:
+        # Every path goes before any named row (round 12, NBA: one path was kept while nine named teams were dropped).
+        if paths:
             paths = paths[:-1]
         elif len(shown) > 1:
             left_out.insert(0, str(shown[-1].get("team")))
             shown = shown[:-1]
-        else:
-            paths = []
     if not out["points_path_summary"]:
         del out["points_path_summary"]
     return out

@@ -2619,7 +2619,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                      context, answer, fixes=contracts.summarise(claims))
                 if rewritten is None or not rewritten.strip():
                     break
-                answer = rewritten
+                # Round 12 (AUUNEMP): the rewrite dropped the level sentence added above, and the run ended partial on it.
+                answer = contracts.add_level_sentence(rewritten, history)
                 claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
                 if not claims:
                     break

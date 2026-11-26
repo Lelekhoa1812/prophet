@@ -146,8 +146,38 @@ def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         _room(live)
         meta = download_to_dataset(source, params, store)
         mount = _mount(ctx, live, meta)
-        return _result(meta, mount, {"source": source})
+        extra = {"source": source}
+        note = _month_file_note(source, params)
+        if note:
+            extra["note"] = note
+        return _result(meta, mount, extra)
     return Tool("download_open_data", run, idempotent=True)
+
+
+MONTH_FILE_SOURCES = ("aemo_price_demand",)
+MONTHS_FOR_DAILY = 6
+
+
+def _month_file_note(source: str, params: dict) -> str:
+    """For a source that serves one month per file: the months before this one to fetch for a daily forecast.
+
+    Motivation: panel rounds 11 and 12 (NEM): the planner fetched October and November only (58 days) although the source
+    title asks for six months; control_lab needs 174 points and calibration 6 windows, so both refused and the run stalled.
+    The note names the months to fetch, so the next calls follow from the result rather than from the title.
+    """
+    month = str(params.get("month") or "")
+    if source not in MONTH_FILE_SOURCES or not re.fullmatch(r"\d{6}", month):
+        return ""
+    y, m = int(month[:4]), int(month[4:])
+    before = []
+    for _ in range(MONTHS_FOR_DAILY - 1):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        before.append(f"{y}{m:02d}")
+    return (f"this file holds one month (about 30 days). A daily forecast with a range needs about {MONTHS_FOR_DAILY} "
+            f"months: fetch the months before {month} that you do not hold yet ({', '.join(reversed(before))}) with the "
+            "same region, then combine them in one sandbox_python cell")
 
 
 def _as_table(fetched: dict) -> tuple[bytes, str]:

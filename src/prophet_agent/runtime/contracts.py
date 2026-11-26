@@ -1188,13 +1188,31 @@ def render_progress(items: list[dict]) -> str:
 RULE_TOLERANCE = 0.02   # a rule centre within 2 percent of the best rule's MASE counts as the best (2026-11-22)
 
 
+def _delivered_horizon(delivered) -> int | None:
+    """The horizon of a forecast record: its own field, else config.horizon, window.steps or the length of point."""
+    if not isinstance(delivered, dict):
+        return None
+    for v in (delivered.get("horizon"), (delivered.get("config") or {}).get("horizon") if isinstance(delivered.get("config"), dict) else None,
+              (delivered.get("window") or {}).get("steps") if isinstance(delivered.get("window"), dict) else None):
+        if _is_int(v):
+            return int(v)
+    point = delivered.get("point")
+    return len(point) if isinstance(point, list) and point and not isinstance(point[0], (list, dict)) else None
+
+
 def _baseline_gate(delivered: dict, backtests: list) -> dict:
     """The baseline check for the forecast that stands (audit 2026-11-22, item 4). A backtest counts only if it ran at the
     delivered horizon or longer, so a 14-day check does not vouch for a 60-day forecast. When the centre is TimesFM's own
     line and a simple rule beat it in such a backtest, the gate blocks it; a centre switch (forecast_report centre=rule)
     is the repair."""
-    fh = delivered.get("horizon") if isinstance(delivered, dict) else None
+    fh = _delivered_horizon(delivered)
     covering = [b for b in backtests if _is_int(b.get("horizon")) and (not _is_int(fh) or b["horizon"] >= fh)]
+    if covering:
+        # Panel round 12 (NVDA): the record carries its horizon under config and window, not at the top, so every backtest
+        # counted; the 20-step one ranked naive best and the 44-step one drift, and the gate refused each centre in turn.
+        # The newest backtest at the shortest covering horizon is the one that tested this forecast.
+        nearest = min(b["horizon"] for b in covering)
+        covering = [[b for b in covering if b["horizon"] == nearest][-1]]
     if not covering:
         ran = sorted({b.get("horizon") for b in backtests if _is_int(b.get("horizon"))})
         return _check("baseline_compared", False,
@@ -2278,6 +2296,8 @@ _ON_DAY = re.compile(r"\b(?:closed|close|stood|settled|ended|finished|was|read|r
 _OUTSIDE = re.compile(r"\bS\d{1,3}\b|release|reported|according|announced|survey|statement|forecast|predict|expected|"
                       r"range|band|centre|median|naive|baseline|\bMASE\b|\brule\b|repeat|\bmean\b|average", re.I)
 _FIGURE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\d-])")
+_COUNT_AFTER = re.compile(r"\s+(?:\w+\s+)?(?:points?|rows?|observations?|days?|weeks?|months?|years?|values?|records?|"
+                          r"intervals?|readings?|closes|games?|matches)\b", re.I)
 _DATA_WORDS = re.compile(r"\b(?:observations?|observed|closes|rows|data|series|history|record|readings)\b", re.I)
 _AHEAD_WORDS = re.compile(r"\b(?:forecasts?|window|horizon|ahead|next|predict\w*|projected|steps?)\b", re.I)
 _SPAN_END = re.compile(r"(?:\bto\b|\bthrough\b|\buntil\b|\bending\b|[–—]|\s-\s)\s*(\d{4}-\d{2}-\d{2})")
@@ -2407,10 +2427,14 @@ def _latest_and_end(text: str, obs: list) -> list[dict]:
     if value is not None:
         for unit in grounding.sentences(text):
             m = _LATEST.search(unit)
-            if not m and day and day in unit and _ON_DAY.search(unit):
+            if not m and day and day in unit:
                 # Round 10 (NVDA): "closed at $148.82 on 2026-11-25", where 148.82 was the mean of the last four closes and
                 # the close that day was 149.30. A value stated for the last observed day is that day's value.
-                m = _ON_DAY.search(unit)
+                # Round 12 (NGSTORAGE): "was used as downloaded (882 weekly points, 2010-01-01 to 2026-11-20)" is a span, not a
+                # value for that day: the verb must be followed by a figure and then the day.
+                m = next((v for v in _ON_DAY.finditer(unit)
+                          if re.match(r"\s*\$?" + _FIGURE.pattern + r"[^.;]{0,30}?\b(?:on|for)\s+" + re.escape(day),
+                                      unit[v.end():])), None)
             if not m or _OUTSIDE.search(unit):
                 continue
             # Round 11: "latest observation 20 Nov 2026 = 3,858 Bcf" (NGSTORAGE) read the day as the value, and "521 points,
@@ -2420,7 +2444,9 @@ def _latest_and_end(text: str, obs: list) -> list[dict]:
             if any(_matches_value(f.group(1), value) for f in _FIGURE.finditer(plain)):
                 continue
             tail = grounding.DATE_WORDS.sub(" ", unit[m.end():m.end() + 60])
-            fig = next((f for f in _FIGURE.finditer(tail) if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1))), None)
+            # A count ("882 weekly points", "521 rows") is not a value.
+            fig = next((f for f in _FIGURE.finditer(tail) if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1))
+                        and not _COUNT_AFTER.match(tail[f.end():])), None)
             if fig is None:
                 continue
             token = fig.group(1)

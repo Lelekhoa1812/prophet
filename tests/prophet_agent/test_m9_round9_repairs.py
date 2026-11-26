@@ -371,3 +371,33 @@ def test_a_straight_median_that_moves_by_half_its_band_is_a_trend():
     assert out["verdict"] == "ok" and "337.864 to 341.72" in out["median_path_note"]
     level = [337.5, 337.6, 337.5, 337.6, 337.5, 337.6]
     assert health.assess(np.r_[x[:-1], 337.5], level, q10, q90)["verdict"] == "flat_expected"
+
+
+# Round 12 (NEM): two AEMO months (58 days) again, although the source title asks for six.
+def test_a_month_file_download_names_the_months_to_fetch():
+    from prophet_agent.tools.opendata_tools import _month_file_note
+    note = _month_file_note("aemo_price_demand", {"month": "202602", "region": "NSW1"})
+    assert "202509, 202510, 202511, 202512, 202601" in note
+    assert _month_file_note("fred", {"series_id": "X"}) == ""
+
+
+# Round 12 (NVDA): the pack's record had no top-level horizon, so a 20-step and a 44-step backtest both counted; each
+# ranked a different rule best and the gate refused the 44-step pack on naive and on drift in turn.
+def test_the_baseline_gate_judges_by_the_backtest_at_the_forecast_horizon():
+    def bt(h, best, mase):
+        return {"horizon": h, "best_baseline": best, "models": {k: {"mase": v} for k, v in mase.items()}}
+    backtests = [bt(20, "naive", {"naive": 2.955, "drift": 3.194, "timesfm": 3.277}),
+                 bt(44, "drift", {"naive": 4.136, "drift": 4.019, "timesfm": 4.464})]
+    pack = {"config": {"horizon": 44}, "window": {"steps": 44}, "point": [1.0] * 44}
+    assert contracts._baseline_gate({**pack, "centre": {"rule": "drift"}}, backtests)["ok"]
+    assert not contracts._baseline_gate({**pack, "centre": {"rule": "naive"}}, backtests)["ok"]
+    assert contracts._baseline_gate({"point": [1.0] * 20, "centre": {"rule": "naive"}}, backtests[:1])["ok"]
+
+
+# Round 12 (NBA): ten teams named from memory; the leaders were not among them.
+def test_the_simulation_view_lists_better_teams_the_call_did_not_name():
+    rows = [_row(f"T{i}", i) for i in range(30)]
+    paths = {f"T{i}": [] for i in range(5, 15)}
+    view = observe_simulate({"teams": rows, "points_paths": paths})
+    assert [r[0] for r in view["better_teams_not_named"]] == ["T0", "T1", "T2", "T3", "T4"]
+    assert len(json.dumps(view, separators=(",", ":"))) <= VIEW_BUDGET
