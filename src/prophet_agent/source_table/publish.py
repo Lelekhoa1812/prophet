@@ -14,9 +14,9 @@ from prophet_agent.source_table.validate import validate_table
 
 
 def bind_series(store: DatasetStore, claim: dict, csv_bytes: bytes, *, final_url: str = "",
-                retrieved_at: str = "", page_text: str | None = None) -> dict:
+                retrieved_at: str = "", page_text: str | None = None, reference_csvs: list[bytes] | None = None) -> dict:
     """Store ``csv_bytes`` under the claim's series name when the verdict is accepted. Otherwise bind nothing."""
-    verdict = validate_table(claim, csv_bytes, final_url=final_url, page_text=page_text)
+    verdict = validate_table(claim, csv_bytes, final_url=final_url, page_text=page_text, reference_csvs=reference_csvs)
     digest = hashlib.sha256(csv_bytes).hexdigest() if csv_bytes else ""
     if verdict["status"] != "accepted":
         return {**verdict, "dataset_id": None, "sha256": digest}

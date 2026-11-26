@@ -149,3 +149,26 @@ def test_the_entity_list_is_stored_and_its_length_is_the_count():
     claim = build_claim({"series_name": "alpha_daily", "entity": "Alpha", "expected_entities": ["A", "B", "A"]})
     assert claim["expected_entities"] == ["A", "B"]
     assert validate_table(claim, b"date,name,close\n2024-01-01,Alpha,3\n", final_url=URL)["expected_rows"] == 2
+
+
+# --- through the tools the planner calls ------------------------------------------------------------------------------
+
+def test_validate_table_tool_takes_the_expected_clubs_and_reference_results(tmp_path):
+    """The planner reaches the count check through validate_table: expected_entities and a results table it stored."""
+    from prophet_agent.datasets import DatasetStore
+    from prophet_agent.tools import default_tools
+    from prophet_agent.tools.opendata_tools import OpenDataContext
+
+    store = DatasetStore(tmp_path / "datasets")
+    ids: list[str] = []
+    tool = default_tools(opendata=OpenDataContext(store=store, attach=ids.append))["validate_table"]
+    clubs = club_names()
+    base = {"series_name": "harbour_points", "entity": "Harbour League", "aliases": ["Harbour League"], "measure": "Pts",
+            "table_kind": "league", "final_url": URL}
+    short = tool.fn({**base, "csv": first_rows(11).decode(), "expected_entities": clubs}, "k1")
+    assert short["status"] != "accepted"
+    assert set(clubs[11:]) <= set(short.get("missing_entities") or [])
+    results = store.add("results.csv", results_csv(clubs), provenance={"source": "test"})
+    full = tool.fn({**base, "csv": league_csv(), "page_text": page_with(""), "reference_dataset_ids": [results["id"]]},
+                   "k2")
+    assert full["status"] == "accepted" and full["cardinality"] == "complete"

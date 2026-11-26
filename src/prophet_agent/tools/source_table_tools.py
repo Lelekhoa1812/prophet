@@ -20,7 +20,7 @@ from prophet_agent.source_table.validate import validate_table
 from prophet_agent.tools.opendata_tools import LiveMounts, OpenDataContext, _mount, _room, _store
 
 _CLAIM_KEYS = {"series_name", "entity", "aliases", "measure", "time_grain", "time_aliases", "entity_aliases",
-               "measure_aliases", "tolerance"}
+               "measure_aliases", "tolerance", "expected_rows", "expected_entities", "table_kind"}
 
 
 def _args(args, allowed: set[str], required: set[str]) -> dict:
@@ -65,6 +65,24 @@ def _csv_bytes(ctx: OpenDataContext, args: dict) -> tuple[bytes, str]:
     if isinstance(args.get("final_url"), str) and args["final_url"].strip():
         url = args["final_url"].strip()
     return store.path(dataset_id).read_bytes(), url
+
+
+def _reference_csvs(ctx: OpenDataContext, args: dict) -> list[bytes]:
+    """Results tables of the same competition, read from the mission store, used to count a league's teams."""
+    ids = args.get("reference_dataset_ids")
+    if ids is None:
+        return []
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or len(ids) > 5:
+        raise ArgumentRejected("reference_dataset_ids must be a list of up to 5 dataset ids")
+    store = _store(ctx)
+    out = []
+    for dataset_id in ids:
+        try:
+            store.get(dataset_id)
+        except KeyError:
+            raise ArgumentRejected(f"reference dataset {dataset_id} is not in the mission store") from None
+        out.append(store.path(dataset_id).read_bytes())
+    return out
 
 
 def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tuple[Tool, dict]]:
@@ -125,23 +143,25 @@ def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tupl
                 "skipped_layout": extracted["skipped_layout"], "final_url": final_url}
 
     def validate(args, _key):
-        got = _args(args, _CLAIM_KEYS | {"claim", "csv", "dataset_id", "final_url", "page_text"}, {"series_name", "entity"})
+        got = _args(args, _CLAIM_KEYS | {"claim", "csv", "dataset_id", "final_url", "page_text", "reference_dataset_ids"},
+                    {"series_name", "entity"})
         claim = _claim_from(got)
         body, url = _csv_bytes(ctx, got)
         page = got.get("page_text") if isinstance(got.get("page_text"), str) else None
-        verdict = validate_table(claim, body, final_url=url, page_text=page)
+        verdict = validate_table(claim, body, final_url=url, page_text=page, reference_csvs=_reference_csvs(ctx, got))
         verdict["tool"] = "validate_table"
         verdict["mapped"] = {key: int(value) for key, value in (verdict.get("mapped") or {}).items()}
         return verdict
 
     def bind(args, _key):
-        got = _args(args, _CLAIM_KEYS | {"claim", "csv", "dataset_id", "final_url", "page_text", "retrieved_at"},
-                    {"series_name", "entity"})
+        got = _args(args, _CLAIM_KEYS | {"claim", "csv", "dataset_id", "final_url", "page_text", "retrieved_at",
+                                         "reference_dataset_ids"}, {"series_name", "entity"})
         claim = _claim_from(got)
         body, url = _csv_bytes(ctx, got)
         page = got.get("page_text") if isinstance(got.get("page_text"), str) else None
         retrieved = got.get("retrieved_at") if isinstance(got.get("retrieved_at"), str) else ""
-        result = bind_series(_store(ctx), claim, body, final_url=url, retrieved_at=retrieved, page_text=page)
+        result = bind_series(_store(ctx), claim, body, final_url=url, retrieved_at=retrieved, page_text=page,
+                             reference_csvs=_reference_csvs(ctx, got))
         result["tool"] = "bind_series"
         if result.get("dataset_id") and result.get("status") == "accepted":
             meta = _store(ctx).get(result["dataset_id"])
@@ -185,7 +205,10 @@ def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tupl
                      "entity_aliases": "optional header names that mean the entity column",
                      "measure_aliases": "optional header names that mean the measure",
                      "time_grain": "optional grain, such as day or month",
-                     "tolerance": "optional exact, or a relative gap allowed when two sources are later fused"},
+                     "tolerance": "optional exact, or a relative gap allowed when two sources are later fused",
+                     "expected_rows": "optional number of rows the table must have, such as the number of clubs in a league",
+                     "expected_entities": "optional list of names the table must hold, such as the clubs",
+                     "table_kind": "optional: league for a standings table (no time column; its row count is checked)"},
         }),
         "diagnose_source": (Tool("diagnose_source", diagnose, idempotent=True), {
             "name": "diagnose_source", "title": "Source diagnosis", "activity": "Diagnosing a source",
@@ -202,7 +225,7 @@ def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tupl
         }),
         "validate_table": (Tool("validate_table", validate, idempotent=True), {
             "name": "validate_table", "title": "Table check", "activity": "Checking a candidate table",
-            "description": "Check a candidate against the claim. wrong_entity means the file is a different series. The requested name is not applied here.",
+            "description": "Check a candidate against the claim. wrong_entity means the file is a different series. short means fewer rows than expected, with the missing names when the claim lists them: find the full table, do not forecast from part of it. The requested name is not applied here.",
             "args": {"series_name": "the series name from state_table_claim",
                      "entity": "the entity from state_table_claim",
                      "aliases": "optional aliases from the claim",
@@ -210,7 +233,11 @@ def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tupl
                      "csv": "optional CSV text of the candidate",
                      "dataset_id": "optional id of a stored candidate",
                      "final_url": "optional address the bytes came from",
-                     "page_text": "optional page text; each measure cell must appear in it"},
+                     "page_text": "optional page text; each measure cell must appear in it",
+                     "expected_rows": "optional expected row count from the claim",
+                     "expected_entities": "optional expected names from the claim",
+                     "table_kind": "optional table kind from the claim (league)",
+                     "reference_dataset_ids": "optional results tables of the same competition, used to count its teams"},
         }),
         "bind_series": (Tool("bind_series", bind, idempotent=True), {
             "name": "bind_series", "title": "Bind series", "activity": "Binding an accepted series",
@@ -223,7 +250,11 @@ def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tupl
                      "dataset_id": "optional id of a stored candidate",
                      "final_url": "optional address the bytes came from",
                      "page_text": "optional page text the measure cells must appear in",
-                     "retrieved_at": "optional retrieval time"},
+                     "retrieved_at": "optional retrieval time",
+                     "expected_rows": "optional expected row count from the claim",
+                     "expected_entities": "optional expected names from the claim",
+                     "table_kind": "optional table kind from the claim (league)",
+                     "reference_dataset_ids": "optional results tables of the same competition, used to count its teams"},
         }),
         "fuse_sources": (Tool("fuse_sources", fuse, idempotent=True), {
             "name": "fuse_sources", "title": "Fuse sources", "activity": "Fusing accepted sources",
