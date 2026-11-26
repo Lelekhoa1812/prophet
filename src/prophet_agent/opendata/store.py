@@ -17,6 +17,7 @@ from typing import Any
 
 from prophet_agent.datasets import DatasetStore
 from prophet_agent.opendata import containers, fetch, sources
+from prophet_agent.opendata.csvlines import comment_flags, table_lines
 
 PREVIEW_ROWS = 5
 
@@ -103,9 +104,9 @@ def _csv_table(text: str) -> tuple[list, int, list]:
         # Without this, a JSON body parses as a one-column CSV and is stored as a table. Live, 2026-11-24: a request with
         # no format came back as JSON.
         raise ValueError("the body is JSON, not CSV")
-    # Lines starting with '#' are comments. Open-Meteo prints a location block before its table, marked by a
-    # 'latitude' first cell; the table then starts at the first row whose first cell is 'time' or 'date'.
-    lines = [line for line in text.splitlines() if not line.startswith("#")]
+    # A '#' line is a comment unless it is the header (csvlines). Open-Meteo prints a location block before its table,
+    # marked by a 'latitude' first cell; the table then starts at the first row whose first cell is 'time' or 'date'.
+    lines = table_lines(text)
     rows = [row for row in csv.reader(lines) if any(cell.strip() for cell in row)]
     if not rows:
         raise ValueError("the CSV has no rows")
@@ -121,9 +122,10 @@ def split_csv(text: str) -> tuple[str, str]:
     """Split a CSV text into (preamble, table). A title of single-cell rows, and an Open-Meteo 'latitude' block, stay in
     the preamble. The table starts at the header row. A text that already starts at the header is returned whole."""
     lines = text.splitlines(keepends=True)
+    flags = comment_flags(text.splitlines())
     kept = []
     for index, line in enumerate(lines):
-        if line.startswith("#") or not line.strip():
+        if flags[index] or not line.strip():
             continue
         try:
             row = next(csv.reader([line]))
