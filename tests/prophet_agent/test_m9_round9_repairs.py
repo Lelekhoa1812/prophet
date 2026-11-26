@@ -525,3 +525,33 @@ def test_a_scan_category_the_scan_does_not_have_is_invented():
     text = "- 7 scan findings: 3 level shifts, 2 outliers, 1 variance change, 1 trend bend."
     assert contracts._invented_categories(text, findings)[0] == "variance change"
     assert contracts._invented_categories("A regime change would widen the variance.", findings) is None
+
+
+# Round 14: GISTEMP's corrected rewrite was blocked for "Seasonality was set to 12 months (annual cycle) as specified" (a
+# setting, not a measurement); EPL's season simulation did not count as a stored forecast.
+def test_a_setting_called_annual_is_not_a_measured_claim():
+    assert contracts._annual_word("Seasonality was set to 12 months (annual cycle) as specified.", [_rec(24, 31.0)]) == []
+    assert contracts._annual_word("A strong annual cycle.", [_rec(24, 31.0)])
+
+
+def test_a_season_simulation_is_a_stored_forecast():
+    sim = {"kind": "tool", "tool": "simulate_season", "args": {}, "result": {"teams": [{"team": "Arsenal", "title": 0.34}]}}
+    checks = contracts.check_answer("Arsenal are forecast to finish on 79 points (median).", [sim])
+    assert all(c["ok"] for c in checks if c["name"] == "answer_forecast_stored")
+
+
+# Round 14 (AUUNEMP): a downloaded file carried with the id of a run that wrote nothing was refused nine times; an empty
+# frame was saved as a series of length 0.
+def test_a_carried_download_is_mounted_whatever_run_it_names(tmp_path):
+    from prophet_agent.tools.sandbox_tool import carried_inputs
+    f = tmp_path / "abs_sdmx.csv"
+    f.write_text("a,b\n1,2\n")
+    out = carried_inputs([{"file": "abs_sdmx.csv", "run_id": "c" * 32}], {"abs_sdmx.csv": f})
+    assert out == {"carried/abs_sdmx.csv": f}
+
+
+def test_an_empty_series_is_not_saved(tmp_path):
+    import pandas as pd
+    from prophet_agent.sandbox import prophet_lib as pl
+    with pytest.raises(ValueError, match="is empty"):
+        pl.save_series(pd.Series([], dtype=float), str(tmp_path / "s.json"))

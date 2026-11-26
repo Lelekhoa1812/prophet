@@ -91,7 +91,7 @@ def carried_inputs(carry, inputs: dict[str, Path] | None = None) -> dict[str, Pa
     for item in carry:
         name = str(item.get("file", "")) if isinstance(item, dict) else ""
         mounted_input = inputs.get(Path(name).name) if name else None
-        if mounted_input is not None and not RUN_ID.match(str(item.get("run_id", ""))):
+        if mounted_input is not None and not _run_wrote(item, name):
             # Panel round 3 NEM and GISTEMP (2026-11-26): the planner carried downloaded files with a step number as the run
             # id ("18") and read them from in/carried/. A download is already mounted at in/<name>; it is mounted at
             # in/carried/<name> too, so the cell runs as written.
@@ -116,6 +116,19 @@ def carried_inputs(carry, inputs: dict[str, Path] | None = None) -> dict[str, Pa
             key = f"carried/{item['run_id'][:8]}_{target.name}"
         mounted[key] = target
     return mounted
+
+
+def _run_wrote(item, name: str) -> bool:
+    """Whether the carry item names a real run whose out/ holds this file.
+
+    Panel round 14 (AUUNEMP): the planner carried the downloaded abs_sdmx.csv with the id of the run that first read it; that
+    run wrote nothing, and the refusal repeated nine times. A downloaded file is mounted for every run, so it is mounted.
+    """
+    if not isinstance(item, dict) or not RUN_ID.match(str(item.get("run_id", ""))):
+        return False
+    base = (SANDBOX_ROOT / item["run_id"]).resolve()
+    target = (base / name).resolve()
+    return str(target).startswith(str((base / OUT_DIR).resolve()) + "/") and target.is_file()
 
 
 CARRIED_FROM = "carried_from.json"   # beside in/ and out/, outside what the program sees

@@ -2420,6 +2420,10 @@ _ANNUAL = re.compile(r"\b(?:annual|yearly|12-month|twelve-month)\b[^.;\n]{0,25}?
                      r"\b(?:cycle|season\w*|pattern|periodicity)\b[^.;\n]{0,15}?\b(?:annual|yearly)\b", re.I)
 
 
+_SETTING = re.compile(r"\b(?:set to|was set|configured|specified|as requested|you asked|parameter|argument|season\s*=|"
+                      r"was used|were used|used as the)", re.I)
+
+
 def _annual_word(text: str, obs: list) -> list[dict]:
     """Blocks a cycle called annual when the measured period is not a year in the series' own steps.
 
@@ -2446,9 +2450,12 @@ def _annual_word(text: str, obs: list) -> list[dict]:
     per_year = min(years, key=lambda y: abs(period - y))
     if period <= per_year * 1.15:
         return []
-    unit = next((u for u in grounding.sentences(text) if _ANNUAL.search(u)), "")
-    if grounding.negated(unit, _ANNUAL.search(unit).start()):
+    # Round 14 (GISTEMP): "Seasonality was set to 12 months (annual cycle) as specified" states a setting, not a measurement.
+    units = [u for u in grounding.sentences(text) if _ANNUAL.search(u) and not _SETTING.search(u)
+             and not grounding.negated(u, _ANNUAL.search(u).start())]
+    if not units:
         return []
+    unit = units[0]
     return [_check("answer_cycle_matches_health", False,
                    f"the answer calls the cycle annual ({unit.strip()[:140]}), but the measured period is {period} steps and "
                    f"a year is about {per_year:.0f} steps of this series; describe it as a {period}-step cycle, not annual")]
@@ -2912,7 +2919,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                              "applied that treatment (control_lab only tests it); say the outliers were kept, or apply it"))
 
     forecast_claims = grounding.claimed_forecast_results(text)
-    stored_forecast = any(_forecast_record(h) for h in obs)
+    # Round 14 (EPL): a season simulation is the forecast of a sports mission; its stored result holds the figures.
+    stored_forecast = any(_forecast_record(h) or _ok_result(h, "simulate_season") is not None for h in obs)
     if forecast_claims and not stored_forecast:
         checks.append(_check(
             "answer_forecast_stored", False,

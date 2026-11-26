@@ -2614,9 +2614,16 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal)) if cfg.depth == 0 else []
             # Round 10 (AUUNEMP): the one rewrite moved "no level shifts" to another sentence and the run ended partial. A
             # second rewrite is told the claim it kept; the step names differ, so a replay reads each stored rewrite.
+            fixed_before: list[str] = []
             for attempt in range(CLAIM_REWRITES if claims else 0):
+                # Round 14 (GISTEMP): the first rewrite corrected the shift dates, a second claim then blocked it, and the
+                # second rewrite brought the wrong dates back. Each rewrite is also told what earlier ones fixed.
+                fixes = contracts.summarise(claims)
+                if fixed_before:
+                    fixes += " Keep these earlier corrections: " + " ".join(fixed_before)
                 rewritten = _compose(ctx, brain, f"claims:{tag}:{i}" + (f":{attempt}" if attempt else ""), goal, history, memo,
-                                     context, answer, fixes=contracts.summarise(claims))
+                                     context, answer, fixes=fixes)
+                fixed_before.append(contracts.summarise(claims))
                 if rewritten is None or not rewritten.strip():
                     break
                 # Round 12 (AUUNEMP): the rewrite dropped the level sentence added above, and the run ended partial on it.

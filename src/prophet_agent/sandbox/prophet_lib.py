@@ -1221,6 +1221,11 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
                 out["dates"][name] = [d.strftime("%Y-%m-%d %H:%M") if (d.hour or d.minute) else d.strftime("%Y-%m-%d") for d in s.index]
         else:
             vals = [float(v) for v in s]
+        if not vals:
+            # Panel round 14 (AUUNEMP): an empty frame was saved twice as a series of length 0; the backtest then refused it
+            # and the planner went looking for the data in the wrong runs.
+            raise ValueError(f"series {name!r} is empty: the frame it came from has no rows. Check the filter or the column "
+                             "names (print df.shape and df.head()) before saving")
         if any(v != v for v in vals):
             # Panel round 12 (SPX): FRED marks market holidays as empty rows; build_series(freq='D') then added every weekend
             # as well (785 gaps), and the planner retried the same save seven times. A trading series keeps its observed days.
