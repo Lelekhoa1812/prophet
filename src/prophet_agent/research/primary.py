@@ -33,6 +33,10 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
          "what": "daily Henry Hub spot price"},
         {"name": "EIA Short-Term Energy Outlook", "url": "https://www.eia.gov/outlooks/steo/",
          "what": "EIA monthly price and supply forecast"},
+        # Panel NGSTORAGE (2026-11-26, measured): 882 weekly rows from 2010 through download_web_data.
+        {"name": "EIA weekly Lower 48 working gas in storage, history",
+         "url": "https://www.eia.gov/dnav/ng/hist_xls/NW2_EPG0_SWO_R48_BCFw.xls",
+         "what": "weekly Lower 48 working gas in underground storage, billion cubic feet, Excel workbook"},
     ),
     "fx": (
         {"name": "ECB euro foreign exchange reference rates",
@@ -72,6 +76,9 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
          "what": "S&P 500 daily closing level, CSV"},
     ),
     "inflation": (
+        {"name": "FRED CPI-U all items, seasonally adjusted (CPIAUCSL)",
+         "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL",
+         "what": "US consumer price index for all urban consumers, monthly, CSV"},
         {"name": "BLS CPI release schedule", "url": "https://www.bls.gov/schedule/news_release/cpi.htm",
          "what": "US consumer price index release dates"},
         {"name": "BLS consumer price index", "url": "https://www.bls.gov/cpi/",
@@ -89,6 +96,20 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
         {"name": "USGS gold statistics", "url": "https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information",
          "what": "US gold production, trade and consumption statistics"},
     ),
+    "labour": (
+        # Panel AUUNEMP (2026-11-26, measured): 322 monthly rows from 2000 through download_open_data abs_sdmx.
+        {"name": "ABS Labour Force, unemployment rate, persons, seasonally adjusted (SDMX CSV)",
+         "url": "https://data.api.abs.gov.au/rest/data/ABS,LF,1.0.0/M13.3.1599.20.AUS.M?format=csv",
+         "what": "Australia monthly unemployment rate, percent; download_open_data abs_sdmx flow ABS,LF,1.0.0 key "
+                 "M13.3.1599.20.AUS.M"},
+        {"name": "FRED US unemployment rate (UNRATE)", "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=UNRATE",
+         "what": "US civilian unemployment rate, monthly, seasonally adjusted, CSV"},
+    ),
+    "climate": (
+        {"name": "NASA GISTEMP v4 global land-ocean temperature anomaly",
+         "url": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
+         "what": "monthly global surface temperature anomaly, degrees C against 1951-1980, CSV (one row per year)"},
+    ),
     "co2": (
         {"name": "NOAA Mauna Loa daily CO2", "url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt",
          "what": "Mauna Loa daily mean CO2, mole fraction in ppm, space-separated text"},
@@ -102,8 +123,10 @@ FAMILY_KEYWORDS: dict[str, frozenset[str]] = {
     "fx": frozenset("fx forex currency currencies exchange eur usd jpy gbp aud cny yen euro dollar".split()),
     "rates": frozenset("rate rates yield yields treasury bond bonds fomc ecb boj policy".split()),
     "equities": frozenset("stock stocks equity equities shares index nasdaq earnings".split()),
-    "inflation": frozenset("inflation cpi hicp deflation prices".split()),
+    "inflation": frozenset("inflation cpi hicp deflation prices consumer".split()),
     "co2": frozenset("co2 mauna ppm".split()),
+    "labour": frozenset("unemployment unemployed jobless labour labor payrolls employment".split()),
+    "climate": frozenset("gistemp anomaly anomalies warming climate hadcrut".split()),
     # round 3 (A3-06): the domains the goal trigger uses. They have no hand-kept registry yet, so they need a region.
     "electricity": frozenset("electricity electric kwh megawatt megawatts".split()),
     "retail": frozenset("retail retailer retailers grocery supermarket supermarkets christmas footfall".split()),
@@ -153,6 +176,9 @@ def detect_family(text: str) -> str | None:
     # "S&P" splits into the letters s and p, so a closing-price query would otherwise match "prices" as inflation.
     if "s&p" in raw or "sp500" in raw.replace(" ", ""):
         return "equities"
+    # "unemployment rate" would tie with the rates family, which comes first in the table.
+    if "unemploy" in raw or "jobless" in raw:
+        return "labour"
     words = WORD.findall(raw)
     best, best_hits = None, 0
     for family, keywords in FAMILY_KEYWORDS.items():

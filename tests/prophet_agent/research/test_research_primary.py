@@ -16,7 +16,8 @@ def test_every_registry_page_is_an_official_tier_one_source(family):
 
 
 def test_the_families_named_in_the_brief_are_all_present():
-    assert set(PRIMARY_SOURCES) == {"oil", "fx", "rates", "equities", "inflation", "gas", "gold", "co2"}
+    assert set(PRIMARY_SOURCES) == {"oil", "fx", "rates", "equities", "inflation", "gas", "gold", "co2", "labour",
+                                    "climate"}
 
 
 def test_oil_registry_names_the_eia_opec_and_iea_pages():
@@ -70,3 +71,13 @@ def test_family_is_detected_from_the_query_words(query, family):
 def test_no_keyword_means_no_family():
     assert detect_family("history of the Roman road network") is None
     assert detect_family("") is None
+
+
+def test_round_2_panel_goals_reach_their_official_data_files():
+    """Panel round 2 (2026-11-26): unemployment, CPI and storage goals now detect a family whose registry names the file."""
+    from prophet_agent.research.primary import detect_family
+    assert detect_family("Australia's monthly unemployment rate (seasonally adjusted)") == "labour"
+    assert detect_family("monthly US consumer price index (all items, CPI-U)") == "inflation"
+    assert detect_family("monthly global surface temperature anomaly from NASA GISTEMP") == "climate"
+    assert "NW2_EPG0_SWO_R48_BCFw.xls" in " ".join(p["url"] for p in registry_pages("gas"))
+    assert "M13.3.1599.20.AUS.M" in " ".join(p["url"] for p in registry_pages("labour"))
