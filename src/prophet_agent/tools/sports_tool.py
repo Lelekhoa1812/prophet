@@ -1,0 +1,134 @@
+"""simulate_season: fit a sports model on a results file and simulate the rest of the season.
+
+Motivation vs Logic
+Motivation: a planner asked for a league table forecast summed points ranges across teams, which is meaningless, and had no
+model of a season. The tool gives each team its own range and probabilities, with the backtest beside them.
+Logic: the results come from one of the person's uploaded files or an analysis run's out/ file, read only. A CSV or an
+openfootball football.json is parsed by forecast.sports. The full result is kept in the ledger; the planner sees a compact view.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from prophet_agent.forecast.sports import (DEFAULT_HALF_LIFE_DAYS, DEFAULT_POINTS, DEFAULT_PRIOR_SD, FOOTBALL, WIN_LOSS,
+                                           parse_matches, simulate_season)
+from prophet_agent.runtime.runner import Tool
+from prophet_agent.tools.series_io import source_path
+
+MAX_SIMS = 100_000
+ALLOWED = {"sport", "results", "source", "fixtures", "teams", "simulations", "seed", "points", "half_life_days",
+           "prior_sd", "relegation_places", "top_places", "playoff_places", "games_per_team", "backtest"}
+
+
+def _named_text(name: Any, datasets: dict[str, Path], label: str) -> tuple[str, str]:
+    if not isinstance(name, str) or name not in datasets:
+        raise ValueError(f"{label} must be one of the uploaded file names {sorted(datasets)}")
+    return Path(datasets[name]).read_text(encoding="utf-8"), name
+
+
+def _int(args: dict, key: str, default: int, low: int, high: int) -> int:
+    value = args.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise ValueError(f"{key} must be a whole number from {low} to {high}")
+    return value
+
+
+def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any]:
+    extra = sorted(set(args) - ALLOWED)
+    if extra:
+        raise ValueError(f"unknown arguments {extra}; allowed: {sorted(ALLOWED)}")
+    sport = args.get("sport", FOOTBALL)
+    if sport not in (FOOTBALL, WIN_LOSS):
+        raise ValueError("sport must be football (draws possible, Poisson goals) or win_loss (no draws, score margins)")
+    has_file, has_source = args.get("results") is not None, args.get("source") is not None
+    if has_file == has_source:
+        raise ValueError("give exactly one of results (an uploaded file name) or source (an analysis run's out/ file)")
+    if has_file:
+        text, name = _named_text(args["results"], datasets, "results")
+    else:
+        path = source_path(args)
+        text, name = path.read_text(encoding="utf-8"), path.name
+    matches = parse_matches(text, name)
+    fixtures = None
+    if args.get("fixtures") is not None:
+        ftext, fname = _named_text(args["fixtures"], datasets, "fixtures")
+        fixtures = parse_matches(ftext, fname)
+    teams = args.get("teams")
+    if teams is not None and (not isinstance(teams, list) or not all(isinstance(t, str) for t in teams)):
+        raise ValueError("teams must be a list of team names as they appear in the results")
+    points = args.get("points", list(DEFAULT_POINTS))
+    if (not isinstance(points, list) or len(points) != 3 or not all(isinstance(v, int) and not isinstance(v, bool)
+                                                                   for v in points)):
+        raise ValueError("points must be three whole numbers: win, draw, loss")
+    half_life = args.get("half_life_days", DEFAULT_HALF_LIFE_DAYS)
+    if half_life is not None and (not isinstance(half_life, (int, float)) or isinstance(half_life, bool) or half_life <= 0):
+        raise ValueError("half_life_days must be a positive number, or null for no time decay")
+    prior_sd = args.get("prior_sd", DEFAULT_PRIOR_SD)
+    if not isinstance(prior_sd, (int, float)) or isinstance(prior_sd, bool) or prior_sd <= 0:
+        raise ValueError("prior_sd must be a positive number")
+    games = args.get("games_per_team")
+    if games is not None:
+        games = _int(args, "games_per_team", 0, 1, 200)
+    backtest = args.get("backtest", True)
+    if not isinstance(backtest, bool):
+        raise ValueError("backtest must be true or false")
+    return simulate_season(
+        matches, fixtures, sport=sport, n_sims=_int(args, "simulations", 10_000, 10, MAX_SIMS),
+        seed=_int(args, "seed", 0, 0, 2**31 - 1), points=tuple(points),
+        half_life_days=None if half_life is None else float(half_life), prior_sd=float(prior_sd),
+        teams_of_interest=teams, relegation_places=_int(args, "relegation_places", 3, 0, 10),
+        top_places=_int(args, "top_places", 4, 0, 10), playoff_places=_int(args, "playoff_places", 8, 1, 30),
+        games_per_team=games, backtest=backtest)
+
+
+def observe_simulate(result: dict) -> dict:
+    """The planner's view: the team table, settings, backtest and the first 20 standings and ratings. The ledger keeps all."""
+    if "teams" not in result:
+        return result
+    out = {k: v for k, v in result.items() if k not in ("standings", "ratings")}
+    out["standings"] = (result.get("standings") or [])[:20]
+    out["ratings"] = (result.get("ratings") or [])[:20]
+    out["note"] = ("per-team ranges shown; the full standings, ratings and points paths are kept in the ledger. Do not sum "
+                   "ranges across teams.")
+    return out
+
+
+def simulate_season_tool(datasets: dict[str, Path] | None = None) -> Tool:
+    data = dict(datasets or {})
+    return Tool("simulate_season", lambda args, key: _simulate(args, key, data), idempotent=True, observe=observe_simulate)
+
+
+SIMULATE_SEASON_SPEC = {
+    "name": "simulate_season",
+    "title": "Season simulation",
+    "activity": "Simulating the rest of the season",
+    "description": "Fit a sports model on a results file and simulate the rest of the season many times. sport football "
+                   "(default): Dixon-Coles Poisson goals with time decay and a low-score correction; the table uses points "
+                   "and the usual tie-breaks. sport win_loss (no draws, for example basketball): a score-margin model. Give "
+                   "results as an uploaded CSV (date, home, away, home_goals, away_goals, optional group) or openfootball "
+                   "football.json, or as source (an analysis run's out/ file). Remaining matches come from fixtures (an uploaded "
+                   "file), else unplayed rows in results, else for football a double round robin, else for win_loss "
+                   "games_per_team per team. Returns per team: final total (median, 10 and 90 per cent), probability of the title, "
+                   "top places, relegation (football) or the playoff line (win_loss, per group when a group column is given), "
+                   "points or wins paths for teams of interest, and a backtest against equal odds and simple rules with "
+                   "measured verdicts. Each team's range stands alone; never add ranges across teams. Figures are simulated "
+                   "from fitted ratings.",
+    "args": {
+        "sport": "football (default) or win_loss",
+        "results": "name of an uploaded results file (CSV or football.json)",
+        "source": "object {run_id, file} naming a results CSV or JSON in an analysis run's out/ folder, instead of results",
+        "fixtures": "name of an uploaded file of remaining matches (optional)",
+        "teams": "list of team names to show paths for (optional; default the top four by current standing)",
+        "simulations": "number of simulated seasons, 10 to 100000 (default 10000)",
+        "seed": "random seed for reproducibility (default 0)",
+        "points": "[win, draw, loss] points, football only (default [3, 1, 0])",
+        "half_life_days": "time-decay half life in days, or null for none (default 365; with no dates, in matches)",
+        "prior_sd": "prior standard deviation of a team rating (default 0.5)",
+        "relegation_places": "bottom places relegated, football (default 3)",
+        "top_places": "places counted as top, football (default 4)",
+        "playoff_places": "places in the playoff line, win_loss, per group (default 8)",
+        "games_per_team": "games per team in the full season, win_loss with no fixtures (for example 82)",
+        "backtest": "true to run the rolling backtest (default true)",
+    },
+}

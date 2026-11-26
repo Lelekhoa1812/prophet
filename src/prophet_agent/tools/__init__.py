@@ -17,6 +17,7 @@ from .opendata_tools import (DOWNLOAD_OPEN_DATA_SPEC, DOWNLOAD_WEB_DATA_SPEC, LI
 from .research_tools import tools as research_tool_pairs
 from .source_table_tools import source_table_tools
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
+from .sports_tool import SIMULATE_SEASON_SPEC, simulate_season_tool
 from .sandbox_tool import SANDBOX_PYTHON_SPEC, sandbox_python_tool
 from .skill_tool import ANALYST_SKILL_SPEC, skill_tool
 from .timesfm_tool import QUANTILE_LEVELS, TIMESFM_TOOL_SPEC, timesfm_tool
@@ -38,6 +39,7 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         "timesfm_forecast": (timesfm_tool(), TIMESFM_TOOL_SPEC),
         "backtest_series": (backtest_tool(), BACKTEST_SPEC),
         "forecast_report": (forecast_report_tool(), FORECAST_REPORT_SPEC),
+        "simulate_season": (simulate_season_tool(datasets), SIMULATE_SEASON_SPEC),
         "sandbox_python": (sandbox_python_tool(datasets), SANDBOX_PYTHON_SPEC),
         "build_drivers": (build_drivers_tool(), BUILD_DRIVERS_SPEC),
         "detect_anomalies": (detect_anomalies_tool(), DETECT_ANOMALIES_SPEC),
