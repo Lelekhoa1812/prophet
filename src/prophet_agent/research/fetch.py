@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
@@ -31,7 +32,9 @@ from bs4 import BeautifulSoup
 
 from prophet_agent.research.netguard import (DEFAULT_ROBOTS, DEFAULT_THROTTLE, USER_AGENT, HostThrottle, LookupTimeout,
                                              Resolver, Robots, UnsafeURL, check_syntax, open_pinned, read_capped)
+from prophet_agent.research.interstitial import Verdict, classify_page
 from prophet_agent.research.rank import parse_date
+from prophet_agent.research.render import Rendered, chromium_status, render_page
 from prophet_agent.research.search import cache_key, cache_root, read_cache, write_cache
 
 MAX_REDIRECTS = 4
@@ -291,21 +294,57 @@ def looks_like_data_table(text: str) -> bool:
     return numeric / len(cells) >= 0.7
 
 
+SHELL_SCRIPT_COUNT = 3       # a page with this many scripts and little text may be a JavaScript shell
+SHELL_TEXT_CHARS = 1000      # visible text below this, with no table, is a shell candidate
+SPA_ROOT = re.compile(r"""id=["'](root|__next|__nuxt|app|q-app)["']""", re.I)
+
+
+def js_shell_reasons(html: str, text: str) -> list[str]:
+    """Why an HTML page looks like a JavaScript shell that a plain GET cannot read: an empty app root, or little text
+    with no table and several scripts. An empty list means it does not look like one.
+
+    Motivation vs Logic
+    Motivation: a shell page is the commonest reason a data table is missing from a fetch, and a render costs seconds,
+    so it should be tried only where the static HTML is likely to be empty.
+    Logic: two signals, each on its own. An app root element (id root, __next and similar) with almost no extracted text,
+    or little text, no table and at least three scripts. A normal article has text, so it is not drawn.
+    """
+    if not html:
+        return []
+    reasons = []
+    if SPA_ROOT.search(html) and len(text) < 300:
+        reasons.append("empty app root")
+    soup = BeautifulSoup(html, "lxml")
+    if len(text) < SHELL_TEXT_CHARS and not soup.find("table") and len(soup.find_all("script")) >= SHELL_SCRIPT_COUNT:
+        reasons.append("little text, no table, script-heavy")
+    return reasons
+
+
+def _wall_note(verdict: Verdict) -> str:
+    evidence = "; ".join(verdict.evidence[:4])
+    return f"interstitial {verdict.kind} ({verdict.label}), not read: {evidence}"
+
+
 def fetch_page(url: str, *, max_bytes: int = 2_000_000, timeout: float = 15.0, use_cache: bool = True,
                cache_dir=None, client: httpx.Client | None = None, resolver: Resolver | None = None,
                robots: Robots | None = None, throttle: HostThrottle | None = None,
-               total_seconds: float = TOTAL_SECONDS) -> Page:
-    """Fetch and extract one page. Never raises; a refused or failed fetch returns Page(ok=False, note=...)."""
+               total_seconds: float = TOTAL_SECONDS, render: bool = False,
+               renderer: Callable[[str], Rendered] | None = None) -> Page:
+    """Fetch and extract one page. Never raises; a refused or failed fetch returns Page(ok=False, note=...).
+
+    ``render`` asks for the page to be drawn in headless Chromium before extraction. A JavaScript shell is rendered
+    even without it. ``renderer`` replaces the render (tests only); the default is render.render_page.
+    """
     try:
         return _fetch(url, max_bytes=max_bytes, timeout=timeout, use_cache=use_cache, cache_dir=cache_dir,
                       client=client, resolver=resolver, robots=robots, throttle=throttle,
-                      total_seconds=total_seconds)
+                      total_seconds=total_seconds, render=render, renderer=renderer)
     except Exception as exc:   # last line of defence: the research tools must always get an answer
         return _failed(url, f"fetch failed: {type(exc).__name__}")
 
 
 def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, robots, throttle,
-           total_seconds) -> Page:
+           total_seconds, render=False, renderer=None) -> Page:
     if not isinstance(url, str) or not url.strip():
         return _failed(url or "", "the URL is empty")
     url = url.strip()
@@ -319,7 +358,12 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
         cached = read_cache(path, CACHE_TTL_S)
         if cached and cached.get("ok"):
             # An HTML page cached before file_links existed has no data-file addresses. Refetch it once.
+            # A render asked for now needs a page drawn by the browser, and a wall stored by an older version is not a source.
             if (cached.get("media") or "") in HTML_MEDIA and ("file_links" not in cached or "tables" not in cached):
+                cached = None
+            elif render and "rendered" not in (cached.get("note") or ""):
+                cached = None
+            elif classify_page(cached.get("title") or "", cached.get("text") or "", cached.get("status")).blocked:
                 cached = None
             else:
                 return Page(**{**{k: v for k, v in cached.items() if k in PAGE_FIELDS}, "cached": True})
@@ -358,7 +402,8 @@ def _fetch(url, *, max_bytes, timeout, use_cache, cache_dir, client, resolver, r
                     current = urljoin(current, response.headers["location"])
                     continue
                 return _read_response(url, current, response, max_bytes=max_bytes, use_cache=use_cache, path=path,
-                                      deadline=deadline, total_seconds=total_seconds)
+                                      deadline=deadline, total_seconds=total_seconds, render=render,
+                                      renderer=renderer)
             finally:
                 response.close()
         return _failed(url, f"more than {MAX_REDIRECTS} redirects", final_url=current)
@@ -377,12 +422,34 @@ def _robots_reason(robots, url: str, deadline: float, throttle: HostThrottle) ->
     return None if robots.allowed(url) else "disallowed by robots.txt"
 
 
+def _render_step(final_url: str, renderer: Callable[[str], Rendered] | None) -> Rendered:
+    """Draw the page, or say why it was not drawn. A missing Playwright or Chromium is a skipped render with a note,
+    never a failed fetch. An injected renderer (tests) skips the availability check."""
+    if renderer is None:
+        available, reason = chromium_status()
+        if not available:
+            return Rendered(ok=False, note=f"render skipped: {reason}")
+        renderer = render_page
+    try:
+        return renderer(final_url)
+    except Exception as exc:
+        return Rendered(ok=False, note=f"render skipped: {type(exc).__name__}")
+
+
 def _read_response(url: str, final_url: str, response: httpx.Response, *, max_bytes: int, use_cache: bool,
-                   path, deadline: float | None = None, total_seconds: float = TOTAL_SECONDS) -> Page:
+                   path, deadline: float | None = None, total_seconds: float = TOTAL_SECONDS, render: bool = False,
+                   renderer: Callable[[str], Rendered] | None = None) -> Page:
     status = response.status_code
-    if status >= 300:   # a redirect with a location was followed by the caller; anything else is not content
-        return _failed(url, f"HTTP {status}", final_url=final_url, status=status)
     media, charset = _media_and_charset(response.headers.get("content-type", ""))
+    if status >= 300:   # a redirect with a location was followed by the caller; anything else is not content
+        if status >= 400 and (media or "") in HTML_MEDIA:   # a challenge page is named, not just its status
+            body, _ = read_capped(response, max_bytes, deadline)
+            decoded = _decode(body, charset)
+            text, title, _, _ = extract(decoded, media)
+            verdict = classify_page(title, text, status, decoded)
+            if verdict.blocked:
+                return _failed(url, _wall_note(verdict), final_url=final_url, status=status)
+        return _failed(url, f"HTTP {status}", final_url=final_url, status=status)
     if media == "application/pdf":
         return _failed(url, "PDF files are not read; look for the HTML version or a text source",
                        final_url=final_url, status=status)
@@ -409,8 +476,27 @@ def _read_response(url: str, final_url: str, response: httpx.Response, *, max_by
     if method == "bs4":
         notes.append("main text taken by fallback extraction")
     text = text.strip()
-    if not text:
-        return _failed(url, "no readable text found", final_url=final_url, status=status)
+    is_html = (media or "") in HTML_MEDIA
+    # A wall is refused before any render, so the browser never draws a bot check or CAPTCHA page.
+    verdict = classify_page(title, text, status, decoded if is_html else "")
+    if verdict.blocked:
+        return _failed(url, _wall_note(verdict), final_url=final_url, status=status)
+    if is_html:
+        shell = js_shell_reasons(decoded, text)   # a shell often has no text at all, so this runs before the text check
+        if render or shell:
+            drawn = _render_step(final_url, renderer)
+            if drawn.ok:
+                decoded = drawn.html
+                text, title, extracted, method = extract(decoded, "text/html")
+                text = text.strip()
+                notes.append("rendered" + ("" if render else f" (JavaScript shell: {', '.join(shell)})"))
+                verdict = classify_page(title, text, status, decoded)
+                if verdict.blocked:
+                    return _failed(url, _wall_note(verdict), final_url=final_url, status=status)
+            else:
+                notes.append(drawn.note or "render skipped")
+    if not text:   # the notes say whether a render was tried, so a shell that could not be drawn explains itself
+        return _failed(url, "; ".join(["no readable text found"] + notes), final_url=final_url, status=status)
     cap = CSV_MAX_TEXT_CHARS if (media or "") in CSV_MEDIA else MAX_TEXT_CHARS
     if len(text) > cap:
         full = len(text)

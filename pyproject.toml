@@ -37,6 +37,7 @@ packages = ["src/prophet_agent"]
 [project.optional-dependencies]
 dev = ["pytest", "pillow"]
 datasets = ["pyarrow"]   # scripts/fetch_datasets.py writes Parquet
+browser = ["playwright>=1.65"]   # research/render.py draws JavaScript pages; then run: python -m playwright install chromium
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

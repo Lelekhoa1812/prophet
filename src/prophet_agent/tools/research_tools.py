@@ -39,7 +39,7 @@ PASSAGE_SEEN_CHARS = 500
 OBSERVE_CHARS = 9000
 RECENCY = {"day": ("d", 1), "week": ("w", 7), "month": ("m", 31), "year": ("y", 366)}
 SEARCH_ARGS = {"query", "kind", "max_results", "recency"}
-FETCH_ARGS = {"url", "queries", "max_chars"}
+FETCH_ARGS = {"url", "queries", "max_chars", "render"}
 RESEARCH_ARGS = {"queries", "kind", "recency", "fetch_top", "passages_per_page", "exclude_urls", "family", "region",
                  "units", "data_end", "horizon_end"}
 MAX_EXCLUDE = 200
@@ -285,7 +285,7 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
         clamp = f"max_chars {requested} clamped to {MAX_CHARS_LIMIT} (the schema limit)"   # A3-07 (e)
         requested = MAX_CHARS_LIMIT
     max_chars = _int({"max_chars": requested}, "max_chars", 6000, 500, MAX_CHARS_LIMIT)
-    page = fetch_page(url.strip())
+    page = fetch_page(url.strip(), render=args.get("render") is True)
     out = _page_view(page, url.strip())
     if clamp:
         out["note"] = "; ".join(n for n in [out.get("note"), clamp] if n)
@@ -474,15 +474,19 @@ WEB_FETCH_SPEC = {
     "name": "web_fetch",
     "title": "Read a page",
     "activity": "Reading a web page",
-    "description": "Read one web page (http or https only; no scripts or forms). Returns title, date, final_url, tier and "
+    "description": "Read one web page (http or https only; no forms). Returns title, date, final_url, tier and "
                    "sha256 of the text. With queries, returns the best-matching quotable passages (each with start offset "
                    "and score); without them, the first max_chars of the text. When the page is a data table, data_file is "
                    "set and only a short preview is returned: call download_web_data with the same url for the full file, "
-                   "and do not paste the preview into sandbox code.",
+                   "and do not paste the preview into sandbox code. A page that is an adblock notice, consent screen, bot "
+                   "check, CAPTCHA, login wall or paywall returns ok false with the kind in note; it is not read, and it "
+                   "is not a source.",
     "args": {"url": "the page address from a search hit",
              "queries": "optional list of 1 to 8 strings: what you want from the page",
              "max_chars": "whole number 500 to 20000 (default 6000; a larger value is clamped and reported), used when "
-                          "no passage is asked for"},
+                          "no passage is asked for",
+             "render": "optional true to draw the page in a headless browser first, for a page whose table or text is "
+                       "built by JavaScript (slower; default false). A JavaScript-looking page is drawn without it"},
 }
 
 WEB_RESEARCH_SPEC = {
