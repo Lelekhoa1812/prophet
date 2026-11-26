@@ -32,6 +32,7 @@ from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
 from prophet_agent.usage import ledger_for
 
 from .bundle import build_bundle
+from .data_pack import build_mission_pack, build_notebook_pack, merge_output_files
 from .panels import entity_page, panel_summary
 from .service import MissionService
 from .sharing import PolicyRefused, normalise_patch
@@ -175,7 +176,7 @@ class TurnIn(BaseModel):
     model: str | None = Field(default=None, max_length=120)     # a catalog model id; omitted means the default chain
 
 
-DISPLAY_EXTS = (".png", ".svg", ".jpg", ".jpeg", ".gif", ".webp", ".xlsx", ".docx", ".pdf")
+DISPLAY_EXTS = (".png", ".svg", ".jpg", ".jpeg", ".gif", ".webp", ".xlsx", ".csv", ".docx", ".pdf")
 
 
 def _history(args: dict) -> list[float]:
@@ -258,6 +259,17 @@ def create_app(service: MissionService) -> FastAPI:
             return service.datasets.get(dataset_id)
         except KeyError:
             raise HTTPException(404, "no such file")
+
+    @app.get("/api/datasets/{dataset_id}/file")
+    def download_dataset(dataset_id: str) -> FileResponse:
+        """The uploaded file itself, so a chip on the page can be saved or shown."""
+        try:
+            path = service.datasets.path(dataset_id)
+        except KeyError:
+            raise HTTPException(404, "no such file")
+        if not path.is_file():
+            raise HTTPException(404, "no such file")
+        return FileResponse(path, filename=path.name)
 
     @app.get("/api/missions")
     def list_missions() -> list[dict]:
@@ -375,16 +387,17 @@ def create_app(service: MissionService) -> FastAPI:
             if not run_id:
                 continue
             if r["tool"] == "sandbox_python":
-                # Analysis runs show up only when they made something a person opens: a chart or a document.
-                files = [{"path": o["path"], "sha256": o["sha256"], "bytes": o["bytes"]} for o in res.get("outputs", [])
-                         if isinstance(o, dict) and o.get("path", "").startswith("out/")]
-                if any(f["path"].lower().endswith(DISPLAY_EXTS) for f in files):
+                # Analysis runs show up when they made a chart, a document, or a table.
+                # Files on disk are merged in, so an image the result list missed is still shown.
+                files = merge_output_files(res.get("outputs") or [], SANDBOX_ROOT, run_id)
+                if any(str(f["path"]).lower().endswith(DISPLAY_EXTS) for f in files):
                     out.append({"run_id": run_id, "files": files, "history": [], "forecast": None})
                 continue
             fc = res.get("forecast") or {}
             q = fc.get("quantiles") or {}
             args = json.loads(r["args_json"] or "null") or {}
-            out.append({"run_id": run_id, "files": res.get("files", []), "history": _history(args),
+            files = merge_output_files(res.get("files") or [], SANDBOX_ROOT, run_id)
+            out.append({"run_id": run_id, "files": files, "history": _history(args),
                         "forecast": {"config": fc.get("config"), "point": fc.get("point"),
                                      "q10": q.get("0.1"), "q50": q.get("0.5"), "q90": q.get("0.9")}})
         return out
@@ -427,6 +440,16 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(404, "no such mission")
         return Response(data, media_type="application/zip",
                         headers={"content-disposition": f'attachment; filename="prophet-{mission_id[:12]}-repro.zip"'})
+
+    @app.get("/api/missions/{mission_id}/data")
+    def mission_data(mission_id: str) -> Response:
+        """Every file this session holds: uploads, kept tables, and each run's inputs and outputs, including images."""
+        try:
+            data, filename = build_mission_pack(service, mission_id, SANDBOX_ROOT)
+        except KeyError:
+            raise HTTPException(404, "no such mission")
+        return Response(data, media_type="application/zip",
+                        headers={"content-disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/api/artifacts/{run_id}/{name:path}")
     def get_artifact(run_id: str, name: str) -> FileResponse:
@@ -502,6 +525,16 @@ def create_app(service: MissionService) -> FastAPI:
     def table_versions(nid: str, name: str) -> list[dict]:
         _nb(service.notebooks.get, nid)
         return service.notebooks.table_versions(nid, name)
+
+    @app.get("/api/notebooks/{nid}/data")
+    def notebook_data(nid: str) -> Response:
+        """Every file this notebook holds: uploads, kept tables, and each question's inputs and outputs."""
+        try:
+            data, filename = build_notebook_pack(service, nid, SANDBOX_ROOT)
+        except KeyError:
+            raise HTTPException(404, "no such notebook item")
+        return Response(data, media_type="application/zip",
+                        headers={"content-disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/api/notebooks/{nid}/tables/{name}/download")
     def download_table(nid: str, name: str, version: int | None = None) -> FileResponse:
