@@ -22,6 +22,7 @@ from typing import Any
 
 from prophet_agent.forecast.timesfm import nonnegative_domain
 from prophet_agent.runtime import grounding
+from prophet_agent.runtime.questions import SYNTHETIC_GOAL, invented_data_phrase
 from prophet_agent.source_table.diagnose import diagnose_failure
 
 EXPECTED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
@@ -2368,6 +2369,27 @@ def check_answer_files(answer, history) -> dict | None:
                   "it in sandbox_python and save it under out/, or take the file name out and say the image was not made")
 
 
+def check_answer_real_series(answer, goal: str = "") -> dict | None:
+    """The answer may not say it used approximate or synthetic data in place of a requested real series.
+
+    Motivation vs Logic
+    Motivation (task 2, 2026-11-26): a planner that cannot find the real series can fall back on invented numbers and still write
+    "completed". The person asked for NVDA prices; a forecast of simulated prices is not the answer to that question.
+    Logic: a sentence that offers invented, simulated or approximate data (questions.invented_data_phrase) blocks the finish. A
+    sentence that negates it is not a claim of use. A goal that itself asks for a synthetic or simulated series (a twin, a test)
+    is left alone, because then the synthetic data is the test the person asked for. None when the answer makes no such claim.
+    """
+    if SYNTHETIC_GOAL.search(goal or ""):
+        return None
+    phrase = invented_data_phrase(answer if isinstance(answer, str) else "")
+    if phrase is None:
+        return None
+    return _check("answer_real_series", False,
+                  f"the answer says it used {phrase!r}, which stands in for a real series the person asked for. Do not "
+                  "present invented or approximate data as the series: find the real series in public sources, or state that "
+                  "it could not be found and finish as partial")
+
+
 def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict]:
     """Checks on what the written answer says against the stored output. A check is returned only for a claim the answer
     makes, so an answer with no such claim adds nothing.
@@ -2514,6 +2536,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(level)
     if (named := check_answer_files(text, obs)) is not None:
         checks.append(named)
+    if (real := check_answer_real_series(text, goal)) is not None:
+        checks.append(real)
     return checks
 
 

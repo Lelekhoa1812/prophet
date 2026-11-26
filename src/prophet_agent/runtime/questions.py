@@ -176,3 +176,60 @@ def _near_duplicates(a: str, b: str) -> bool:
     if not _similar(main_a, main_b):
         return False
     return not (qual_a and qual_b) or _similar(qual_a, qual_b)
+
+
+# Mission 9 (task 2): a question may not offer invented data in place of the real series the person asked for.
+# Live (Nvidia, baseline run 2026-11-26): the planner asked "Use synthetic data based on known NVDA price ranges" as an option.
+INVENTED_DATA = re.compile(
+    r"\b(?:synthetic|simulated|simulation|made[- ]up|invented|fabricated|fake|placeholder|illustrative)\s+"
+    r"(?:[\w/-]+\s+){0,3}?(?:data|prices?|series|closes?|values?|history|figures|numbers|returns|observations)\b"
+    r"|\b(?:approximat\w*|rough|reconstructed)\s+(?:[\w/-]+\s+)?(?:prices?|closes?|series|history|data|values?|figures)\b",
+    re.I)
+NEGATED = re.compile(r"\b(?:not|no|never|without|none|neither|nor|cannot|don't|do not|did not|was not|were not)\b", re.I)
+# A goal that itself asks for a synthetic or simulated series (a twin, a test, a mock) may be offered one.
+SYNTHETIC_GOAL = re.compile(r"synthetic|simulat|\btwins?\b|made[- ]up|\bfake\b|\bdummy\b|\bmock\b|sample data|test data", re.I)
+SYNTHETIC_OPTION_PROBLEM = ("{where} offers {phrase!r} in place of the real series. Remove that option, and keep researching "
+                            "public sources for the real series (price endpoints, filings, official tables). A synthetic "
+                            "series may be offered only for a test the person asked for.")
+
+
+def invented_data_phrase(text: str) -> str | None:
+    """The first phrase in ``text`` that offers invented, simulated or approximate data, or None.
+
+    Motivation vs Logic
+    Motivation: an option such as "Use synthetic data based on known price ranges" asks the person to accept a made-up series
+    in place of the real one. The person has not asked for that, and the answer would then be a forecast of invented numbers.
+    Logic: a phrase of an invented-data word (synthetic, simulated, made-up, approximate, rough) next to a data word (data, prices,
+    series, closes, values). A sentence that negates the phrase ("do not use synthetic data") is not an offer and is skipped.
+    """
+    for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text or ""):
+        if NEGATED.search(sentence):
+            continue
+        m = INVENTED_DATA.search(sentence)
+        if m:
+            return " ".join(m.group(0).split())
+    return None
+
+
+def synthetic_substitute_problems(payload: Any, goal: str = "") -> list[str]:
+    """Problems for each question option that offers invented data in place of the real series. Empty when the goal itself asks
+    for a synthetic or simulated series, because then the option is the test the person asked for."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("questions"), list) or SYNTHETIC_GOAL.search(goal or ""):
+        return []
+    problems: list[str] = []
+    for i, q in enumerate(payload["questions"]):
+        if not isinstance(q, dict):
+            continue
+        for j, o in enumerate(q.get("options") or []):
+            if not isinstance(o, dict):
+                continue
+            text = f"{o.get('label') or ''}. {o.get('description') or ''}"
+            phrase = invented_data_phrase(text)
+            if phrase:
+                problems.append(SYNTHETIC_OPTION_PROBLEM.format(where=f"questions[{i}].options[{j}]", phrase=phrase))
+    return problems
+
+
+def validate_for_goal(payload: Any, goal: str = "") -> list[str]:
+    """The shape problems of validate_questions plus the invented-data refusals. The one check an ask_user call must pass."""
+    return validate_questions(payload) + synthetic_substitute_problems(payload, goal)

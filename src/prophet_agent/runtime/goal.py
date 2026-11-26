@@ -45,7 +45,7 @@ from . import contracts
 from .grounding import snap, snap_note, unverified
 from . import agents
 from . import claims as claim_checks
-from .questions import QUESTIONS_SCHEMA, expected_shape, repair_questions, validate_questions
+from .questions import QUESTIONS_SCHEMA, expected_shape, repair_questions, validate_for_goal
 from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import LeaseLost, OutcomeUnknown, canonical
 
@@ -1157,10 +1157,11 @@ def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, t
     memo.covered = cut
 
 
-def _usable_questions(verdict: dict) -> list[dict] | None:
-    """The evaluator's questions, if it asked any and they pass the same validator as the planner's."""
+def _usable_questions(verdict: dict, goal: str = "") -> list[dict] | None:
+    """The evaluator's questions, if it asked any and they pass the same validator as the planner's (shape, and no option that
+    offers invented data in place of the real series)."""
     qs = verdict.get("questions")
-    if not qs or validate_questions({"questions": qs}):
+    if not qs or validate_for_goal({"questions": qs}, goal):
         return None
     return qs
 
@@ -2148,7 +2149,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             open_dicts, repeated = _already_asked([q for q in items if isinstance(q, dict)], history)
             open_qs = open_dicts + [q for q in items if not isinstance(q, dict)]    # a non-object is left for the validator
             payload = {"questions": open_qs}
-            problems = (validate_questions(payload) if open_qs or not repeated
+            # Mission 9 (task 2): an option that offers invented data in place of the real series is refused here, with the reason.
+            problems = (validate_for_goal(payload, goal) if open_qs or not repeated
                         else ["every question was already asked and answered"])
             if problems and repeated:
                 obs = {"kind": "ask_user", "error": "not asked again, the person already answered: " + "; ".join(repeated)
@@ -2264,7 +2266,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                                                  eval_schema, "eval"))
         # The evaluator may find that one decision by the person would change the answer. It is asked once per run,
         # then the evaluator judges again with the answer in the evidence.
-        qs = _usable_questions(verdict) if verdict["verdict"] != "met" else None
+        qs = _usable_questions(verdict, goal) if verdict["verdict"] != "met" else None
         if qs:
             qs, _ = _already_asked(qs, history)
         if qs and not any(h.get("kind") == "evaluator_question" for h in history):
