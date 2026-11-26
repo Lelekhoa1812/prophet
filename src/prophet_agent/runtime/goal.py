@@ -1417,7 +1417,7 @@ def _progress_key(obs: dict) -> str:
     return _outcome_key(obs) or _signature(obs)
 
 
-def _run_of_same_result(history: list[dict]) -> list[dict]:
+def _exact_run(history: list[dict]) -> list[dict]:
     """The newest tool calls in a row whose progress key equals the newest call's, newest first. One call is a run of one."""
     calls = [h for h in history if h.get("kind") == "tool"]
     if not calls:
@@ -1428,6 +1428,124 @@ def _run_of_same_result(history: list[dict]) -> list[dict]:
             break
         run.append(h)
     return run
+
+
+# Mission 9 (2026-11-26, live EPL 56465803). About 60 sandbox cells re-read the same carried files and printed the same standings
+# table with small differences (a heading, a diagnostic line, a shorter print), so no outcome key matched and the stall rule
+# waited until step 63 of 196. Near-duplicates are judged by what a cell reads and writes, the table shapes it prints, and its
+# printed rows and words, not by its bytes.
+NEAR_SIMILARITY = 0.85     # Jaccard of two cells' row tokens or word shingles, at or above which they are near-duplicates
+NEAR_SHINGLE = 3           # words per shingle
+_SHAPE = re.compile(r"\((\d+), (\d+)\)")                                        # a pandas-style shape, e.g. (11, 9)
+_FILE_NAME = re.compile(r"[\w./-]+\.(?:csv|json|html?|txt|parquet|xlsx)\b")
+_FILE_LINE = re.compile(r"^\s*(?:\S+\.(?:csv|json|html?|txt|parquet|xlsx)(?: \(\d+ bytes\))?|Files in\b.*|Available carried files\b.*)\s*$",
+                        re.M)                                                    # a file-listing line, not a result
+_TOKEN = re.compile(r"\d+(?:\.\d+)?|[a-z][a-z.'-]*|[^\sa-z\d]")
+
+
+def _resolved(obs: dict, history: list[dict]) -> dict:
+    """The call a pointer (repeat_of) points to, or the call itself. The position is 1-based in the full, unfiltered history."""
+    pos = obs.get("repeat_of")
+    if isinstance(pos, int) and 1 <= pos <= len(history):
+        return history[pos - 1]
+    return obs
+
+
+def _sandbox_files(obs: dict, history: list[dict]) -> frozenset[str]:
+    """The files a sandbox cell names in its code, and the files it wrote. A cell that names none is named by nothing."""
+    src = _resolved(obs, history)
+    args = src.get("args")
+    code = str(args.get("code") or "") if isinstance(args, dict) else ""
+    res = src.get("full") if isinstance(src.get("full"), dict) else src.get("result")
+    written: list[str] = []
+    for o in (res.get("outputs") or []) if isinstance(res, dict) else []:
+        if isinstance(o, dict) and isinstance(o.get("path"), str):
+            written.append(o["path"])
+        elif isinstance(o, str):
+            written.append(o.split(" (")[0])
+    return frozenset(_FILE_NAME.findall(code)) | frozenset(written)
+
+
+def _row_tokens(text: str) -> set[str]:
+    """The tokens of the lines that carry numbers and a word (table rows): numbers kept, layout and spacing dropped."""
+    out: set[str] = set()
+    for ln in text.splitlines():
+        toks = _TOKEN.findall(ln.lower())
+        if sum(t[0].isdigit() for t in toks) >= 3 and any(t[0].isalpha() for t in toks):
+            out.update(toks)
+    return out
+
+
+def _sandbox_profile(obs: dict, history: list[dict]) -> dict | None:
+    """What a sandbox cell produced, for near-duplicate checks, or None when it produced nothing to compare.
+
+    Motivation: a repeat that changes a few words of the same table is still a repeat, and a cell that writes a new file or
+    prints a new table shape is work. Run ids and file listings say nothing about the result, so they are removed first.
+    Logic: the profile holds ok, the files (_sandbox_files), the table shapes printed, the row tokens and the word shingles of the
+    normalised stdout and stderr. A pointer is resolved to the cell it points to, so a repeat keeps its profile.
+    """
+    src = _resolved(obs, history)
+    if src.get("tool") != "sandbox_python" or src.get("error") is not None:
+        return None
+    res = src.get("full") if isinstance(src.get("full"), dict) else src.get("result")
+    if not isinstance(res, dict):
+        return None
+    stdout = str(res.get("stdout") or "")
+    stderr = str(res.get("stderr") or res.get("stderr_tail") or "")
+    if not (stdout.strip() or stderr.strip() or _sandbox_files(src, history)):
+        return None
+    text = _FILE_LINE.sub("", RUN_ID_ANY.sub("<run>", stdout + "\n" + stderr))
+    tokens = _TOKEN.findall(text.lower())
+    return {"ok": res.get("ok") is True, "files": _sandbox_files(src, history),
+            "shapes": tuple(sorted(set(_SHAPE.findall(stdout)))), "rows": frozenset(_row_tokens(text)),
+            "shingles": frozenset(tuple(tokens[i:i + NEAR_SHINGLE]) for i in range(max(0, len(tokens) - NEAR_SHINGLE + 1)))}
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+def _near_duplicate(a: dict, b: dict) -> bool:
+    """Two sandbox profiles are near-duplicates when both ran the same way, print the same table shapes, and their rows or
+    shingles overlap at least NEAR_SIMILARITY. The files are compared by the caller: a new file is new work."""
+    if a["ok"] != b["ok"] or a["shapes"] != b["shapes"]:
+        return False
+    rows = _jaccard(a["rows"], b["rows"]) if a["rows"] and b["rows"] else 0.0
+    return max(rows, _jaccard(a["shingles"], b["shingles"])) >= NEAR_SIMILARITY
+
+
+def _near_run(history: list[dict]) -> list[dict]:
+    """The newest sandbox cells that are near-duplicates of the newest one, newest first. Tool calls of other kinds and cells that
+    produced nothing are skipped, not counted, so a re-parse with a fetch between its cells is still one loop; the first cell that
+    is not near ends the run. A newest cell that names or writes a file no earlier cell named is progress, so it has no run."""
+    calls = [h for h in history if h.get("kind") == "tool" and not h.get("rejected")]
+    sandbox = [h for h in calls if h.get("tool") == "sandbox_python"]
+    if not sandbox:
+        return []
+    newest = _sandbox_profile(sandbox[-1], history)
+    if newest is None:
+        return []
+    earlier: set[str] = set()
+    for h in sandbox[:-1]:
+        earlier |= _sandbox_files(h, history)
+    if newest["files"] - earlier:
+        return []
+    run = [sandbox[-1]]
+    for h in reversed(sandbox[:-1]):
+        p = _sandbox_profile(h, history)
+        if p is None:
+            continue
+        if not _near_duplicate(newest, p):
+            break
+        run.append(h)
+    return run
+
+
+def _run_of_same_result(history: list[dict]) -> list[dict]:
+    """The run the stall rule and the notice use: the longer of the exact run (same progress key) and the near-duplicate run."""
+    exact = _exact_run(history)
+    near = _near_run(history)
+    return near if len(near) > len(exact) else exact
 
 
 def _outcome_line(obs: dict) -> str:
@@ -1463,9 +1581,12 @@ def _stall_notice(history: list[dict], next_item: str | None) -> str | None:
         return None
     todo = (f"The next unfinished checklist item must be done now, with a different step: {next_item}." if next_item else
             "Take the next unfinished step of the goal with a different call, or finish with what is found.")
-    return ("Stall notice: the last " + str(len(run)) + " calls gave the same result as " + _stall_label(run) + ". That result "
-            "already exists: do not run this step again. " + todo + " If the same result comes back again, the run is stopped "
-            "with what it has found.")
+    same = "the same" if all(_progress_key(h) == _progress_key(run[-1]) for h in run) else "nearly the same"
+    files = set.intersection(*(set(_sandbox_files(h, history)) for h in run)) if run[0].get("tool") == "sandbox_python" else set()
+    named = (" Each call reads or writes " + ", ".join(sorted(files)[:6]) + " and prints the same table shape.") if files else ""
+    return ("Stall notice: the last " + str(len(run)) + " calls gave " + same + " result as " + _stall_label(run) + "." + named +
+            " That result already exists: do not run this step again, and do not re-parse it with another cell. " + todo +
+            " If the same result comes back again, the run is stopped with what it has found.")
 
 
 def _stalled(history: list[dict], window: int) -> bool:
@@ -1476,8 +1597,12 @@ def _stalled(history: list[dict], window: int) -> bool:
     from a different sandbox cell is no progress either.
     A refused argument list ("rejected") is not a call: it is not charged, and it is not counted here either (GOAL.md
     defect 5). Before, the same invalid call sent again reached ERROR_STALL and stopped the mission as stalled."""
-    history = [h for h in history if not h.get("rejected")]
+    full, history = history, [h for h in history if not h.get("rejected")]
     if _error_run(history) >= ERROR_STALL:
+        return True
+    # Mission 9: `window` sandbox cells that are near-duplicates of the newest one (same files, shapes and rows) are the same loop.
+    # The pointers are resolved against the full history, so the positions they carry still point at the right calls.
+    if len(_near_run(full)) >= window:
         return True
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
