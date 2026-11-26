@@ -67,10 +67,10 @@ def test_unknown_arguments_are_refused_and_named(name, args, allowed):
     ("web_search", {"query": "oil", "kind": "video"}),
     ("web_search", {"query": "oil", "recency": "decade"}),
     ("web_fetch", {"url": ""}),
-    ("web_fetch", {"url": "https://example.com", "queries": ["a"] * 9}),
+    ("web_fetch", {"url": "https://example.com", "queries": [""]}),
     ("web_fetch", {"url": "https://example.com", "max_chars": 100}),
     ("web_research", {"queries": []}),
-    ("web_research", {"queries": ["x"] * 9}),
+    ("web_research", {"queries": [3]}),
     ("web_research", {"queries": ["ok"], "fetch_top": 9}),
     ("web_research", {"queries": ["ok"], "passages_per_page": 0}),
     ("web_research", {"queries": ["ok"], "kind": "video"}),
@@ -79,6 +79,13 @@ def test_bad_values_are_refused(name, args):
     tool, _ = tools_by_name()[name]
     with pytest.raises(ValueError):
         tool.fn(args, "key")
+
+
+def test_too_many_queries_keep_the_first_eight():
+    """Panel NEM (2026-11-26) was refused five times for nine queries; a list that is only too long is trimmed."""
+    from prophet_agent.tools import research_tools as rt
+    assert rt._queries([f"q{i}" for i in range(9)], low=1, high=8) == [f"q{i}" for i in range(8)]
+    assert rt._queries("one angle", low=1, high=8) == ["one angle"]
 
 
 def test_web_search_tool_returns_ranked_hits_with_tiers(monkeypatch):

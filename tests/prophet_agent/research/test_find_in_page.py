@@ -99,7 +99,7 @@ def test_no_query_match_says_so_and_gives_no_passage(monkeypatch):
     {"url": URL},
     {"url": URL, "queries": ["a"], "regex": "b"},
     {"url": URL, "queries": []},
-    {"url": URL, "queries": [f"q{i}" for i in range(9)]},
+    {"url": URL, "queries": [None]},
     {"url": URL, "regex": "("},
     {"url": URL, "regex": "a" * 201},
     {"url": "ftp://stats.example.org/x", "queries": ["a"]},

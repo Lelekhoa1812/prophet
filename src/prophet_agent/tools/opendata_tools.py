@@ -291,8 +291,12 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         if table is not None and (isinstance(table, bool) or not isinstance(table, (int, str))):
             raise ArgumentRejected("table must be a candidate index or a locator such as table[2] or __NEXT_DATA__:$.props")
         key = args.get("licence_key") or UNVERIFIED
-        if not isinstance(key, str) or (key != UNVERIFIED and key not in KNOWN_LICENCE_KEYS):
-            raise ValueError(f"licence_key must be {UNVERIFIED} or one of: {', '.join(sorted(KNOWN_LICENCE_KEYS))}")
+        if not isinstance(key, str):
+            raise ValueError(f"licence_key must be text: {UNVERIFIED} or one of: {', '.join(sorted(KNOWN_LICENCE_KEYS))}")
+        if key not in KNOWN_LICENCE_KEYS:
+            # Panel CPI (2026-11-26) was refused twice for a FRED CSV because it named a key not in the list. The key is a
+            # provenance label, so a key with no record is stored as unverified and the download goes ahead.
+            key = UNVERIFIED
         store = _store(ctx)
         _room(live)
         table_request = None if table is None else str(table)

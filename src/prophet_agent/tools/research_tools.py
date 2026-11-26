@@ -88,6 +88,17 @@ def _query(value: Any, name: str = "query") -> str:
 
 
 def _queries(value: Any, *, low: int, high: int) -> list[str]:
+    """The query list, with the first `high` kept when more are sent.
+
+    Motivation: panel NEM (2026-11-26) sent web_fetch nine queries and was refused five times in a row with the same
+    error, until the stall rule stopped the mission. A list that is only too long has a safe repair.
+    Logic: a single string becomes a one-item list; a list longer than `high` keeps its first `high` items, in order.
+    Empty lists and non-text items are still refused.
+    """
+    if isinstance(value, str):
+        value = [value]
+    if isinstance(value, list) and len(value) > high:
+        value = value[:high]
     if not isinstance(value, list) or not low <= len(value) <= high:
         raise ValueError(f"queries must be a list of {low} to {high} search strings, each a different angle")
     return [_query(q, "each query") for q in value]

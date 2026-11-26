@@ -168,13 +168,15 @@ def test_download_web_data_returns_the_stored_copy_for_the_same_url(served, miss
     assert served["calls"] == 1 and second["dataset_id"] == first["dataset_id"]
 
 
-def test_a_known_licence_key_is_recorded_and_an_unknown_one_is_refused(served, mission):
+def test_a_known_licence_key_is_recorded_and_an_unknown_one_is_stored_unverified(served, mission):
     tool = default_tools(opendata=mission.context())["download_web_data"]
     out = tool.fn({"url": "https://data.example.org/a.csv", "licence_key": "ecb"}, "k1")
     assert out["licence_key"] == "ecb"
-    with pytest.raises(ValueError, match="licence_key must be"):
-        tool.fn({"url": "https://data.example.org/b.csv", "licence_key": "made-up"}, "k2")
-    assert served["calls"] == 1
+    other = tool.fn({"url": "https://data.example.org/b.csv", "licence_key": "made-up"}, "k2")
+    assert other["licence_key"] == "unverified"
+    with pytest.raises(ValueError, match="licence_key must be text"):
+        tool.fn({"url": "https://data.example.org/c.csv", "licence_key": 3}, "k3")
+    assert served["calls"] == 2
 
 
 @pytest.mark.parametrize("content_type, body, message", [
