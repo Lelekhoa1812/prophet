@@ -444,3 +444,14 @@ def test_optimistic_held_out_coverage_gets_its_caveat():
 ])
 def test_calling_a_shift_real_is_a_cause(text):
     assert grounding.uncited_causes(text)
+
+
+# Round 12 audit (EPL): "top four: 87%" where the simulation held 0.865 for the club.
+def test_a_team_probability_must_be_the_simulated_value():
+    sim = {"kind": "tool", "tool": "simulate_season", "args": {},
+           "result": {"teams": [{"team": "Arsenal", "title": 0.343, "top_places": 0.8648, "relegation": 0.0},
+                                {"team": "Chelsea", "title": 0.1, "top_places": 0.5, "relegation": 0.01}]}}
+    text = "**Arsenal**\n- Probability to win the title: **34%**\n- Probability to finish in the top four: **87%**"
+    assert contracts._team_probabilities(text, [sim])
+    assert contracts._team_probabilities(text.replace("87%", "86%"), [sim]) == []
+    assert contracts._team_probabilities("Arsenal title odds 34%, 95% CI from the backtest.", [sim]) == []

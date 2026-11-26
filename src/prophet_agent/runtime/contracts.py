@@ -1326,6 +1326,7 @@ def check_shift_decisions(history, run_root) -> dict | None:
 
 OUTLIER_SHARE_RULE = 0.02     # the outliers skill: above about 2% of steps, treat the flags as noise or a broken feed until shown otherwise
 _OUTLIER_TEST = re.compile(r"winsori|robust|replace_outliers|ignore_ranges|control_lab|backtest", re.I)
+_NOT_PROB = re.compile(r"\bCI\b|confidence|interval|Brier|coverage|log[- ]loss|backtest|\brange\b", re.I)
 _PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
 
 
@@ -2424,6 +2425,52 @@ def _annual_word(text: str, obs: list) -> list[dict]:
                    f"a year is about {per_year:.0f} steps of this series; describe it as a {period}-step cycle, not annual")]
 
 
+_PROB_WORDS = re.compile(r"\b(?:probabilit\w*|chance\w*|odds|likelihood|title|top[- ]?\w*|relegat\w*|playoffs?|play-in|"
+                         r"champions|promotion)\b", re.I)
+_PERCENT = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)\s*%")
+
+
+def _team_probabilities(text: str, obs: list) -> list[dict]:
+    """Blocks a percentage given for a team's simulated probability that is none of that team's probabilities.
+
+    Motivation: panel round 12 audit (EPL): "Probability to finish in the top four: 87%" where the simulation held 0.865 for
+    the club; 87 passed grounding because it appears elsewhere. Logic: the team is the last team (from the newest
+    simulate_season rows) named on or before the line; a percentage on a line with a probability word must round to one of
+    that team's values between 0 and 1.
+    """
+    sim = next((r for h in reversed(obs) if isinstance(h, dict) and _ok_result(h, "simulate_season") is not None
+                for r in (h.get("full"), h.get("result")) if isinstance(r, dict) and isinstance(r.get("teams"), list)), None)
+    if sim is None or not text:
+        return []
+    probs: dict[str, list[float]] = {}
+    for row in sim["teams"]:
+        if isinstance(row, dict) and isinstance(row.get("team"), str):
+            probs[row["team"]] = [float(v) for k, v in row.items() if isinstance(v, (int, float)) and not isinstance(v, bool)
+                                  and 0.0 <= v <= 1.0 and k not in ("current",)]
+    names = sorted(probs, key=len, reverse=True)
+    if not names:
+        return []
+    pattern = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
+    team = None
+    for line in text.splitlines():
+        found = pattern.findall(line)
+        if len(set(found)) > 1:
+            team = None                  # a line about several teams: no single team to read against
+            continue
+        if found:
+            team = found[0]
+        if team is None or not _PROB_WORDS.search(line) or _NOT_PROB.search(line):
+            continue
+        for m in _PERCENT.finditer(line):
+            token = m.group(1)
+            if not any(_matches_value(token, 100 * v) for v in probs[team]):
+                return [_check("answer_team_probability", False,
+                               f"the answer gives {token}% for {team} ({line.strip()[:120]}), but the simulation's "
+                               f"probabilities for {team} are {', '.join(f'{100 * v:.1f}%' for v in probs[team])}; give the "
+                               "simulated value")]
+    return []
+
+
 def _matches_value(token: str, value: float) -> bool:
     """True when a written figure is the value at its own rounding, or the value as a percentage."""
     x = float(token.replace(",", ""))
@@ -2820,6 +2867,7 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                                      "every cycle the answer states is the period the health record measured"))
 
     checks.extend(_annual_word(text, obs))
+    checks.extend(_team_probabilities(text, obs))
 
     forecast_claims = grounding.claimed_forecast_results(text)
     stored_forecast = any(_forecast_record(h) for h in obs)
