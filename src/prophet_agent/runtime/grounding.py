@@ -880,9 +880,8 @@ def _source_texts(history: list) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
 
     def add(url: str, text: str) -> None:
-        host = _host(url)
-        if host and text:
-            out.setdefault(host, []).append(text)
+        if text:                         # a passage with no address is kept under "", read when a line cites no site
+            out.setdefault(_host(url), []).append(text)
 
     for h in history:
         if h.get("kind") == "subagent":
@@ -903,6 +902,30 @@ def _source_texts(history: list) -> dict[str, list[str]]:
             elif res.get("final_url") or res.get("url"):      # a download: its row count, columns and first rows
                 add(res.get("final_url") or res.get("url") or "", _as_text(res))
     return out
+
+
+_QUOTED = re.compile(r"[\"\u201c\u201d]([^\"\u201c\u201d\n]{8,240})[\"\u201c\u201d]")
+
+
+def _fold(text: str) -> str:
+    """Text as quotes are compared: accents, dashes, quote marks and spacing folded, lower case."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    t = re.sub(r"[\u2010-\u2015\-]+", "-", t)
+    t = re.sub(r"[\"'`]", "", t)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def quote_found(line: str, texts: dict[str, list[str]]) -> bool:
+    """True when the line holds a quote (in double quotes, 8 characters or more) that appears in the text of the site the
+    line cites, or of any fetched site when the line cites none."""
+    quotes = [_fold(q) for q in _QUOTED.findall(line or "")]
+    if not quotes:
+        return False
+    domains = {m.group(1).lower() for m in _DOMAIN.finditer(line)}
+    hosts = [h for h in texts if any(h == d or h.endswith("." + d) or d.endswith("." + h) for d in domains)] or list(texts)
+    pool = _fold(" ".join(t for h in hosts for t in texts[h]))
+    return any(q and q in pool for q in quotes)
 
 
 def source_bound_mismatches(answer: str, history: list) -> list[str]:

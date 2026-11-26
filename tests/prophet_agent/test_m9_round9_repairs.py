@@ -245,7 +245,30 @@ def test_an_outside_line_is_checked_against_the_site_it_cites(tmp_path):
         {"final_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL", "passages": [{"text": "2026-01-01,2.5\n2.7"}]},
         {"final_url": "https://www.philadelphiafed.org/surveys", "passages": [{"text": "The survey is published quarterly."}]},
         {"final_url": "https://www.bls.gov/schedule/cpi.htm", "passages": [{"text": "Mar. 10, 2027 08:30 AM"}]}]})
-    answer = ("Flat.\n\n## Outside context\n- **SPF (philadelphiafed.org, latest Q4 2026):** a pace near 2.5–2.7%.\n"
-              "- **BLS (bls.gov, undated):** February CPI on 10 Mar 2027 at 08:30.\n\n## Files\n- out/forecast.png")
+    answer = ("Flat.\n\n## Outside context\n- **SPF (philadelphiafed.org, latest Q4 2026):** \"The survey is published "
+              "quarterly\"; a pace near 2.5–2.7%.\n"
+              "- **BLS (bls.gov, undated):** \"Mar. 10, 2027 08:30 AM\" for the February CPI.\n\n## Files\n- out/forecast.png")
     out, removed = _check_outside(c, answer)
     assert "2.5" in removed and "philadelphiafed" not in out and "bls.gov" in out and "1 outside claim(s)" in out
+
+
+# Round 10 (GISTEMP): "ENSO-neutral conditions expected" where the cited CPC passage says a strong El Nino is likely.
+def test_an_outside_line_needs_a_quote_from_its_site(tmp_path):
+    from prophet_agent.runtime.goal import _check_outside
+    from prophet_agent.runtime.store import Store
+
+    class C:
+        pass
+    store = Store(tmp_path / "s.sqlite")
+    mid = store.create_mission("goal", {})
+    c = C(); c.store, c.mission_id = store, mid
+    store.tool_start(mid, 0, "web_fetch", {"url": "x"}, "k0")
+    store.tool_set("k0", "done", {"final_url": "https://www.cpc.ncep.noaa.gov/enso.html",
+                                  "text": "El Niño continues to strengthen, with a strong-to-very strong El Niño likely."})
+    answer = ("Flat.\n\n## Outside context\n"
+              "- **CPC (cpc.ncep.noaa.gov, 12 Nov 2026):** ENSO-neutral conditions expected through early 2027.\n"
+              "- **CPC (cpc.ncep.noaa.gov, 12 Nov 2026):** \"ENSO-neutral conditions expected\".\n"
+              "- **CPC (cpc.ncep.noaa.gov, 12 Nov 2026):** \"a strong-to-very strong El Nino likely\", so warm months.\n"
+              "\n## Files\n- out/forecast.png")
+    out, removed = _check_outside(c, answer)
+    assert out.count("cpc.ncep.noaa.gov") == 1 and "strong-to-very strong" in out and "2 outside claim(s)" in out

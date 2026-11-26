@@ -89,8 +89,9 @@ def test_outside_claims_whose_figures_no_page_contains_are_removed(tmp_path):
     c = C(); c.store, c.mission_id = store, mid
     store.tool_start(mid, 0, "web_research", {"queries": ["x"]}, "k0")
     store.tool_set("k0", "done", {"sources": [{"passages": [{"text": "The IMF rate is JPY 159.47 per USD on 20 Nov 2026."}]}]})
-    answer = ("The forecast is flat.\n\n## Outside context\n- IMF (20 Nov 2026): JPY 159.47 per USD.\n"
-              "- IMF (20 Nov 2026): EUR/JPY 162.34.\n\n## Files\n- out/forecast.png")
+    # Composer v7 (round 10): each line quotes its passage; the figure check still runs on a quoted line.
+    answer = ("The forecast is flat.\n\n## Outside context\n- IMF (20 Nov 2026): \"The IMF rate is JPY 159.47 per USD\".\n"
+              "- IMF (20 Nov 2026): \"The IMF rate is JPY\" and EUR/JPY 162.34.\n\n## Files\n- out/forecast.png")
     out, removed = _check_outside(c, answer)
     assert removed == ["162.34"] and "159.47" in out and "162.34 ." not in out.split("_Some")[0]
     assert "EUR/JPY 162.34" not in out and "## Files" in out and "1 outside claim(s) were left out" in out

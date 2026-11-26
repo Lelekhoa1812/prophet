@@ -1547,3 +1547,7 @@ called a measured 10-month cycle annual. These runs predate the latest-value che
   returned, not against every page; a figure only another source printed is left out with the line. Over the answers of
   rounds 8 to 10 this removes only CPI's three figures.
 Not yet changed: an outside claim with no figure (GISTEMP's reversed ENSO outlook, NVDA's misattributed release).
+- Composer v7: each Outside context line carries a short exact quote (at most 15 words) of the passage it cites, and its
+  meaning must follow the quote. A bullet whose quote is missing, or not in the text of the site it cites (accents, dashes,
+  quote marks and case folded), is left out with the other unsupported lines. This answers claims with no figure, such as
+  GISTEMP's reversed ENSO outlook; whether the composer quotes reliably is measured in the next round.

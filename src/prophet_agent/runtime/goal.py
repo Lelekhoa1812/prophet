@@ -2710,6 +2710,7 @@ DATE_TEXT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|Ma
                        r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?", re.I)
 # Any heading level, with or without a colon or bold (audit 2026-11-22, item 8): "### Outside context:", "**Outside context**".
 OUTSIDE_HEAD = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?[ \t]*outside context[ \t]*(?:\*\*)?[ \t]*:?[ \t]*$", re.I | re.M)
+BULLET = re.compile(r"^[ \t]*[-*\u2022][ \t]+\S")
 SECTION_END = re.compile(r"^(?:#{1,6}[ \t]+\S|\*\*[^*\n]+\*\*[ \t]*:?[ \t]*$)", re.M)
 
 
@@ -2751,7 +2752,15 @@ def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
     nxt = SECTION_END.search(answer[m.end():])
     end = m.end() + nxt.start() if nxt else len(answer)
     kept, removed, dropped = [], [], 0
+    texts = grounding._source_texts(fetched)
     for line in answer[m.end():end].splitlines():
+        if BULLET.match(line) and not grounding.quote_found(line, texts):
+            # Round 10 (GISTEMP): "ENSO-neutral conditions expected", where the cited CPC passage says a strong El Nino is
+            # likely. A claim with no figure passed every check. Composer v7 asks for an exact quote of the passage on each
+            # line; a line whose quote is missing or not in the cited site's text is left out.
+            removed.append("(quote)")
+            dropped += 1
+            continue
         bad = verify_figures(DATE_TEXT.sub(" ", line), sources) if line.strip() else []
         # Round 10 (CPI): "(philadelphiafed.org, latest Q4 2026) ... 2.5-2.7%" passed because 2.5 and 2.7 were printed in
         # another source. A line that cites a domain is checked against what that domain returned.
@@ -2766,7 +2775,7 @@ def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
     body = "\n".join(kept).rstrip()
     # The note gives the count, not the figures: listing them put unsourced numbers back into the answer, and the grounding
     # check then flagged its own note (live EUR/JPY round 6). The figures stay in the result's outside_removed.
-    body += (f"\n\n_{dropped} outside claim(s) were left out because their figures were not found in the pages "
+    body += (f"\n\n_{dropped} outside claim(s) were left out because their figures or quotes were not found in the pages "
              "that were read._\n")
     return answer[:m.end()] + body + ("\n" + answer[end:] if end < len(answer) else ""), removed
 
