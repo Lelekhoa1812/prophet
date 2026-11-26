@@ -1050,3 +1050,49 @@ Owner decisions taken through questions on 2026-11-24. Each is recorded in the c
   moot while robots is off); web typecheck not run.
 - **Not verified:** the Linux sandbox path; the web typecheck; the four named workflows have not been re-run against the
   new build.
+
+## Mission 9: multi-signal data acquisition and deep research (opened 2026-11-26)
+
+**Why.** Two live missions on 2026-11-26 failed to find their data. Nvidia (9e3408a4): Yahoo answered 401, Stooq answered
+HTML, which `download_web_data` refuses, and the planner then saved a Plotly Apple sample as `NVDA_daily.csv` and asked the
+person for a file. EPL (56465803): the only path to the table was ranked `web_fetch` passages clipped at 20,000
+characters, so 11 of 20 clubs were found. About 60 sandbox cells re-parsed the same passage. Two "Adblocker detected"
+pages were counted as fetched, and the stall rule fired at step 63 of 196. The existing `extract_page_tables` toolchain was
+never called.
+
+**Owner decisions (2026-11-26, asked through questions).**
+- Price data: keyless public endpoints (for example Yahoo chart JSON, Nasdaq historical JSON, Stooq), research use only,
+  each tagged with its source and terms. No keyed price provider.
+- Search: no keyed search API. Harden the ddgs cascade instead.
+- JavaScript pages: add Playwright Chromium rendering. Pages behind bot checks or CAPTCHAs stay refused; they are never
+  bypassed.
+- Charts: read embedded chart data first (SVG, Highcharts, Plotly, Vega, Chart.js, ECharts). Digitise chart images with a
+  NIM vision model, and label every digitised value as read from an image.
+- Reverse engineering (REA): WebPlotDigitizer, DePlot and MatCha model files, packaged deep-research agents (GPT
+  Researcher, STORM), and table extraction packages (Docling, Camelot, pdfplumber).
+- Is Agentic: not used. eve: reference only; its patterns are adopted in the Python runtime, not a port.
+
+**Success criteria.** Each needs evidence recorded below, with each figure labelled measured, synthetic or source claim.
+- **M9-1 Prices.** The Nvidia goal, unchanged, obtains at least two years of NVDA daily closes from a keyless endpoint, passes
+  an entity check (the file is NVDA, not another ticker), backtests against the simple rules and forecasts two months with
+  a range. Final status completed (met). A file whose ticker does not match its name is refused.
+- **M9-2 Tables from pages.** The EPL goal, unchanged, lands all 20 clubs of the current table as a dataset from HTML or a
+  rendered page. The planner reaches a points-path forecast without re-parsing passages. Final status completed (met).
+  No sandbox cell re-parses the same passage more than twice.
+- **M9-3 Charts.** An embedded chart (Highcharts, Plotly or SVG) on a page becomes a series that matches the embedded values
+  exactly. A synthetic chart image is digitised with a median absolute error under 2% of the axis range, and the values
+  are labelled as read from an image.
+- **M9-4 Text signals.** Dated events found in news text (earnings, fixtures, policy decisions) become an event table that a
+  forecast tool can take as covariates, each event with its source URL.
+- **M9-5 Search.** On a fixed panel of 20 data-discovery queries, at least 15 return a relevant non-registry hit with ddgs
+  alone. Registry hits are labelled as registry, never presented as search results.
+- **M9-6 Blocked pages.** Interstitials (adblock, consent, bot check, CAPTCHA, login walls) are detected and returned as
+  not ok with a reason. None is counted as a fetched page.
+- **M9-7 Harness.** The stall rule catches a near-duplicate re-parse loop within 4 repeats. A malformed ask_user call is
+  repaired or explained in one step. The planner is given today's date, so it does not guess a data end.
+- **M9-8 Open research panel.** A panel of at least 8 open research missions across finance, sport, science, economics and
+  energy, run through the API: at least 6 finish completed (met), none uses fabricated data, and every figure carries a
+  provenance label.
+- **M9-9 Gate.** `scripts/check.sh` passes on main after every merged batch.
+
+**Evidence.** Added below as each batch lands.
