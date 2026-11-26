@@ -2,9 +2,11 @@
 
 Live evidence (measured, audit round 3, A6): retail rep4 answered "weekly (7-day) confirmed" while its health record measured
 period 5; WTI answered "naive is the appropriate benchmark" while its backtest ranked mean_last_season ahead. Both claims reached
-the person with no check. The period and the best-benchmark claims block a finish; the level-shift count and the uncited causes
-are warnings.
+the person with no check. The period and the best-benchmark claims block a finish; the uncited causes are warnings, and the
+level-shift count blocks for one series (panel round 9) and warns for a panel.
 """
+import pytest
+
 from prophet_agent.runtime import contracts
 
 
@@ -86,9 +88,12 @@ def test_a_forecast_result_with_no_forecast_tool_blocks_the_finish():
     assert _failing(contracts.check_answer("The series is forecast to rise.", []), "answer_forecast_stored")
 
 
-def test_a_level_shift_count_the_scan_does_not_hold_is_a_warning(tmp_path):
-    scan = {"findings": [{"id": "changepoints.level_shift", "severity": "major", "scope": "WTI",
-                          "evidence": {"count": 4, "breaks": []}}]}
+# Panel round 9 (GISTEMP "7 level shifts" against 4): the warning did not stop the answer. One series has one count, so a
+# different number blocks; a panel, whose answer may count one entity or all, stays a warning.
+@pytest.mark.parametrize("scopes, severity", [(["WTI"], "block"), (["WTI", "Brent"], "warn")])
+def test_a_level_shift_count_the_scan_does_not_hold(tmp_path, scopes, severity):
+    scan = {"findings": [{"id": "changepoints.level_shift", "severity": "major", "scope": s,
+                          "evidence": {"count": 4, "breaks": []}} for s in scopes]}
     folder = tmp_path / "run_a" / "out"
     folder.mkdir(parents=True)
     (folder / "scan.json").write_text(__import__("json").dumps(scan))
@@ -96,7 +101,7 @@ def test_a_level_shift_count_the_scan_does_not_hold_is_a_warning(tmp_path):
                 "result": {"ok": True, "run_id": "run_a", "outputs": ["out/scan.json (300 bytes)"]}}, _forecast()]
     checks = contracts.check_answer("The data holds five level shifts.", history, run_root=str(tmp_path))
     bad = _failing(checks, "answer_shift_count_matches")
-    assert len(bad) == 1 and bad[0]["severity"] == "warn"
+    assert len(bad) == 1 and bad[0]["severity"] == severity
 
 
 def test_a_causal_attribution_with_no_source_or_test_is_a_warning():

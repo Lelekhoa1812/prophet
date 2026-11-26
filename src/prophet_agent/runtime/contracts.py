@@ -17,6 +17,7 @@ import hashlib
 import math
 import numbers
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2180,6 +2181,86 @@ def _scan_shift_counts(history: list, run_root) -> list[int] | None:
     return counts or [0]
 
 
+FLAGGED = ("minor", "major", "blocker")
+SHIFT_DATE_DAYS = 90      # how far a stated shift date may sit from a scan break
+TOPIC_WORDS = {"level_shift": "level shifts", "outliers": "outliers", "missing": "missing values or gaps"}
+
+
+def _scan_topic_findings(findings: list[dict]) -> dict[str, list[dict]]:
+    """The saved scan's flagged findings by answer topic: level shifts, outliers, missing values or gaps."""
+    out: dict[str, list[dict]] = {"level_shift": [], "outliers": [], "missing": []}
+    for f in findings:
+        fid, sev, ev = str(f.get("id", "")), f.get("severity"), f.get("evidence") if isinstance(f.get("evidence"), dict) else {}
+        if sev not in FLAGGED:
+            continue
+        if fid == "changepoints.level_shift" and (ev.get("count") or ev.get("breaks")):
+            out["level_shift"].append(f)
+        elif fid.startswith("outliers."):
+            out["outliers"].append(f)
+        elif fid in ("values.missing", "gaps.missing") and (ev.get("missing_values") or ev.get("missing_steps")):
+            out["missing"].append(f)
+    return out
+
+
+def _finding_summary(topic: str, found: list[dict]) -> str:
+    ev = found[0].get("evidence") or {}
+    if topic == "level_shift":
+        dates = [str(b.get("at", ""))[:10] for b in ev.get("breaks") or [] if isinstance(b, dict)]
+        return f"{ev.get('count', len(dates))} level shifts ({', '.join(dates[:6])})"
+    if topic == "outliers":
+        share = (ev.get("share_by_method") or {}).get(ev.get("severity_uses", "hampel"))
+        return f"an outlier share of {share:.1%} ({found[0].get('severity')})" if isinstance(share, float) else "outliers"
+    n = ev.get("missing_values", ev.get("missing_steps"))
+    return f"{n} missing values or steps"
+
+
+def _scan_contradictions(text: str, obs: list, run_root) -> list[dict]:
+    """Blocks an answer that denies what the saved scan flagged, or dates a level shift where the scan found none.
+
+    Motivation: round 9 independent audit. CPI, AUUNEMP and SPX wrote "no level shifts, outliers or missing values"; CO2
+    "Level shifts / regime changes: None detected"; NGSTORAGE "no outliers" against a 9.8% share and "one level shift in
+    early 2012" against breaks in 2013, 2015, 2017, 2019 and 2023; SPX dated a break 2020-03-23 against breaks from 2021.
+    Logic: the newest saved scan's findings of severity minor or above, by topic. A denial of a topic the scan flagged
+    blocks ("no major outliers" only when one is major). A year placed on a shift must lie within a year of a scan break.
+    """
+    findings = _saved_scan_findings(obs, run_root)
+    if not findings or not text:
+        return []
+    topics = _scan_topic_findings(findings)
+    checks: list[dict] = []
+    for topic, sentence, strong_only in grounding.denied_findings(text):
+        found = [f for f in topics.get(topic, []) if not strong_only or f.get("severity") in ("major", "blocker")]
+        if found:
+            checks.append(_check("answer_scan_consistent", False,
+                                 f"the answer says there were no {TOPIC_WORDS[topic]} ({sentence[:160]}), but the saved "
+                                 f"scan flagged {_finding_summary(topic, found)}; say what the scan found and what was decided"))
+            break
+    stamps = []
+    for f in topics["level_shift"]:
+        for b in (f.get("evidence") or {}).get("breaks") or []:
+            try:
+                stamps.append(date.fromisoformat(str(b.get("at", ""))[:10]))
+            except (AttributeError, ValueError):
+                continue
+    if stamps:
+        # A year names the calendar year, give or take SHIFT_DATE_DAYS at either end (a break in late December of the year
+        # before still reads as "early 2013"); a date names that day, give or take the same.
+        def near(y: int, claimed: date | None) -> bool:
+            if claimed is not None:
+                return any(abs((s - claimed).days) <= SHIFT_DATE_DAYS for s in stamps)
+            lo, hi = date(y, 1, 1) - timedelta(days=SHIFT_DATE_DAYS), date(y, 12, 31) + timedelta(days=SHIFT_DATE_DAYS)
+            return any(lo <= s <= hi for s in stamps)
+        wrong = [(y, s) for y, s, d in grounding.claimed_shift_dates(text) if not near(y, d)]
+        if wrong:
+            y, s = wrong[0]
+            checks.append(_check("answer_shift_dates_match", False,
+                                 f"the answer places a level shift in {y} ({s[:160]}), but the saved scan's breaks are "
+                                 f"{_finding_summary('level_shift', topics['level_shift'])}; use the scan's dates"))
+    if not checks:
+        checks.append(_check("answer_scan_consistent", True, "the answer denies nothing the saved scan flagged"))
+    return checks
+
+
 def _withheld_totals(obs) -> dict[str, str]:
     """Why the delivered pack (the newest forecast_report) withheld its headline total: {"": reason} for one series,
     {entity: reason} for a panel. Empty when the total stands or no pack was built."""
@@ -2544,12 +2625,17 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         wrong_counts = [(n, s) for n, s in counts if n not in allowed]
         if wrong_counts:
             n, s = wrong_counts[0]
+            # Round 9 audit (GISTEMP "7 level shifts" against 4, SPX "one level shift" against 5): a warning did not stop
+            # either answer. One series has one count, so a different number is wrong and blocks; a panel stays a warning.
             checks.append(_check("answer_shift_count_matches", False,
                                  f"the answer counts {n} level shifts ({s[:160]}), but the saved scan reports "
-                                 f"{', '.join(str(c) for c in stored_counts)}", "warn"))
+                                 f"{', '.join(str(c) for c in stored_counts)}; state the scan's count",
+                                 "block" if len(stored_counts) == 1 else "warn"))
         else:
             checks.append(_check("answer_shift_count_matches", True,
                                  "the level-shift count the answer states is the scan's count", "warn"))
+
+    checks.extend(_scan_contradictions(text, obs, run_root))
 
     causes = grounding.uncited_causes(text)
     if causes:

@@ -1439,3 +1439,59 @@ What was changed:
 Not yet changed: CO2's claims from code text pass because the bag-of-numbers check finds such numbers elsewhere; CPI's answer
 gave a last value (315.66) no tool printed, and was caught.
 
+### Panel round 9 (measured, run 20261127-051319, API on 60f2a18, planner v32, evaluator v11, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| AUUNEMP | completed | none | 20 |
+| CO2 | completed | none | 9 |
+| CPI | completed | none | 5 |
+| GISTEMP | completed | none | 13 |
+| NEM | completed | none | 13 |
+| NGSTORAGE | completed | none | 6 |
+| NVDA | completed | none | 5 |
+| SPX | completed | none | 5 |
+| EPL | partial | not_settled | 1 |
+| NBA | partial | unverified_figures (0.200, 1,230) | 1 |
+
+Eight of ten completed by status. **M9-8 is not met.** Four independent read-only reviewers traced every figure of the eight
+completed answers to the tool outputs. The forecast centres, ranges and backtest scores traced in all eight. The answers
+failed on what they said about the data:
+- Denying scan findings (seven of eight): CPI, AUUNEMP and SPX wrote "no level shifts, outliers or missing values"; CO2 wrote
+  "Level shifts / regime changes: None detected"; NGSTORAGE wrote "no outliers" against a 9.8% share. In each case the saved
+  scan had flagged level shifts (3 to 5 breaks), outliers or missing values. SPX hid 65 holiday closes that were filled by
+  straight-line interpolation; NVDA counted 21 filled days as closes.
+- Wrong break counts and dates: GISTEMP "7 level shifts" (scan: 4); SPX "one level shift (2020-03-23)" (scan: five, from
+  2021); NGSTORAGE "one level shift in early 2012, a capacity expansion" (scan: five from 2013-12, no cause found). The
+  existing count check caught GISTEMP and SPX but only as a warning, which did not stop the finish.
+- Observed against forecast: NGSTORAGE gave the first forecast step (3,813) as "this week" and the data end a week late;
+  AUUNEMP gave a January value (4.1%) as the October value; SPX and NVDA gave data end dates two or three days late.
+- Outside context misread: AUUNEMP said the RBA held the cash rate when the retrieved statement says it raised it 25 basis
+  points; NEM quoted Queensland's 2024 price as New South Wales's; GISTEMP gave a 1951-1980 baseline no fetched page states
+  and put a JMA figure under NOAA.
+- NEM: the last daily value was a single 5-minute reading (the month file ends at 00:00 on 27 November), and the 14-day
+  centre repeated it.
+- The NEM and CO2 average ranges the reviewers could not find are computed by the runtime from the backtest
+  (measured_total_range); they are grounded.
+Failed missions:
+- NBA: the call named 15 teams; the view showed the first six by standing (three of them named), so the planner paged 25 times
+  through the full result and then gave a Brier score of 0.200 (tool: 0.249). The grounding check caught it.
+- EPL: before any download the planner stated a table claim listing last season's clubs from memory. Two independent sources
+  then named this season's promoted clubs; the planner and the evaluator both rejected the files, and no forecast was given.
+What was changed:
+- A blocking check (answer_scan_consistent): an answer may not deny a topic the saved scan flagged at minor or above (level
+  shifts, outliers, missing values or gaps). "No major outliers" denies only major findings. Statements about treatment ("no
+  gaps were filled", "no outliers needing treatment", "no structural-break test") are not denials. Run over the eight answers
+  it blocks CPI, AUUNEMP, CO2 and SPX.
+- A blocking check (answer_shift_dates_match): a date placed on a level shift must lie within 90 days of a scan break, and
+  a year must have one inside it, give or take 90 days. It blocks SPX (2020) and NGSTORAGE (2012).
+- The level-shift count check blocks for a single series (a panel stays a warning). It blocks GISTEMP.
+- The simulation view shows the teams the call named (simulate_season keeps paths for exactly those), with compact rows, and
+  fits one observation by dropping paths first, then rows, and naming what was left out. On the round 9 NBA result it shows 12
+  of the 14 named teams the file holds, and names the other two, in 3,681 characters.
+- A table claim's expected members that appear neither in the request nor in any fetched data are left out, with a note to
+  read the members from the fetched table.
+- pl.build_series leaves out a first or last period that holds fewer than half the usual rows when it aggregates (except with
+  agg first or last), and prints which. A series built with pandas directly is not covered.
+Not yet changed: outside-context misreadings (RBA, NEM prices, GISTEMP baseline) and observed values given as forecast.
+

@@ -483,6 +483,81 @@ def claimed_shift_counts(answer: str) -> list[tuple[int, str]]:
     return out
 
 
+# Round 9 audit: seven of eight completed answers wrote "no level shifts", "no outliers" or "no missing values" while the
+# saved scan had flagged them (CPI: four breaks and a 6.4% outlier share; SPX: 65 missing closes filled by interpolation).
+SCAN_TOPICS = {
+    "level_shift": re.compile(r"\b(?:level[- ]shifts?|structural breaks?|breaks?|regime (?:changes?|shifts?)|changepoints?|"
+                              r"change[- ]points?)\b", re.I),
+    "outliers": re.compile(r"\b(?:outliers?|spikes?)\b", re.I),
+    "missing": re.compile(r"\b(?:missing(?: values?| data| days?| weeks?| months?| observations?| points?)?|gaps?|nulls?)\b",
+                          re.I),
+}
+_DENIAL = re.compile(r"\b(?:no|zero)\s+", re.I)
+_DENIAL_STOP = re.compile(r"\b(?:were|was|are|is|found|detected|flagged|in|after|before|remain(?:ed|ing)?|needing|need(?:ed|s)?|"
+                          r"that|which|to|beyond|other|than|apart|except|requiring|left|new|further|additional)\b|[.;:!?()\n]",
+                          re.I)
+_TREATED_AFTER = re.compile(r"^[\W_]{0,3}(?:\w+\s+){0,2}(?:were\s+|was\s+|is\s+|are\s+)?(?:filled|interpolated|imputed|dropped|"
+                            r"removed|treated|clipped|winsori[sz]ed|adjusted|corrected|changed|replaced|tests?|testing|tested|"
+                            r"models?|modell?ed|analysis|checks?|checked|treatment|adjustments?|corrections?|applied|used|"
+                            r"included|assumed|handling|handled)\b", re.I)
+_STRONG = re.compile(r"^\s*(?:major|large|significant|material|notable|severe|big)\b", re.I)
+_NONE_AFTER = re.compile(r"^[^.;\n]{0,40}?(?::\s*(?:none|no)\b|\b(?:none|not|never)\s+(?:were\s+|was\s+)?(?:detected|found|"
+                         r"flagged|seen|identified|present|observed)\b)", re.I)
+
+
+def denied_findings(answer: str) -> list[tuple[str, str, bool]]:
+    """(topic, sentence, strong_only) for each scan topic the answer says is absent: "no level shifts, outliers or missing
+    values", "Level shifts / regime changes: None detected". strong_only is True for "no major outliers", which denies only
+    major findings. A stance on treatment ("no gaps were filled", "no outliers needing treatment") is not a denial."""
+    out: list[tuple[str, str, bool]] = []
+    for unit in re.split(r"(?<=[.!?;])\s+|\n+", answer or ""):
+        for m in _DENIAL.finditer(unit):
+            rest = unit[m.end():m.end() + 80]
+            stop = _DENIAL_STOP.search(rest)
+            window = rest[:stop.start()] if stop else rest
+            if stop and re.match(r"needing|need|requiring", stop.group(0), re.I):
+                continue
+            after = rest[len(window):]
+            for topic, pat in SCAN_TOPICS.items():
+                hit = pat.search(window)
+                if not hit or _TREATED_AFTER.match(window[hit.end():] + after):
+                    continue
+                out.append((topic, unit.strip(), bool(_STRONG.match(window))))
+        for topic, pat in SCAN_TOPICS.items():
+            for hit in pat.finditer(unit):
+                if _NONE_AFTER.match(unit[hit.end():]) and not any(t == topic and s == unit.strip() for t, s, _ in out):
+                    out.append((topic, unit.strip(), False))
+    return out
+
+
+_SHIFT_DATE = re.compile(r"\b(?:level[- ]shifts?|structural breaks?|breaks?|regime (?:changes?|shifts?)|changepoints?)\b"
+                         r"([^.;\n]{0,45})", re.I)
+_DATE_IN = re.compile(r"(?<![\d.,])((?:19|20)\d{2})(?:-(\d{2})(?:-(\d{2}))?)?(?![\d,])")
+
+
+def claimed_shift_dates(answer: str) -> list[tuple[int, str, "date | None"]]:
+    """(year, sentence, date or None) for each date the answer places a level shift, break or regime change on: "one level
+    shift (2020-03-23)" gives the day, "a break in early 2012" the year only (date None). Only dates within a few words after
+    the shift word count, so a data span elsewhere in the sentence does not."""
+    from datetime import date
+    out: list[tuple[int, str, date | None]] = []
+    for unit in sentences(answer):
+        for m in _SHIFT_DATE.finditer(unit):
+            if negated(unit, m.start()):
+                continue
+            tail = m.group(1)
+            if re.match(r"\s*(?:since|from|between|over|across|during|throughout|beyond)\b", tail, re.I):
+                continue
+            for d in _DATE_IN.finditer(tail):
+                y, mo, dd = int(d.group(1)), d.group(2), d.group(3)
+                try:
+                    when = date(y, int(mo), int(dd) if dd else 15) if mo else None
+                except ValueError:
+                    when = None
+                out.append((y, unit.strip(), when))
+    return out
+
+
 _CAUSE = re.compile(r"\b(?:correspond(?:s|ed)? to|caused by|due to|driven by|because of|reflects?|reflecting|as a result of)\b", re.I)
 _SHIFT_WORD = re.compile(r"\b(?:level[- ]shifts?|shifts?|breaks?|changepoints?|regimes?|spikes?|outliers?)\b", re.I)
 _CITED = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b", re.I)

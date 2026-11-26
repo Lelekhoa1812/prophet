@@ -1039,6 +1039,32 @@ def _closed_candidates(index: pd.DatetimeIndex, missing: np.ndarray) -> dict[str
     return out
 
 
+PARTIAL_EDGE = 0.5      # an edge period with fewer rows than this share of the usual count is partial
+
+
+def _drop_partial_edges(s: pd.Series, counts: pd.Series) -> pd.Series:
+    """The aggregated series without a first or last period that holds only part of its rows.
+
+    Motivation: panel round 9 (NEM). The month file of 5-minute demand ended at 00:00 on 27 November, so the last "daily
+    mean" was that one reading; the 14-day forecast repeated it and the answer called it 150 days of daily averages.
+    Logic: when most periods hold several rows, an edge period with fewer than PARTIAL_EDGE of the median count is dropped,
+    and a note is printed so the answer can say so. Interior periods are left alone (a gap is the caller's decision).
+    """
+    if len(counts) < 3:
+        return s
+    usual = float(counts[counts > 0].median()) if (counts > 0).any() else 0.0
+    if usual < 2:
+        return s
+    dropped = []
+    for at in (counts.index[0], counts.index[-1]):
+        if 0 < counts[at] < PARTIAL_EDGE * usual and at in s.index:
+            dropped.append(f"{at} ({int(counts[at])} of about {int(usual)} rows)")
+            s = s.drop(at)
+    if dropped:
+        print(f"note: build_series left out partial edge periods: {'; '.join(dropped)}")
+    return s
+
+
 def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq: str | None = None,
                  agg: str | None = None, fill: str = "keep", sentinel: list[float] | None = None,
                  entity: str | None = None, key: Any = None) -> pd.Series:
@@ -1069,8 +1095,11 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
     if freq:
         freq = _grid_freq(s.index, freq)
         grouped = s.groupby(pd.Grouper(freq=freq))
+        counts = grouped.count()
         # A period with no recorded value is missing, not zero: sum() of nothing is 0 in pandas unless min_count says so.
         s = grouped.sum(min_count=1) if agg == "sum" else getattr(grouped, agg)()
+        if agg not in ("last", "first"):       # a month's last close is still that month's close
+            s = _drop_partial_edges(s, counts)
         if fill == "zero":
             s = s.fillna(0.0)
         elif fill == "interpolate":

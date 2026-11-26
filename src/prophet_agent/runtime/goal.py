@@ -42,6 +42,7 @@ from prophet_agent.nim.errors import Exhausted, NimError, NotConfigured, redact
 from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN, preview_text
 
 from . import contracts
+from . import grounding
 from .grounding import snap, snap_note, unverified
 from . import agents
 from . import claims as claim_checks
@@ -1307,6 +1308,30 @@ def _auto_carry(args: Any, history: list[dict]) -> Any:
     return {**args, "carry": given + extra}
 
 
+def _drop_unsourced_entities(args: Any, history: list[dict], goal: str) -> tuple[Any, list[str]]:
+    """A list of expected members (clubs, constituents) that the request and the fetched data do not name is left out.
+
+    Motivation: panel round 9 (EPL). Before any download, the planner stated a table claim whose expected_entities were
+    last season's clubs from memory (Burnley, Leicester City, Southampton, West Ham United). Two independent sources then
+    named this season's promoted clubs; the claim, the planner and the evaluator all treated the files as wrong, and the
+    mission ended with no forecast. The prompts already said members come from the data; a prompt rule was not enough.
+    Logic: when any expected entity appears neither in the request nor in what the tools returned so far (case and spacing
+    ignored), the whole list is dropped and expected_rows keeps its count. Decided from the stored history and the goal, so
+    a replay builds the same arguments. Returns the arguments and the names that had no source.
+    """
+    if not isinstance(args, dict) or not isinstance(args.get("expected_entities"), list):
+        return args, []
+    seen = grounding._norm_name(grounding.evidence_text(history, goal))
+    names = [n for n in args["expected_entities"] if isinstance(n, str) and n.strip()]
+    unsourced = [n for n in names if grounding._norm_name(n) not in seen]
+    if not unsourced:
+        return args, []
+    out = {k: v for k, v in args.items() if k != "expected_entities"}
+    if names and not isinstance(out.get("expected_rows"), int):
+        out["expected_rows"] = len(names)
+    return out, unsourced
+
+
 def _drop_blank_keys(args: Any) -> Any:
     """Arguments without blank names.
 
@@ -2389,6 +2414,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 args = {k: v for k, v in args.items() if k != "rationale"}
             if name == "sandbox_python":
                 args = _auto_carry(args, history)
+            args, unsourced = _drop_unsourced_entities(args, history, goal)
             stand_in = (stand_in_reason(str(args.get("code") or ""), goal)
                         if name == "sandbox_python" and isinstance(args, dict) else None)
             if stand_in:
@@ -2400,6 +2426,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     obs = _repeat_obs(name, args, history, pos)     # not sent again: the earlier result stands
                 else:
                     obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args, tools))
+        if obs.get("kind") == "tool" and obs.get("args") is args and unsourced:
+            obs["entities_note"] = (f"expected_entities was left out: {', '.join(unsourced[:6])} appear in no fetched data and "
+                                    "not in the request, so they came from memory, which is older than today. Read the "
+                                    "members from the fetched table, then state them")
         if obs.get("kind") == "tool":
             obs.setdefault("step", len(history) + 1)     # the number read_observation pages back by (1-based, as evidence shows)
             note = _coverage_note(obs, history)

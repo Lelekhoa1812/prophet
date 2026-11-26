@@ -8,6 +8,7 @@ openfootball football.json is parsed by forecast.sports. The full result is kept
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -132,35 +133,78 @@ def _compact_backtest(bt: Any) -> Any:
     return _rounded(keep)
 
 
+VIEW_BUDGET = 3700       # characters: one observation (OBS_CHARS 4,000) with room for the wrapper
+
+
+def _compact_row(row: dict) -> dict:
+    """One team's row with expectations to one decimal and whole numbers without a decimal point."""
+    out = {}
+    for k, v in row.items():
+        if k in ("expected_final", "expected_rank_in_group") and isinstance(v, float):
+            v = round(v, 1)
+        v = _rounded(v)
+        if isinstance(v, dict):
+            v = {kk: int(vv) if isinstance(vv, float) and vv.is_integer() else vv for kk, vv in v.items()}
+        elif isinstance(v, float) and v.is_integer():
+            v = int(v)
+        out[k] = v
+    return out
+
+
+def _size(view: dict) -> int:
+    return len(json.dumps(view, ensure_ascii=False, separators=(",", ":")))
+
+
 def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dict:
-    """The planner's view, sized to fit one observation: the named teams' rows (or the first six), the backtest verdicts,
-    and compact points paths. The full result, with every team, the standings, ratings and paths, stays in the ledger.
+    """The planner's view, sized to fit one observation: the rows of the teams the call asked about (or the first six),
+    the backtest verdicts, and compact points paths. The full result, with every team, the standings, ratings and paths,
+    stays in the ledger.
 
     Motivation: panel round 4 (EPL) paged eight times through game-by-game paths; round 6 (EPL) lost the path the goal asks
     for when they were dropped; round 7 (NBA) the view was 13,592 characters, so it was clipped and the planner paged
-    18 times through the full result, and the answer then stated backtest errors no tool produced.
+    18 times through the full result. Round 9 (NBA): the call named 15 teams, the view showed the first six by standing
+    (only three of them named), and the planner paged 25 times to find the rest, then stated a Brier score no tool produced.
+    Logic: the teams asked about are the keys of points_paths (simulate_season keeps paths for exactly those teams), unless
+    every team has a path. Paths are dropped first, then rows from the end, until the view fits; what is left out is named.
     """
     if "teams" not in result:
         return result
-    named = [t for t in (teams_of_interest or []) if isinstance(t, str)]
     rows = [r for r in result.get("teams") or [] if isinstance(r, dict)]
-    shown = [r for r in rows if r.get("team") in named] if named else rows[:VIEW_TEAMS]
+    paths_all = result.get("points_paths") if isinstance(result.get("points_paths"), dict) else {}
+    named = [t for t in (teams_of_interest or []) if isinstance(t, str)]
+    if not named and paths_all and len(paths_all) < len(rows):
+        named = list(paths_all)
+    shown = [r for r in rows if r.get("team") in named] if named else []
+    shown = shown or rows[:VIEW_TEAMS]
     out = {k: v for k, v in result.items() if k not in ("standings", "ratings", "points_paths", "teams", "backtest")}
-    out["teams"] = _rounded(shown or rows[:VIEW_TEAMS])
+    out["teams"] = [_compact_row(r) for r in shown]
     if isinstance(result.get("settings"), dict):    # the fields an answer cites; the rest stay in the full result
         out["settings"] = {k: v for k, v in result["settings"].items()
                            if k in ("model", "n_played", "n_remaining", "n_sims", "points_rule", "games_per_team")}
-    if len(rows) > len(out["teams"]):
-        out["teams_not_shown"] = len(rows) - len(out["teams"])
     if "backtest" in result:
         out["backtest"] = _compact_backtest(result["backtest"])
-    if isinstance(result.get("points_paths"), dict):
-        order = [r.get("team") for r in out["teams"]]
-        paths = {t: result["points_paths"][t] for t in order if t in result["points_paths"]}
-        out["points_path_summary"] = {t: compact_path(p, every=10) for t, p in list(paths.items())[:VIEW_PATHS]}
+    order = [r.get("team") for r in shown]
+    paths = [(t, compact_path(paths_all[t], every=10)) for t in order if t in paths_all][:VIEW_PATHS]
     out["note"] = ("every figure the answer needs is in this view: per-team ranges, the backtest verdicts and "
                    "points_path_summary ([game, median, p10, p90] every tenth unplayed game and the last). The full "
                    "standings, ratings and paths are in the ledger; do not page through them. Do not sum ranges across teams.")
+    left_out: list[str] = []
+    while True:
+        out["points_path_summary"] = dict(paths)
+        if len(rows) > len(out["teams"]):
+            out["teams_not_shown"] = len(rows) - len(out["teams"])
+        if left_out:
+            out["named_teams_not_shown"] = left_out
+        if _size(out) <= VIEW_BUDGET or (not paths and len(out["teams"]) <= 1):
+            break
+        if len(paths) > 1:
+            paths = paths[:-1]
+        elif len(out["teams"]) > 1:
+            left_out.insert(0, str(out["teams"].pop().get("team")))
+        else:
+            paths = []
+    if not out["points_path_summary"]:
+        del out["points_path_summary"]
     return out
 
 
