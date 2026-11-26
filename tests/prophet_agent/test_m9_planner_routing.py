@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v28"
+    assert planner.version == "planner.v29"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
@@ -51,7 +51,7 @@ def test_v28_routes_leagues_pdfs_cached_pages_and_indexes():
     assert "call simulate_season (sport football, or win_loss for no draws)" in text
     assert "never add ranges across teams" in text
     assert "download_web_data on the PDF URL" in text and "find_in_page searches it" in text
-    assert "download_open_data from FRED (SP500" in text
+    assert "download_open_data with source `fred` (SP500" in text
     assert "table_kind league and expected_rows" in text
     assert "never offer invented, simulated or approximate numbers as an option" in text
 
@@ -63,3 +63,17 @@ def test_every_tool_v28_names_is_registered():
     for tool in ("simulate_season", "find_in_page", "download_web_data", "download_market_prices", "download_open_data",
                  "extract_page_charts", "state_table_claim", "validate_table", "backtest_series"):
         assert tool in names, tool
+
+
+def test_v29_routes_fred_full_season_results_and_copied_figures():
+    """Panel round 2 (2026-11-26): CPI asked for an unknown source "fred"; EPL read a football.json that stopped on 20
+    September; EPL passed the current season as history; NBA retyped standings that disagreed with the downloaded table."""
+    from prophet_agent.opendata import sources
+    text = _text()
+    assert "download_open_data with source `fred` and params {\"id\": code}" in text and "CPIAUCSL" in text
+    assert sources.get("fred").licence_key == "fred"
+    assert "https://fixturedownload.com/download/epl-2026-GMTStandardTime.csv" in text
+    assert "compare its last match date with today and prefer the fuller file" in text
+    assert "`history` names earlier seasons' files only, never the current season's file" in text
+    assert "or with `source` {run_id, file} for a results file a sandbox run wrote" in text
+    assert "copied from a tool result, not typed from memory" in text

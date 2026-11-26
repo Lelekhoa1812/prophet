@@ -2588,6 +2588,39 @@ def add_level_sentence(text: str, obs: list) -> str:
     return (text or "").rstrip() + "\n\n" + LEVEL_SENTENCE
 
 
+def _series_read_from_download(obs: list, paths: list[str]) -> bool:
+    """True when the forecast's source file was written by sandbox code that read a downloaded file, directly or through
+    files that earlier cells derived from it. Such a series is a filter of the file (one region of a long table), not a paste.
+
+    Panel NEM (2026-11-26): the download held 604 rows for several regions; the run kept the 120 NSW rows in code and was
+    blocked as if it had pasted a preview."""
+    names = {p.rsplit("/", 1)[-1] for p in paths if p}
+    if not names:
+        return False
+    source_run = None
+    for h in reversed(obs):
+        if isinstance(h, dict) and h.get("kind") == "tool" and h.get("tool") in ("forecast_report", "timesfm_forecast"):
+            src = (h.get("args") or {}).get("source")
+            if isinstance(src, dict) and src.get("run_id"):
+                source_run = str(src["run_id"])
+                break
+    if source_run is None:
+        return False
+    derived = set(names)
+    for h in obs:
+        res = _ok_result(h, "sandbox_python")
+        if not isinstance(res, dict):
+            continue
+        code = str((h.get("args") or {}).get("code") or "")
+        reads = any(n in code for n in derived)
+        if reads:
+            for out in res.get("outputs") or []:
+                derived.add(str(out).split(" (", 1)[0].rsplit("/", 1)[-1])
+        if str(res.get("run_id")) == source_run:
+            return reads
+    return False
+
+
 def _series_shorter_than_file(obs: list) -> dict | None:
     """The forecast used a small paste of a file the mission already downloaded.
 
@@ -2615,6 +2648,8 @@ def _series_shorter_than_file(obs: list) -> dict | None:
     # A mission can download two series. The forecast covers the file it actually used when its history
     # is at least half of that file. Block only when the history is a short paste of every downloaded file.
     if used is None or any(used >= rows * 0.5 for rows, _path in files):
+        return None
+    if _series_read_from_download(obs, [p for _r, p in files if p]):
         return None
     rows, path = max(files)
     where = f" at {path}" if path else ""
