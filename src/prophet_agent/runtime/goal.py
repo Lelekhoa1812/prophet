@@ -1290,6 +1290,11 @@ def _auto_carry(args: Any, history: list[dict]) -> Any:
             if p.lower().endswith(AUTO_CARRY_KINDS):
                 newest[p.rsplit("/", 1)[-1]] = (run, p)
     given = [c for c in args.get("carry") or [] if isinstance(c, dict)]
+    # Panel round 5 (NGSTORAGE): three cells each carried a different earlier ledger, so every save held only some of the
+    # stages and the checklist never saw four. A carried ledger is always the newest one of that name in the mission.
+    given = [({**c, "run_id": newest[name][0], "file": newest[name][1]}
+              if (name := str(c.get("file", "")).rsplit("/", 1)[-1]) in newest
+              and contracts.LEDGER_FILE.fullmatch(f"out/{name}") else c) for c in given]
     have = {str(c.get("file", "")).rsplit("/", 1)[-1] for c in given}
     room = max(0, AUTO_CARRY_MAX - len(given))
     extra = [{"run_id": r, "file": p} for name, (r, p) in sorted(newest.items()) if name not in have][:room]
@@ -2135,6 +2140,13 @@ def _dated_span_check(asked: str, count: int, unit: str, rec: dict, history: lis
         first = dt.date.fromisoformat(str(window.get("first"))[:10])
         last = dt.date.fromisoformat(str(window.get("last"))[:10])
     except ValueError:
+        return None
+    # Only a series stepped in days or weeks. A monthly point is dated at its period's start, so six months from November
+    # end on 1 April, 152 days on (panel round 5, CPI: the check asked for 7, then 8 months). The period count is exact there.
+    step = _series_step(rec)
+    steps = window.get("steps")
+    gap = ((last - first).days / (steps - 1)) if isinstance(steps, int) and steps > 1 else None
+    if (step is not None and (step[1] or step[0] >= 28)) or (gap is not None and gap >= 28):
         return None
     end = _data_facts(history).get("data_end")
     try:

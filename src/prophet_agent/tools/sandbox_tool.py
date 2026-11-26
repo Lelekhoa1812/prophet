@@ -118,6 +118,22 @@ def carried_inputs(carry, inputs: dict[str, Path] | None = None) -> dict[str, Pa
     return mounted
 
 
+CARRIED_FROM = "carried_from.json"   # beside in/ and out/, outside what the program sees
+
+
+def _record_carried_from(run_id: str, carried: dict[str, Path]) -> None:
+    """Which earlier run each carried input came from, so a series' sources can be traced back to the download that fed it
+    (panel round 5: AUUNEMP and NEM built series from carried files and cited addresses that were never fetched)."""
+    if not carried or not isinstance(run_id, str) or not RUN_ID.match(run_id):
+        return
+    origin = {name: path.parent.parent.name for name, path in carried.items()
+              if path.parent.name == "out" and RUN_ID.match(path.parent.parent.name)}
+    try:
+        (SANDBOX_ROOT / run_id / CARRIED_FROM).write_text(json.dumps(origin, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def make_run(datasets: dict[str, Path] | None = None):
     inputs = dict(datasets or {})
 
@@ -138,6 +154,7 @@ def make_run(datasets: dict[str, Path] | None = None):
         carried = carried_inputs(args.get("carry"), inputs)
         res = run_python(code, timeout_s=60, mem_mb=1536, inputs={**inputs, **carried}, run_id=run_id)
         d = res.to_dict()
+        _record_carried_from(d["run_id"], carried)
         out = {"ok": d["ok"], "returncode": d["returncode"], "timed_out": d["timed_out"],
                "stdout": d["stdout"], "stderr": d["stderr"], "run_id": d["run_id"],
                "outputs": d["outputs"], "memory_limit_enforced": d["memory_limit_enforced"]}

@@ -205,17 +205,34 @@ def input_source_urls(run_id: str, datasets_root: Path | None = None) -> dict[st
     names it. Logic: hash each file in the run's in/ folder and look it up among the dataset records' provenance.
     """
     import hashlib
-    inbox = SANDBOX_ROOT / run_id / "in"
     root = datasets_root or DATASETS_ROOT
-    if not RUN_ID.match(run_id) or not inbox.is_dir() or not root.is_dir():
+    if not RUN_ID.match(run_id) or not root.is_dir():
         return {}
+    # Round 5 (AUUNEMP, NEM): the series was built from files carried from an earlier run, whose own in/ held the download.
+    # The sandbox tool records where each carried file came from (carried_from.json); follow that chain a few runs back.
     wanted: dict[str, str] = {}
-    for f in inbox.iterdir():
-        if f.is_file() and not f.is_symlink():
-            try:
-                wanted[hashlib.sha256(f.read_bytes()).hexdigest()] = f.name
-            except OSError:
-                continue
+    queue, seen = [run_id], set()
+    while queue and len(seen) < 12:
+        rid = queue.pop(0)
+        if rid in seen or not RUN_ID.match(rid):
+            continue
+        seen.add(rid)
+        inbox = SANDBOX_ROOT / rid / "in"
+        if inbox.is_dir():
+            for f in inbox.iterdir():
+                if f.is_file() and not f.is_symlink():
+                    try:
+                        wanted.setdefault(hashlib.sha256(f.read_bytes()).hexdigest(), f.name)
+                    except OSError:
+                        continue
+        try:
+            origin = json.loads((SANDBOX_ROOT / rid / "carried_from.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            origin = {}
+        if isinstance(origin, dict):
+            queue.extend(str(v) for v in origin.values())
+    if not wanted:
+        return {}
     out: dict[str, str] = {}
     for i, folder in enumerate(root.iterdir()):
         if i >= MAX_DATASET_RECORDS or not wanted:
@@ -255,8 +272,8 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
             urls = input_source_urls(source["run_id"])
             if not urls:
                 raise
-            listed = "; ".join(f"in/{name} came from {url}" for name, url in sorted(urls.items())[:6])
-            raise ValueError(f"{exc}. The files this run read were downloaded in this mission: {listed}. Use that address "
+            listed = "; ".join(f"{name} came from {url}" for name, url in sorted(urls.items())[:6])
+            raise ValueError(f"{exc}. The files behind this series were downloaded in this mission: {listed}. Use that address "
                              "as the source url with origin retrieved, and save the series again") from None
     body = doc.get("series") if isinstance(doc, dict) else doc
     if isinstance(body, list):

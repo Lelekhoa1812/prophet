@@ -1301,3 +1301,36 @@ build. Defects read from the stored runs, and what was changed (407c280):
 - AUUNEMP: the series named its source as text ("ABS SDMX flow ...") and backtest_series refused it six times until the
   budget ran out. The refusal now names the address each input file of the run was downloaded from.
 
+### Panel round 5 (measured, run 20261127-015454, API on 00f1ddc, planner v31, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| CO2 | completed | none | 15 |
+| GISTEMP | completed | none | 6 |
+| NBA | completed | none | 1 |
+| NVDA | completed | none | 5 |
+| SPX | completed | none | 8 |
+| AUUNEMP | partial | unverified_figures, stalled | 7 |
+| CPI | partial | not_settled | 5 |
+| EPL | partial | not_settled | 2 |
+| NEM | partial | unverified_figures, stalled | 16 |
+| NGSTORAGE | partial | unverified_figures, stalled | 6 |
+
+Five of ten met (round 4: four). GISTEMP, NBA and NVDA met for the first time; CPI and NGSTORAGE, met in round 4, did
+not meet here. NEM landed AEMO price and demand through the new source (7,488 five-minute rows). Defects read from the
+stored runs, and what was changed:
+- CPI: round 4's dated horizon check read six monthly steps dated at month starts (November to 1 April) as 152 days
+  against 183, and the loop pushed the forecast to 7 and then 8 months before the evaluator called it too long. The dated
+  check now applies only to series stepped in days or weeks; monthly and slower series keep the exact period count.
+- EPL: the evaluator refused the official fixture file because its promoted clubs (Coventry, Hull, Ipswich, Sunderland)
+  were not the clubs the model remembers. Evaluator v11 and planner v32 say that members of a league, index or market
+  this season come from the fetched data, not from memory.
+- AUUNEMP and NEM: the series cited an address that was never fetched (a made-up api.data.abs.gov.au host; the AEMO page
+  instead of the CSV). Round 4's hint looked only at the series run's own inputs, and these series were built from
+  carried files. The sandbox tool now records which run each carried file came from, and the refusal follows that chain
+  back to the download.
+- NGSTORAGE: three cells each carried a different earlier ledger, so no save held four stages and the run repeated
+  itself. A carried ledger is now always the newest of its name in the mission.
+- NEM: a research sub-agent fetched aemo.com.au five times after the first page answered with a bot check. A host that
+  answered with a bot check or a CAPTCHA is not fetched again in the same mission.
+

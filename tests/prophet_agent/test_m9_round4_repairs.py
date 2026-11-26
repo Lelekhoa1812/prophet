@@ -131,7 +131,7 @@ def test_refusal_names_the_downloaded_address(tmp_path, monkeypatch):
     monkeypatch.setattr(series_io, "SANDBOX_ROOT", tmp_path / "sandbox")
     monkeypatch.setattr(series_io, "DATASETS_ROOT", tmp_path / "datasets")
     assert series_io.input_source_urls(run_id) == {"abs_sdmx.csv": url}
-    with pytest.raises(ValueError, match=r"in/abs_sdmx\.csv came from https://data\.api\.abs\.gov\.au"):
+    with pytest.raises(ValueError, match=r"abs_sdmx\.csv came from https://data\.api\.abs\.gov\.au"):
         series_io.resolve_series({"source": {"run_id": run_id, "file": "out/series.json"}})
 
 
@@ -152,3 +152,67 @@ def test_simulation_view_leaves_out_points_paths():
     result = {"teams": [{"team": "A"}], "points_paths": {"A": [{"game": 1, "median": 3.0}]}, "standings": [], "ratings": []}
     view = observe_simulate(result)
     assert "points_paths" not in view and "points_paths" in result and "points paths" in view["note"]
+
+
+# CPI (round 5): six monthly steps dated at month starts end on 1 April; the dated check read 152 days and asked for 8 months.
+def test_a_monthly_forecast_keeps_the_period_count():
+    rec = {"config": {"horizon": 6, "series_step": "monthly"},
+           "window": {"first": "2026-11-01", "last": "2027-04-01", "steps": 6}}
+    assert goal._dated_span_check("the request asks for 6 months", 6, "month", rec, []) is None
+    no_step = {"config": {"horizon": 6}, "window": {"first": "2026-11-01", "last": "2027-04-01", "steps": 6}}
+    assert goal._dated_span_check("the request asks for 6 months", 6, "month", no_step, []) is None
+
+
+# AUUNEMP and NEM (round 5): the series run read carried files; the download sat in an earlier run's in/ folder.
+def test_the_address_is_found_through_carried_files(tmp_path, monkeypatch):
+    import hashlib
+    first, second = "b" * 32, "c" * 32
+    body = b"REGION,SETTLEMENTDATE,TOTALDEMAND\nNSW1,2026/11/01 00:05:00,6829.48\n"
+    (tmp_path / "sandbox" / first / "in").mkdir(parents=True)
+    (tmp_path / "sandbox" / first / "in" / "aemo.csv").write_bytes(body)
+    (tmp_path / "sandbox" / second / "in" / "carried").mkdir(parents=True)
+    (tmp_path / "sandbox" / second / "carried_from.json").write_text(json.dumps({"carried/daily.csv": first}))
+    url = "https://www.aemo.com.au/aemo/data/nem/priceanddemand/PRICE_AND_DEMAND_202611_NSW1.csv"
+    ds = tmp_path / "datasets" / "d2"
+    ds.mkdir(parents=True)
+    (ds / "meta.json").write_text(json.dumps({"sha256": hashlib.sha256(body).hexdigest(), "provenance": {"url": url}}))
+    monkeypatch.setattr(series_io, "SANDBOX_ROOT", tmp_path / "sandbox")
+    monkeypatch.setattr(series_io, "DATASETS_ROOT", tmp_path / "datasets")
+    assert series_io.input_source_urls(second) == {"aemo.csv": url}
+
+
+def test_carried_origins_are_recorded(tmp_path, monkeypatch):
+    from prophet_agent.tools import sandbox_tool
+    monkeypatch.setattr(sandbox_tool, "SANDBOX_ROOT", tmp_path)
+    run, src = "d" * 32, "e" * 32
+    (tmp_path / run).mkdir()
+    sandbox_tool._record_carried_from(run, {"carried/series.json": tmp_path / src / "out" / "series.json"})
+    assert json.loads((tmp_path / run / "carried_from.json").read_text()) == {"carried/series.json": src}
+
+
+# NGSTORAGE (round 5): each cell carried a different earlier ledger, so no save held all the stages.
+def test_a_carried_ledger_is_the_newest_of_its_name():
+    old, new = "1" * 32, "2" * 32
+    hist = [{"kind": "tool", "tool": "sandbox_python", "result": {"run_id": old, "outputs": [{"path": "out/ledger.json"}]}},
+            {"kind": "tool", "tool": "sandbox_python", "result": {"run_id": new, "outputs": [{"path": "out/ledger.json"},
+                                                                                             {"path": "out/scan.json"}]}}]
+    out = goal._auto_carry({"code": "x", "carry": [{"run_id": old, "file": "out/ledger.json"},
+                                                   {"run_id": old, "file": "out/series.json"}]}, hist)
+    assert {"run_id": new, "file": "out/ledger.json"} in out["carry"]
+    assert {"run_id": old, "file": "out/series.json"} in out["carry"]      # other files stay as the planner chose
+
+
+# NEM (round 5): a sub-agent fetched aemo.com.au five times after its first page answered with a bot check.
+def test_a_walled_host_is_not_fetched_again():
+    from prophet_agent.tools import refuse_walled_hosts
+    calls = []
+
+    def fetch(args, key):
+        calls.append(args["url"])
+        return {"ok": False, "note": "interstitial bot_check (bot check), not read: title: 'just a moment...'"}
+    guarded = refuse_walled_hosts(fetch)
+    guarded({"url": "https://aemo.com.au/a"}, "k1")
+    with pytest.raises(ValueError, match="aemo.com.au answered with a bot check"):
+        guarded({"url": "https://aemo.com.au/b"}, "k2")
+    guarded({"url": "https://www.aemo.com.au/data.csv"}, "k3")     # another host name is still fetched
+    assert calls == ["https://aemo.com.au/a", "https://www.aemo.com.au/data.csv"]

@@ -58,6 +58,9 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
     # One LiveMounts for the whole mission: the download tools, the source tables, the chart tool and the sandbox all
     # mount into it, so a chart series landed in this run is read by the next sandbox_python call.
     live = LiveMounts(datasets)
+    if "web_fetch" in specs:
+        tool, spec = specs["web_fetch"]
+        specs["web_fetch"] = (replace(tool, fn=refuse_walled_hosts(tool.fn)), spec)
     specs.update(_open_data_tools(opendata, live))
     specs.update(chart_tool_pair(datasets, opendata, live))
     specs["simulate_season"] = (simulate_season_tool(datasets, live), SIMULATE_SEASON_SPEC)   # reads downloaded files too
@@ -71,6 +74,31 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
             specs[name] = (replace(tool, fn=_fetch_lands_the_file(tool.fn, download[0].fn)), spec)
     return {name: replace(tool, doc=spec_doc(spec), title=spec["title"], activity=spec["activity"])
             for name, (tool, spec) in specs.items()}
+
+
+def refuse_walled_hosts(fn):
+    """A web_fetch that refuses a host which already answered this mission with a bot check or a CAPTCHA.
+
+    Motivation: panel round 5 (NEM, 2026-11-27), a research sub-agent fetched aemo.com.au pages five times after the first
+    answered with a bot check, and stalled. The host is matched exactly, so www.aemo.com.au data files stay reachable.
+    """
+    import re
+    from urllib.parse import urlsplit
+    wall = re.compile(r"^interstitial (bot_check|captcha)\b")
+    walled: dict[str, str] = {}
+
+    def run(args, key):
+        url = args.get("url") if isinstance(args, dict) else None
+        host = (urlsplit(url.strip()).hostname or "").lower() if isinstance(url, str) else ""
+        if host and host in walled:
+            raise ValueError(f"{host} answered with a {walled[host]} earlier in this mission, so its pages are not read "
+                             "here; do not fetch it again. Choose another source, such as an open-data download of the "
+                             "same figures")
+        out = fn(args, key)
+        if host and isinstance(out, dict) and (m := wall.match(str(out.get("note") or ""))):
+            walled[host] = m.group(1).replace("_", " ")
+        return out
+    return run
 
 
 def _open_data_tools(context: OpenDataContext | None, live: LiveMounts) -> dict[str, tuple]:
