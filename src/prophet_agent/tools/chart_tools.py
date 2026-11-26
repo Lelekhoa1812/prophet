@@ -5,9 +5,10 @@ Motivation: the numbers a forecast needs are often only drawn on a page. Embedde
 first. A chart that is only a picture is digitised, and the planner must be able to tell the two apart.
 Logic: a page is fetched raw (chart_fetch, the guarded fetch). Series come from the page's own markup when it has any
 (charts.py). Only when it has none are its chart images digitised (chart_vision, at most max_images). Each series is
-landed as a CSV dataset in the mission's store with its method, exactness and source in the provenance, so the next
-sandbox call can read it. An uploaded image is read the same way. Nothing here returns an estimate as an observation:
-every series carries its exactness label.
+landed as a CSV dataset in the mission's store with its method, exactness and source in the provenance. It is then
+mounted on the mission's live files, the same set the download tools and sandbox_python use, so the next sandbox call in
+this run reads it at in/<name> (sandbox_file). An uploaded image is read the same way. Nothing here returns an estimate
+as an observation: every series carries its exactness label.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from prophet_agent.datasets import DatasetStore, clean_name
 from prophet_agent.opendata.store import preview
 from prophet_agent.research import chart_fetch, chart_vision, charts
 from prophet_agent.runtime.runner import ArgumentRejected, Tool
+from prophet_agent.tools.opendata_tools import MAX_MISSION_FILES, LiveMounts
 
 MAX_IMAGES = 4
 DEFAULT_IMAGES = 2
@@ -69,8 +71,21 @@ def _csv_bytes(series: dict) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def _land(ctx: ChartContext, series: dict, provenance: dict) -> dict:
-    """Stores one series as a CSV dataset and records it on the mission. Returns the summary the planner reads."""
+def _mount(ctx: ChartContext, live: LiveMounts, meta: dict) -> str:
+    """Records the landed series on the mission and mounts it for this run, as download_web_data does: attach first, then
+    the live mount under its name (a numeric suffix when the name is taken). A file already mounted keeps its name."""
+    path = ctx.store.path(meta["id"])
+    mounted = live.name_of(path)
+    if mounted is not None:
+        return mounted
+    if ctx.attach is not None:
+        ctx.attach(meta["id"])
+    return live.add(meta["name"], path)
+
+
+def _land(ctx: ChartContext, series: dict, provenance: dict, live: LiveMounts | None) -> dict:
+    """Stores one series as a CSV dataset, records it on the mission and mounts it when the mission has live mounts.
+    Returns the summary the planner reads. A mission already holding its file limit gets no new file, and is told so."""
     summary = {"name": series["name"], "method": series["method"], "exactness": series["exactness"],
                "x_kind": series.get("x_kind"), "n": series["n"], "source": series.get("source")}
     if series.get("error_bound_y") is not None:
@@ -80,15 +95,21 @@ def _land(ctx: ChartContext, series: dict, provenance: dict) -> dict:
     if ctx.store is None:
         summary["landed"] = False
         return summary
+    if live is not None and len(live) >= MAX_MISSION_FILES:
+        summary.update({"landed": False, "note": f"not stored: this mission already holds {MAX_MISSION_FILES} files"})
+        return summary
     name = clean_name(f"chart-{series['name'][:40]}.csv")
     meta = ctx.store.add(name, body, provenance={**provenance, "sha256_series": hashlib.sha256(body).hexdigest(),
                                                   "series_name": series["name"], "method": series["method"],
                                                   "exactness": series["exactness"], "licence_key": "unverified",
                                                   "series_bound": False})
-    if ctx.attach is not None:
-        ctx.attach(meta["id"])
     summary.update({"landed": True, "dataset_id": meta["id"], "file": name,
                     "row_count": preview(body, "csv")["row_count"]})
+    if live is None:
+        if ctx.attach is not None:
+            ctx.attach(meta["id"])
+    else:
+        summary["sandbox_file"] = f"in/{_mount(ctx, live, meta)}"
     return summary
 
 
@@ -150,9 +171,11 @@ def _run_image(args: dict, datasets: dict[str, Path]) -> dict:
     return {"ok": True, "image": base, "found": found, "skipped": skipped}
 
 
-def chart_tool_pair(datasets: dict[str, Path] | None, context) -> dict[str, tuple[Tool, dict]]:
+def chart_tool_pair(datasets: dict[str, Path] | None, context,
+                    live: LiveMounts | None = None) -> dict[str, tuple[Tool, dict]]:
     """The extract_page_charts tool, as the (tool, spec) pair default_tools expects. ``context`` is the mission's
-    OpenDataContext (store and attach), or None outside a mission; the tool then reads but does not land."""
+    OpenDataContext (store and attach), or None outside a mission; the tool then reads but does not land. ``live`` is the
+    mission's LiveMounts, the same set the sandbox reads; with it each landed series is mounted for the sandbox run."""
     ctx = ChartContext(store=getattr(context, "store", None), attach=getattr(context, "attach", None))
     files = dict(datasets or {})
 
@@ -187,10 +210,10 @@ def chart_tool_pair(datasets: dict[str, Path] | None, context) -> dict[str, tupl
         provenance = {"source": "chart", "url": result.get("final_url") or result.get("image"),
                       "retrieved_from": "page" if url else "upload"}
         for s in found:
-            landed.append(_land(ctx, s, {**provenance, "source_location": s.get("source")}))
+            landed.append(_land(ctx, s, {**provenance, "source_location": s.get("source")}, live))
         note = ("Each series is a dataset. exactness embedded or svg-geometry means the values are the page's data or "
                 "inverted from its SVG geometry; read_from_image means digitised from a picture, with error_bound_y. "
-                "Read a landed file in sandbox_python only when it is mounted for this run.")
+                "A landed series is mounted at sandbox_file (in/<name>): read it in the next sandbox_python call.")
         return {"ok": True, "series": landed, "skipped": result.get("skipped", []),
                 "chart_images_seen": result.get("chart_images_seen", []), "note": note}
 
@@ -205,7 +228,8 @@ EXTRACT_PAGE_CHARTS_SPEC = {
                    "ECharts, Vega-Lite) or its inline SVG line charts, exact where the page carries the numbers. Only when the "
                    "page has none, digitise up to max_images chart pictures with a vision model: the code measures the "
                    "pixels, and those values are labelled read_from_image with an error bound. With image, digitise a chart "
-                   "picture the person uploaded (a mission file). Each series lands as a dataset with its exactness.",
+                   "picture the person uploaded (a mission file). Each series lands as a dataset with its exactness, and is "
+                   "mounted at sandbox_file (in/<name>) for sandbox_python in this run.",
     "args": {"url": "an http or https address of a page with a chart (give url or image, not both)",
              "image": "a mission file name of a PNG or JPEG chart (give url or image, not both)",
              "series": "optional; keep only series whose name contains this text",

@@ -11,8 +11,11 @@ from .lab_tool import LAB_TOOL_SPEC
 from .lab_tool import lab_tool as make_lab_tool
 from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_drivers_tool, detect_anomalies_tool)
 from .notebook_tools import SAVE_TABLE_SPEC, NotebookBinding, save_table_tool
-from .opendata_tools import OpenDataContext, open_data_tools
+from .opendata_tools import (DOWNLOAD_OPEN_DATA_SPEC, DOWNLOAD_WEB_DATA_SPEC, LIST_SOURCES_SPEC, MARKET_PRICES_SPEC,
+                             LiveMounts, OpenDataContext, download_market_prices_tool, download_open_data_tool,
+                             download_web_data_tool, list_sources_tool, live_sandbox_tool)
 from .research_tools import tools as research_tool_pairs
+from .source_table_tools import source_table_tools
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .sandbox_tool import SANDBOX_PYTHON_SPEC, sandbox_python_tool
 from .skill_tool import ANALYST_SKILL_SPEC, skill_tool
@@ -50,8 +53,11 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         specs["inspect_data"] = (inspect_data_tool(datasets), INSPECT_DATA_SPEC)
     if binding is not None:
         specs["save_table"] = (save_table_tool(binding), SAVE_TABLE_SPEC)
-    specs.update(open_data_tools(datasets, opendata))
-    specs.update(chart_tool_pair(datasets, opendata))
+    # One LiveMounts for the whole mission: the download tools, the source tables, the chart tool and the sandbox all
+    # mount into it, so a chart series landed in this run is read by the next sandbox_python call.
+    live = LiveMounts(datasets)
+    specs.update(_open_data_tools(opendata, live))
+    specs.update(chart_tool_pair(datasets, opendata, live))
     download = specs.get("download_web_data")
     if download is not None and opendata is not None and opendata.store is not None:
         # SciRes re-run 2026-11-24 was told to call download_web_data and pasted the preview instead. Landing the file
@@ -62,6 +68,20 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
             specs[name] = (replace(tool, fn=_fetch_lands_the_file(tool.fn, download[0].fn)), spec)
     return {name: replace(tool, doc=spec_doc(spec), title=spec["title"], activity=spec["activity"])
             for name, (tool, spec) in specs.items()}
+
+
+def _open_data_tools(context: OpenDataContext | None, live: LiveMounts) -> dict[str, tuple]:
+    """The open-data tools around one shared LiveMounts. Same pairs as opendata_tools.open_data_tools, which makes its own
+    LiveMounts and so cannot share the mission's mounts with the chart tool; the parts are the same public functions."""
+    pairs = {"list_open_data_sources": (list_sources_tool(), LIST_SOURCES_SPEC)}
+    if context is None:
+        return pairs
+    pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)
+    pairs["download_open_data"] = (download_open_data_tool(context, live), DOWNLOAD_OPEN_DATA_SPEC)
+    pairs["download_web_data"] = (download_web_data_tool(context, live), DOWNLOAD_WEB_DATA_SPEC)
+    pairs["download_market_prices"] = (download_market_prices_tool(context, live), MARKET_PRICES_SPEC)
+    pairs.update(source_table_tools(context, live))
+    return pairs
 
 
 def _fetch_lands_the_file(fetch_fn, download_fn):
