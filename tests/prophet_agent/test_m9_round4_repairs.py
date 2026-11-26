@@ -144,3 +144,11 @@ def test_calendar_request_is_checked_by_dates():
     assert goal._dated_span_check("the request asks for 2 months", 2, "month", short, [])["ok"] is False
     assert goal._dated_span_check("x", 20, "trading_day", rec, []) is None
     assert goal._dated_span_check("x", 2, "month", {"config": {}}, []) is None
+
+
+# EPL: the planner paged eight times through a simulation result whose game-by-game paths it never used.
+def test_simulation_view_leaves_out_points_paths():
+    from prophet_agent.tools.sports_tool import observe_simulate
+    result = {"teams": [{"team": "A"}], "points_paths": {"A": [{"game": 1, "median": 3.0}]}, "standings": [], "ratings": []}
+    view = observe_simulate(result)
+    assert "points_paths" not in view and "points_paths" in result and "points paths" in view["note"]

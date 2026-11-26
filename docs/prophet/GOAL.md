@@ -1263,3 +1263,41 @@ the data lands. Defects read from the stored runs, and what was changed:
   download at `in/carried/<name>` (4a0d428).
 - GISTEMP: `download_open_data` had no GISTEMP source; `gistemp_monthly` added (measured live: 147 yearly rows).
 - AUUNEMP (round 2's model loop) completed with planner v29 on this build; v30 adds the ABS key for later rounds.
+
+### Panel round 4 (measured, run 20261127-001014, API on 8f83c52, planner v30, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| CO2 | completed | none | 11 |
+| CPI | completed | none | 9 |
+| NGSTORAGE | completed | none | 28 |
+| SPX | completed | none | 15 |
+| AUUNEMP | checkpoint | budget_spent | 12 |
+| EPL | partial | unverified_figures, stalled | 1 |
+| GISTEMP | partial | unverified_figures, stalled | 19 |
+| NBA | partial | unverified_figures, stalled | 4 |
+| NEM | partial | stalled | 10 |
+| NVDA | partial | stalled | 23 |
+
+Four of ten met (round 3: three). NGSTORAGE and SPX met for the first time. The ledger fix of 7ca4e54 was not in this
+build. Defects read from the stored runs, and what was changed (407c280):
+- EPL: the planner sent its question as a tool call named ask_user three times, got "unknown tool" each time and stalled.
+  Such a call is now the ask_user action. "95% CI" and "95% bootstrap interval" (EPL, NBA) were flagged as figures; interval
+  names with those words are now labels, and a bare "95%" is still checked.
+- NBA: the fixturedownload file holds cup knockout rows reading "To be announced" on both sides, and the simulation failed
+  on them ("a team cannot play itself"). Unplayed placeholder rows are left out and counted in the notes; a played one is
+  an error. A score written as "121.0" is read as 121.
+- NEM: aemo.com.au pages answer with a bot check, and the NEMWEB dispatch file the planner found holds unit prices, not
+  demand. The monthly AEMO price and demand file is reachable (measured: 200, text/csv, 5-minute TOTALDEMAND for NSW1);
+  source `aemo_price_demand` added, and planner v31 routes to it.
+- GISTEMP: a cell saved four ledger stages with ps.Ledger and then copied the carried ledger over `out/ledger.json`; the
+  checklist read one stage for five cells, no forecast ran, and the stall composer wrote a forecast table that no tool
+  produced (all 18 values were caught as unverified). A ledger written over after ps.Ledger saved it is now restored at
+  the end of the cell, with a note in the output.
+- NVDA: origin "market" was refused five times; words that mean fetched are now read as retrieved, which still needs a
+  fetch-recorded address. `rationale` passed as a tool argument and to `Ledger.add` failed; the first is dropped, the second
+  is added to the decision. The horizon check read "the next 2 months" on a trading-day series as 60.9 periods and blocked
+  a forecast that ran from 27 November to 26 January; a calendar request is now checked by the forecast's dates.
+- AUUNEMP: the series named its source as text ("ABS SDMX flow ...") and backtest_series refused it six times until the
+  budget ran out. The refusal now names the address each input file of the run was downloaded from.
+

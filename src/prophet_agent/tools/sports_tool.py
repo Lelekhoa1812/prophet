@@ -100,11 +100,13 @@ def observe_simulate(result: dict) -> dict:
     """The planner's view: the team table, settings, backtest and the first 20 standings and ratings. The ledger keeps all."""
     if "teams" not in result:
         return result
-    out = {k: v for k, v in result.items() if k not in ("standings", "ratings")}
+    # Panel round 4 (EPL): the points paths were 11,315 of 24,905 characters, and the planner paged eight times to read a
+    # game-by-game table it never used. The paths stay in the full result for charts and checks.
+    out = {k: v for k, v in result.items() if k not in ("standings", "ratings", "points_paths")}
     out["standings"] = (result.get("standings") or [])[:20]
     out["ratings"] = (result.get("ratings") or [])[:20]
-    out["note"] = ("per-team ranges shown; the full standings, ratings and points paths are kept in the ledger. Do not sum "
-                   "ranges across teams.")
+    out["note"] = ("per-team ranges shown; the full standings, ratings and game-by-game points paths are kept in the ledger. "
+                   "Do not sum ranges across teams.")
     return out
 
 
