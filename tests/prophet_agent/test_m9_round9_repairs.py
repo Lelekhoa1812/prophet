@@ -132,3 +132,33 @@ def test_a_partial_last_period_is_left_out(capsys):
     assert str(closes.index[-1].date()) == "2026-11-27"                    # the last close of a day is still that close
     daily = pd.DataFrame({"t": pd.date_range("2026-11-01", "2026-11-26").astype(str), "v": 1.0})
     assert len(pl.build_series(daily, "v", "t", freq="D", agg="mean")) == 26
+
+
+def _fc(date: str, value: float) -> list[dict]:
+    return [{"kind": "tool", "tool": "timesfm_forecast", "result": {"point": [1.0], "last_observed": {"date": date,
+                                                                                                    "value": value}}}]
+
+
+# AUUNEMP: "Latest observed value: 4.1% (October 2026)" where October was 4.86 and 4.1 was January's.
+def test_the_latest_value_is_the_last_observed_value():
+    bad = contracts._latest_and_end("- Latest observed value: **4.1%** (October 2026).", _fc("2026-10-01", 4.864833))
+    assert bad and bad[0]["name"] == "answer_latest_value" and bad[0]["severity"] == "block"
+    for ok in ("- Latest observed value: **4.86%** (October 2026).", "The latest value is 4.9%.",
+               "| Naive (last value) | 0.442 | baseline |", "The ABS release reported a latest value of 5.1%."):
+        assert contracts._latest_and_end(ok, _fc("2026-10-01", 4.864833)) == [], ok
+
+
+# SPX: "1,799 trading days, 2020-01-02 to 2026-11-27" with the last close on 2026-11-24.
+def test_the_data_span_may_not_end_after_the_last_observation():
+    said = "- Source: FRED series SP500 (1,799 trading days, 2020-01-02 to 2026-11-27)."
+    bad = contracts._latest_and_end(said, _fc("2026-11-24", 7201.09))
+    assert bad and bad[0]["name"] == "answer_data_end" and "2026-11-24" in bad[0]["detail"]
+    for ok in ("- Source: FRED SP500, 2020-01-02 to 2026-11-24.", "The forecast window runs 2026-11-25 to 2026-12-22."):
+        assert contracts._latest_and_end(ok, _fc("2026-11-24", 7201.09)) == [], ok
+
+
+def test_a_forecast_records_where_the_observations_stop():
+    from prophet_agent.tools.timesfm_tool import _last_observed
+    assert _last_observed([1.0, 2.0, float("nan")], ["2026-11-01", "2026-11-02", "2026-11-03"]) == \
+        {"value": 2.0, "date": "2026-11-02"}
+    assert _last_observed([1.0, 3.5], None) == {"value": 3.5}

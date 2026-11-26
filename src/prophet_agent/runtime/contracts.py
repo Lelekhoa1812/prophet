@@ -2261,6 +2261,77 @@ def _scan_contradictions(text: str, obs: list, run_root) -> list[dict]:
     return checks
 
 
+_LATEST = re.compile(r"\b(?:latest|last|most recent)\s+(?:observed\s+|recorded\s+|actual\s+)?(?:value|reading|level|close|"
+                     r"observation|data point|weekly value|monthly value|daily value)s?\b", re.I)
+_OUTSIDE = re.compile(r"\bS\d{1,3}\b|release|reported|according|announced|survey|statement|forecast|predict|expected|"
+                      r"range|band|centre|median|naive|baseline|\bMASE\b|\brule\b|repeat", re.I)
+_FIGURE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\d-])")
+_DATA_WORDS = re.compile(r"\b(?:observations?|observed|closes|rows|data|series|history|record|readings)\b", re.I)
+_AHEAD_WORDS = re.compile(r"\b(?:forecasts?|window|horizon|ahead|next|predict\w*|projected|steps?)\b", re.I)
+_SPAN_END = re.compile(r"(?:\bto\b|\bthrough\b|\buntil\b|\bending\b|[–—]|\s-\s)\s*(\d{4}-\d{2}-\d{2})")
+
+
+def _last_observed(obs: list) -> dict | None:
+    """The last observed point the newest single-series forecast started from ({date, value}), or None."""
+    for h in reversed(obs):
+        rec = _forecast_record(h) if isinstance(h, dict) else None
+        if isinstance(rec, dict) and isinstance(rec.get("last_observed"), dict):
+            return rec["last_observed"]
+        if isinstance(rec, dict):
+            return None
+    return None
+
+
+def _latest_and_end(text: str, obs: list) -> list[dict]:
+    """Blocks a "latest value" that is not the last observed value, and a data span that ends after the last observation.
+
+    Motivation: panel round 9 audit. AUUNEMP: "Latest observed value: 4.1% (October 2026)", where October was 4.86 and 4.1 was
+    January's. SPX: "1,799 observed rows from 2020-01-02 to 2026-11-27" with the last close on 2026-11-24. NVDA the same, a
+    day of interpolated closes past the data.
+    Logic: the forecast record's last_observed. A figure right after "latest value" (and the like) in a sentence with no
+    source id, release or forecast word must round to that value (or its percentage). A span in a sentence about the data,
+    not the forecast, may not end after the last observed date.
+    """
+    last = _last_observed(obs)
+    if not last or not text:
+        return []
+    checks: list[dict] = []
+    value = _finite(last.get("value"))
+    if value is not None:
+        for unit in grounding.sentences(text):
+            m = _LATEST.search(unit)
+            if not m or _OUTSIDE.search(unit):
+                continue
+            fig = next((f for f in _FIGURE.finditer(unit[m.end():m.end() + 60])
+                        if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1))), None)
+            if fig is None:
+                continue
+            token = fig.group(1)
+            x = float(token.replace(",", ""))
+            dec = len(token.split(".")[1]) if "." in token else 0
+            tol = 0.5 * 10 ** -dec + 1e-9
+            if abs(x - value) <= tol or abs(x - abs(value)) <= tol or abs(x / 100 - value) <= tol / 100:
+                continue
+            checks.append(_check("answer_latest_value", False,
+                                 f"the answer gives {token} as the latest value ({unit.strip()[:160]}), but the last observed "
+                                 f"value is {value:g}{' on ' + last['date'][:10] if last.get('date') else ''}; give that value, "
+                                 "or say which source the figure is from"))
+            break
+    end = str(last.get("date") or "")[:10]
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+        for unit in grounding.sentences(text):
+            if not _DATA_WORDS.search(unit) or _AHEAD_WORDS.search(unit):
+                continue
+            stated = [d for d in _SPAN_END.findall(unit)]
+            later = [d for d in stated if d > end]
+            if later:
+                checks.append(_check("answer_data_end", False,
+                                     f"the answer says the data runs to {later[0]} ({unit.strip()[:160]}), but the last "
+                                     f"observation is on {end}; state the last observed date"))
+                break
+    return checks
+
+
 def _withheld_totals(obs) -> dict[str, str]:
     """Why the delivered pack (the newest forecast_report) withheld its headline total: {"": reason} for one series,
     {entity: reason} for a panel. Empty when the total stands or no pack was built."""
@@ -2636,6 +2707,7 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                                  "the level-shift count the answer states is the scan's count", "warn"))
 
     checks.extend(_scan_contradictions(text, obs, run_root))
+    checks.extend(_latest_and_end(text, obs))
 
     causes = grounding.uncited_causes(text)
     if causes:

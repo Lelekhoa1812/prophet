@@ -139,6 +139,8 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
             r["config"]["ignored_arguments"] = ignored
         dates = run_dates(args, name)
         _attach_window(r, dates, len(s), horizon)
+        if (last := _last_observed(s, dates)) is not None:
+            r["last_observed"] = last
         step = _typical_step(dates)
         if step is not None:
             r["config"]["series_step"] = step      # the series' own step, so a request in weeks or months can be converted
@@ -167,6 +169,27 @@ def _attach_window(r: dict, dates: list[str] | None, n_history: int, horizon: in
     if ahead:
         r["future_dates"] = ahead
         r["window"] = {"first": ahead[0], "last": ahead[-1], "steps": len(ahead)}
+
+
+def _last_observed(values: Any, dates: list[str] | None) -> dict | None:
+    """The last observed point of the history the forecast starts from: its date (when known) and value.
+
+    Motivation: panel round 9 audit. NGSTORAGE gave the first forecast step (3,813) as "this week" and the data end a week
+    late; AUUNEMP gave a January value as October's; SPX and NVDA put the data end two or three days after the last close.
+    No forecast record said where the observations stop, so neither the planner nor a check could tell.
+    """
+    try:
+        v = [float(x) for x in values]
+    except (TypeError, ValueError):
+        return None
+    finite = [i for i, x in enumerate(v) if np.isfinite(x)]
+    if not finite:
+        return None
+    i = finite[-1]
+    out: dict[str, Any] = {"value": round(v[i], 6)}
+    if dates is not None and len(dates) == len(v):
+        out["date"] = str(dates[i])[:19]
+    return out
 
 
 def _typical_step(dates: list[str] | None) -> float | None:
@@ -205,6 +228,8 @@ def _compact(r: dict) -> dict:
            "point": _thin(r["point"]), "q10": _thin(q["0.1"]), "q90": _thin(q["0.9"])}
     if r.get("window"):
         out["window"] = r["window"]           # the first and last forecast dates, so an answer can state the period it covers
+    if r.get("last_observed"):
+        out["last_observed"] = r["last_observed"]     # where the observations stop; the window starts after it
     if len(r["point"]) > FULL_SHOWN:
         out["note"] = f"{len(r['point'])} periods; every ~{len(r['point']) // SHOWN}th shown"
     return out
