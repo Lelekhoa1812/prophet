@@ -334,3 +334,25 @@ def test_the_mission_records_the_download_and_a_rebuilt_tool_set_mounts_it(serve
     rebuilt = service.tools_for(service.store.mission(mid))
     out = rebuilt["sandbox_python"].fn({"code": "import os\nprint(os.listdir('in'))"}, "run-key-" + "1" * 22)
     assert out["ok"] and got["name"] in out["stdout"]
+
+
+def test_an_address_that_failed_for_good_is_not_fetched_again_in_the_mission(served, mission):
+    """Panel NGSTORAGE (2026-11-26): the same refused EIA addresses were fetched twelve times."""
+    from prophet_agent.tools.opendata_tools import LiveMounts, download_web_data_tool
+    tool = download_web_data_tool(mission.context(), LiveMounts(None))
+    served["status"] = 403
+    with pytest.raises(fetch.DownloadError, match="HTTP 403"):
+        tool.fn({"url": WEB_URL}, "k1")
+    with pytest.raises(ValueError, match="already failed in this mission"):
+        tool.fn({"url": WEB_URL}, "k2")
+    assert served["calls"] == 1
+
+
+def test_a_rate_limit_is_not_remembered_as_a_permanent_failure(served, mission):
+    from prophet_agent.tools.opendata_tools import LiveMounts, download_web_data_tool
+    tool = download_web_data_tool(mission.context(), LiveMounts(None))
+    served["status"] = 429
+    with pytest.raises(fetch.DownloadError, match="HTTP 429"):
+        tool.fn({"url": WEB_URL}, "k1")
+    served["status"] = 200
+    assert tool.fn({"url": WEB_URL}, "k2")["row_count"] > 0

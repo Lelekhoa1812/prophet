@@ -52,6 +52,9 @@ class LiveMounts:
 
     def __init__(self, start: dict[str, Path] | None):
         self._mounts: dict[str, Path] = dict(start or {})
+        # Addresses that failed for good in this mission (HTTP 401, 403, 404 or 410, or a refused type), with the reason.
+        # Panel NGSTORAGE (2026-11-26): the lead and an analyst fetched the same five refused EIA addresses twelve times.
+        self.failed: dict[str, str] = {}
 
     def mounts(self) -> dict[str, Path]:
         return dict(self._mounts)
@@ -70,6 +73,9 @@ class LiveMounts:
             mount = f"{stem}_{n}{suffix}"
         self._mounts[mount] = path
         return mount
+
+
+PERMANENT_FAILURE = re.compile(r"^HTTP (?:401|403|404|410)\b|content type .* is not allowed")
 
 
 def live_sandbox_tool(live: LiveMounts) -> Tool:
@@ -311,7 +317,15 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
             _guard_name(name, body, url)
             meta = dict(existing, preview=preview(body, existing["provenance"]["format"]))
         else:
-            fetched = fetch.download(url)          # refuses private addresses, redirects to them, and types or sizes it does not accept
+            if url in live.failed:
+                raise ValueError(f"this address already failed in this mission ({live.failed[url]}), so it is not fetched "
+                                 "again. Use a data file link that web_fetch listed for the page, or another source")
+            try:
+                fetched = fetch.download(url)      # refuses private addresses, redirects to them, and types or sizes it does not accept
+            except fetch.DownloadError as exc:
+                if PERMANENT_FAILURE.search(str(exc)):
+                    live.failed[url] = str(exc)[:160]
+                raise
             media = fetch.media_type(fetched["content_type"])
             if media in fetch.HTML_TYPES or media in fetch.PDF_TYPES:
                 # A page or a PDF lands its best table (or the one named by table), with the other candidates listed on the
