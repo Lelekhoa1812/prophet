@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v29"
+    assert planner.version == "planner.v30"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
@@ -77,3 +77,13 @@ def test_v29_routes_fred_full_season_results_and_copied_figures():
     assert "`history` names earlier seasons' files only, never the current season's file" in text
     assert "or with `source` {run_id, file} for a results file a sandbox run wrote" in text
     assert "copied from a tool result, not typed from memory" in text
+
+
+def test_v30_gives_sdmx_keys_without_guessing():
+    """Panel AUUNEMP (2026-11-26): the model wrote an ABS key as "M.1.1.1..." until it was cut off, four times."""
+    from prophet_agent.opendata import sources
+    text = _text()
+    assert "never build one by repeating a code" in text
+    assert "flow ABS,LF,1.0.0, key M13.3.1599.20.AUS.M" in text
+    url = sources.build_url("abs_sdmx", {"flow": "ABS,LF,1.0.0", "key": "M13.3.1599.20.AUS.M"})
+    assert url.endswith("/ABS,LF,1.0.0/M13.3.1599.20.AUS.M?format=csv")
