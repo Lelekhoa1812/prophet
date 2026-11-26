@@ -2457,6 +2457,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # ...and a copying slip in a station table's day cell, set to the forecast's own value for that station and day.
             answer, table_fixed = contracts.snap_tables(answer, history)
             answer += snap_note([*fixed, *table_fixed])
+            answer = contracts.add_level_sentence(answer, history)    # follows from the stored flat_expected verdict
             # The answer's plain claims (a cycle, the best rule, a total the pack withheld) are checked against the stored
             # output. The fix is in the words, so the composer rewrites once; a claim still wrong after that leaves partial.
             # Round 4: these checks were built (C3a) and tested but never called here, so none ran live.

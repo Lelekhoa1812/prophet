@@ -2563,6 +2563,22 @@ def _flat_expected_level_sentence(text: str, obs: list) -> dict | None:
                   "the history shows no repeating pattern. A check verdict does not require this sentence.")
 
 
+LEVEL_SENTENCE = ("The centre line is a level: the history shows no repeating pattern, so the line carries no directional "
+                  "view and the range is the forecast.")
+
+
+def add_level_sentence(text: str, obs: list) -> str:
+    """The answer with the level sentence added when the delivered verdict is flat_expected and the answer lacks it.
+
+    Motivation: panel runs NVDA (round 1) and SPX (baseline), 2026-11-26: the composer was told to add the sentence and
+    the answer still missed it, so a price forecast that was right to be flat ended partial. The sentence follows from
+    the stored verdict alone, like a snapped figure. Logic: only for flat_expected, only when _LEVEL_LINE is absent.
+    """
+    if _latest_health_verdict(obs) != "flat_expected" or _LEVEL_LINE.search(text or ""):
+        return text
+    return (text or "").rstrip() + "\n\n" + LEVEL_SENTENCE
+
+
 def _series_shorter_than_file(obs: list) -> dict | None:
     """The forecast used a small paste of a file the mission already downloaded.
 

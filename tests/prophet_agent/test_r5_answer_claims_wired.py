@@ -359,3 +359,13 @@ def test_compounding_or_correlated_errors_name_the_together_bound():
                           192_095, 794_892, True) is None
     assert bound_misnamed("$1,622.3 - $2,042.5 (perfectly correlated).", 1_622.3, 2_042.5, True) is None
     assert bound_misnamed("$1,622.3 - $2,042.5 (uncorrelated).", 1_622.3, 2_042.5, True)
+
+
+def test_the_level_sentence_is_added_when_the_verdict_is_flat_expected():
+    """Panel NVDA and SPX (2026-11-26) ended partial for a missing level sentence the verdict alone implies."""
+    missing = "The next 40 trading days centre on 182.4, with an 80% range of 160 to 205."
+    added = contracts.add_level_sentence(missing, [_forecast("flat_expected")])
+    assert added.startswith(missing) and contracts.LEVEL_SENTENCE in added
+    assert _named(contracts.check_answer(added, [_forecast("flat_expected")]), "answer_level_sentence")[0]["ok"]
+    assert contracts.add_level_sentence(missing, [_forecast("check")]) == missing
+    assert contracts.add_level_sentence(added, [_forecast("flat_expected")]) == added
