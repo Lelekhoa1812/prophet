@@ -44,6 +44,7 @@ from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN, preview_text
 from . import contracts
 from .grounding import snap, snap_note, unverified
 from . import agents
+from . import claims as claim_checks
 from .questions import QUESTIONS_SCHEMA, expected_shape, repair_questions, validate_questions
 from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
 from .store import LeaseLost, OutcomeUnknown, canonical
@@ -1634,6 +1635,10 @@ def _brief(spec: dict, agent: agents.AgentType, agent_id: str, resumed: bool) ->
         parts.append(f"Boundaries: {str(spec['constraints']).strip()}")
     parts.append("Your final verdict lists findings (each a short statement) and figures (a name and the value a tool "
                  "printed). Give only figures a tool printed; list the ones you could not establish in the answer.")
+    parts.append("Put each claim you rely on on its own line, in this form: CLAIM | value=<the value as the page prints it> | "
+                 "unit=<unit> | as_of=<date the source gives> | entity=<what it is about> | source_id=<the S-id of the source> | "
+                 "quote=\"<the words of the page around the value, copied exactly>\". Add locator=<a label next to the quote> only "
+                 "when the value appears more than once on that page. A claim without a quote from a page a tool read is not checked.")
     parts.append("You do not see the lead agent's conversation: this brief and the context below are all you have. Keep "
                  "anything you must not lose (a decision, a run id and file, open questions) in your notes. Report only "
                  "figures a tool printed. The lead agent reads your final report and nothing else; it can read your notes.")
@@ -1731,6 +1736,11 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     bad = list(dict.fromkeys(bad + [f["value"] for f in obs["figures"] if not f["sourced"]]))
     if bad:
         obs["unverified"] = bad          # the lead agent is told which of the report's figures no tool printed
+    # Mission 9 (task 1): each claim the report lists (value, source and quote) is checked against the page text the research cache
+    # holds for its source. The check is a ledger step, so a resumed run reads the stored statuses and never reads the cache again.
+    if claim_checks.parse_claims(answer):
+        checked = ctx.step(f"claims:{agent_id}", lambda _c: claim_checks.check_report_claims(answer, sub_history))
+        obs["claims"], obs["claim_summary"] = checked["claims"], checked["summary"]
     return obs
 
 
