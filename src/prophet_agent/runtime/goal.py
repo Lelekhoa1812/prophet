@@ -50,6 +50,7 @@ from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Canc
 from .store import LeaseLost, OutcomeUnknown, canonical
 
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT
+from prophet_agent.tools.sandbox_tool import stand_in_reason
 
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -2308,7 +2309,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             args = _repair_source(_drop_blank_keys(plan.get("args", {})), history)
             if name == "sandbox_python":
                 args = _auto_carry(args, history)
-            if name not in tools:
+            stand_in = (stand_in_reason(str(args.get("code") or ""), goal)
+                        if name == "sandbox_python" and isinstance(args, dict) else None)
+            if stand_in:
+                obs = {"kind": "tool", "tool": name, "args": args, "error": stand_in}     # derived from args and goal: replays alike
+            elif name not in tools:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
             else:
                 if (pos := _repeat_of(name, args, history)) is not None:

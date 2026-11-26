@@ -55,6 +55,27 @@ def invented_source_reason(code: str) -> str | None:
             "labelled synthetic replay must not name the source: label them synthetic.")
 
 
+STAND_IN_WORD = re.compile(r"\b(?:synthetic|placeholder|dummy|fake|mock|made[- ]up|stand[- ]in|fabricated)\b", re.I)
+
+
+def stand_in_reason(code: str, goal: str = "") -> str | None:
+    """Why a cell that builds stand-in data must not run, or None.
+
+    Motivation: panel CPI (2026-11-26) had no data in the sandbox, and an analyst cell built "synthetic CPI data" with a
+    random generator; five more cells analysed it before the run stalled. Logic: refused when the cell generates numbers
+    (a random generator or a long typed list), calls them synthetic, placeholder, dummy, fake or similar, reads no file
+    from in/, and the goal does not itself ask for synthetic data or a test.
+    """
+    if not (GENERATES_NUMBERS.search(code) or TYPED_NUMBERS.search(code)) or READS_INPUT.search(code):
+        return None
+    word = STAND_IN_WORD.search(code)
+    if word is None or re.search(r"\bsynthetic\b|\bsimulat|\btest (?:case|data|series)\b", goal or "", re.I):
+        return None
+    return (f"refused: this cell builds {word.group(0)} numbers and reads no file from in/. The goal asks for the real "
+            "series, so no stand-in values are built. Retrieve the data with download_web_data, download_open_data or "
+            "download_market_prices (the sandbox has no network), or report what could not be found.")
+
+
 def carried_inputs(carry) -> dict[str, Path]:
     """Files an earlier run wrote to its ``out/``, mounted read-only at ``in/carried/<file name>`` in this run.
 
@@ -67,6 +88,10 @@ def carried_inputs(carry) -> dict[str, Path]:
         raise ValueError(f"carry is a list of at most {MAX_CARRY} objects {{run_id, file}}")
     mounted: dict[str, Path] = {}
     for item in carry:
+        if isinstance(item, dict) and str(item.get("file", "")).startswith("in/"):
+            # Panel CPI (2026-11-26): the planner carried in/fredgraph.csv, a downloaded file already mounted in in/, and
+            # was refused three times. Inputs are mounted at every call, so the item is not needed.
+            continue
         if not isinstance(item, dict) or not RUN_ID.match(str(item.get("run_id", ""))):
             raise ValueError("each carry item needs run_id (the 32-character id of the run that wrote the file) and file")
         rel = str(item.get("file", ""))

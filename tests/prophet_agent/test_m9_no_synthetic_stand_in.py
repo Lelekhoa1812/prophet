@@ -108,3 +108,22 @@ def test_approximate_data_as_the_series_is_blocked_but_an_honest_answer_is_not()
 def test_a_goal_that_asks_for_a_synthetic_test_series_is_not_blocked():
     answer = "The backtest used a synthetic twin of the demand series with censoring."
     assert check_answer_real_series(answer, "backtest a synthetic twin of demand") is None
+
+
+# --- sandbox cells that build stand-in data (panel CPI round 1, 2026-11-26) -------------------------------------------
+
+def test_a_cell_that_builds_synthetic_data_for_a_real_series_is_refused():
+    from prophet_agent.tools.sandbox_tool import stand_in_reason
+    code = ("import numpy as np, pandas as pd\nrng = np.random.default_rng(0)\n"
+            "cpi = 261 + rng.normal(0, 0.5, 82).cumsum()\nprint('Created synthetic CPI data')\n")
+    goal = "Find the monthly US consumer price index from official open data and forecast the next 6 months."
+    assert stand_in_reason(code, goal) and "download_web_data" in stand_in_reason(code, goal)
+    assert stand_in_reason(code, "Build a synthetic test series and check the backtest") is None
+    assert stand_in_reason("import pandas as pd\ndf = pd.read_csv('in/cpi.csv')\n" + code, goal) is None
+    assert stand_in_reason("import numpy as np\nsims = np.random.default_rng(1).poisson(1.4, 1000)\n", goal) is None
+
+
+def test_a_carry_item_for_a_mounted_input_is_skipped():
+    """Panel CPI: carrying in/fredgraph.csv (already mounted) was refused three times."""
+    from prophet_agent.tools.sandbox_tool import carried_inputs
+    assert carried_inputs([{"file": "in/fredgraph.csv", "run_id": "12"}]) == {}
