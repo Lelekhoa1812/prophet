@@ -225,6 +225,14 @@ def _wire_name(name: str) -> str:
     return _WIRE_NAME.sub("_", name)[:64] or "output"
 
 
+def _append_text(content: Any, text: str) -> Any:
+    """Adds text to a message's content. A content list (multimodal parts, such as an image) gets a text part at its
+    end; a string gets the text after a blank line. Stringifying a list here would send the image as plain text."""
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": "\n\n" + text}]
+    return f"{content or ''}\n\n{text}"
+
+
 def _with_schema_hint(messages: Sequence[Mapping[str, Any]], schema: dict) -> list[dict]:
     """json_object mode cannot enforce the schema, so the schema goes into the prompt (NIM.md §3.1)."""
     hint = ("Reply with one JSON value that validates against this JSON Schema. No prose, no code fence.\n"
@@ -232,7 +240,7 @@ def _with_schema_hint(messages: Sequence[Mapping[str, Any]], schema: dict) -> li
     out = [dict(m) for m in messages]
     for m in out:
         if m.get("role") == "system":
-            m["content"] = f"{m.get('content', '')}\n\n{hint}"
+            m["content"] = _append_text(m.get("content", ""), hint)
             return out
     return [{"role": "system", "content": hint}, *out]
 
