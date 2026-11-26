@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import hashlib
 import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin
@@ -66,10 +67,37 @@ def download(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout_s: float =
     deadline = time.monotonic() + timeout_s
     client = open_client(timeout_s)
     try:
-        return _follow(url, client=client, max_bytes=max_bytes, timeout_s=timeout_s, deadline=deadline,
-                       resolver=resolver)
+        got = _follow(url, client=client, max_bytes=max_bytes, timeout_s=timeout_s, deadline=deadline,
+                      resolver=resolver)
     finally:
         client.close()
+    record_download(url, got.get("final_url") or url, got["bytes"], got.get("retrieved_at", ""))
+    return got
+
+
+def download_record_path(url: str):
+    """Where the fetch record of a downloaded URL is kept: beside the research cache's page records."""
+    from prophet_agent.research.search import cache_key, cache_root
+    return cache_root() / "downloads" / f"{cache_key('download', url)}.json"
+
+
+def record_download(url: str, final_url: str, body: bytes, retrieved_at: str) -> None:
+    """Write a fetch record for a download that answered 200 with an accepted body.
+
+    Motivation: panel GISTEMP round 2 and NEM round 1 (2026-11-26): a series landed by download_web_data named its URL as
+    its source, and backtest_series refused it ("has no fetch record, so the research did not read it"), because only
+    web research wrote records. Logic: the record holds the URL, final URL, sha256 and time; a write failure is ignored,
+    since the download itself succeeded.
+    """
+    doc = {"ok": True, "url": url, "final_url": final_url, "sha256": hashlib.sha256(body).hexdigest(),
+           "retrieved_at": retrieved_at}
+    for key in dict.fromkeys((url, final_url)):
+        try:
+            path = download_record_path(key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(doc), encoding="utf-8")
+        except OSError:
+            pass
 
 
 def _follow(url, *, client: httpx.Client, max_bytes: int, timeout_s: float, deadline: float,

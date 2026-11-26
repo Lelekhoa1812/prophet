@@ -337,6 +337,8 @@ def fetch_daily_prices(symbol, start, end, *, timeout_s: float = DEFAULT_TIMEOUT
             failed.append({"source": source, "endpoint": url, "reason": str(exc)})
             continue
         columns, csv_bytes = _csv(table, parsed["has_adj"])
+        from prophet_agent.opendata.fetch import record_download
+        record_download(url, url, body, retrieved_at)      # the endpoint now has a fetch record a series can cite
         return {"ok": True, "symbol": symbol, "source": source, "endpoint": url, "retrieved_at": retrieved_at,
                 "currency": parsed["currency"], "exchange": parsed["exchange"],
                 "entity_check": parsed["entity_check"], "returned_symbol": parsed["returned_symbol"],

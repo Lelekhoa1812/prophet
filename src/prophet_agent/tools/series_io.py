@@ -99,14 +99,18 @@ HTTP_URL = re.compile(r"^https?://\S+$")
 
 
 def _fetch_record_exists(url: str) -> bool:
-    """True when the research cache holds a fetch record for this URL with ok set: the entry research/fetch.py writes after it
-    reads a page. A page the research never read has no record, so a claim to it is refused."""
+    """True when a fetch record with ok set exists for this URL: the entry research/fetch.py writes after it reads a page, or
+    the one opendata/fetch.py writes after a download lands. A URL nothing fetched has no record, so a claim to it is refused."""
+    from prophet_agent.opendata.fetch import download_record_path
     from prophet_agent.research.search import cache_key, cache_root
-    try:
-        doc = json.loads((cache_root() / "pages" / f"{cache_key('page', url)}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return isinstance(doc, dict) and doc.get("ok") is True
+    for path in (cache_root() / "pages" / f"{cache_key('page', url)}.json", download_record_path(url)):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("ok") is True:
+            return True               # a page research read, or a file a download tool landed (opendata/fetch.py)
+    return False
 
 
 def check_provenance(raw: Any, name: str = "series") -> dict | None:
@@ -149,7 +153,7 @@ def check_provenance(raw: Any, name: str = "series") -> dict | None:
             raise ValueError(f"source {sid} of {name!r} needs a url that starts with http:// or https://")
         if not _fetch_record_exists(url.strip()):
             raise ValueError(f"source {sid} ({url.strip()}) has no fetch record, so the research did not read it. Fetch the page "
-                             "with web research first, or label the series synthetic or user-supplied")
+                             "with web research or download it with download_web_data first, or label the series synthetic or user-supplied")
         clean.append({"id": sid, "url": url.strip()})
     return {"origin": "retrieved", "source_name": name_text, "sources": clean}
 
