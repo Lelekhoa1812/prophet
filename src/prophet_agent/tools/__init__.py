@@ -60,6 +60,7 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
     live = LiveMounts(datasets)
     specs.update(_open_data_tools(opendata, live))
     specs.update(chart_tool_pair(datasets, opendata, live))
+    specs["simulate_season"] = (simulate_season_tool(datasets, live), SIMULATE_SEASON_SPEC)   # reads downloaded files too
     download = specs.get("download_web_data")
     if download is not None and opendata is not None and opendata.store is not None:
         # SciRes re-run 2026-11-24 was told to call download_web_data and pasted the preview instead. Landing the file

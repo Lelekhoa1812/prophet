@@ -112,7 +112,7 @@ def test_tool_win_loss_with_games_per_team_and_observe_view(tmp_path):
 @pytest.mark.parametrize("args, message", [
     ({"simulations": 100}, "exactly one of results"),
     ({"results": "x.csv", "source": {"run_id": "0" * 32, "file": "out/x.csv"}}, "exactly one of results"),
-    ({"results": "missing.csv"}, "must be one of the uploaded file names"),
+    ({"results": "missing.csv"}, "must be one of the mission's file names"),
     ({"results": "results.csv", "sport": "cricket"}, "sport must be"),
     ({"results": "results.csv", "surprise": 1}, "unknown arguments"),
     ({"results": "results.csv", "simulations": 3}, "simulations must be a whole number"),
@@ -139,3 +139,75 @@ def test_tool_is_in_the_catalogue_and_the_modeler_role():
     assert "simulate_season" in default_tools({"a.csv": Path("a.csv")})
     modeler = agents.get("modeler")
     assert modeler is not None and "simulate_season" in modeler.tools
+
+
+# --- open data in: football.json landed by download_web_data, football-data.co.uk CSV ---------------------------------
+
+def _football_json(names, played=12):
+    matches, k = [], 0
+    for h in names:
+        for a in names:
+            if h == a:
+                continue
+            k += 1
+            entry = {"round": f"Matchday {1 + k // 4}", "date": f"2026-{8 + k // 30:02d}-{1 + k % 28:02d}",
+                     "team1": h, "team2": a}
+            if k <= played:
+                entry["score"] = {"ft": [k % 3, (k + 1) % 2]} if k % 2 else [k % 2, k % 3]   # both live spellings
+            matches.append(entry)
+    return {"name": "Synthetic League 2026/27", "matches": matches}
+
+
+def test_a_bare_score_list_counts_as_the_full_time_score():
+    """2026-27 en.1.json (live) gives some results as "score": [0, 0]; they are played matches, not fixtures."""
+    doc = _football_json(["A", "B", "C", "D"], played=6)
+    played = [m for m in S.parse_football_json(doc) if m.played]
+    assert len(played) == 6
+
+
+def test_football_data_co_uk_columns_and_day_month_dates_are_read():
+    text = "Div,Date,HomeTeam,AwayTeam,FTHG,FTAG\nE0,22/08/26,Arsenal,Spurs,2,1\nE0,23/08/2026,Spurs,Arsenal,,\n"
+    first, second = S.read_matches_csv(text)
+    assert (first.date, first.home, first.away, first.home_goals, first.away_goals) == ("2026-08-22", "Arsenal", "Spurs", 2, 1)
+    assert second.date == "2026-08-23" and not second.played
+
+
+def test_download_web_data_lands_football_json_and_simulate_season_reads_it(tmp_path, monkeypatch):
+    """The open-research path: the planner downloads the league file, then simulates from it in the same mission."""
+    import httpx
+    from prophet_agent.datasets import DatasetStore
+    from prophet_agent.opendata import fetch
+    from prophet_agent.research import netguard
+    from prophet_agent.tools.opendata_tools import OpenDataContext
+
+    names = [f"Club {i}" for i in range(6)]
+    body = json.dumps(_football_json(names, played=26)).encode()
+    handler = lambda request: httpx.Response(200, headers={"content-type": "application/json"}, content=body)  # noqa: E731
+    monkeypatch.setattr(fetch, "open_client", lambda timeout_s: httpx.Client(transport=httpx.MockTransport(handler),
+                                                                             follow_redirects=False))
+    monkeypatch.setattr(netguard, "_default_resolver", lambda host, port: ["93.184.216.34"])
+    store = DatasetStore(tmp_path / "datasets")
+    tools = default_tools(opendata=OpenDataContext(store=store, attach=lambda _id: None))
+    landed = tools["download_web_data"].fn({"url": "https://raw.example.org/2026-27/en.1.json", "name": "league.json"},
+                                           "k1")
+    file_name = landed["sandbox_file"].split("/", 1)[1]
+    out = tools["simulate_season"].fn({"results": file_name, "simulations": 200, "backtest": False}, "k2")
+    teams = {row["team"] for row in out["standings"]}
+    assert teams == set(names)
+
+
+def test_earlier_seasons_fit_the_ratings_only(tmp_path):
+    """Early season: too few current matches to rate the clubs, so last season's results fit the ratings, and the table
+    and simulation still start from this season. A club absent this season is not in the simulated table."""
+    names = [f"Club {i}" for i in range(6)]
+    current = _football_json(names, played=8)
+    last = _football_json(names[:5] + ["Gone FC"], played=30)
+    (tmp_path / "now.json").write_text(json.dumps(current), encoding="utf-8")
+    (tmp_path / "last.json").write_text(json.dumps(last), encoding="utf-8")
+    tool = simulate_season_tool({"now.json": tmp_path / "now.json", "last.json": tmp_path / "last.json"})
+    with pytest.raises(ValueError, match="too few matches"):
+        tool.fn({"results": "now.json", "simulations": 100, "backtest": False}, "k1")
+    out = tool.fn({"results": "now.json", "history": ["last.json"], "simulations": 100, "backtest": False}, "k2")
+    assert {row["team"] for row in out["teams"]} == set(names)
+    assert out["settings"]["n_played"] == 8
+    assert any("fit the ratings only" in note for note in out["notes"])

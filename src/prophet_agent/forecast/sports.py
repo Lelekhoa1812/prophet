@@ -14,6 +14,7 @@ fitted ratings, not observed results.
 from __future__ import annotations
 
 import csv
+import re
 import datetime as dt
 import io
 import json
@@ -62,16 +63,29 @@ def _score(text: str, label: str, line: int) -> int | None:
     return value
 
 
+# Other spellings of the columns: openfootball flattened (team1, team2), football-data.co.uk (HomeTeam, AwayTeam, FTHG,
+# FTAG, dates as dd/mm/yy or dd/mm/yyyy) and common variants.
+_CSV_ALIASES = {"team1": "home", "team2": "away", "hometeam": "home", "awayteam": "away", "home_team": "home",
+                "away_team": "away", "fthg": "home_goals", "ftag": "away_goals", "hg": "home_goals", "ag": "away_goals",
+                "home_score": "home_goals", "away_score": "away_goals", "homegoals": "home_goals",
+                "awaygoals": "away_goals", "div": "group_code"}
+_DMY = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+
+
 def read_matches_csv(text: str) -> list[Match]:
     """Matches from a CSV with columns home, away and optionally date, home_goals, away_goals, group. A row with no score is
     a fixture. Motivation: the planner hands over a file, not a Python object. Logic: one row per match, scores as whole numbers."""
     reader = csv.DictReader(io.StringIO(text))
-    cols = {c.strip().lower() for c in (reader.fieldnames or []) if c}
+    cols = {_CSV_ALIASES.get(c.strip().lower(), c.strip().lower()) for c in (reader.fieldnames or []) if c}
     if not {"home", "away"} <= cols:
-        raise ValueError("the CSV needs columns home and away; date, home_goals, away_goals and group are optional")
+        raise ValueError("the CSV needs columns home and away (or team1 and team2, HomeTeam and AwayTeam); date, "
+                         "home_goals, away_goals and group are optional")
     out: list[Match] = []
     for line, row in enumerate(reader, start=2):
-        r = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+        r = {_CSV_ALIASES.get(k.strip().lower(), k.strip().lower()): (v or "").strip() for k, v in row.items() if k}
+        if r.get("date") and _DMY.match(r["date"]):
+            day, month, year = r["date"].split("/")
+            r["date"] = f"{'20' + year if len(year) == 2 else year}-{month.zfill(2)}-{day.zfill(2)}"
         if not r.get("home") or not r.get("away"):
             raise ValueError(f"row {line}: home and away are needed")
         if r["home"] == r["away"]:
@@ -101,7 +115,9 @@ def parse_football_json(doc: Any) -> list[Match]:
         home, away = m.get("team1"), m.get("team2")
         if not isinstance(home, str) or not isinstance(away, str) or not home or not away:
             raise ValueError(f"match {i}: team1 and team2 must be team names")
-        ft = (m.get("score") or {}).get("ft") if isinstance(m.get("score"), dict) else None
+        score = m.get("score")
+        # Most entries give {"ft": [h, a]}; some give the full-time score as a bare [h, a] list (2026-27 en.1.json, live).
+        ft = score.get("ft") if isinstance(score, dict) else (score if isinstance(score, list) and score else None)
         if ft is None:
             hg = ag = None
         else:
@@ -717,9 +733,12 @@ def _team_index(teams: list[str]) -> dict[str, int]:
 
 
 def _football_season(played: list[Match], rem: list[Match], teams: list[str], *, n_sims: int, seed: int,
-                     points, half_life_days, prior_sd, interest: list[str], relegation_places: int, top_places: int) -> dict:
-    """Simulate the remaining football matches; ranking by points, goal difference, goals for, then name."""
-    model = fit_dixon_coles(played, teams=teams, half_life_days=half_life_days, prior_sd=prior_sd)
+                     points, half_life_days, prior_sd, interest: list[str], relegation_places: int, top_places: int,
+                     fit_extra: list[Match] = ()) -> dict:
+    """Simulate the remaining football matches; ranking by points, goal difference, goals for, then name. ``fit_extra``
+    (earlier seasons) is used to fit the ratings only; the table and the simulation start from ``played``."""
+    model = fit_dixon_coles(_chronological(list(fit_extra) + list(played))[0], teams=teams, half_life_days=half_life_days,
+                            prior_sd=prior_sd)
     T = len(teams)
     idx = _team_index(teams)
     hi = np.array([idx[m.home] for m in rem], int)
@@ -755,9 +774,10 @@ def _football_season(played: list[Match], rem: list[Match], teams: list[str], *,
 
 def _winloss_season(played: list[Match], rem: list[Match], teams: list[str], groups: dict[str, str], *, n_sims: int,
                     seed: int, half_life_days, prior_sd, interest: list[str], playoff_places: int,
-                    games_per_team: int | None) -> dict:
+                    games_per_team: int | None, fit_extra: list[Match] = ()) -> dict:
     """Simulate a win_loss season: remaining games from the fixtures, or from each team's opponent mix."""
-    model = fit_margin(played, teams=teams, half_life_days=half_life_days, prior_sd=prior_sd)
+    model = fit_margin(_chronological(list(fit_extra) + list(played))[0], teams=teams, half_life_days=half_life_days,
+                       prior_sd=prior_sd)
     T = len(teams)
     idx = _team_index(teams)
     keep = {idx[t] for t in interest}
@@ -826,7 +846,8 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
                     n_sims: int = 10_000, seed: int = 0, points: tuple[int, int, int] = DEFAULT_POINTS,
                     half_life_days: float | None = DEFAULT_HALF_LIFE_DAYS, prior_sd: float = DEFAULT_PRIOR_SD,
                     teams_of_interest: list[str] | None = None, relegation_places: int = 3, top_places: int = 4,
-                    playoff_places: int = 8, games_per_team: int | None = None, backtest: bool = True) -> dict[str, Any]:
+                    playoff_places: int = 8, games_per_team: int | None = None, backtest: bool = True,
+                    history: list[Match] | None = None) -> dict[str, Any]:
     """Fit the model on the played matches and simulate the rest of the season n_sims times.
 
     Motivation vs Logic
@@ -855,6 +876,14 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
         if m.group and m.away not in groups:
             groups[m.away] = m.group
     notes: list[str] = []
+    # Earlier seasons fit the ratings only. Early in a season (live 2026-27 en.1.json held 50 matches for 20 clubs) the
+    # current season alone is too small to rate the teams. Matches with a club outside this season are left out, so a
+    # promoted club is rated from this season and the shrinkage toward the mean.
+    in_season = set(teams)
+    fit_extra = [m for m in (history or []) if m.played and m.home in in_season and m.away in in_season]
+    if history:
+        notes.append(f"{len(fit_extra)} earlier matches between this season's teams were used to fit the ratings only; "
+                     "the table and the simulation start from this season's results")
     rem, _ = _chronological(unplayed) if unplayed else ([], None)
     if sport == FOOTBALL and not rem:
         rem = _remaining_double_round_robin(teams, played)
@@ -872,10 +901,12 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
 
     if sport == FOOTBALL:
         core = _football_season(played, rem, teams, n_sims=n_sims, seed=seed, points=points, half_life_days=half_life_days,
-                                prior_sd=prior_sd, interest=interest, relegation_places=relegation_places, top_places=top_places)
+                                prior_sd=prior_sd, interest=interest, relegation_places=relegation_places, top_places=top_places,
+                                fit_extra=fit_extra)
     else:
         core = _winloss_season(played, rem, teams, groups, n_sims=n_sims, seed=seed, half_life_days=half_life_days,
-                               prior_sd=prior_sd, interest=interest, playoff_places=playoff_places, games_per_team=games_per_team)
+                               prior_sd=prior_sd, interest=interest, playoff_places=playoff_places, games_per_team=games_per_team,
+                               fit_extra=fit_extra)
     notes.extend(core.get("notes", []))
     totals, prob = core["totals"], core["prob"]
     team_rows = []
@@ -902,9 +933,9 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
 
     if backtest:
         if sport == FOOTBALL:
-            bt = backtest_football(everything, teams, half_life_days=half_life_days, prior_sd=prior_sd)
+            bt = backtest_football(fit_extra + everything, teams, half_life_days=half_life_days, prior_sd=prior_sd)
         else:
-            bt = backtest_winloss(everything, teams, half_life_days=half_life_days, prior_sd=prior_sd)
+            bt = backtest_winloss(fit_extra + everything, teams, half_life_days=half_life_days, prior_sd=prior_sd)
     else:
         bt = None
     return {"sport": sport, "metric": core["metric"], "figure_label": FIGURE_LABEL,

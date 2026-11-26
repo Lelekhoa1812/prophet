@@ -17,13 +17,13 @@ from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import source_path
 
 MAX_SIMS = 100_000
-ALLOWED = {"sport", "results", "source", "fixtures", "teams", "simulations", "seed", "points", "half_life_days",
+ALLOWED = {"sport", "results", "history", "source", "fixtures", "teams", "simulations", "seed", "points", "half_life_days",
            "prior_sd", "relegation_places", "top_places", "playoff_places", "games_per_team", "backtest"}
 
 
 def _named_text(name: Any, datasets: dict[str, Path], label: str) -> tuple[str, str]:
     if not isinstance(name, str) or name not in datasets:
-        raise ValueError(f"{label} must be one of the uploaded file names {sorted(datasets)}")
+        raise ValueError(f"{label} must be one of the mission's file names {sorted(datasets)}")
     return Path(datasets[name]).read_text(encoding="utf-8"), name
 
 
@@ -50,6 +50,15 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
         path = source_path(args)
         text, name = path.read_text(encoding="utf-8"), path.name
     matches = parse_matches(text, name)
+    history = None
+    if args.get("history") is not None:
+        names = args["history"] if isinstance(args["history"], list) else [args["history"]]
+        if not 1 <= len(names) <= 4:
+            raise ValueError("history must name 1 to 4 results files of earlier seasons")
+        history = []
+        for hist_name in names:
+            htext, hname = _named_text(hist_name, datasets, "history")
+            history.extend(parse_matches(htext, hname))
     fixtures = None
     if args.get("fixtures") is not None:
         ftext, fname = _named_text(args["fixtures"], datasets, "fixtures")
@@ -79,7 +88,7 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
         half_life_days=None if half_life is None else float(half_life), prior_sd=float(prior_sd),
         teams_of_interest=teams, relegation_places=_int(args, "relegation_places", 3, 0, 10),
         top_places=_int(args, "top_places", 4, 0, 10), playoff_places=_int(args, "playoff_places", 8, 1, 30),
-        games_per_team=games, backtest=backtest)
+        games_per_team=games, backtest=backtest, history=history)
 
 
 def observe_simulate(result: dict) -> dict:
@@ -94,9 +103,16 @@ def observe_simulate(result: dict) -> dict:
     return out
 
 
-def simulate_season_tool(datasets: dict[str, Path] | None = None) -> Tool:
+def simulate_season_tool(datasets: dict[str, Path] | None = None, live: Any = None) -> Tool:
+    """The tool over the person's files and, when ``live`` (the mission's LiveMounts) is given, every file the mission
+    downloaded so far, such as an openfootball JSON landed by download_web_data. Read at each call, as the sandbox does."""
     data = dict(datasets or {})
-    return Tool("simulate_season", lambda args, key: _simulate(args, key, data), idempotent=True, observe=observe_simulate)
+
+    def files() -> dict[str, Path]:
+        return {**data, **(live.mounts() if live is not None else {})}
+
+    return Tool("simulate_season", lambda args, key: _simulate(args, key, files()), idempotent=True,
+                observe=observe_simulate)
 
 
 SIMULATE_SEASON_SPEC = {
@@ -106,8 +122,8 @@ SIMULATE_SEASON_SPEC = {
     "description": "Fit a sports model on a results file and simulate the rest of the season many times. sport football "
                    "(default): Dixon-Coles Poisson goals with time decay and a low-score correction; the table uses points "
                    "and the usual tie-breaks. sport win_loss (no draws, for example basketball): a score-margin model. Give "
-                   "results as an uploaded CSV (date, home, away, home_goals, away_goals, optional group) or openfootball "
-                   "football.json, or as source (an analysis run's out/ file). Remaining matches come from fixtures (an uploaded "
+                   "results as a mission CSV (date, home, away, home_goals, away_goals, optional group) or openfootball "
+                   "football.json, or as source (an analysis run's out/ file). Remaining matches come from fixtures (a mission "
                    "file), else unplayed rows in results, else for football a double round robin, else for win_loss "
                    "games_per_team per team. Returns per team: final total (median, 10 and 90 per cent), probability of the title, "
                    "top places, relegation (football) or the playoff line (win_loss, per group when a group column is given), "
@@ -116,9 +132,11 @@ SIMULATE_SEASON_SPEC = {
                    "from fitted ratings.",
     "args": {
         "sport": "football (default) or win_loss",
-        "results": "name of an uploaded results file (CSV or football.json)",
+        "results": "name of a results file the mission holds (uploaded, or landed by download_web_data; CSV or football.json)",
         "source": "object {run_id, file} naming a results CSV or JSON in an analysis run's out/ folder, instead of results",
-        "fixtures": "name of an uploaded file of remaining matches (optional)",
+        "history": "optional name, or list of up to 4 names, of earlier seasons' results files; used to fit the ratings only "
+                   "(early in a season the current results are too few)",
+        "fixtures": "name of a mission file of remaining matches (optional)",
         "teams": "list of team names to show paths for (optional; default the top four by current standing)",
         "simulations": "number of simulated seasons, 10 to 100000 (default 10000)",
         "seed": "random seed for reproducibility (default 0)",

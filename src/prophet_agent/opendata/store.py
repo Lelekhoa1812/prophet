@@ -56,6 +56,20 @@ def _flatten_record(record: dict) -> dict:
     return flat
 
 
+def _is_match_list(value) -> bool:
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(m, dict) and isinstance(m.get("team1"), str) and isinstance(m.get("team2"), str) for m in value))
+
+
+def _match_record(match: dict) -> dict:
+    """One football.json match as a flat record. The score is {"ft": [h, a]} or a bare [h, a]; a fixture has none."""
+    score = match.get("score")
+    ft = score.get("ft") if isinstance(score, dict) else (score if isinstance(score, list) else None)
+    played = isinstance(ft, list) and len(ft) == 2
+    return {"date": match.get("date"), "round": match.get("round"), "team1": match["team1"], "team2": match["team2"],
+            "home_goals": ft[0] if played else None, "away_goals": ft[1] if played else None}
+
+
 def _json_table(text: str) -> tuple[list, int, list]:
     data = json.loads(text)
     # The World Bank indicator call returns [page metadata, list of observations].
@@ -65,6 +79,12 @@ def _json_table(text: str) -> tuple[list, int, list]:
     if isinstance(data, list) and data and all(isinstance(record, dict) for record in data):
         columns = list(dict.fromkeys(key for record in data for key in record))
         rows = [[record.get(column) for column in columns] for record in data]
+        return columns, len(rows), rows[:PREVIEW_ROWS]
+    if isinstance(data, dict) and _is_match_list(data.get("matches")):
+        # openfootball football.json: one record per match, the full-time score split into two columns.
+        records = [_match_record(match) for match in data["matches"]]
+        columns = list(records[0])
+        rows = [[record[column] for column in columns] for record in records]
         return columns, len(rows), rows[:PREVIEW_ROWS]
     if isinstance(data, dict):
         # Open-Meteo nests its table under "daily" or "hourly"; other blocks of equal-length lists are taken in order.
