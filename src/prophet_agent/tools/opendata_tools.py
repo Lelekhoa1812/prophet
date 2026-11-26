@@ -148,8 +148,13 @@ def _as_table(fetched: dict) -> tuple[bytes, str]:
     """CSV or JSON bytes. A ZIP or a workbook becomes one CSV. The original content type is kept on the record."""
     media = fetch.media_type(fetched["content_type"])
     body = fetched["bytes"]
-    if media in fetch.CONTAINER_TYPES:
-        kind = "xlsx" if media.endswith("sheet") else "zip"
+    if media in fetch.CONTAINER_TYPES or media in fetch.XLS_TYPES:
+        if body[:8] == fetch.OLE_MAGIC:
+            kind = "xls"
+        elif media in fetch.XLS_TYPES or media.endswith("sheet"):
+            kind = "xlsx"
+        else:
+            kind = "zip"
         try:
             body = containers.to_csv(body, kind)
         except containers.ContainerError as exc:

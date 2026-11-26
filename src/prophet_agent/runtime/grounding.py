@@ -133,12 +133,19 @@ def _drop_labels(text: str) -> str:
 _SEASON = re.compile(r"\b(?:FY\s?)?(?:19|20)\d\d\s?[/-]\s?\d\d\b(?![-/]\d)")
 _DATE_DAY_RANGE = re.compile(r"(\b\d{4}-\d{2}-\d{2})-(\d{1,2})\b")
 _HTTP_STATUS = re.compile(r"\b(?:HTTP|status(?: code)?|error)\s?[1-5]\d\d\b", re.I)
+# Panel NGSTORAGE (2026-11-26): "the history files return 403/404" and "failed with 403 or 404" were flagged as figures.
+# After a fetch verb only the common status codes count, so "returned 250 points" stays a figure to check.
+_STATUS_CODE = r"(?:200|201|204|301|302|304|400|401|403|404|405|406|408|410|418|429|451|500|502|503|504)"
+_HTTP_STATUS_VERB = re.compile(
+    rf"\b(?:returns?|returned|returning|failed with|fails with|gave|gives|answered with|responded with|blocked with)\s"
+    rf"(?:an?\s)?{_STATUS_CODE}(?:\s?(?:/|,|or|and)\s?{_STATUS_CODE})*\b"
+    rf"|\b{_STATUS_CODE}(?:\s?/\s?{_STATUS_CODE})+\b", re.I)
 _CITATION = re.compile(r"\[\s?\d{1,3}(?:\s?,\s?\d{1,3})*\s?\]")
 
 
 def _drop_reference_labels(text: str) -> str:
     text = _DATE_DAY_RANGE.sub(lambda m: m.group(1) + " " * (len(m.group(0)) - len(m.group(1))), text)
-    for pattern in (_HTTP_STATUS, _CITATION):
+    for pattern in (_HTTP_STATUS, _HTTP_STATUS_VERB, _CITATION):
         text = pattern.sub(lambda m: " " * len(m.group(0)), text)
     # A season range is dropped whole only when its two years run on ("2026-27"); "2026-11" is a month and stays for _DATE.
     return _SEASON.sub(lambda m: " " * len(m.group(0)) if _consecutive_years(m.group(0)) else m.group(0), text)

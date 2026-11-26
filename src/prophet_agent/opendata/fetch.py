@@ -41,6 +41,11 @@ CONTAINER_TYPES = (
     "application/x-zip-compressed",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
+# A legacy Excel workbook (an OLE compound file). Panel NGSTORAGE (2026-11-26): EIA's weekly storage history is an .xls and
+# was refused. Many servers also label plain CSV with these types, so the body decides: an OLE or ZIP body is a workbook,
+# anything else must read as CSV text.
+XLS_TYPES = ("application/vnd.ms-excel", "application/x-msexcel", "application/x-excel", "application/excel")
+OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 class DownloadError(ValueError):
@@ -129,9 +134,9 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
         raise DownloadError(f"HTTP {response.status_code}; only a 200 response is used")
     media = media_type(response.headers.get("content-type", ""))
     if media not in TEXT_TYPES and media not in SNIFF_TYPES and media not in CONTAINER_TYPES and media not in HTML_TYPES \
-            and media not in PDF_TYPES:
-        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, HTML, PDF, ZIP "
-                            "or XLSX")
+            and media not in PDF_TYPES and media not in XLS_TYPES:
+        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, HTML, PDF, ZIP, "
+                            "XLS or XLSX")
     declared = response.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > max_bytes:
         raise DownloadError(f"the response is {int(declared)} bytes; the limit is {max_bytes}")
@@ -142,6 +147,13 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
         raise DownloadError("the response did not finish in time")
     if not body:
         raise DownloadError("the response body is empty")
+    if media in XLS_TYPES:
+        if body[:8] == OLE_MAGIC or body[:2] == b"PK":
+            return {"bytes": body, "content_type": media, "final_url": final_url, "retrieved_at": _now()}
+        text = _decoded(body)
+        if text is None or not _csv_like(text):
+            raise DownloadError(f"content type {media} is accepted only when the body is an Excel workbook or CSV")
+        return {"bytes": body, "content_type": "text/csv", "final_url": final_url, "retrieved_at": _now()}
     if media in CONTAINER_TYPES or (media in SNIFF_TYPES and body[:2] == b"PK"):
         if body[:2] != b"PK":
             raise DownloadError(f"content type {media} is accepted only when the body is a ZIP or XLSX")

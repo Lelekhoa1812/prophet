@@ -4,14 +4,15 @@ Motivation vs Logic
 Motivation: several publishers ship a series inside a ZIP or a workbook. The store can keep a table, and it should not
 keep the archive.
 Logic: a ZIP is read in memory. Names that leave the archive, encrypted members, and members that expand past the
-download cap are refused. An EIA bulk file is JSON lines, and only the requested series id is kept. A workbook keeps
-the first sheet, as CSV.
+download cap are refused. An EIA bulk file is JSON lines, and only the requested series id is kept. A workbook (XLSX, or
+legacy XLS read by calamine) keeps the sheet with the most numeric rows, as CSV: EIA workbooks open on a Contents sheet.
 """
 from __future__ import annotations
 
 import csv
 import io
 import json
+from datetime import date
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -23,6 +24,7 @@ MAX_MEMBERS = 30
 MAX_RATIO = 20
 MAX_ROWS = 100_000
 MAX_COLS = 64
+MAX_SHEETS = 40
 TEXT_SUFFIXES = {".txt", ".csv", ".json"}
 
 
@@ -34,6 +36,8 @@ def to_csv(body: bytes, kind: str, series_id: str | None = None) -> bytes:
     """CSV bytes for a zip or xlsx body. ``series_id`` selects one JSON-lines series inside a ZIP."""
     if kind == "xlsx":
         return _xlsx_csv(body)
+    if kind == "xls":
+        return _xls_csv(body)
     if kind == "zip":
         return _zip_csv(body, series_id)
     raise ContainerError(f"unsupported container {kind}")
@@ -118,25 +122,71 @@ def _series_csv(texts: list[str], series_id: str) -> bytes:
     raise ContainerError(f"the archive has no series {series_id}")
 
 
+def _numeric_rows(rows: list) -> int:
+    return sum(1 for row in rows if any(isinstance(c, (int, float, date)) and not isinstance(c, bool) for c in row))
+
+
+def _best_sheet(sheets: list[list]) -> list:
+    """The sheet with the most rows holding a number or a date; the first of equals. A Contents or notes sheet loses."""
+    best = max(range(len(sheets)), key=lambda i: (_numeric_rows(sheets[i]), -i))
+    return sheets[best]
+
+
+def _kept(rows_iter) -> list:
+    rows = []
+    for index, row in enumerate(rows_iter):
+        if index >= MAX_ROWS:
+            raise ContainerError("the sheet has too many rows")
+        cells = list(row[:MAX_COLS])
+        if any(cell is not None and str(cell).strip() for cell in cells):
+            rows.append(["" if cell is None else cell for cell in cells])
+    return rows
+
+
+def _from_header(rows: list) -> list:
+    """The rows from the header on: the text row just above the first row that holds a number or a date. Title and
+    navigation rows above it ("Back to Contents", "Sourcekey") are dropped; a sheet with no such row is kept whole."""
+    def numeric(row):
+        return any(isinstance(c, (int, float, date)) and not isinstance(c, bool) for c in row)
+    first = next((i for i, row in enumerate(rows) if numeric(row)), None)
+    if not first:
+        return rows
+    return rows[first - 1:]
+
+
+def _rows_csv(rows: list) -> bytes:
+    rows = _from_header(rows)
+    if not rows:
+        raise ContainerError("the sheet has no rows")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
 def _xlsx_csv(body: bytes) -> bytes:
     try:
         book = load_workbook(io.BytesIO(body), read_only=True, data_only=True)
     except Exception:
         raise ContainerError("the body is not an XLSX workbook") from None
     try:
-        sheet = book.worksheets[0]
-        rows = []
-        for index, row in enumerate(sheet.iter_rows(values_only=True)):
-            if index >= MAX_ROWS:
-                raise ContainerError("the sheet has too many rows")
-            cells = list(row[:MAX_COLS])
-            if any(cell is not None and str(cell).strip() for cell in cells):
-                rows.append(["" if cell is None else cell for cell in cells])
-        if not rows:
-            raise ContainerError("the sheet has no rows")
+        sheets = [_kept(sheet.iter_rows(values_only=True)) for sheet in book.worksheets[:MAX_SHEETS]]
     finally:
         book.close()
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerows(rows)
-    return buf.getvalue().encode("utf-8")
+    if not sheets:
+        raise ContainerError("the workbook has no sheets")
+    return _rows_csv(_best_sheet(sheets))
+
+
+def _xls_csv(body: bytes) -> bytes:
+    try:
+        from python_calamine import CalamineWorkbook
+        book = CalamineWorkbook.from_filelike(io.BytesIO(body))
+        sheets = [_kept(book.get_sheet_by_name(name).to_python()) for name in book.sheet_names[:MAX_SHEETS]]
+    except ContainerError:
+        raise
+    except Exception:
+        raise ContainerError("the body is not an XLS workbook") from None
+    if not sheets:
+        raise ContainerError("the workbook has no sheets")
+    return _rows_csv(_best_sheet(sheets))
