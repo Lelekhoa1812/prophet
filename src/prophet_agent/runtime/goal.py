@@ -2024,6 +2024,22 @@ def horizon_note(goal: str, history: list[dict]) -> str | None:
     return ("Horizon check (computed): " + contracts.summarise(failing)) if failing else None
 
 
+def _dated(context: str, today: str | None) -> str:
+    """The context with the run's date at its head, so the planner, the evaluator and the composer all read it.
+
+    Motivation vs Logic
+    Motivation: live Nvidia mission (2026-11-26), the planner used data_end 2026-07-24 because nothing told it the date. A data end
+    that is guessed is a wrong forecast window.
+    Logic: the date is the one stored in the contracts step (the ledger), so a resumed run reads the same line. A run without a
+    stored date (a mission started before this change) keeps its context unchanged.
+    """
+    if not today:
+        return context
+    line = (f"The date today is {today}. Any data end, latest date or current figure is on or before this day; do not "
+            "assume a date later than it.")
+    return line + ("\n\n" + context if context else "")
+
+
 def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfig, context: str,
          history: list[dict]) -> dict:
     """The loop itself. Used for the goal and, recursively with depth 1, for a delegated sub-agent."""
@@ -2038,8 +2054,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                         for n in prompts.CURRENT}
             recorded["brief"] = {"goal": goal, "done_when": DONE_WHEN, "must_not_change": MUST_NOT_CHANGE,
                                  "budget": {"steps_per_part": cfg.max_iterations, "tool_calls": cfg.tool_budget}}
+            # Mission 9 (M9-7): the date is read once and stored here, so a resumed run sees the same date the first run did.
+            recorded["today"] = time.strftime("%Y-%m-%d")
             return recorded
-        ctx.step("contracts", record)
+        stored = ctx.step("contracts", record)
+        context = _dated(context, stored.get("today") if isinstance(stored, dict) else None)
     tag = cfg.tag or f"d{cfg.depth}"
     seg_len = cfg.max_iterations
     started = time.time()
