@@ -56,11 +56,21 @@ def test_an_undated_list_beside_a_table_with_no_time_column_is_not_a_forecast_pa
         {"kind": "tool", "tool": "sandbox_python", "result": {"run_id": "r1", "outputs": ["out/series.json"]}},
     ]
     text = " ".join(f"{it['item']} {it.get('detail', '')}" for it in contracts.progress(history, run_root=tmp_path))
-    assert "backtest_series" not in text and "no time column" in text
+    assert "backtest_series" not in text and "not a path" in text
     (folder / "series.json").write_text(json.dumps({
         "series": [1, 2, 3], "dates": ["2020-01-01", "2020-02-01", "2020-03-01"]}))
     later = " ".join(it["item"] for it in contracts.progress(history, run_root=tmp_path))
     assert "backtest_series" in later
+
+
+def test_a_bound_table_with_one_time_and_many_rows_does_not_open_the_model_steps():
+    bound = {"kind": "tool", "tool": "bind_series", "result": {
+        "status": "accepted", "distinct_times": 1, "row_count": 20, "bound_name": "season_table"}}
+    text = " ".join(f"{it['item']} {it.get('detail', '')}" for it in contracts.progress([bound]))
+    assert "backtest_series" not in text and "one time" in text
+    path = {"kind": "tool", "tool": "bind_series", "result": {
+        "status": "accepted", "distinct_times": 2, "row_count": 2, "bound_name": "city_rate"}}
+    assert any("backtest_series" in it["item"] for it in contracts.progress([path]))
 
 
 def test_files_are_on_the_list_only_when_the_goal_asks_for_them(tmp_path):

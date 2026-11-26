@@ -983,7 +983,7 @@ def numeric_series_ready(history, run_root=None) -> bool:
         if _saved_series_file(h) and not skip_undated:
             return True
         bound = _ok_result(h, "bind_series")
-        if isinstance(bound, dict) and bound.get("status") == "accepted":
+        if isinstance(bound, dict) and bound.get("status") == "accepted" and not _one_time_many_rows(bound):
             return True
         if _profile_has_time_and_number(_ok_result(h, "inspect_data")):
             return True
@@ -1001,10 +1001,22 @@ def _extract_found_a_table(history) -> bool:
     return False
 
 
+def _one_time_many_rows(result: dict) -> bool:
+    """Many rows that share one time are a cross-section. One row can still be a short series."""
+    times = result.get("distinct_times")
+    rows = result.get("row_count")
+    return times == 1 and isinstance(rows, int) and not isinstance(rows, bool) and rows > 1
+
+
+def _bound_cross_section(history) -> bool:
+    return any(_one_time_many_rows(res) for h in _observations(history)
+               if isinstance(res := _ok_result(h, "bind_series"), dict) and res.get("status") == "accepted")
+
+
 def series_item_detail(history, run_root=None) -> str:
     """What to do before a model comparison. The url is one web_fetch already stored."""
-    if _undated_list_is_not_a_path(history, run_root):
-        return ("the table has no time column, so a list of its numbers is not a path. "
+    if _undated_list_is_not_a_path(history, run_root) or _bound_cross_section(history):
+        return ("the table has one time and many rows, so a list of its numbers is not a path. "
                 "Save one entity across dates, or say the path is not in the table.")
     urls = extract_target_urls(history)
     if html_download_urls(history) and urls and not _extract_found_a_table(history):

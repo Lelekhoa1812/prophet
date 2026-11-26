@@ -50,9 +50,22 @@ def validate_table(claim: dict, csv_bytes: bytes, *, final_url: str = "", page_t
     else:
         status, detail = "accepted", "entity and columns match the claim"
     verdict = _verdict(status, claim, parsed, final_url, detail=detail, observed=observed, rivals=rivals, mapping=mapping)
+    time_index = (mapping or {}).get("mapped", {}).get("time")
+    if isinstance(time_index, int):
+        verdict["distinct_times"] = _distinct_count(parsed.get("rows") or [], time_index)
     if status == "accepted":
         verdict["bound_name"] = claim["series_name"]
     return verdict
+
+
+def _distinct_count(rows: list, index: int) -> int:
+    seen: set[str] = set()
+    for row in rows:
+        if isinstance(row, list) and index < len(row):
+            cell = str(row[index]).strip()
+            if cell:
+                seen.add(cell)
+    return len(seen)
 
 
 def _verdict(status, claim, parsed, final_url, *, detail, observed="", rivals=None, mapping=None) -> dict:
