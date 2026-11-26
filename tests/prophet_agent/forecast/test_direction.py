@@ -99,3 +99,24 @@ def test_a_recent_climb_is_drawn_where_a_long_drift_averages_it_away():
     assert out["tilt_check"]["adopt"] is True and out["centre"]["rule"] in d.TILT_RULES
     assert out["point"][-1] > out["point"][0] > float(x[-1])
     assert out["tilt_check"]["tried"]["recent_drift"]["result"].startswith("moves under")
+
+
+def _pack(tilt_adopt, **extra):
+    return {"kind": "tool", "tool": "forecast_report", "args": {}, "result": {"forecast": {}, "tilt_check": {"adopt": tilt_adopt}}, **extra}
+
+
+def test_a_flat_pack_with_no_driver_tested_is_sent_back():
+    from prophet_agent.runtime import contracts
+    bad = contracts._signal_search_missing([_pack(False)])
+    assert bad and bad["name"] == "answer_signal_search" and not bad["ok"]
+
+
+def test_the_signal_search_is_satisfied_by_a_covariate_test_or_a_drawn_trend():
+    from prophet_agent.runtime import contracts
+    lab = {"kind": "tool", "tool": "control_lab", "args": {"source": {}}, "result": {"candidates": [{"name": "with_covariates"}]}}
+    assert contracts._signal_search_missing([lab, _pack(False)]) is None
+    passed = {"kind": "tool", "tool": "timesfm_forecast", "args": {"past_covariates": ["peer"]}, "result": {}}
+    assert contracts._signal_search_missing([passed, _pack(False)]) is None
+    assert contracts._signal_search_missing([_pack(True)]) is None
+    null_only = {"kind": "tool", "tool": "calibrate_intervals", "args": {"past_covariates": None, "future_covariates": None}, "result": {}}
+    assert contracts._signal_search_missing([null_only, _pack(False)])

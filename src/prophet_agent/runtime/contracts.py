@@ -3042,6 +3042,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(level)
     if (tilted := _flat_claim_after_tilt(text, obs)) is not None:
         checks.append(tilted)
+    if (searched := _signal_search_missing(obs)) is not None:
+        checks.append(searched)
     if (named := check_answer_files(text, obs)) is not None:
         checks.append(named)
     if (real := check_answer_real_series(text, goal)) is not None:
@@ -3050,6 +3052,42 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
 
 
 _LEVEL_LINE = re.compile(r"centre line is a level|center line is a level", re.I)
+
+
+_COVARIATE_ARG = re.compile(r'"(?:past|future)_covariates":\s*[\[{"]')
+
+
+def _signal_searched(obs: list) -> bool:
+    """True when some call tested a driver beyond the series itself: a control_lab run that scored with_covariates, or any call
+    that passed past or future covariates (null or empty ones do not count)."""
+    for h in obs if isinstance(obs, list) else []:
+        if not isinstance(h, dict):
+            continue
+        if h.get("tool") == "control_lab" and "with_covariates" in json.dumps(h, default=str):
+            return True
+        if _COVARIATE_ARG.search(json.dumps(h.get("args") or {}, default=str)):
+            return True
+    return False
+
+
+def _signal_search_missing(obs: list) -> dict | None:
+    """The newest pack drew a flat centre because the history gave no direction, and no driver beyond the series was ever
+    tested. Blocks (owner review of the round 14 charts, 2026-11-27: a flat line is not accepted until the signal search ran).
+    Passes when the pack drew a trend rule, when it was not flat, or when a covariate test was made."""
+    pack = next((h for h in reversed(obs if isinstance(obs, list) else []) if isinstance(h, dict)
+                 and isinstance(_ok_result(h, "forecast_report"), dict)), None)
+    if pack is None or _ok_result(pack, "forecast_report").get("n_series"):
+        return None
+    tc = _ok_result(pack, "forecast_report").get("tilt_check")
+    if not isinstance(tc, dict) or tc.get("adopt") is not False:
+        return None
+    if _signal_searched(obs):
+        return None
+    return _check("answer_signal_search", False,
+                  "the pack's centre line is flat (the history alone gives no direction) and no driver beyond the series was "
+                  "tested. Search for signal: a related series (a peer, the index, rates, a leading indicator), weather or the "
+                  "calendar, saved with the series as covariates and scored with control_lab (with_covariates); then rebuild the "
+                  "pack. If a test shows nothing helps, say what was tested and that the range is the forecast")
 
 
 _FLAT_CLAIM = re.compile(r"(?:centre|center|forecast|median)\s+line\s+is\s+(?:a\s+)?(?:level|flat)\b|\bflat\s+(?:centre|center|median|forecast)\b|"
