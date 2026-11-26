@@ -24,6 +24,8 @@ dependencies = [
   "trafilatura",    # main-text extraction from fetched pages; Apache-2.0
   "beautifulsoup4", # fallback text extraction; MIT
   "ruptures",       # changepoint search in the analysis sandbox; BSD
+  "duckdb",         # pl.query reads large files in place in the analysis sandbox; MIT
+  "lxml",           # HTML parser for page tables (beautifulsoup4 "lxml"); BSD
   "fastapi",
   "uvicorn",
 ]
