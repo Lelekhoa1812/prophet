@@ -51,6 +51,14 @@ def _how_sure(tier: int, explicit_year: bool) -> str:
     return "low"
 
 
+def _date_found(explicit: bool, source: dict) -> str:
+    """How the date was found: the year is written in the sentence ("stated in text"), else taken from the source's
+    publication date, else assumed from the current year ("inferred")."""
+    if explicit:
+        return "stated in text"
+    return "publication date" if source.get("date") else "inferred"
+
+
 def _position(event_date: str, data_end: str | None, horizon_end: str | None) -> str | None:
     if data_end is None:
         return None
@@ -85,6 +93,7 @@ def dated_events(sources: list[dict], data_end: str | None = None, horizon_end: 
                 found.append({"date": event_date, "event": sentence[:EVENT_CHARS],
                               "source_id": source.get("id"), "source_url": source.get("final_url") or source.get("url"),
                               "how_sure": _how_sure(tier, explicit),
+                              "date_found": _date_found(explicit, source),
                               "position": _position(event_date, data_end, horizon_end)})
     found.sort(key=lambda e: e["date"])
     return found[:MAX_EVENTS]
