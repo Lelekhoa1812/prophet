@@ -32,6 +32,7 @@ from prophet_workflows import CHECKPOINT_STATUSES, POLL_SECONDS, ROOT, call  # n
 
 MAX_CONTINUES = 4
 MAX_ANSWERS = 3
+MAX_REFUSALS = 5     # refused continues (lease still held) retried before the panel stops watching
 MAX_MINUTES = 120
 
 PANEL: dict[str, dict] = {
@@ -154,7 +155,7 @@ def run_one(key: str, out_root: Path) -> dict:
         tid = turn["id"]
         record["turn_id"] = tid
         deadline = time.time() + MAX_MINUTES * 60
-        continues = answers = 0
+        continues = answers = refused = 0
         mission: dict = {}
         while True:
             mission = call("GET", f"/api/missions/{tid}?after=0")
@@ -177,8 +178,14 @@ def run_one(key: str, out_root: Path) -> dict:
                     continues += 1
                     time.sleep(POLL_SECONDS)
                     continue
-                except RuntimeError:
-                    pass
+                except RuntimeError as exc:
+                    # Round 2 AUUNEMP (2026-11-26): the checkpoint was read while the worker still held its lease, the
+                    # continue was refused once and the panel stopped; the mission then ran on unwatched. Retry a few times.
+                    refused += 1
+                    record.setdefault("continue_refusals", []).append(str(exc)[:200])
+                    if refused <= MAX_REFUSALS:
+                        time.sleep(POLL_SECONDS * 2)
+                        continue
             break
         record.update({"final_status": mission.get("status"), "continues": continues, "auto_answer_rounds": answers})
         record.update(_score(mission))

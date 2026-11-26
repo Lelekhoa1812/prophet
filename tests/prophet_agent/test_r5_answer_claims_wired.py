@@ -369,3 +369,11 @@ def test_the_level_sentence_is_added_when_the_verdict_is_flat_expected():
     assert _named(contracts.check_answer(added, [_forecast("flat_expected")]), "answer_level_sentence")[0]["ok"]
     assert contracts.add_level_sentence(missing, [_forecast("check")]) == missing
     assert contracts.add_level_sentence(added, [_forecast("flat_expected")]) == added
+
+
+def test_closes_indexes_and_stored_quantities_are_levels():
+    """Panel round 2 SPX (2026-11-26): "S&P 500 Daily Close" was given a 20-day total."""
+    for name in ("S&P 500 Daily Close", "Weekly working gas in storage (Lower 48)", "Daily CO2 ppm", "Temperature anomaly"):
+        assert contracts.is_level_name(name), name
+    for name in ("NSW daily demand MWh", "Monthly retail sales", "Total electricity demand"):
+        assert not contracts.is_level_name(name), name

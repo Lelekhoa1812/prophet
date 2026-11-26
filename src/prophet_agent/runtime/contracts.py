@@ -1580,7 +1580,11 @@ def _panel_rules(h: dict, res: dict) -> list[str]:
 # kWh in a day) does. Read from the measure's own names: the forecast pack's title and the uploaded data's numeric columns.
 LEVEL_MEASURE = re.compile(r"price|spot|\brate\b|_rate|pm2|pm10|pm_|concentration|temperature|\btemp|index|\blevel|yield|"
                            r"ratio|percent|pct|%|\u00b5g|ug_?m3|humidity|pressure|_mean\b|\bmean\b|_avg|\bavg\b|average|"
-                           r"per_barrel|per barrel|/bbl|usd_per|exchange|fx\b", re.I)
+                           r"per_barrel|per barrel|/bbl|usd_per|exchange|fx\b|"
+                           # Panel round 2 (2026-11-26): "S&P 500 Daily Close" was given a 20-day total. Closes, stock
+                           # indexes, stored quantities and anomalies are levels too.
+                           r"\bclose\b|closing|adj_close|\bclose_|s&p|nasdaq|dow jones|\bdjia\b|ftse|nikkei|"
+                           r"storage|inventor(?:y|ies)|\bppm\b|co2|anomal|unemployment|inflation|\bcpi\b", re.I)
 FLOW_MEASURE = re.compile(r"_sum\b|\bsum\b|total|sales|revenue|units|count|volume|kwh|orders|demand|quantity|qty", re.I)
 
 

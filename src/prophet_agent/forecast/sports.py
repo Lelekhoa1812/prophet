@@ -68,8 +68,49 @@ def _score(text: str, label: str, line: int) -> int | None:
 _CSV_ALIASES = {"team1": "home", "team2": "away", "hometeam": "home", "awayteam": "away", "home_team": "home",
                 "away_team": "away", "fthg": "home_goals", "ftag": "away_goals", "hg": "home_goals", "ag": "away_goals",
                 "home_score": "home_goals", "away_score": "away_goals", "homegoals": "home_goals",
-                "awaygoals": "away_goals", "div": "group_code"}
-_DMY = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+                "awaygoals": "away_goals", "div": "group_code",
+                # fixturedownload.com: "Home Team", "Away Team", "Result" as "3 - 0"; its JSON gives HomeTeamScore and DateUtc.
+                "home team": "home", "away team": "away", "hometeamscore": "home_goals", "awayteamscore": "away_goals",
+                "dateutc": "date", "result": "result", "score": "result"}
+_DMY = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})(?:\s.*)?$")
+_ISO_START = re.compile(r"^(\d{4}-\d{2}-\d{2})[T\s]")
+_RESULT = re.compile(r"^\s*(\d{1,3})\s*[-\u2013:]\s*(\d{1,3})\s*$")
+
+
+def _match_from_row(r: dict[str, str], line: int) -> Match:
+    """One match from a row whose keys are already aliased. Dates become YYYY-MM-DD; a "3 - 0" result gives both scores."""
+    date = r.get("date") or ""
+    if (dmy := _DMY.match(date)):
+        day, month, year = dmy.groups()
+        date = f"{'20' + year if len(year) == 2 else year}-{month.zfill(2)}-{day.zfill(2)}"
+    elif (iso := _ISO_START.match(date)):
+        date = iso.group(1)
+    if not r.get("home") or not r.get("away"):
+        raise ValueError(f"row {line}: home and away are needed")
+    if r["home"] == r["away"]:
+        raise ValueError(f"row {line}: a team cannot play itself")
+    hg = _score(r.get("home_goals", ""), "home_goals", line)
+    ag = _score(r.get("away_goals", ""), "away_goals", line)
+    if hg is None and ag is None and (res := _RESULT.match(r.get("result") or "")):
+        hg, ag = int(res.group(1)), int(res.group(2))
+    if (hg is None) != (ag is None):
+        raise ValueError(f"row {line}: give both scores or neither")
+    return Match(date or None, r["home"], r["away"], hg, ag, r.get("group") or None)
+
+
+def _aliased(row: dict) -> dict[str, str]:
+    return {_CSV_ALIASES.get(str(k).strip().lower(), str(k).strip().lower()): ("" if v is None else str(v)).strip()
+            for k, v in row.items() if k}
+
+
+def read_match_records(records: list) -> list[Match]:
+    """Matches from a JSON list of records (fixturedownload.com feed and similar), with the CSV reader's column names."""
+    if not records or not all(isinstance(r, dict) for r in records):
+        raise ValueError("the JSON list must hold one object per match")
+    rows = [_aliased(r) for r in records]
+    if not {"home", "away"} <= set(rows[0]):
+        raise ValueError("each match needs home and away team names (for example HomeTeam and AwayTeam)")
+    return [_match_from_row(r, i) for i, r in enumerate(rows, start=1)]
 
 
 def read_matches_csv(text: str) -> list[Match]:
@@ -80,22 +121,7 @@ def read_matches_csv(text: str) -> list[Match]:
     if not {"home", "away"} <= cols:
         raise ValueError("the CSV needs columns home and away (or team1 and team2, HomeTeam and AwayTeam); date, "
                          "home_goals, away_goals and group are optional")
-    out: list[Match] = []
-    for line, row in enumerate(reader, start=2):
-        r = {_CSV_ALIASES.get(k.strip().lower(), k.strip().lower()): (v or "").strip() for k, v in row.items() if k}
-        if r.get("date") and _DMY.match(r["date"]):
-            day, month, year = r["date"].split("/")
-            r["date"] = f"{'20' + year if len(year) == 2 else year}-{month.zfill(2)}-{day.zfill(2)}"
-        if not r.get("home") or not r.get("away"):
-            raise ValueError(f"row {line}: home and away are needed")
-        if r["home"] == r["away"]:
-            raise ValueError(f"row {line}: a team cannot play itself")
-        hg = _score(r.get("home_goals", ""), "home_goals", line)
-        ag = _score(r.get("away_goals", ""), "away_goals", line)
-        if (hg is None) != (ag is None):
-            raise ValueError(f"row {line}: give both scores or neither")
-        out.append(Match(r.get("date") or None, r["home"], r["away"], hg, ag, r.get("group") or None))
-    return out
+    return [_match_from_row(_aliased(row), line) for line, row in enumerate(reader, start=2)]
 
 
 def parse_football_json(doc: Any) -> list[Match]:
@@ -136,6 +162,8 @@ def parse_matches(text: str, filename: str = "") -> list[Match]:
             doc = json.loads(text)
         except ValueError:
             raise ValueError("the JSON file does not parse")
+        if isinstance(doc, list):
+            return read_match_records(doc)
         return parse_football_json(doc)
     return read_matches_csv(text)
 
@@ -880,10 +908,16 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     # current season alone is too small to rate the teams. Matches with a club outside this season are left out, so a
     # promoted club is rated from this season and the shrinkage toward the mean.
     in_season = set(teams)
-    fit_extra = [m for m in (history or []) if m.played and m.home in in_season and m.away in in_season]
+    # Round 2 EPL (2026-11-26): the planner passed the current file as history too, so every match counted twice and the
+    # note read as if earlier seasons had been used. A history match that is also a current match is dropped.
+    current_keys = {(m.date, m.home, m.away) for m in everything}
+    fit_extra = [m for m in (history or []) if m.played and m.home in in_season and m.away in in_season
+                 and (m.date, m.home, m.away) not in current_keys]
     if history:
-        notes.append(f"{len(fit_extra)} earlier matches between this season's teams were used to fit the ratings only; "
-                     "the table and the simulation start from this season's results")
+        dropped = sum(1 for m in history if (m.date, m.home, m.away) in current_keys)
+        notes.append(f"history: {len(fit_extra)} matches from earlier seasons, between this season's teams, fitted the "
+                     f"ratings only; this season's {len(played)} results set the table and start the simulation"
+                     + (f"; {dropped} history rows were this season's own matches and were not counted twice" if dropped else ""))
     rem, _ = _chronological(unplayed) if unplayed else ([], None)
     if sport == FOOTBALL and not rem:
         rem = _remaining_double_round_robin(teams, played)

@@ -202,6 +202,8 @@ def test_earlier_seasons_fit_the_ratings_only(tmp_path):
     names = [f"Club {i}" for i in range(6)]
     current = _football_json(names, played=8)
     last = _football_json(names[:5] + ["Gone FC"], played=30)
+    for match in last["matches"]:
+        match["date"] = match["date"].replace("2026-", "2025-")      # last season's dates
     (tmp_path / "now.json").write_text(json.dumps(current), encoding="utf-8")
     (tmp_path / "last.json").write_text(json.dumps(last), encoding="utf-8")
     tool = simulate_season_tool({"now.json": tmp_path / "now.json", "last.json": tmp_path / "last.json"})
@@ -210,4 +212,35 @@ def test_earlier_seasons_fit_the_ratings_only(tmp_path):
     out = tool.fn({"results": "now.json", "history": ["last.json"], "simulations": 100, "backtest": False}, "k2")
     assert {row["team"] for row in out["teams"]} == set(names)
     assert out["settings"]["n_played"] == 8
-    assert any("fit the ratings only" in note for note in out["notes"])
+    assert any("fitted the ratings only" in note for note in out["notes"])
+
+
+def test_fixturedownload_csv_and_json_layouts_are_read():
+    """Round 2 EPL: fixturedownload.com had the full 2026-27 results (openfootball stopped at 20 September)."""
+    text = ("Match Number,Round Number,Date,Location,Home Team,Away Team,Result\n"
+            "1,1,21/08/2026 20:00,Emirates Stadium,Arsenal,Coventry,3 - 0\n"
+            "2,1,22/08/2026 12:30,MKM Stadium,Hull,Man Utd,\n")
+    first, second = S.read_matches_csv(text)
+    assert (first.date, first.home, first.away, first.home_goals, first.away_goals) == ("2026-08-21", "Arsenal", "Coventry", 3, 0)
+    assert not second.played
+    feed = json.dumps([{"MatchNumber": 1, "DateUtc": "2026-08-21 19:00:00Z", "HomeTeam": "Arsenal", "AwayTeam": "Coventry",
+                        "HomeTeamScore": 3, "AwayTeamScore": 0},
+                       {"MatchNumber": 2, "DateUtc": "2026-08-22 11:30:00Z", "HomeTeam": "Hull", "AwayTeam": "Man Utd",
+                        "HomeTeamScore": None, "AwayTeamScore": None}])
+    a, b = S.parse_matches(feed, "epl-2026.json")
+    assert (a.date, a.home_goals, a.away_goals) == ("2026-08-21", 3, 0) and not b.played
+
+
+def test_the_current_file_given_as_history_is_not_counted_twice(tmp_path):
+    names = [f"Club {i}" for i in range(6)]
+    doc = _football_json(names, played=26)
+    (tmp_path / "now.json").write_text(json.dumps(doc), encoding="utf-8")
+    tool = simulate_season_tool({"now.json": tmp_path / "now.json"})
+    out = tool.fn({"results": "now.json", "history": ["now.json"], "simulations": 100, "backtest": False}, "k")
+    note = next(n for n in out["notes"] if n.startswith("history:"))
+    assert "0 matches from earlier seasons" in note and "not counted twice" in note
+
+
+def test_an_unknown_results_name_points_to_source():
+    with pytest.raises(ValueError, match="source"):
+        simulate_season_tool({}).fn({"results": "out_file.csv"}, "k")

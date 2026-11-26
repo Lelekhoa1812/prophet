@@ -23,7 +23,8 @@ ALLOWED = {"sport", "results", "history", "source", "fixtures", "teams", "simula
 
 def _named_text(name: Any, datasets: dict[str, Path], label: str) -> tuple[str, str]:
     if not isinstance(name, str) or name not in datasets:
-        raise ValueError(f"{label} must be one of the mission's file names {sorted(datasets)}")
+        raise ValueError(f"{label} must be one of the mission's file names {sorted(datasets)}; a file a sandbox run "
+                         "wrote is passed as source {run_id, file} instead")
     return Path(datasets[name]).read_text(encoding="utf-8"), name
 
 
