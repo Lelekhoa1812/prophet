@@ -17,6 +17,7 @@ all. No tool runs JavaScript, submits a form or opens a file:// URL.
 from __future__ import annotations
 
 import json
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
@@ -27,7 +28,8 @@ from prophet_agent.research.passages import best_passages, select_passages, stat
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
                                             is_us_region, registry_pages, resolve_family)
 from prophet_agent.research.rank import credibility, host_of, parse_date, rank_hits, rank_report
-from prophet_agent.research.search import KINDS, Hit, normalise_url, web_search
+from prophet_agent.research.queryplan import is_data_seeking
+from prophet_agent.research.search import KINDS, REGISTRY_SOURCE, Hit, discover, normalise_url, web_search
 from prophet_agent.runtime.runner import Tool
 
 WORKERS = 4
@@ -234,15 +236,36 @@ def web_search_tool(args: Any, _key: str) -> dict:
     kind = _kind(args)
     max_results = _int(args, "max_results", 8, 1, 10)
     timelimit, days = _recency(args)
-    result = web_search(query, kind=kind, max_results=max_results, timelimit=timelimit)
-    hits = rank_hits(list(result), recency_days=days, queries=[query], kind=kind)
+    # A data-seeking query runs several wordings (discover); registry entries never count as search hits and follow them.
+    # On 2026-11-26 "NVDA historical stock price CSV download" showed SEC and Federal Reserve registry pages first.
+    if kind == "text" and is_data_seeking(query):
+        result = discover(query, kind=kind, max_results=max_results, timelimit=timelimit, search=web_search)
+    else:
+        result = web_search(query, kind=kind, max_results=max_results, timelimit=timelimit)
+    found = [h for h in result if h.source != REGISTRY_SOURCE]
+    hits = [_hit_view(h) for h in rank_hits(found, recency_days=days, queries=[query], kind=kind)]
+    # A registry entry that is itself the data file (the NOAA daily CO2 file) leads, because search did not return it and
+    # the planner then invented an address. A registry web page follows the search hits. Both stay labelled registry.
+    registry = _registry_hits(query)
+    files = [h for h in registry if _is_data_file_url(h["url"])]
+    pages = [h for h in registry if not _is_data_file_url(h["url"])]
+    ordered = files + hits + pages
     out: dict[str, Any] = {"query": query, "kind": kind, "backend": result.backend, "cached": result.cached,
-                           "hits": _registry_hits(query) + [_hit_view(h) for h in hits]}
-    if not out["hits"]:
+                           "hits": [dict(h, rank=i + 1) for i, h in enumerate(ordered)]}
+    if not hits:
         out["diagnostics"] = result.diagnostics or ["no results"]
-    elif _registry_hits(query):
-        out["note"] = "registry pages for this series are listed first; use those urls for the data file"
+    if registry:
+        out["note"] = ("registry entries are labelled source registry: a registry data file is listed first, registry "
+                       "pages follow the search hits")
     return out
+
+
+DATA_FILE_SUFFIXES = (".csv", ".txt", ".json", ".xlsx", ".xls", ".zip", ".tsv")
+
+
+def _is_data_file_url(url: str) -> bool:
+    path = urlsplit(url).path.lower()
+    return path.endswith(DATA_FILE_SUFFIXES)
 
 
 def _registry_hits(query: str) -> list[dict]:

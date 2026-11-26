@@ -86,10 +86,28 @@ def test_web_search_tool_returns_ranked_hits_with_tiers(monkeypatch):
     tool, _ = tools_by_name()["web_search"]
     out = tool.fn({"query": "oil outlook"}, "key")
     assert out["backend"] == "bing"
-    assert out["hits"][0]["source"] == "registry"
-    assert out["hits"][0]["url"] in {page["url"] for page in registry_pages("oil")}
-    assert [h["tier"] for h in out["hits"] if h.get("source") != "registry"] == [1, 2, 4]
+    # Mission 9 (M9-5): registry web pages are labelled and follow the search hits; they are never listed as search hits.
+    assert [h["tier"] for h in out["hits"][:3]] == [1, 2, 4]
+    assert all(h.get("source") != "registry" for h in out["hits"][:3])
+    tail = out["hits"][3:]
+    assert tail and all(h["source"] == "registry" for h in tail)
+    assert {h["url"] for h in tail} <= {page["url"] for page in registry_pages("oil")}
+    assert [h["rank"] for h in out["hits"]] == list(range(1, len(out["hits"]) + 1))
     assert "diagnostics" not in out
+
+
+def test_web_search_puts_unrelated_registry_pages_after_search_hits(monkeypatch):
+    """NVDA on 2026-11-26: SEC and Federal Reserve registry pages were listed first for a price-file query."""
+    monkeypatch.setattr(rt, "discover", lambda q, **kw: SearchResult([
+        Hit(title="NVDA historical prices", url="https://www.nasdaq.com/market-activity/stocks/nvda/historical",
+            snippet="s", rank=1, backend="bing")], backend="bing"))
+    tool, _ = tools_by_name()["web_search"]
+    out = tool.fn({"query": "NVDA historical stock price CSV download"}, "key")
+    searched = [h for h in out["hits"] if h.get("source") != "registry"]
+    assert searched and searched[0]["url"].startswith("https://www.nasdaq.com/")
+    nasdaq = out["hits"].index(searched[0])
+    pages = [h for h in out["hits"] if h.get("source") == "registry" and "sec.gov" in h["url"]]
+    assert pages and out["hits"].index(pages[0]) > nasdaq       # a registry web page follows the search hits
 
 
 def test_web_search_lists_the_noaa_daily_file_before_other_hits(monkeypatch):
@@ -107,7 +125,9 @@ def test_web_search_tool_reports_diagnostics_when_nothing_came_back(monkeypatch)
     monkeypatch.setattr(rt, "web_search", lambda q, **kw: empty)
     tool, _ = tools_by_name()["web_search"]
     out = tool.fn({"query": "history of the roman roads"}, "key")
-    assert out["hits"] == [] and out["diagnostics"] == ["auto: DDGSException: blocked"]
+    # A data-seeking wording runs through discover, which reports each variant's backend error.
+    assert out["hits"] == []
+    assert out["diagnostics"] and all("auto: DDGSException: blocked" in d for d in out["diagnostics"][:-1])
 
 
 def test_web_fetch_returns_passages_for_the_queries(monkeypatch):

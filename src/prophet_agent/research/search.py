@@ -313,7 +313,8 @@ def web_search(query: str, *, kind: str = "text", max_results: int = 8, timelimi
 
 def discover(query: str, *, kind: str = "text", max_results: int = 8, timelimit: str | None = None,
              region: str = "wt-wt", backends: tuple[str, ...] | list[str] | None = None,
-             backoff_s: float = 0.5, use_cache: bool = True, max_variants: int = MAX_VARIANTS) -> SearchResult:
+             backoff_s: float = 0.5, use_cache: bool = True, max_variants: int = MAX_VARIANTS,
+             search=None) -> SearchResult:
     """Search with several wordings of a data query and merge them.
 
     Motivation vs Logic
@@ -328,12 +329,13 @@ def discover(query: str, *, kind: str = "text", max_results: int = 8, timelimit:
     # Imported here: rank imports Hit and normalise_url from this module.
     from prophet_agent.research.rank import interleave, rank_report, registry_hits
 
+    run = search or web_search      # a caller (the web_search tool) may pass its own search function
     plan = plan_query(query)
     variants = list(plan.variants[:max_variants])
     with ThreadPoolExecutor(max_workers=max(1, min(DISCOVER_WORKERS, len(variants)))) as pool:
         results = list(pool.map(
-            lambda v: web_search(v, kind=kind, max_results=max(max_results, VARIANT_FETCH), timelimit=timelimit,
-                                 region=region, backends=backends, backoff_s=backoff_s, use_cache=use_cache),
+            lambda v: run(v, kind=kind, max_results=max(max_results, VARIANT_FETCH), timelimit=timelimit,
+                          region=region, backends=backends, backoff_s=backoff_s, use_cache=use_cache),
             variants))
 
     diagnostics: list[str] = []
