@@ -21,6 +21,7 @@ import numpy as np
 TOLERANCE = 1.05        # the tilt may score at most this many times the flat line's mean absolute error
 MIN_MOVE = 0.04         # the path must move at least this share of the band's final half-width, or it is not visible
 FLAT_SHARE = 0.08       # a centre whose range is under this share of the band's width is flat
+AGREE_FLOOR = 0.02      # the model's own median moves at least this share of the final half-range to count as a direction
 FIT_POINTS = 400        # the trailing history the trend is fitted to
 MIN_POINTS = 24         # shorter histories give no trend
 N_ORIGINS = 8
@@ -127,6 +128,9 @@ def tilt(fc: dict, values: Any) -> dict:
         return fc
     x = np.asarray(values, dtype=float)
     final_half = float(q["0.9"][-1] - q["0.1"][-1]) / 2 or float(np.mean(np.asarray(q["0.9"]) - np.asarray(q["0.1"]))) / 2 or 1.0
+    own = np.asarray(fc.get("timesfm_point", fc["point"]), dtype=float)     # the model's own median, before any rule replaced it
+    own_move = float(own[-1] - x[-1])
+    own_dir = 0 if abs(own_move) < AGREE_FLOOR * final_half else (1 if own_move > 0 else -1)
     tried: dict[str, Any] = {}
     passing: list[tuple[float, str, np.ndarray, dict]] = []
     for rule, fn in CANDIDATES.items():
@@ -139,6 +143,10 @@ def tilt(fc: dict, values: Any) -> dict:
         info: dict[str, Any] = {"move": round(move, 4), "move_share_of_final_half_range": round(share, 3)}
         if share < MIN_MOVE:
             tried[rule] = {**info, "result": f"moves under {MIN_MOVE:.0%} of the range: no visible direction"}
+            continue
+        if own_dir and (move > 0) != (own_dir > 0):
+            tried[rule] = {**info, "result": f"points {'up' if move > 0 else 'down'} while the model's own median moves "
+                                             f"{'up' if own_dir > 0 else 'down'}: no agreement, so no tilt"}
             continue
         ev = tilt_evidence(x, h, rule)
         if not ev["scored"]:

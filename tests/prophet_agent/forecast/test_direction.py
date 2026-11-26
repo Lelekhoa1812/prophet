@@ -78,3 +78,13 @@ def test_an_answer_cannot_call_a_tilted_line_flat():
 def test_a_tilted_centre_is_not_a_level_line():
     from prophet_agent.runtime import contracts
     assert contracts._delivered_centre(_tilted_obs()) == "damped_trend"
+
+
+def test_a_trend_rule_that_contradicts_the_models_own_direction_is_not_drawn():
+    rng = np.random.default_rng(3)
+    x = 100 + np.arange(300) * 0.4 + rng.normal(0, 1.0, 300)          # rising history
+    fc = _flat_fc(float(x[-1]), 20, 3.0)
+    fc["timesfm_point"] = [float(x[-1]) - 0.4 * (i + 1) for i in range(20)]       # the model's own median falls
+    out = d.tilt(fc, x)
+    assert out["tilt_check"]["adopt"] is False
+    assert all("no agreement" in t["result"] for t in out["tilt_check"]["tried"].values())
