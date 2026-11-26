@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v27"
+    assert planner.version == "planner.v28"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
@@ -43,3 +43,23 @@ def test_blocked_interstitials_are_not_refetched():
     text = _text()
     assert "adblock, cookie consent, bot check, CAPTCHA, login wall" in text
     assert "Do not refetch it, and do not try to pass it" in text
+
+
+def test_v28_routes_leagues_pdfs_cached_pages_and_indexes():
+    """Batch 2 (2026-11-26): the planner is told the tools that now exist for these sources."""
+    text = _text()
+    assert "call simulate_season (sport football, or win_loss for no draws)" in text
+    assert "never add ranges across teams" in text
+    assert "download_web_data on the PDF URL" in text and "find_in_page searches it" in text
+    assert "download_open_data from FRED (SP500" in text
+    assert "table_kind league and expected_rows" in text
+    assert "never offer invented, simulated or approximate numbers as an option" in text
+
+
+def test_every_tool_v28_names_is_registered():
+    from prophet_agent.tools import default_tools
+    from prophet_agent.tools.opendata_tools import OpenDataContext
+    names = set(default_tools(opendata=OpenDataContext(store=None, attach=None)))
+    for tool in ("simulate_season", "find_in_page", "download_web_data", "download_market_prices", "download_open_data",
+                 "extract_page_charts", "state_table_claim", "validate_table", "backtest_series"):
+        assert tool in names, tool

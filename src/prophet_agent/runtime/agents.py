@@ -41,7 +41,8 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
         "Finds and reads outside sources on the web (news, policy, central banks, market reports) and returns dated, "
         "cited findings. Use before forecasting anything driven by events: FX, commodities, equities, demand tied to "
         "policy, weather or news.",
-        tools=("web_research", "web_search", "web_fetch", "download_web_data", "download_market_prices", *_COMMON),
+        tools=("web_research", "web_search", "web_fetch", "find_in_page", "extract_page_charts", "download_web_data",
+               "download_market_prices", "download_open_data", *_COMMON),
         skills=("web-research-playbook",), steps=14,
         role="You are a research sub-agent. Plan several different angles first, search them together, read the best "
              "passages, follow up on what is missing, and stop when new searches add nothing. Every claim you report has "
@@ -77,8 +78,8 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
         "principal_analyst",
         "States what table the question needs, collects pages, and reads why a download failed. It does not bind the "
         "series name and it does not forecast.",
-        tools=("web_search", "web_fetch", "web_research", "state_table_claim", "diagnose_source", "extract_page_tables",
-               "download_web_data", "download_market_prices", *_COMMON),
+        tools=("web_search", "web_fetch", "web_research", "find_in_page", "state_table_claim", "diagnose_source",
+               "extract_page_tables", "download_web_data", "download_market_prices", *_COMMON),
         steps=12,
         role="You state the table claim, collect pages, and read each diagnosis. A file name is not the series. "
              "You do not bind a series and you do not forecast. Report the claim, the signals, and the candidate ids."),
