@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from prophet_agent.forecast.control import CONTROL_ARGS, CONTROL_HELP, build_control
 from prophet_agent.forecast.rolling import rolling_backtest
 from prophet_agent.runtime.runner import Tool
@@ -99,10 +101,76 @@ MAX_HORIZON = 512           # the limit of timesfm_forecast and calibrate_interv
 MAX_BACKTEST_SERIES = 100   # as forecast_report's panel cap (round 5: electricity had 60 clients)
 
 
+class _RecordingEngine:
+    """Wraps the TimesFM engine and keeps the forecasts it returns, so the price comparison scores the same TimesFM points that
+    the backtest scored. Every other attribute is passed through unchanged.
+
+    Motivation vs Logic
+    Motivation: the price comparison must put TimesFM on the same origins with the same points, and rolling_backtest does not
+    return its per-origin forecasts.
+    Logic: rolling_backtest calls forecast_batch once (all origins, default settings) and forecast_controlled once per origin
+    when a control is set. Both results are kept as returned, so nothing is re-run and nothing is re-shaped.
+    """
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+        self.batch: Any = None
+        self.controlled: list[Any] = []
+
+    def forecast_batch(self, histories: Any, horizon: int) -> Any:
+        self.batch = self._inner.forecast_batch(histories, horizon)
+        return self.batch
+
+    def forecast_controlled(self, history: Any, horizon: int, control: Any) -> Any:
+        run = self._inner.forecast_controlled(history, horizon, control)
+        self.controlled.append(run)
+        return run
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _rolling_with_price(series: Any, horizon: int, n_origins: int, season: int | None, control: Any, combine: bool,
+                        price: bool | None) -> dict[str, Any]:
+    """rolling_backtest, plus the price baselines on the same origins when the series is price-like (or price is forced).
+
+    Motivation vs Logic
+    Motivation: a price series that is compared only with "repeat the last value" can look like a model win on a rising stretch.
+    Logic: detect_price_series decides (or the caller forces it). For a price, TimesFM's per-origin points are recorded from the
+    backtest itself and scored beside the random walk, drift, EWMA and GARCH baselines on the same origins, and the result
+    states which method was best and whether any beat the random walk. A non-price series gets the unchanged backtest.
+    """
+    from prophet_agent.forecast.price import detect_price_series, price_comparison
+
+    x = np.asarray(series, dtype=float)
+    if not detect_price_series(x, force=price)["is_price"]:
+        return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control,
+                                combine_forecasts=combine)
+    if not (np.isfinite(x).all() and (x > 0).all()):
+        raise ValueError("price baselines need positive, finite values; pass price false to backtest this series as it is")
+    from prophet_agent.forecast.timesfm import TimesFMEngine
+    rec = _RecordingEngine(TimesFMEngine.get())
+    out = rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control, combine_forecasts=combine,
+                           engine=rec)
+    k = int(out["origins"])
+    timesfm = None
+    if "timesfm_median" not in out["models"]:      # lumpy demand swaps TimesFM's point for expected volume: no price comparison
+        if rec.controlled and len(rec.controlled) == k:
+            timesfm = (np.stack([np.asarray(r.point) for r in rec.controlled]),
+                       np.stack([np.asarray(r.q) for r in rec.controlled]))
+        elif rec.batch is not None:
+            timesfm = (np.asarray(rec.batch.point)[:k], np.asarray(rec.batch.q)[:k])
+    out["price"] = price_comparison(x, horizon, k, season=int(out["season_used"]), timesfm=timesfm)
+    return out
+
+
 def _backtest(args: dict, _key: str) -> dict[str, Any]:
-    extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season", "combine"} - CONTROL_ARGS)
+    extra = sorted(set(args) - {"values", "source", "horizon", "n_origins", "season", "combine", "price"} - CONTROL_ARGS)
     if extra:
         raise ValueError(f"unknown arguments {extra}")
+    price = args.get("price")
+    if price is not None and not isinstance(price, bool):
+        raise ValueError("price must be true or false")
     horizon = args.get("horizon")
     if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
         raise ValueError("horizon must be a positive integer")
@@ -125,7 +193,7 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     if len(named) == 1:
         series = named[0][1]
         control = build_control(args, len(series), horizon, source_covariates(args))
-        return rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=control, combine_forecasts=combine)
+        return _rolling_with_price(series, horizon, n_origins, season, control, combine, price)
     # Several named series (a panel saved with pl.save_panel): the same backtest on each, in one call, with a summary table.
     # Live, a 12-station mission spent its whole budget on 23 one-series calls and forecast only 8 stations.
     if any(k in args for k in CONTROL_ARGS if args.get(k) not in (None, [], False)):
@@ -133,13 +201,14 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     per: dict[str, Any] = {}
     for name, series in named:
         try:
-            per[name] = rolling_backtest(series, horizon, n_origins=n_origins, season=season, control=None,
-                                         combine_forecasts=combine)
+            per[name] = _rolling_with_price(series, horizon, n_origins, season, None, combine, price)
         except ValueError as exc:
             per[name] = {"error": str(exc)[:200]}
     rows = {n: {"timesfm_mase": (r.get("models") or {}).get("timesfm", {}).get("mase"), "best_baseline": r.get("best_baseline"),
                 "baseline_mase": (r.get("models") or {}).get(r.get("best_baseline") or "", {}).get("mase"),
-                "verdict": r.get("verdict"), "coverage_80": r.get("timesfm_range_coverage_80")} if "error" not in r else r
+                "verdict": r.get("verdict"), "coverage_80": r.get("timesfm_range_coverage_80"),
+                **({"price_best_method": r["price"]["best_method"],
+                    "price_beat_random_walk": r["price"]["beat_random_walk"]} if "price" in r else {})} if "error" not in r else r
             for n, r in per.items()}
     verdicts = [r.get("verdict") for r in rows.values() if r.get("verdict")]
     return {"series": per, "summary": rows, "horizon": horizon, "n_series": len(named),
@@ -181,5 +250,7 @@ BACKTEST_SPEC = {
              "n_origins": "windows to test, 2 to 30 (default 12; fewer if the series is too short)",
              "season": "length of the repeating cycle in periods, 1 for none (default: chosen from the data by one shared rule)",
              "combine": "true to also score the TimesFM plus best-earlier-rule blend (default false)",
+             "price": ("true or false to force or skip the price baselines (random walk, drift, EWMA and GARCH volatility, "
+                       "scored on the same origins); default: detected from the values (positive, persistent, daily-like)"),
              **CONTROL_HELP},
 }
