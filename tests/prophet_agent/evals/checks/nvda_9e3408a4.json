@@ -1,0 +1,9 @@
+[
+  {"check": "download_refused", "tool": "download_web_data", "name": "NVDA_daily.csv",
+   "reason_contains": ["AAPL", "refused"],
+   "why": "the Apple sample saved under the NVDA name is refused by the name entity guard"},
+  {"check": "no_download_accepted", "name": "NVDA_daily.csv",
+   "why": "no download under the NVDA name is accepted from the recorded results"},
+  {"check": "max_eval_calls", "value": 0,
+   "why": "the evaluator never judges an answer built on the refused file"}
+]

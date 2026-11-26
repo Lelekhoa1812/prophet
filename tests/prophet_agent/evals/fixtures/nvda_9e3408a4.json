@@ -1,0 +1,784 @@
+{
+ "about": "Offline mission-eval fixture (see docs/prophet/EVALS.md). Built by scripts/build_eval_fixture.py from a stored mission, read-only. Decisions are the planner and eval outputs in the order the brain was asked (depth 0 and sub-agents); results are the tool calls of every lane, in run order, trimmed. Replayed numbers are recorded tool output, not new observations.",
+ "id": "nvda_9e3408a4",
+ "source": {
+  "mission_id": "9e3408a4e0d247178fe940a66bca9522",
+  "stored_status": "partial",
+  "stored_budget": {
+   "auto_continued": 2,
+   "auto_progress": 2,
+   "dataset_ids": [
+    "46f320f7751e4d28b280f77b3cbb0180"
+   ],
+   "finish_now": true,
+   "max_delegated_calls": 336,
+   "max_seconds": 900,
+   "model": "nvidia/nemotron-3-ultra-550b-a55b",
+   "segment": 2
+  }
+ },
+ "goal": "Research on Nvidia stock today and forecast their stock and best buy in time over the next 2 months. \n\nAsk me questions if you may need to. Search extensively for all possible insights and signals that can possibly influence this.",
+ "config": {
+  "auto_delegate": true,
+  "stall_window": 3
+ },
+ "decisions": {
+  "plan": [
+   {
+    "action": "ask_user",
+    "rationale": "Before I can forecast anything I need to know what data exists. You asked for Nvidia stock research and a two-month forecast, but I have not seen any file yet. Please tell me: (1) which file holds the price history and what its columns are (date and close price, or something else); (2) whether you want the forecast in trading days (about 42 trading days for two months) or calendar days; and (3) do"
+   },
+   {
+    "action": "ask_user",
+    "questions": [
+     {
+      "header": "Identify the",
+      "multiSelect": false,
+      "options": [
+       {
+        "description": "The closing price column",
+        "label": "Close"
+       },
+       {
+        "description": "Adjusted closing price",
+        "label": "Adj Close"
+       },
+       {
+        "description": "Name it",
+        "label": "Other column"
+       },
+       {
+        "description": "Proceed with inspection first",
+        "label": "I will tell you after you inspect the file"
+       }
+      ],
+      "question": "Which column in your file is Nvidia's closing price, and what is the date column?"
+     }
+    ],
+    "rationale": "high-risk: I need to know which column to forecast before I inspect and scan the data. A wrong column choice changes every number delivered. Recommended: inspect the file first, then tell me the column names."
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": null
+    },
+    "rationale": "List the analysis playbooks so I can read the ones that apply to this series before deciding any treatment.",
+    "tool": "analyst_skill"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "questions": [
+      {
+       "header": "Data source",
+       "multiSelect": false,
+       "options": [
+        {
+         "description": "I have a file with Date and Close (or Adj Close) columns",
+         "label": "Upload a CSV/Excel file with Nvidia daily prices"
+        },
+        {
+         "description": "Give me a https URL that returns a CSV of NVDA daily data",
+         "label": "Download from Yahoo Finance via a direct CSV link"
+        },
+        {
+         "description": "Check list_open_data_sources for equities",
+         "label": "Use a built-in open data source if one exists"
+        }
+       ],
+       "question": "I don't have a data file yet. How would you like to provide Nvidia's daily price history?"
+      }
+     ],
+     "rationale": "high-risk: The forecast cannot start without a time series. The choice of source determines the series length, adjustments (splits/dividends), and trading-day calendar. A wrong guess would deliver a forecast on the wrong data."
+    },
+    "rationale": "high-risk: The forecast cannot start without a time series. The choice of source determines the series length, adjustments (splits/dividends), and trading-day calendar. A wrong guess would deliver a forecast on the wrong data.",
+    "tool": "ask_user"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "queries": [
+      "Nvidia stock price today NVDA close",
+      "Nvidia stock news today earnings AI chips Blackwell",
+      "Nvidia stock price forecast next 2 months analyst targets",
+      "Nvidia stock split dividend history adjusted close",
+      "Nvidia stock trading calendar NYSE holidays 2025",
+      "Nvidia stock volatility beta market cap",
+      "Nvidia stock upcoming events product launches",
+      "Nvidia stock risks competition regulation"
+     ]
+    },
+    "constraints": "Do not generate or simulate any numbers for named real-world sources. Use only retrieved passages with source ids and dates.",
+    "deliverable": "A briefing with dated events, sources, and scenarios for the NVDA stock forecast.",
+    "rationale": "Nvidia stock is driven by external events (earnings, product launches, macro, regulation) that its price history cannot show. I need outside context before forecasting. I will delegate this to a researcher sub-agent with multiple angles.",
+    "resume": "continue",
+    "task": "Research Nvidia stock: current price, recent news, analyst forecasts, stock split/dividend history, trading calendar, volatility, upcoming events, and risks that could influence the stock over the next 2 months.",
+    "tasks": [
+     {
+      "constraints": "Do not generate or simulate any numbers for named real-world sources. Use only retrieved passages with source ids and dates.",
+      "deliverable": "A briefing with dated events, sources, and scenarios for the NVDA stock forecast.",
+      "task": "Research Nvidia stock: current price, recent news, analyst forecasts, stock split/dividend history, trading calendar, volatility, upcoming events, and risks that could influence the stock over the next 2 months."
+     }
+    ],
+    "tool": "web_research"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "data_end": "2026-07-24",
+     "fetch_top": 8,
+     "horizon_end": "2026-09-24",
+     "kind": "text",
+     "passages_per_page": 3,
+     "queries": [
+      "Nvidia stock price today NVDA close",
+      "Nvidia stock news today earnings AI chips Blackwell",
+      "Nvidia stock price forecast next 2 months analyst targets",
+      "Nvidia stock split dividend history adjusted close",
+      "Nvidia stock trading calendar NYSE holidays 2025",
+      "Nvidia stock volatility beta market cap",
+      "Nvidia stock upcoming events product launches",
+      "Nvidia stock risks competition regulation"
+     ],
+     "region": "United States"
+    },
+    "rationale": "The person wants research on Nvidia stock today and a forecast over the next 2 months. I need outside context before forecasting: today's price, recent news, analyst targets, split/dividend history (affects adjusted close), trading calendar, volatility, upcoming events, and risks. web_research fans out eight angles and returns dated events with source ids I can cite.",
+    "tool": "web_research"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "code": "import os\nprint('in:', os.listdir('in') if os.path.exists('in') else 'no in dir')\nprint('carried:', os.listdir('in/carried') if os.path.exists('in/carried') else 'no carried dir')\nprint('out:', os.listdir('out') if os.path.exists('out') else 'no out dir')"
+    },
+    "rationale": "The person wants a Nvidia stock forecast but has not supplied a file. I need to see what files exist in the mission before deciding whether to inspect an existing series or ask how to get one. I will list the in/ directory and any carried files, then inspect whatever Nvidia price file is present (or report that none exists). This is the first analysis step: frame and provenance come from the file.",
+    "tool": "sandbox_python"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": "NVDA_daily.csv",
+     "url": "https://query1.finance.yahoo.com/v7/finance/download/NVDA?period1=0&period2=9999999999&interval=1d&events=history&includeAdjustedClose=true"
+    },
+    "rationale": "Download Nvidia's full daily price history from Yahoo Finance as a CSV. This provides the adjusted close (for splits/dividends), volume, and trading-day calendar needed for the forecast. The file will be mounted at in/NVDA_daily.csv for the next sandbox step.",
+    "tool": "download_web_data"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": "NVDA_daily.csv",
+     "url": "https://query1.finance.yahoo.com/v7/finance/download/NVDA?period1=0&period2=9999999999&interval=1d&events=history"
+    },
+    "rationale": "Download Nvidia daily price history from Yahoo Finance without the adjusted close parameter that caused the 401 error. This gives us the raw OHLCV data needed for the forecast.",
+    "tool": "download_web_data"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": "NVDA_daily.csv",
+     "url": "https://stooq.com/q/d/l/?s=nvda.us&i=d"
+    },
+    "rationale": "Yahoo Finance CSV download requires authentication (401). Stooq provides free daily OHLCV data for NVDA without API keys. This will give us the raw price history needed for the forecast.",
+    "tool": "download_web_data"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": "NVDA_daily.csv",
+     "url": "https://raw.githubusercontent.com/datasets/s-and-p-500-companies-financials/master/data/NVDA.csv"
+    },
+    "rationale": "Try a known public CSV source for NVDA daily data from a GitHub dataset repository. This avoids Yahoo Finance authentication issues and Stooq HTML responses.",
+    "tool": "download_web_data"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": "NVDA_daily.csv",
+     "url": "https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv"
+    },
+    "rationale": "The previous attempts to download NVDA data from Yahoo Finance and Stooq failed due to authentication and content type issues. I'll try a different approach using a known working CSV source. However, the Plotly dataset is for Apple (AAPL), not NVDA. Let me try a more reliable source for NVDA data.",
+    "tool": "download_web_data"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "code": "import pandas as pd\nimport os\n\n# Check what files we have\nprint('Files in in/:', os.listdir('in') if os.path.exists('in') else 'no in dir')\n\n# Load the downloaded file (it's AAPL data, not NVDA)\ndf = pd.read_csv('in/NVDA_daily.csv')\nprint('Shape:', df.shape)\nprint('Columns:', df.columns.tolist())\nprint('First 5 rows:')\nprint(df.head())\nprint('\\nLast 5 rows:')\nprint(df.tail())\nprint('\\nDate range:', df['Date'].min(), 'to', df['Date'].max())\nprint('\\nData types:')\nprint(df.dtypes)"
+    },
+    "rationale": "The downloaded file is AAPL data, not NVDA. I need to find a working source for NVDA daily price data. Let me first check what we have, then search for a reliable NVDA data source.",
+    "tool": "sandbox_python"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "name": "NVDA_daily.csv",
+     "url": "https://stooq.com/q/d/l/?s=nvda.us&i=d"
+    },
+    "rationale": "Download NVDA daily data from Stooq (free, no API key needed). This is a reliable source for historical stock data.",
+    "tool": "download_web_data"
+   },
+   {
+    "action": "call_tool",
+    "args": {
+     "kind": "text",
+     "max_results": 10,
+     "query": "NVDA historical stock price CSV download",
+     "recency": "month"
+    },
+    "rationale": "Need to find a reliable source for NVDA daily historical stock data. The Yahoo Finance API returned 401, Stooq returned HTML. Let me search for alternative sources that provide CSV downloads of NVDA stock data.",
+    "tool": "web_search"
+   },
+   {
+    "action": "ask_user",
+    "questions": [
+     {
+      "header": "Nvidia price",
+      "multiSelect": false,
+      "options": [
+       {
+        "description": "Upload the file with NVDA daily closes",
+        "label": "Yes, I can upload it"
+       },
+       {
+        "description": "I need you to find NVDA data from a public source",
+        "label": "No, I don't have a file"
+       }
+      ],
+      "question": "Do you have a file with Nvidia's daily closing prices (Date and Close columns) that you can upload?"
+     }
+    ],
+    "rationale": "The only NVDA data found so far is Apple's (AAPL) file, which cannot be used to forecast Nvidia. I need Nvidia's own closing prices before I can scan, backtest or forecast. If you don't have a file, I will keep trying public sources for NVDA daily closes."
+   },
+   {
+    "action": "finish",
+    "rationale": "the person asked for the answer so far"
+   }
+  ],
+  "eval": [
+   {
+    "answer": "No forecast can be delivered yet. The attached file contains Apple (AAPL) daily prices from 2015-02-17 to 2017-02-16, not Nvidia. Please confirm whether you can supply an NVDA daily CSV with Date and Close columns, or whether I should proceed with the Apple file as a stand-in.",
+    "reason": "The file in in/ is Apple stock data, not Nvidia's, so no Nvidia forecast exists yet. The person has already confirmed Close is the price column, so no question is needed there. I need to load the actual Nvidia file, check its date range and gaps, run an accuracy check against simple rules, and produce a forecast for the next two months.",
+    "verdict": "not_met"
+   }
+  ]
+ },
+ "answers": [
+  {
+   "Identify the": "Close"
+  }
+ ],
+ "results": [
+  {
+   "tool": "analyst_skill",
+   "args": {
+    "name": null
+   },
+   "ok": true,
+   "result": {
+    "skills": [
+     {
+      "name": "bayesian-shrinkage-hierarchies",
+      "summary": "Pull noisy per-series means or rates toward the group when each series has little history."
+     },
+     {
+      "name": "changepoints-and-regimes",
+      "summary": "Find persistent mean shifts on history only; a backtest decides between a regime flag and truncation."
+     }
+    ],
+    "_trimmed": true
+   }
+  },
+  {
+   "tool": "web_research",
+   "args": {
+    "queries": [
+     "Nvidia stock price today NVDA close",
+     "Nvidia stock news today earnings AI chips Blackwell",
+     "Nvidia stock price forecast next 2 months analyst targets",
+     "Nvidia stock split dividend history adjusted close",
+     "Nvidia stock trading calendar NYSE holidays 2025",
+     "Nvidia stock volatility beta market cap",
+     "Nvidia stock upcoming events product launches",
+     "Nvidia stock risks competition regulation"
+    ]
+   },
+   "ok": true,
+   "result": {
+    "dropped_queries": [],
+    "duplicate_sources": 2,
+    "events": [
+     {
+      "date": "2012-11-20",
+      "event": "| Nov 20, 2012 | Dec 14, 2012 | $0.075 | Regular |",
+      "how_sure": "low",
+      "position": null,
+      "source_id": "S5",
+      "source_url": "https://gainbot.ai/stocks/NVDA/dividends"
+     },
+     {
+      "date": "2013-02-26",
+      "event": "| Feb 26, 2013 | Mar 21, 2013 | $0.075 | Regular |",
+      "how_sure": "low",
+      "position": null,
+      "source_id": "S5",
+      "source_url": "https://gainbot.ai/stocks/NVDA/dividends"
+     }
+    ],
+    "failed": [
+     {
+      "origin": "search",
+      "url": "https://www.macroaxis.com/volatility/NVDA/NVIDIA",
+      "why": "HTTP 403"
+     },
+     {
+      "origin": "search",
+      "url": "https://www.marketbeat.com/stocks/NASDAQ/NVDA/forecast",
+      "why": "HTTP 403"
+     }
+    ],
+    "family": "equities",
+    "metrics": {
+     "dated_sources": 5,
+     "new_sources": 8,
+     "newest_date": "2026-11-20",
+     "oldest_date": "2006-04-07",
+     "tier1_sources": 4,
+     "unique_domains": 8
+    },
+    "new_sources": 8,
+    "queries": [
+     "Nvidia stock price today NVDA close",
+     "Nvidia stock news today earnings AI chips Blackwell"
+    ],
+    "region": null,
+    "repeated_queries": 0,
+    "search_diagnostics": [
+     "'Nvidia stock news today earnings AI chips Blackwell': mojeek: DDGSException: No results found.; every backend failed or...[60 characters trimmed]"
+    ],
+    "searched": 46,
+    "searched_queries": [
+     "Nvidia stock price today NVDA close",
+     "Nvidia stock news today earnings AI chips Blackwell"
+    ],
+    "sources": [
+     {
+      "date": "2026-11-20",
+      "date_source": "meta",
+      "final_url": "https://www.sec.gov/newsroom",
+      "id": "S1",
+      "name": "SEC newsroom",
+      "origin": "registry",
+      "passages": [
+       {
+        "reason": "query",
+        "score": 1.0274,
+        "start": 0,
+        "text": "Upcoming Events\n- SEC Meetings and Other Events Investor Advisory Committee\n- SEC Meetings and Other Events Closed Meeti...[384 characters trimmed]",
+        "_trimmed": true
+       }
+      ],
+      "sha256": "e6f4c1af4641cd035f2a9cf79d7388543a7fc4ecd893bd425537690322320b1f",
+      "tier": 1,
+      "title": "Newsroom",
+      "url": "https://www.sec.gov/newsroom",
+      "_trimmed": true
+     },
+     {
+      "date": "2017-03-13",
+      "date_source": "meta",
+      "final_url": "https://www.federalreserve.gov/newsevents/pressreleases.htm",
+      "id": "S2",
+      "name": "Federal Reserve press releases",
+      "note": "no passage matched the queries; the opening of the page is shown",
+      "origin": "registry",
+      "passages": [
+       {
+        "reason": "head",
+        "score": 0.0,
+        "start": 0,
+        "text": "An official website of the United States Government\nOfficial websites use .gov A .gov website belongs to an official gov...[199 characters trimmed]",
+        "_trimmed": true
+       }
+      ],
+      "sha256": "114d8129077f50a62833d5cb2130089c30f0b1d3aa5539ac319e54bc1cee1a06",
+      "tier": 1,
+      "title": "Press Releases",
+      "url": "https://www.federalreserve.gov/newsevents/pressreleases.htm",
+      "_trimmed": true
+     }
+    ],
+    "units": null,
+    "_trimmed": true
+   }
+  },
+  {
+   "tool": "web_research",
+   "args": {
+    "data_end": "2026-07-24",
+    "fetch_top": 8,
+    "horizon_end": "2026-09-24",
+    "kind": "text",
+    "passages_per_page": 3,
+    "queries": [
+     "Nvidia stock price today NVDA close",
+     "Nvidia stock news today earnings AI chips Blackwell",
+     "Nvidia stock price forecast next 2 months analyst targets",
+     "Nvidia stock split dividend history adjusted close",
+     "Nvidia stock trading calendar NYSE holidays 2025",
+     "Nvidia stock volatility beta market cap",
+     "Nvidia stock upcoming events product launches",
+     "Nvidia stock risks competition regulation"
+    ],
+    "region": "United States"
+   },
+   "ok": true,
+   "result": {
+    "dropped_queries": [],
+    "duplicate_sources": 1,
+    "events": [
+     {
+      "date": "2012-11-20",
+      "event": "| Nov 20, 2012 | Dec 14, 2012 | $0.075 | Regular |",
+      "how_sure": "low",
+      "position": "inside the data period",
+      "source_id": "S12",
+      "source_url": "https://gainbot.ai/stocks/NVDA/dividends"
+     },
+     {
+      "date": "2013-02-26",
+      "event": "| Feb 26, 2013 | Mar 21, 2013 | $0.075 | Regular |",
+      "how_sure": "low",
+      "position": "inside the data period",
+      "source_id": "S12",
+      "source_url": "https://gainbot.ai/stocks/NVDA/dividends"
+     }
+    ],
+    "failed": [
+     {
+      "origin": "search",
+      "url": "https://www.wsj.com/market-data/quotes/US/XNAS/NVDA/research-ratings",
+      "why": "HTTP 401"
+     },
+     {
+      "origin": "search",
+      "url": "https://www.calendarlabs.com/nyse-market-holidays-2025",
+      "why": "HTTP 404"
+     }
+    ],
+    "family": "equities",
+    "metrics": {
+     "dated_sources": 9,
+     "new_sources": 12,
+     "newest_date": "2026-11-25",
+     "oldest_date": "2006-04-07",
+     "tier1_sources": 4,
+     "unique_domains": 12
+    },
+    "new_sources": 12,
+    "queries": [
+     "Nvidia stock price today NVDA close",
+     "Nvidia stock news today earnings AI chips Blackwell"
+    ],
+    "region": "United States",
+    "repeated_queries": 0,
+    "searched": 50,
+    "searched_queries": [
+     "Nvidia stock price today NVDA close United States",
+     "Nvidia stock news today earnings AI chips Blackwell United States"
+    ],
+    "sources": [
+     {
+      "date": "2026-11-20",
+      "date_source": "meta",
+      "final_url": "https://www.sec.gov/newsroom",
+      "id": "S1",
+      "name": "SEC newsroom",
+      "origin": "registry",
+      "passages": [
+       {
+        "reason": "query",
+        "score": 1.0274,
+        "start": 0,
+        "text": "Upcoming Events\n- SEC Meetings and Other Events Investor Advisory Committee\n- SEC Meetings and Other Events Closed Meeti...[384 characters trimmed]",
+        "_trimmed": true
+       }
+      ],
+      "sha256": "e6f4c1af4641cd035f2a9cf79d7388543a7fc4ecd893bd425537690322320b1f",
+      "tier": 1,
+      "title": "Newsroom",
+      "url": "https://www.sec.gov/newsroom",
+      "_trimmed": true
+     },
+     {
+      "date": "2017-03-13",
+      "date_source": "meta",
+      "final_url": "https://www.federalreserve.gov/newsevents/pressreleases.htm",
+      "id": "S2",
+      "name": "Federal Reserve press releases",
+      "origin": "registry",
+      "passages": [
+       {
+        "reason": "query",
+        "score": 0.7911,
+        "start": 0,
+        "text": "An official website of the United States Government\nOfficial websites use .gov A .gov website belongs to an official gov...[209 characters trimmed]",
+        "_trimmed": true
+       }
+      ],
+      "sha256": "114d8129077f50a62833d5cb2130089c30f0b1d3aa5539ac319e54bc1cee1a06",
+      "tier": 1,
+      "title": "Press Releases",
+      "url": "https://www.federalreserve.gov/newsevents/pressreleases.htm",
+      "_trimmed": true
+     }
+    ],
+    "units": null,
+    "_trimmed": true
+   }
+  },
+  {
+   "tool": "sandbox_python",
+   "args": {
+    "code": "import os\nprint('in:', os.listdir('in') if os.path.exists('in') else 'no in dir')\nprint('carried:', os.listdir('in/carried') if os.path.exists('in/carried') else 'no carried dir')\nprint('out:', os.listdir('out') if os.path.exists('out') else 'no out dir')"
+   },
+   "ok": true,
+   "result": {
+    "memory_limit_enforced": false,
+    "ok": true,
+    "outputs": [],
+    "returncode": 0,
+    "run_id": "19932468b835de4222b01a633e2caa9c",
+    "stderr": "",
+    "stdout": "in: []\ncarried: no carried dir\nout: []\n",
+    "timed_out": false
+   }
+  },
+  {
+   "tool": "download_web_data",
+   "args": {
+    "name": "NVDA_daily.csv",
+    "url": "https://query1.finance.yahoo.com/v7/finance/download/NVDA?period1=0&period2=9999999999&interval=1d&events=history&includeAdjustedClose=true"
+   },
+   "ok": false,
+   "error": "HTTP 401; only a 200 response is used"
+  },
+  {
+   "tool": "download_web_data",
+   "args": {
+    "name": "NVDA_daily.csv",
+    "url": "https://query1.finance.yahoo.com/v7/finance/download/NVDA?period1=0&period2=9999999999&interval=1d&events=history"
+   },
+   "ok": false,
+   "error": "HTTP 401; only a 200 response is used"
+  },
+  {
+   "tool": "download_web_data",
+   "args": {
+    "name": "NVDA_daily.csv",
+    "url": "https://stooq.com/q/d/l/?s=nvda.us&i=d"
+   },
+   "ok": false,
+   "error": "content type text/html is not allowed; use CSV, plain text, JSON, ZIP or XLSX"
+  },
+  {
+   "tool": "download_web_data",
+   "args": {
+    "name": "NVDA_daily.csv",
+    "url": "https://raw.githubusercontent.com/datasets/s-and-p-500-companies-financials/master/data/NVDA.csv"
+   },
+   "ok": false,
+   "error": "HTTP 404; only a 200 response is used"
+  },
+  {
+   "tool": "download_web_data",
+   "args": {
+    "name": "NVDA_daily.csv",
+    "url": "https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv"
+   },
+   "ok": true,
+   "result": {
+    "columns": [
+     "Date",
+     "AAPL.Open",
+     "AAPL.High",
+     "AAPL.Low",
+     "AAPL.Close",
+     "AAPL.Volume",
+     "AAPL.Adjusted",
+     "dn",
+     "mavg",
+     "up",
+     "direction"
+    ],
+    "dataset_id": "46f320f7751e4d28b280f77b3cbb0180",
+    "final_url": "https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv",
+    "first_rows": [
+     [
+      "2015-02-17",
+      "127.489998",
+      "128.880005",
+      "126.919998",
+      "127.830002",
+      "63152400",
+      "122.905254",
+      "106.7410523",
+      "117.9276669",
+      "129.1142814",
+      "Increasing"
+     ],
+     [
+      "2015-02-18",
+      "127.629997",
+      "128.779999",
+      "127.449997",
+      "128.720001",
+      "44891700",
+      "123.760965",
+      "107.842423",
+      "118.9403335",
+      "130.0382439",
+      "Increasing"
+     ],
+     [
+      "2015-02-19",
+      "128.479996",
+      "129.029999",
+      "128.330002",
+      "128.449997",
+      "37362400",
+      "123.501363",
+      "108.8942449",
+      "119.8891668",
+      "130.8840887",
+      "Decreasing"
+     ],
+     [
+      "2015-02-20",
+      "128.619995",
+      "129.5",
+      "128.050003",
+      "129.5",
+      "48948400",
+      "124.510914",
+      "109.7854494",
+      "120.7635001",
+      "131.7415509",
+      "Increasing"
+     ],
+     [
+      "2015-02-23",
+      "130.020004",
+      "133",
+      "129.660004",
+      "133",
+      "70974100",
+      "127.876074",
+      "110.3725162",
+      "121.7201668",
+      "133.0678174",
+      "Increasing"
+     ]
+    ],
+    "licence_key": "unverified",
+    "name": "NVDA_daily.csv",
+    "row_count": 506,
+    "sandbox_file": "in/NVDA_daily.csv",
+    "source": "web",
+    "url": "https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv"
+   }
+  },
+  {
+   "tool": "sandbox_python",
+   "args": {
+    "code": "import pandas as pd\nimport os\n\n# Check what files we have\nprint('Files in in/:', os.listdir('in') if os.path.exists('in') else 'no in dir')\n\n# Load the downloaded file (it's AAPL data, not NVDA)\ndf = pd.read_csv('in/NVDA_daily.csv')\nprint('Shape:', df.shape)\nprint('Columns:', df.columns.tolist())\nprint('First 5 rows:')\nprint(df.head())\nprint('\\nLast 5 rows:')\nprint(df.tail())\nprint('\\nDate range:', df['Date'].min(), 'to', df['Date'].max())\nprint('\\nData types:')\nprint(df.dtypes)"
+   },
+   "ok": true,
+   "result": {
+    "memory_limit_enforced": false,
+    "ok": true,
+    "outputs": [],
+    "returncode": 0,
+    "run_id": "2bed14ceba74e0e6548f56adaba02df8",
+    "stderr": "",
+    "stdout": "Files in in/: ['NVDA_daily.csv']\nShape: (506, 11)\nColumns: ['Date', 'AAPL.Open', 'AAPL.High', 'AAPL.Low', 'AAPL.Close', 'AAPL.Volume', 'AAPL.Adjusted', 'dn', 'mavg', 'up', 'direction']\nFirst 5 rows:\n         Date   AAPL.Open   AAPL.High  ...        mavg          up   direction\n0  2015-02-17  127.489998  128.880005  ...  117.927667  129.114281  Increasing\n1  2015-02-18  127.629997  128.779999  ...  118.940333  130.038244  Increasing\n2  2015-02-19  128.479996  129.029999  ...  119.889167  130.884089  Decreasing\n3  2015-02-20  128.619995  129.500000  ...  120.763500  131.741551  Increasing\n4  2015-02-23  130.020004  133.000000  ...  121.720167  133.067817  Increasing\n\n[5 rows x 11 columns]\n\nLast 5 rows:\n           Date   AAPL.Open  ...          up   direction\n501  2017-02-10  132.460007  ...  134.503328  Decreasing\n502  2017-02-13  133.080002  ...  135.589534  Increasing\n503  2017-02-14  133.470001  ...  136.731280  Increasing\n504  2017-02-15  135.520004  ...  137.901963  Decreasing\n505  2017-02-16  135.669998  ...  138.805366  Decreasing\n\n[5 rows x 11 columns]\n\nDate range: 2015-02-17 to 2017-02-16\n\nData types:\nDate                 str\nAAPL.Open        float64\nAAPL.High        float64\nAAPL.Low         float64\nAAPL.Close       float64\nAAPL.Volume        int64\nAAPL.Adjusted    float64\ndn               float64\nmavg             float64\nup               float64\ndirection            str\ndtype: object\n",
+    "timed_out": false
+   }
+  },
+  {
+   "tool": "download_web_data",
+   "args": {
+    "name": "NVDA_daily.csv",
+    "url": "https://stooq.com/q/d/l/?s=nvda.us&i=d"
+   },
+   "ok": false,
+   "error": "content type text/html is not allowed; use CSV, plain text, JSON, ZIP or XLSX"
+  },
+  {
+   "tool": "web_search",
+   "args": {
+    "kind": "text",
+    "max_results": 10,
+    "query": "NVDA historical stock price CSV download",
+    "recency": "month"
+   },
+   "ok": true,
+   "result": {
+    "backend": "auto",
+    "cached": false,
+    "hits": [
+     {
+      "backend": "registry",
+      "date": null,
+      "rank": 1,
+      "snippet": "US securities regulator announcements",
+      "source": "registry",
+      "tier": 1,
+      "title": "SEC newsroom",
+      "url": "https://www.sec.gov/newsroom"
+     },
+     {
+      "backend": "registry",
+      "date": null,
+      "rank": 2,
+      "snippet": "policy and supervision announcements",
+      "source": "registry",
+      "tier": 1,
+      "title": "Federal Reserve press releases",
+      "url": "https://www.federalreserve.gov/newsevents/pressreleases.htm"
+     }
+    ],
+    "kind": "text",
+    "note": "registry pages for this series are listed first; use those urls for the data file",
+    "query": "NVDA historical stock price CSV download",
+    "_trimmed": true
+   }
+  }
+ ],
+ "recorded": {
+  "status": "partial",
+  "stop_reason": "partial_unverified",
+  "iterations": 17,
+  "stored_steps": 33,
+  "note": "what the live run did; for comparison only, no check reads it"
+ },
+ "checks": [
+  {
+   "check": "download_refused",
+   "tool": "download_web_data",
+   "name": "NVDA_daily.csv",
+   "reason_contains": [
+    "AAPL",
+    "refused"
+   ],
+   "why": "the Apple sample saved under the NVDA name is refused by the name entity guard"
+  },
+  {
+   "check": "no_download_accepted",
+   "name": "NVDA_daily.csv",
+   "why": "no download under the NVDA name is accepted from the recorded results"
+  },
+  {
+   "check": "max_eval_calls",
+   "value": 0,
+   "why": "the evaluator never judges an answer built on the refused file"
+  }
+ ]
+}
