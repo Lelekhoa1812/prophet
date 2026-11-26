@@ -131,7 +131,7 @@ def test_params_must_be_a_mapping():
 def test_new_sources_build_checked_urls_and_keep_local_parameters_off_the_query():
     assert sources.build_url("bis_sdmx", {
         "flow": "WS_CBPOL", "version": "1.0", "key": "M.US", "start_period": "2024", "end_period": "2024",
-    }) == "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.US?format=csv&start_period=2024&end_period=2024"
+    }) == "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.US?format=csv&startPeriod=2024&endPeriod=2024"
     assert sources.build_url("oecd_sdmx", {
         "dataflow": "OECD.SDD.STES,DSD_STES@DF_CLI", "key": "USA.M.LI...AA...H",
     }) == ("https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI/USA.M.LI...AA...H?format=csvfile")
@@ -186,3 +186,13 @@ def test_fred_builds_a_keyless_graph_csv_url_and_refuses_bad_codes_and_spans():
         sources.build_url("fred", {})
     with pytest.raises(ValueError, match="coed is before cosd"):
         sources.build_url("fred", {"id": "UNRATE", "cosd": "2026-01-01", "coed": "2025-01-01"})
+
+
+def test_sdmx_period_filters_use_the_sdmx_names_on_the_url():
+    """Measured 2026-11-26: ABS answered start_period with HTTP 403; BIS, OECD and Eurostat ignored it."""
+    url = sources.build_url("abs_sdmx", {"flow": "ABS,LF,1.0.0", "key": "M13.3.1599.20.AUS.M",
+                                         "start_period": "2000-01", "end_period": "2026-10"})
+    assert url.endswith("?format=csv&startPeriod=2000-01&endPeriod=2026-10")
+    for key, params in (("oecd_sdmx", {"dataflow": "OECD.SDD.STES,DSD_STES@DF_CLI", "key": "USA.M.LI...AA...H"}),
+                        ("eurostat_sdmx", {"dataset": "prc_hicp_manr", "key": "M.RCH_A.CP00.EA"})):
+        assert "startPeriod=2025-06" in sources.build_url(key, dict(params, start_period="2025-06"))

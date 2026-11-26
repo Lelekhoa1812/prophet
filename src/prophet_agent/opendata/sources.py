@@ -25,6 +25,9 @@ FLOW = re.compile(r"[A-Z0-9_]{1,30}")
 DATA_KEY = re.compile(r"[A-Za-z0-9_.+]{1,120}")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 MAX_SPAN_YEARS = 20
+# SDMX REST names the period filters startPeriod and endPeriod. Measured 2026-11-26: ABS answered start_period with HTTP 403,
+# BIS and OECD ignored it and sent the full history, and Eurostat ignored it. All four honour startPeriod.
+SDMX_PERIODS = (("start_period", "startPeriod"), ("end_period", "endPeriod"))
 PERIOD = re.compile(r"\d{4}(?:-\d{2}(?:-\d{2})?|-Q[1-4])?")
 YEAR_SPAN = re.compile(r"\d{4}:\d{4}")
 BOE_DATE = re.compile(r"\d{2}/[A-Z][a-z]{2}/\d{4}")
@@ -59,6 +62,7 @@ class Source:
     body_kind: str = "csv"     # csv, json, text, zip or xlsx. zip and xlsx are stored as csv
     local_params: tuple = ()   # checked and stored, never placed on the URL
     defaults: tuple = ()       # ((name, value), ...) filled in when the caller omits an optional parameter
+    query_names: tuple = ()    # ((name, name on the URL), ...) where the server's name differs from the parameter's
 
     @property
     def path_params(self) -> tuple:
@@ -328,6 +332,7 @@ SOURCES: dict[str, Source] = {
         },
         licence_key="bis",
         cross_check=_check_periods,
+        query_names=SDMX_PERIODS,
     ),
     "oecd_sdmx": Source(
         key="oecd_sdmx",
@@ -344,6 +349,7 @@ SOURCES: dict[str, Source] = {
         },
         licence_key="oecd",
         cross_check=_check_periods,
+        query_names=SDMX_PERIODS,
     ),
     "eurostat_sdmx": Source(
         key="eurostat_sdmx",
@@ -359,6 +365,7 @@ SOURCES: dict[str, Source] = {
         },
         licence_key="eurostat",
         cross_check=_check_periods,
+        query_names=SDMX_PERIODS,
     ),
     "abs_sdmx": Source(
         key="abs_sdmx",
@@ -374,6 +381,7 @@ SOURCES: dict[str, Source] = {
         },
         licence_key="abs",
         cross_check=_check_periods,
+        query_names=SDMX_PERIODS,
     ),
     "boe_database": Source(
         key="boe_database",
@@ -598,8 +606,9 @@ def build_url(source_key: str, params: dict) -> str:
     source = get(source_key)
     canonical = normalise(source_key, params)
     base = source.url_template.format(**{name: canonical[name] for name in source.path_params})
+    on_url = dict(source.query_names)
     query = list(source.fixed_query) + [
-        (name, canonical[name]) for name in source.params
+        (on_url.get(name, name), canonical[name]) for name in source.params
         if name in canonical and name not in source.path_params and name not in source.local_params
     ]
     if not query:
