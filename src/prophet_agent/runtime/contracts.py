@@ -1326,7 +1326,8 @@ def check_shift_decisions(history, run_root) -> dict | None:
 
 OUTLIER_SHARE_RULE = 0.02     # the outliers skill: above about 2% of steps, treat the flags as noise or a broken feed until shown otherwise
 _OUTLIER_TEST = re.compile(r"winsori|robust|replace_outliers|ignore_ranges|control_lab|backtest", re.I)
-_NOT_PROB = re.compile(r"\bCI\b|confidence|interval|Brier|coverage|log[- ]loss|backtest|\brange\b", re.I)
+_NOT_PROB = re.compile(r"\bCI\b|confidence|interval|Brier|coverage|log[- ]loss|backtest|\brange\b|ribbons?|\bbands?\b|"
+                       r"chart|\.png|\.svg|percentile", re.I)
 _PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
 
 
@@ -2455,14 +2456,22 @@ def _team_probabilities(text: str, obs: list) -> list[dict]:
         return []
     pattern = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
     team = None
+    section_prob = False
     for line in text.splitlines():
+        if re.match(r"\s*#{1,6}\s", line):
+            section_prob = False         # a new heading starts a new section
+        # Round 13 (NBA): "- San Antonio Spurs: 15 -> 46 [41-52], 74%" under a legend line that says "playoff probability";
+        # the row itself carries no probability word.
+        section_prob = section_prob or bool(_PROB_WORDS.search(line) and not pattern.search(line))
         found = pattern.findall(line)
         if len(set(found)) > 1:
             team = None                  # a line about several teams: no single team to read against
             continue
         if found:
             team = found[0]
-        if team is None or not _PROB_WORDS.search(line) or _NOT_PROB.search(line):
+        elif line.lstrip().startswith("|"):
+            team = None                  # a table row names its own team ("Manchester City" when the file says "Man City")
+        if team is None or not (_PROB_WORDS.search(line) or section_prob) or _NOT_PROB.search(line):
             continue
         for m in _PERCENT.finditer(line):
             token = m.group(1)
@@ -2871,6 +2880,11 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
 
     checks.extend(_annual_word(text, obs))
     checks.extend(_team_probabilities(text, obs))
+    applied = grounding.unapplied_treatments(text, obs)
+    if applied:
+        checks.append(_check("answer_treatment_applied", False,
+                             f"the answer says outliers were treated ({applied[0][:150]}), but no analysis code or forecast call "
+                             "applied that treatment (control_lab only tests it); say the outliers were kept, or apply it"))
 
     forecast_claims = grounding.claimed_forecast_results(text)
     stored_forecast = any(_forecast_record(h) for h in obs)

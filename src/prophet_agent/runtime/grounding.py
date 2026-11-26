@@ -555,8 +555,10 @@ def claimed_best_baselines(answer: str) -> list[tuple[str, str]]:
 
 
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+# Round 13 (SPX): "Two unexplained regime shifts detected" against five breaks: an adjective sat between count and noun.
 _SHIFT_COUNT = re.compile(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
-                          r"(?:level[- ]shifts?|regime shifts?|structural breaks?|breaks?|changepoints?)\b", re.I)
+                          r"(?:(?!of\b|the\b|these\b|those\b|which\b|or\b|and\b)[a-z-]+\s+){0,2}?"
+                          r"(?:level[- ]shifts?|regime shifts?|regime changes?|structural breaks?|breaks?|changepoints?)\b", re.I)
 
 
 def claimed_shift_counts(answer: str) -> list[tuple[int, str]]:
@@ -637,9 +639,11 @@ def acknowledges(answer: str, topic: str, dates: list[str] = ()) -> bool:
     denial; a later phrase about regimes does not hide findings the answer has reported."""
     text = answer or ""
     for unit in re.split(r"(?<=[.!?;])\s+|\n+", text):
-        m = _ACKNOWLEDGED[topic].search(unit)
-        if m and not re.search(r"\b(?:no|zero)\s+$", unit[:m.start()]):
-            return True
+        # Round 13 (NGSTORAGE): "No level shifts or regime changes detected." matched "level shifts ... detected" and the
+        # lower-case test missed the capital "No", so the denial counted as its own acknowledgement.
+        for m in _ACKNOWLEDGED[topic].finditer(unit):
+            if not re.search(r"\b(?:no|zero|not|never|without)\s+(?:\w+\s+){0,2}$", unit[:m.start()], re.I):
+                return True
     return topic == "level_shift" and any(d and d in text for d in dates)
 
 
@@ -677,7 +681,9 @@ def claimed_shift_dates(answer: str) -> list[tuple[int, str, "date | None"]]:
 _CAUSE = re.compile(r"\b(?:correspond(?:s|ed)? to|caused by|due to|driven by|because of|reflects?|reflecting|as a result of|"
                     r"align(?:s|ed)? with|coincid(?:es|ed|ing) with|linked to|attributable to|tied to|associated with|"
                     r"explained by|triggered by|(?:are|were|is|was|as)\s+(?:real|genuine|actual)\b[^.;\n]{0,30}?"
-                    r"\b(?:episodes?|events?|regimes?|changes?|moves?|shifts?|movements?))\b", re.I)
+                    r"\b(?:episodes?|events?|regimes?|changes?|moves?|shifts?|movements?))\b|"
+                    # "kept all 3 level shifts (real regime moves)" (round 13, NVDA)
+                    r"\((?:real|genuine|actual)\s[^()]{0,30}?\b(?:episodes?|events?|regimes?|changes?|moves?|shifts?)\b", re.I)
 _SHIFT_WORD = re.compile(r"\b(?:level[- ]shifts?|shifts?|breaks?|changepoints?|regimes?|spikes?|outliers?)\b", re.I)
 _CITED = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b", re.I)
 
@@ -724,7 +730,11 @@ def drop_uncited_causes(answer: str) -> str:
     for unit in flagged:
         new = unit
         m = _CAUSE.search(new)
-        if m:
+        if m and m.group(0).startswith("("):
+            close = new.find(")", m.end())
+            stop = close + 1 if close >= 0 else m.end()
+            new = new[:m.start()] + "(cause not established)" + new[stop:]
+        elif m:
             end = _CLAUSE_END.search(new, m.end())
             stop = end.start() if end else len(new)
             lead = _LEAD_IN.search(new[:m.start()])
@@ -803,6 +813,40 @@ def unsupported_method_claims(answer: str, history: list) -> list[str]:
             if rx.search(unit) and not any(_carries(c, mk) for c in calls for mk in markers):
                 out.append(unit.strip())
                 break
+    return out
+
+
+_APPLIED = re.compile(r"\b(?:winsori[sz]ed|clipped|capped|trimmed|replaced|removed|dropped)\b[^.;\n]{0,30}?\b(?:outliers?|spikes?)\b|"
+                      r"\b(?:outliers?|spikes?)\b[^.;\n]{0,30}?\b(?:were|was|been)\s+(?:winsori[sz]ed|clipped|capped|replaced|removed)\b", re.I)
+_APPLIED_MARKERS = ("winsor", "clip(", "replace_outliers", "hampel_replace")
+_HYPOTHETICAL = re.compile(r"\b(?:would|could|might|if|not)\b", re.I)
+_TRIED = re.compile(r"\b(?:test(?:ed|ing)?|candidates?|control_lab|trial(?:led)?|tried)\b", re.I)
+
+
+def unapplied_treatments(answer: str, history: list) -> list[str]:
+    """Sentences that say outliers were winsorised, clipped, capped or removed, where no analysis code or forecast call
+    applied such a treatment (control_lab only tests candidates; it does not change the series).
+
+    Motivation: panel round 13 audit (NVDA): "winsorised the 2 outliers", where the ledger only planned a test, control_lab
+    found no evidence for replace_outliers, and the forecast applied ignore_ranges alone.
+    """
+    calls: list[str] = []
+    for h in _flat(history):
+        if h.get("kind") != "tool" or h.get("error") or h.get("tool") == "control_lab":
+            continue
+        args = h.get("args") if isinstance(h.get("args"), dict) else {}
+        if h.get("tool") == "sandbox_python" and isinstance(args.get("code"), str):
+            # Only the code: a ledger line typed in a string ("will test winsorised copy in control_lab") applies nothing.
+            calls.append(re.sub(r"(?s)\"\"\".*?\"\"\"|'''.*?'''|\"[^\"\n]*\"|'[^'\n]*'", "''", args["code"]).lower())
+        else:
+            calls.append(_as_text(args).lower())
+    out = []
+    for unit in sentences(answer):
+        m = _APPLIED.search(unit)
+        if not m or _HYPOTHETICAL.search(unit[max(0, m.start() - 30):m.end()]) or _TRIED.search(unit):
+            continue
+        if not any(mk in c for c in calls for mk in _APPLIED_MARKERS):
+            out.append(unit.strip())
     return out
 
 

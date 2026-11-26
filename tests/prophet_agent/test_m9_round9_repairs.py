@@ -478,3 +478,42 @@ def test_an_uncited_cause_is_taken_out(text, kept):
 def test_a_figure_after_a_newline_in_evidence_is_read():
     hist = [{"kind": "tool", "tool": "web_fetch", "args": {}, "result": {"text": "Spot Price\n$128.96\n/MWh\nDemand\n8,301 MW"}}]
     assert grounding.unverified("Live demand was 8,301 MW on 26 Nov 2026.", hist, "") == []
+
+
+# Round 13 audit: NGSTORAGE "No level shifts or regime changes detected." counted as its own acknowledgement (the
+# negation test missed the capital "No"); SPX "Two unexplained regime shifts" against five breaks; NVDA "winsorised the 2
+# outliers" with no treatment applied and "(real regime moves)" given as a cause; NBA "74%" under a legend line.
+def test_a_capitalised_denial_is_not_an_acknowledgement():
+    assert not grounding.acknowledges("- No level shifts or regime changes detected.", "level_shift")
+    assert grounding.acknowledges("The scan detected 5 level shifts.", "level_shift")
+
+
+def test_a_shift_count_with_an_adjective_is_read():
+    assert grounding.claimed_shift_counts("Two unexplained regime shifts detected (2021-01-07, 2023-12-07).")[0][0] == 2
+    assert grounding.claimed_shift_counts("Two of the level shifts were kept.") == []
+
+
+def test_a_treatment_the_answer_claims_must_be_applied():
+    ledger = {"kind": "tool", "tool": "sandbox_python",
+              "args": {"code": "L.add('outliers', 'will test winsorised copy in control_lab')"}, "result": {}}
+    lab = {"kind": "tool", "tool": "control_lab", "args": {"candidates": ["replace_outliers"]}, "result": {}}
+    text = "Ledger decisions: kept the level shifts, winsorised the 2 outliers."
+    assert grounding.unapplied_treatments(text, [ledger, lab])
+    applied = {"kind": "tool", "tool": "sandbox_python", "args": {"code": "s = pl.winsorize(s, 0.01)"}, "result": {}}
+    assert grounding.unapplied_treatments(text, [ledger, applied]) == []
+    assert grounding.unapplied_treatments("Winsorised outliers were tested in control_lab.", [lab]) == []
+
+
+def test_real_moves_in_brackets_are_a_cause_and_only_the_bracket_goes():
+    t = "- Ledger decisions: kept all 3 level shifts (real regime moves), winsorised the 2 outliers."
+    assert grounding.uncited_causes(t)
+    assert grounding.drop_uncited_causes(t) == "- Ledger decisions: kept all 3 level shifts (cause not established), winsorised the 2 outliers."
+
+
+def test_a_probability_under_a_legend_line_is_checked():
+    sim = {"kind": "tool", "tool": "simulate_season", "args": {},
+           "result": {"teams": [{"team": "San Antonio Spurs", "playoff": 0.7347}, {"team": "Boston Celtics", "playoff": 0.46}]}}
+    text = ("### Final win totals\nEach row: current wins -> expected wins, playoff probability.\n\n"
+            "- San Antonio Spurs: 15 -> **46**, 74%\n- Boston Celtics: 12 -> 43, 46%")
+    assert contracts._team_probabilities(text, [sim])
+    assert contracts._team_probabilities(text.replace("74%", "73%"), [sim]) == []
