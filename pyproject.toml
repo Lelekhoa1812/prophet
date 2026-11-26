@@ -17,6 +17,7 @@ dependencies = [
   "holidays",   # public-holiday calendars for event covariates; MIT
   "python-docx",
   "reportlab",
+  "pdfplumber",     # reads tables from PDFs for download_web_data (opendata/pdf_landing.py); MIT
   "jsonschema",
   "httpx",
   "ddgs",           # self-hosted web search (DuckDuckGo, Bing, Google, Yahoo backends) for the research tools; MIT

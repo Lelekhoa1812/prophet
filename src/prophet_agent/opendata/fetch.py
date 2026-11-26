@@ -21,6 +21,7 @@ from urllib.parse import urljoin
 
 import httpx
 
+from prophet_agent.opendata.csvlines import table_lines
 from prophet_agent.research.fetch import MAX_REDIRECTS, REDIRECT_CODES
 from prophet_agent.research.netguard import Resolver, UnsafeURL, open_pinned, read_capped
 
@@ -32,6 +33,8 @@ TEXT_TYPES = ("text/csv", "application/csv", "text/plain", "application/json", "
 SNIFF_TYPES = ("application/octet-stream",)
 # An HTML page is accepted; its data tables are landed by html_landing, not returned as the body.
 HTML_TYPES = ("text/html", "application/xhtml+xml")
+# A PDF is accepted when its body starts with %PDF-; its tables are landed by pdf_landing, not returned as the body.
+PDF_TYPES = ("application/pdf",)
 CONTAINER_TYPES = (
     "application/zip",
     "application/x-zip-compressed",
@@ -97,8 +100,10 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
     if response.status_code != 200:
         raise DownloadError(f"HTTP {response.status_code}; only a 200 response is used")
     media = media_type(response.headers.get("content-type", ""))
-    if media not in TEXT_TYPES and media not in SNIFF_TYPES and media not in CONTAINER_TYPES and media not in HTML_TYPES:
-        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, HTML, ZIP or XLSX")
+    if media not in TEXT_TYPES and media not in SNIFF_TYPES and media not in CONTAINER_TYPES and media not in HTML_TYPES \
+            and media not in PDF_TYPES:
+        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, HTML, PDF, ZIP "
+                            "or XLSX")
     declared = response.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > max_bytes:
         raise DownloadError(f"the response is {int(declared)} bytes; the limit is {max_bytes}")
@@ -112,6 +117,10 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
     if media in CONTAINER_TYPES or (media in SNIFF_TYPES and body[:2] == b"PK"):
         if body[:2] != b"PK":
             raise DownloadError(f"content type {media} is accepted only when the body is a ZIP or XLSX")
+        return {"bytes": body, "content_type": media, "final_url": final_url, "retrieved_at": _now()}
+    if media in PDF_TYPES:
+        if body[:5] != b"%PDF-":
+            raise DownloadError("content type application/pdf is accepted only when the body starts with %PDF-")
         return {"bytes": body, "content_type": media, "final_url": final_url, "retrieved_at": _now()}
     text = _decoded(body)
     if media in SNIFF_TYPES:
@@ -131,8 +140,8 @@ def _decoded(body: bytes) -> str | None:
 
 
 def _csv_like(text: str) -> bool:
-    # Lines starting with '#' are comments, as in the store's preview, so they do not count as the header.
-    lines = [line for line in text.splitlines() if not line.startswith("#")]
+    # Comment lines are dropped by the same rule the store's preview uses (csvlines), so they do not count as the header.
+    lines = table_lines(text)
     try:
         rows = [row for row in csv.reader(lines) if any(cell.strip() for cell in row)]
     except csv.Error:

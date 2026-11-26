@@ -117,10 +117,23 @@ def test_an_html_page_that_is_not_utf8_is_refused(serve):
         fetch.download(API, resolver=public_resolver)
 
 
-@pytest.mark.parametrize("content_type", ["application/pdf", "image/png", "application/xml"])
+@pytest.mark.parametrize("content_type", ["image/png", "application/xml"])
 def test_other_content_types_are_refused(serve, content_type):
     serve(lambda request: ok(b"<html>x</html>", content_type=content_type))
     with pytest.raises(fetch.DownloadError, match="is not allowed"):
+        fetch.download(API, resolver=public_resolver)
+
+
+def test_a_pdf_is_accepted_as_bytes_when_it_starts_with_the_pdf_header(serve):
+    # A PDF's tables are landed by pdf_landing; the download returns the bytes unchanged.
+    serve(lambda request: ok(b"%PDF-1.4\n%\xe2\xe3\n", content_type="application/pdf"))
+    out = fetch.download(API, resolver=public_resolver)
+    assert out["content_type"] == "application/pdf" and out["bytes"].startswith(b"%PDF-")
+
+
+def test_a_pdf_content_type_with_a_non_pdf_body_is_refused(serve):
+    serve(lambda request: ok(b"<html>x</html>", content_type="application/pdf"))
+    with pytest.raises(fetch.DownloadError, match="starts with %PDF-"):
         fetch.download(API, resolver=public_resolver)
 
 

@@ -25,7 +25,8 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from prophet_agent.datasets import DatasetStore, clean_name
-from prophet_agent.opendata import containers, fetch, html_landing, market, sources
+from prophet_agent.opendata import containers, fetch, html_landing, market, pdf_landing, sources
+from prophet_agent.opendata.csvlines import table_lines
 from prophet_agent.opendata.store import download_to_dataset, preview
 from prophet_agent.runtime.runner import ArgumentRejected, Tool
 from prophet_agent.source_table.validate import GENERIC, validate_table
@@ -234,7 +235,7 @@ def _dotted_column_tickers(body: bytes) -> set[str]:
     """Tickers that lead a column header such as AAPL.Close. validate_table reads only bare ticker headers, so these are
     read here, with the same comment and blank-line rules."""
     try:
-        lines = [line for line in body.decode("utf-8-sig").splitlines() if line.strip() and not line.startswith("#")]
+        lines = [line for line in table_lines(body.decode("utf-8-sig")) if line.strip()]
         header = next(csv.reader(lines[:1]), [])
     except (UnicodeDecodeError, csv.Error):
         return set()
@@ -279,7 +280,7 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         args = _arguments(args, {"url", "name", "licence_key", "table"}, {"url"})
         url = args["url"]
         if not isinstance(url, str) or not url.strip():
-            raise ArgumentRejected("url must be the https address of a CSV, JSON or HTML file")
+            raise ArgumentRejected("url must be the https address of a CSV, JSON, HTML or PDF file")
         url = url.strip()
         if urlsplit(url).scheme.lower() != "https":
             raise ValueError("url must start with https://")
@@ -302,10 +303,13 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
             meta = dict(existing, preview=preview(body, existing["provenance"]["format"]))
         else:
             fetched = fetch.download(url)          # refuses private addresses, redirects to them, and types or sizes it does not accept
-            if fetch.media_type(fetched["content_type"]) in fetch.HTML_TYPES:
-                # A page lands its best table (or the one named by table), with the other candidates listed on the result.
-                meta, _ = html_landing.land_html(fetched, store=store, name=_web_name(url, None, "csv"), url=url,
-                                                 licence_key=key, table=table)
+            media = fetch.media_type(fetched["content_type"])
+            if media in fetch.HTML_TYPES or media in fetch.PDF_TYPES:
+                # A page or a PDF lands its best table (or the one named by table), with the other candidates listed on the
+                # result. The name guard applies to the landed CSV exactly as it does to any other download.
+                land = pdf_landing.land_pdf if media in fetch.PDF_TYPES else html_landing.land_html
+                meta, _ = land(fetched, store=store, name=_web_name(url, None, "csv"), url=url,
+                               licence_key=key, table=table)
                 reason = (name_entity_refusal(name, store.path(meta["id"]).read_bytes(), url)
                           if isinstance(name, str) and name.strip() else None)
                 if reason:
@@ -325,7 +329,7 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         provenance = meta["provenance"]
         extra = {"source": "web", "url": provenance["url"], "final_url": provenance["final_url"],
                  "licence_key": provenance["licence_key"], "series_bound": False}
-        if provenance.get("html"):
+        if provenance.get("html") or provenance.get("pdf"):
             extra["extraction"] = provenance["extraction"]
             extra["other_tables"] = provenance["extraction"]["other_tables"]
         if isinstance(name, str) and name.strip():
@@ -358,19 +362,21 @@ DOWNLOAD_WEB_DATA_SPEC = {
     "name": "download_web_data",
     "title": "Web data download",
     "activity": "Downloading a web file",
-    "description": "Download one CSV, JSON, plain-text table, ZIP, workbook or HTML page from an https address into the "
+    "description": "Download one CSV, JSON, plain-text table, ZIP, workbook, HTML page or PDF from an https address into the "
                    "mission's files. An HTML page lands its best data table (from its markup or its embedded JSON, such as "
-                   "__NEXT_DATA__) as CSV, with provenance; the result lists the other tables by index, header and row "
-                   "count, and table picks another. A page with no data table is refused: call web_fetch, then "
-                   "extract_page_tables. The stored name comes from the address. A name you pass is ignored, and "
-                   "series_bound stays false until bind_series accepts the file. The full file is mounted at sandbox_file "
-                   "(in/<name>) for sandbox_python. Use this, not web_fetch, when the URL is the data file or a page with "
-                   "a table. Its licence_key is unverified unless a known key is given.",
-    "args": {"url": "https address of a CSV, JSON, plain-text, ZIP, workbook or HTML file",
+                   "__NEXT_DATA__) as CSV, with provenance; a PDF lands its best table (ruled tables first, then aligned "
+                   "text columns) as CSV, with its page. The result lists the other tables by index, header and row "
+                   "count, and table picks another (a whole number, or a locator such as page3.table1 for a PDF). A page or "
+                   "PDF with no data table is refused: call web_fetch, then extract_page_tables. The stored name comes "
+                   "from the address. A name you pass is ignored, and series_bound stays false until bind_series accepts "
+                   "the file. The full file is mounted at sandbox_file (in/<name>) for sandbox_python. Use this, not "
+                   "web_fetch, when the URL is the data file or a page or PDF with a table. Its licence_key is unverified "
+                   "unless a known key is given.",
+    "args": {"url": "https address of a CSV, JSON, plain-text, ZIP, workbook, HTML or PDF file",
              "name": "optional; ignored. The stored name comes from the address",
              "licence_key": f"optional known key ({', '.join(sorted(KNOWN_LICENCE_KEYS))}); leave out when unknown",
-             "table": "optional, for an HTML page: the index of a candidate (a whole number) or its locator, such as "
-                      "table[2] or __NEXT_DATA__:$.props.pageProps.standings; leave out for the best table"},
+             "table": "optional, for an HTML page or PDF: the index of a candidate (a whole number) or its locator, such as "
+                      "table[2], __NEXT_DATA__:$.props.pageProps.standings or page3.table1; leave out for the best table"},
 }
 
 
