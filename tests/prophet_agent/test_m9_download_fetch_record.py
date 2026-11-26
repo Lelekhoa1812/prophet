@@ -40,3 +40,16 @@ def test_a_failed_download_writes_no_record(monkeypatch):
         fetch.download(URL)
     with pytest.raises(ValueError, match="download_web_data"):
         check_provenance(_prov())
+
+
+def test_a_source_url_with_part_of_its_query_dropped_still_finds_the_download(monkeypatch):
+    """Panel round 3 NVDA (2026-11-26): the series cited the Nasdaq history URL without its date and limit parameters."""
+    full = "https://api.nasdaq.com/api/quote/NVDA/historical?assetclass=stocks&fromdate=2024-01-01&limit=9999"
+    fetch.record_download(full, full, b"date,close\n", "2026-11-26T00:00:00Z")
+    short = {"origin": "retrieved", "source_name": "Nasdaq", "sources": [
+        {"id": "S1", "url": "https://api.nasdaq.com/api/quote/NVDA/historical?assetclass=stocks"}]}
+    assert check_provenance(short)["origin"] == "retrieved"
+    other = {"origin": "retrieved", "source_name": "Nasdaq", "sources": [
+        {"id": "S1", "url": "https://api.nasdaq.com/api/quote/AMD/historical?assetclass=stocks"}]}
+    with pytest.raises(ValueError, match="no fetch record"):
+        check_provenance(other)

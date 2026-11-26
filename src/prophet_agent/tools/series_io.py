@@ -101,9 +101,10 @@ HTTP_URL = re.compile(r"^https?://\S+$")
 def _fetch_record_exists(url: str) -> bool:
     """True when a fetch record with ok set exists for this URL: the entry research/fetch.py writes after it reads a page, or
     the one opendata/fetch.py writes after a download lands. A URL nothing fetched has no record, so a claim to it is refused."""
-    from prophet_agent.opendata.fetch import download_record_path
+    from prophet_agent.opendata.fetch import download_record_path, endpoint_of
     from prophet_agent.research.search import cache_key, cache_root
-    for path in (cache_root() / "pages" / f"{cache_key('page', url)}.json", download_record_path(url)):
+    for path in (cache_root() / "pages" / f"{cache_key('page', url)}.json", download_record_path(url),
+                 download_record_path(endpoint_of(url))):
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

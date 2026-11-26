@@ -18,7 +18,7 @@ import json
 import hashlib
 import time
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -86,6 +86,12 @@ def download_record_path(url: str):
     return cache_root() / "downloads" / f"{cache_key('download', url)}.json"
 
 
+def endpoint_of(url: str) -> str:
+    """The address with its query and fragment removed, marked so it never equals a real URL's record key."""
+    parts = urlsplit(url or "")
+    return f"endpoint:{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path}"
+
+
 def record_download(url: str, final_url: str, body: bytes, retrieved_at: str) -> None:
     """Write a fetch record for a download that answered 200 with an accepted body.
 
@@ -96,7 +102,9 @@ def record_download(url: str, final_url: str, body: bytes, retrieved_at: str) ->
     """
     doc = {"ok": True, "url": url, "final_url": final_url, "sha256": hashlib.sha256(body).hexdigest(),
            "retrieved_at": retrieved_at}
-    for key in dict.fromkeys((url, final_url)):
+    # Also under the address without its query (an "endpoint" record): panel round 3 NVDA (2026-11-26) named the Nasdaq
+    # history URL with part of its query dropped, and the exact lookup refused a series the price tool had downloaded.
+    for key in dict.fromkeys((url, final_url, endpoint_of(url), endpoint_of(final_url))):
         try:
             path = download_record_path(key)
             path.parent.mkdir(parents=True, exist_ok=True)
