@@ -133,7 +133,7 @@ def _compact_backtest(bt: Any) -> Any:
     return _rounded(keep)
 
 
-VIEW_BUDGET = 2900       # characters of the view: the observation (OBS_CHARS 4,000) also carries the call's arguments
+VIEW_BUDGET = 3250       # characters of the view: the observation (OBS_CHARS 4,000) also carries the call's arguments (round 14: 2,900 left two named NBA teams out once ten better teams were listed)
 LEAD_COLUMNS = ("team", "current", "expected_final", "p10", "median", "p90")
 SKIP_COLUMNS = ("expected_rank_in_group",)
 
@@ -187,7 +187,7 @@ def extremes(rows: list[dict]) -> dict:
     return out
 
 
-def skipped_leaders(rows: list[dict], shown: list[dict], limit: int = 6) -> list[list]:
+def skipped_leaders(rows: list[dict], shown: list[dict], limit: int = 10) -> list[list]:
     """Teams not shown whose expected_final is above the lowest shown team's, best first, as compact rows."""
     named = {r.get("team") for r in shown}
     floor = min((r["expected_final"] for r in shown if isinstance(r.get("expected_final"), (int, float))), default=None)

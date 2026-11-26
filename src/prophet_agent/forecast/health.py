@@ -173,7 +173,9 @@ def assess(history: Any, point: Any, q10: Any = None, q90: Any = None, *, contex
     fc_shape = _shape(p)
     recent = x[-max(horizon, 30):]
     recent_shape = _shape(recent)
-    out: dict[str, Any] = {"period": period, "cycle_strength": round(strength, 2), "history_points": n}
+    # Round 14 (CPI): with no period found, the strength of the best lag (0.99 on a trending index) was still reported, and
+    # the answer called it "strong annual seasonality (cycle strength 0.99)". No period, no cycle strength.
+    out: dict[str, Any] = {"period": period, "cycle_strength": round(strength, 2) if period else None, "history_points": n}
     expected = _expected_path(x, period, horizon) if period else None
     causes: list[str] = []
     fixes: list[str] = []

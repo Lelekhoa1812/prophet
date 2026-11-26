@@ -555,3 +555,21 @@ def test_an_empty_series_is_not_saved(tmp_path):
     from prophet_agent.sandbox import prophet_lib as pl
     with pytest.raises(ValueError, match="is empty"):
         pl.save_series(pd.Series([], dtype=float), str(tmp_path / "s.json"))
+
+
+# Round 14 follow-ups: the NBA view named only 6 better teams (Miami, Phoenix left out); CPI's "cycle strength 0.99" came
+# with no period.
+def test_the_sports_view_lists_up_to_ten_better_teams():
+    import inspect
+    from prophet_agent.tools import sports_tool as st
+    assert inspect.signature(st.skipped_leaders).parameters["limit"].default == 10
+    assert st.VIEW_BUDGET == 3250
+
+
+def test_cycle_strength_is_none_without_a_period():
+    import numpy as np
+    from prophet_agent.forecast import health
+    y = np.linspace(100, 200, 120)          # a pure trend: no cycle
+    out = health.assess(y, np.linspace(200, 210, 12))
+    assert out["period"] is None
+    assert out["cycle_strength"] is None
