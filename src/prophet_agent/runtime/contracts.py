@@ -1058,6 +1058,16 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
                               "(agent_type researcher) for the regime, scheduled events in the horizon and the main risks, or say "
                               "plainly why web research could not be used",
                       "status": "done" if researched(obs) else "todo"})
+    if any(isinstance(_ok_result(h, "simulate_season"), dict) for h in obs):
+        # Panel round 3 EPL (2026-11-26): the season was simulated from 110 results with its backtest, and the list still
+        # asked for out/series.json and a TimesFM forecast; the run spent 16 calls re-saving panels and stalled. A league is
+        # forecast by simulating its fixtures, so the simulation is the forecast and its backtest is the baseline comparison.
+        items.append({"item": "simulate the rest of the season from match results (simulate_season, with its backtest "
+                              "against equal odds, the home rate and Elo)", "status": "done"})
+        first = next((it for it in items if it["status"] == "todo"), None)
+        if first is not None:
+            first["next"] = True
+        return items
     ready = numeric_series_ready(obs, run_root)
     items.append({"item": SERIES_ITEM, "status": "done" if ready else "todo",
                   **({} if ready else {"detail": series_item_detail(obs, run_root)})})
@@ -2557,13 +2567,31 @@ def _latest_health_verdict(obs: list) -> str | None:
     return delivered_verdict(obs)
 
 
+TRENDING_CENTRES = ("drift",)
+
+
+def _delivered_centre(obs: list) -> str | None:
+    """The centre named on the newest forecast_report (timesfm when none was named); None when no pack was built."""
+    for h in reversed(obs if isinstance(obs, list) else []):
+        if isinstance(h, dict) and _ok_result(h, "forecast_report") is not None:
+            centre = (h.get("args") or {}).get("centre", "timesfm")
+            return centre if isinstance(centre, str) else None
+    return None
+
+
+def _level_line_applies(obs: list) -> bool:
+    """flat_expected, and the delivered centre is not a trending rule. Panel round 3 SPX (2026-11-26): the pack's centre was
+    drift, the sentence "the centre line is a level" was added, and the evaluator rightly called the answer wrong."""
+    return _latest_health_verdict(obs) == "flat_expected" and _delivered_centre(obs) not in TRENDING_CENTRES
+
+
 def _flat_expected_level_sentence(text: str, obs: list) -> dict | None:
     """The level sentence is required on the written answer only for flat_expected.
 
     SciRes-20261124-124543 stored check. The evaluator demanded the sentence anyway. A check verdict
     adds no check. A flat_expected verdict blocks until the answer says the centre line is a level.
     """
-    if _latest_health_verdict(obs) != "flat_expected":
+    if not _level_line_applies(obs):
         return None
     if _LEVEL_LINE.search(text or ""):
         return _check("answer_level_sentence", True, "the answer says the centre line is a level")
@@ -2583,7 +2611,7 @@ def add_level_sentence(text: str, obs: list) -> str:
     the answer still missed it, so a price forecast that was right to be flat ended partial. The sentence follows from
     the stored verdict alone, like a snapped figure. Logic: only for flat_expected, only when _LEVEL_LINE is absent.
     """
-    if _latest_health_verdict(obs) != "flat_expected" or _LEVEL_LINE.search(text or ""):
+    if not _level_line_applies(obs) or _LEVEL_LINE.search(text or ""):
         return text
     return (text or "").rstrip() + "\n\n" + LEVEL_SENTENCE
 

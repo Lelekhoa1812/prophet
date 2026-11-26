@@ -1491,7 +1491,13 @@ def write_scan(result: dict, path: str = "out/scan.json") -> str:
     """Write a scan result as strict JSON, creating the folder if needed. Returns the path written."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(_jsonable(result), indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    doc = _jsonable(result)
+    # A finding answers to "finding" in memory (ALIASES); a file read back with json.load is a plain dict. Panel round 3 SPX
+    # (2026-11-26): three cells read f["finding"] from the loaded scan and failed with KeyError, and the run stalled.
+    for item in doc.get("findings") or [] if isinstance(doc, dict) else []:
+        if isinstance(item, dict) and "message" in item and "finding" not in item:
+            item["finding"] = item["message"]
+    target.write_text(json.dumps(doc, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     return str(target)
 
 

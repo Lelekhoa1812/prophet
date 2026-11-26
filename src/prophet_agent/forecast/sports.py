@@ -891,6 +891,20 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
         raise ValueError(f"sport must be {FOOTBALL!r} or {WIN_LOSS!r}")
     if not 10 <= n_sims <= 100_000:
         raise ValueError("simulations must be from 10 to 100000")
+    notes: list[str] = []
+    # Panel round 3 EPL (2026-11-26): the fixturedownload results file already held the 270 unplayed matches, and a second
+    # fixtures file from another site was passed too, so the remaining games could be counted twice under two spellings of
+    # the club names. When the results hold unplayed rows, they are the schedule and the fixtures file is not used.
+    if fixtures and any(not m.played for m in matches):
+        notes.append(f"the results file already holds {sum(1 for m in matches if not m.played)} unplayed matches, so they "
+                     "are the remaining schedule; the separate fixtures file was not used")
+        fixtures = None
+    if fixtures:
+        known = _team_list(list(matches))
+        strangers = sorted({name for m in fixtures for name in (m.home, m.away)} - set(known))
+        if strangers:
+            raise ValueError("the fixtures name teams that are not in the results, so the names do not match: "
+                             + ", ".join(strangers[:8]) + ". Use fixtures from the same source as the results")
     everything = list(matches) + list(fixtures or [])
     played, _ = _chronological([m for m in everything if m.played])
     unplayed = [m for m in everything if not m.played]
@@ -903,7 +917,6 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     for m in everything:
         if m.group and m.away not in groups:
             groups[m.away] = m.group
-    notes: list[str] = []
     # Earlier seasons fit the ratings only. Early in a season (live 2026-27 en.1.json held 50 matches for 20 clubs) the
     # current season alone is too small to rate the teams. Matches with a club outside this season are left out, so a
     # promoted club is rated from this season and the shrinkage toward the mean.

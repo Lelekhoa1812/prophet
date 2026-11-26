@@ -137,7 +137,7 @@ SIMULATE_SEASON_SPEC = {
         "source": "object {run_id, file} naming a results CSV or JSON in an analysis run's out/ folder, instead of results",
         "history": "optional name, or list of up to 4 names, of earlier seasons' results files; used to fit the ratings only "
                    "(early in a season the current results are too few)",
-        "fixtures": "name of a mission file of remaining matches (optional)",
+        "fixtures": "name of a mission file of remaining matches (optional; not needed when the results file lists unplayed matches, as fixturedownload does)",
         "teams": "list of team names to show paths for (optional; default the top four by current standing)",
         "simulations": "number of simulated seasons, 10 to 100000 (default 10000)",
         "seed": "random seed for reproducibility (default 0)",

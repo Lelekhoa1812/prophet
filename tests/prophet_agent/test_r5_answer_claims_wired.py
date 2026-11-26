@@ -377,3 +377,14 @@ def test_closes_indexes_and_stored_quantities_are_levels():
         assert contracts.is_level_name(name), name
     for name in ("NSW daily demand MWh", "Monthly retail sales", "Total electricity demand"):
         assert not contracts.is_level_name(name), name
+
+
+def test_a_drift_centre_gets_no_level_sentence():
+    """Panel round 3 SPX (2026-11-26): the pack's centre was drift; "the centre line is a level" was added and was wrong."""
+    pack = [{"kind": "tool", "tool": "forecast_report", "args": {"centre": "drift"},
+             "result": {"forecast": {"health": {"verdict": "flat_expected"}, "point": [1.0]}}}]
+    missing = "The S&P 500 is forecast to drift up over the next 20 trading days."
+    assert contracts.add_level_sentence(missing, pack) == missing
+    assert _named(contracts.check_answer(missing, pack), "answer_level_sentence") == []
+    naive = [dict(pack[0], args={"centre": "naive"})]
+    assert contracts.add_level_sentence(missing, naive) != missing

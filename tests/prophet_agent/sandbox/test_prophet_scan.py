@@ -557,3 +557,11 @@ def test_scan_reads_a_near_miss_entity_keyword_and_the_result_reads_as_attribute
         r.results
     with pytest.raises(KeyError, match="keys are"):
         r["finding"]
+
+
+def test_a_saved_scan_keeps_the_finding_alias_for_json_readers(tmp_path):
+    """Panel round 3 SPX (2026-11-26): cells read f["finding"] from json.load and failed with KeyError."""
+    import json as _json
+    path = tmp_path / "scan.json"
+    sc.write_scan({"findings": [{"id": "x", "message": "m"}], "summary": {}}, str(path))
+    assert _json.loads(path.read_text())["findings"][0]["finding"] == "m"
