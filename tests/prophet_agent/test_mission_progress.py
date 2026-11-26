@@ -48,7 +48,10 @@ def test_a_flat_unexpected_forecast_leaves_the_health_item_undone(tmp_path):
 
 def test_files_are_on_the_list_only_when_the_goal_asks_for_them(tmp_path):
     assert not any("charts" in it["item"] for it in contracts.progress([], run_root=tmp_path))
-    assert any("charts" in it["item"] for it in contracts.progress([], run_root=tmp_path, wants_files=True))
+    assert not any("charts" in it["item"] for it in contracts.progress([], run_root=tmp_path, wants_files=True))
+    ready = [_sandbox_ok(outputs=("out/series.json",))]
+    assert any("charts" in it["item"] for it in contracts.progress(ready, run_root=tmp_path, wants_files=True))
+    assert not any("charts" in it["item"] for it in contracts.progress(ready, run_root=tmp_path))
 
 
 def test_render_progress_marks_boxes_and_next(tmp_path):
@@ -70,10 +73,12 @@ def test_the_planner_sees_the_checklist_for_a_forecast_goal_and_status_events_ar
     brain = Seeing([call("a"), finish()], [met()])
     mid, out = run(store, goal_program("Forecast next 7 days of sales", {"a": _tool("a")}, brain))
     assert "Mission checklist" in brain.prompts[0]
+    assert "numeric series" in brain.prompts[0]
     events = [e for e in store.events(mid) if e["kind"] == "mission.progress"]
     assert len(events) >= 2
     payload = events[0]["payload"]
-    assert payload["checklist_total"] >= 4 and payload["next"]
+    assert payload["checklist_total"] >= 3 and payload["next"]
+    assert "backtest_series" not in payload["next"]
 
 
 def test_a_goal_that_is_not_a_forecast_gets_no_checklist(store):

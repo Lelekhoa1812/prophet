@@ -629,6 +629,20 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
     inspected = any(h.get("kind") == "tool" and h.get("tool") in contracts.INSPECTION_TOOLS and not h.get("error") for h in history)
     auto = [h for h in history if h.get("kind") == "subagent" and h.get("auto")]
     kinds = {h.get("auto") for h in auto}
+    if "table-claim" not in kinds and "extract_page_tables" in tools and contracts.html_download_urls(history):
+        urls = contracts.extract_target_urls(history)
+        claimed = any(h.get("kind") == "tool" and h.get("tool") == "state_table_claim" and not h.get("error") for h in history)
+        if urls and not claimed:
+            named = ", ".join(urls)
+            return {"action": "delegate", "auto": "table-claim", "agent_type": "principal_analyst",
+                    "rationale": "a download returned a page that web_fetch already stored; extract that page before a model step",
+                    "task": "A file download returned an HTML page while working on this goal: " + goal
+                            + "\nThe page is already stored. Call extract_page_tables once for each of these urls: " + named
+                            + ". State the table claim first when it is not already in the history. "
+                            "Do not store a different series under the requested name.",
+                    "deliverable": "The claim and each candidate dataset id. Say when the series is still unbound.",
+                    "constraints": "Do not call web_fetch. Do not call download_web_data on those urls. "
+                                   "Do not bind the series. Do not forecast."}
     if stuck and stuck[1] >= STUCK_CALLS and "sandbox_python" in tools and ("stuck:" + stuck[0]) not in kinds:
         card = _state_card(history)
         return {"action": "delegate", "auto": "stuck:" + stuck[0], "agent_type": _agent_for(stuck[0]),
@@ -661,8 +675,10 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
             return {"action": "delegate", "auto": "table-claim", "agent_type": "principal_analyst",
                     "rationale": "a file download failed; the series name stays unbound until a claim is checked",
                     "task": "A file download failed while working on this goal: " + goal + "\nState the table claim "
-                            "(entity, series name, measure). Diagnose each failed download. Fetch the page when the signal "
-                            "is html_page, then extract its tables. Do not store a different series under the requested name. "
+                            "(entity, series name, measure). Diagnose each failed download. When the signal is html_page, "
+                            "call extract_page_tables on a url web_fetch already stored. When no page is stored, call "
+                            "web_fetch with the failed download's https address and no queries argument, then call "
+                            "extract_page_tables with that same url. Do not store a different series under the requested name. "
                             "Do not invent an address that no page listed.",
                     "deliverable": "The claim, each signal, and any candidate dataset id. Say when the series is still unbound.",
                     "constraints": "Do not forecast. Do not call bind_series."}

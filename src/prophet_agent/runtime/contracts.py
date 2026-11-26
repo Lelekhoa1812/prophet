@@ -22,6 +22,7 @@ from typing import Any
 
 from prophet_agent.forecast.timesfm import nonnegative_domain
 from prophet_agent.runtime import grounding
+from prophet_agent.source_table.diagnose import diagnose_failure
 
 EXPECTED_KINDS = ("png", "svg", "xlsx", "docx", "pdf")
 INTERVAL_SHARE = 0.9      # share of steps that must sit inside q10 <= point <= q90
@@ -836,6 +837,119 @@ def _ledger_recipe(history, run_root) -> str:
             + ". Printing the scan again does not count: only saved decisions do")
 
 
+SERIES_FILE = re.compile(r"out/series(?:_[^/]+)?\.json\Z")
+SERIES_ITEM = ("save a numeric series (out/series.json from save_series or save_panel, "
+               "or bind_series accepted)")
+
+
+def _observations(history) -> list:
+    return [h for h in history if isinstance(h, dict)] if isinstance(history, list) else []
+
+
+def stored_web_fetch_urls(history) -> list[str]:
+    """Urls of pages web_fetch stored. A failed call, including one given search queries, is not a stored page."""
+    urls: list[str] = []
+    for h in _observations(history):
+        if h.get("kind") != "tool" or h.get("tool") != "web_fetch" or h.get("error"):
+            continue
+        res = h.get("result")
+        if not isinstance(res, dict) or res.get("ok") is False:
+            continue
+        args = h.get("args") if isinstance(h.get("args"), dict) else {}
+        url = args.get("url")
+        if isinstance(url, str) and url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def html_download_urls(history) -> list[str]:
+    """Download urls whose error is an HTML page. The class comes from diagnose_failure."""
+    urls: list[str] = []
+    for h in _observations(history):
+        if h.get("kind") != "tool" or h.get("tool") != "download_web_data" or not h.get("error"):
+            continue
+        if diagnose_failure(str(h.get("error"))).get("signal") != "html_page":
+            continue
+        args = h.get("args") if isinstance(h.get("args"), dict) else {}
+        url = args.get("url")
+        if isinstance(url, str) and url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def extract_target_urls(history) -> list[str]:
+    """The stored page to extract. Prefer the url the HTML download already tried, and keep at most three."""
+    stored = stored_web_fetch_urls(history)
+    matched = [url for url in html_download_urls(history) if url in stored]
+    return (matched or stored)[:3]
+
+
+def _profile_has_time_and_number(res: Any) -> bool:
+    if not isinstance(res, dict):
+        return False
+    prof = res.get("profile") if isinstance(res.get("profile"), dict) else {}
+    cols = prof.get("columns") if isinstance(prof.get("columns"), list) else res.get("columns")
+    if not isinstance(cols, list):
+        return False
+    has_time = has_number = False
+    for col in cols:
+        if isinstance(col, dict):
+            kind = col.get("kind")
+        elif isinstance(col, str):
+            kind = col.split(":", 1)[1].strip().split(",", 1)[0].strip() if ":" in col else ""
+        else:
+            kind = ""
+        has_time = has_time or kind == "time"
+        has_number = has_number or kind == "number"
+    return has_time and has_number
+
+
+def _saved_series_file(h: Any) -> bool:
+    res = _ok_result(h, "sandbox_python")
+    if not isinstance(res, dict):
+        return False
+    return any(SERIES_FILE.fullmatch(_output_path(o)) for o in (res.get("outputs") or []))
+
+
+def numeric_series_ready(history) -> bool:
+    """True when the evidence holds a numeric series the model tools can read.
+
+    A scan or a ledger does not count. A one-row profile can still pass: this check looks for a time column and a
+    number column, not for how many distinct times that column holds."""
+    for h in _observations(history):
+        if _saved_series_file(h):
+            return True
+        bound = _ok_result(h, "bind_series")
+        if isinstance(bound, dict) and bound.get("status") == "accepted":
+            return True
+        if _profile_has_time_and_number(_ok_result(h, "inspect_data")):
+            return True
+        if any(isinstance(_ok_result(h, tool), dict)
+               for tool in ("timesfm_forecast", "backtest_series", "panel_backtest", "forecast_report")):
+            return True
+    return False
+
+
+def _extract_found_a_table(history) -> bool:
+    for h in _observations(history):
+        res = _ok_result(h, "extract_page_tables")
+        if isinstance(res, dict) and isinstance(res.get("candidates"), list) and res["candidates"]:
+            return True
+    return False
+
+
+def series_item_detail(history) -> str:
+    """What to do before a model comparison. The url is one web_fetch already stored."""
+    urls = extract_target_urls(history)
+    if html_download_urls(history) and urls and not _extract_found_a_table(history):
+        named = ", ".join(f"'{url}'" for url in urls)
+        return f"call extract_page_tables with url {named}. The page is already stored."
+    if _extract_found_a_table(history):
+        return "map the candidate and call bind_series, or write out/series.json with save_series."
+    return ("write out/series.json with save_series or save_panel, or accept a table with bind_series. "
+            "A scan or a ledger is not a series.")
+
+
 def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
     """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
 
@@ -865,6 +979,16 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
                               "(agent_type researcher) for the regime, scheduled events in the horizon and the main risks, or say "
                               "plainly why web research could not be used",
                       "status": "done" if researched(obs) else "todo"})
+    ready = numeric_series_ready(obs)
+    items.append({"item": SERIES_ITEM, "status": "done" if ready else "todo",
+                  **({} if ready else {"detail": series_item_detail(obs)})})
+    if not ready:
+        # A scan and a ledger are not the series the model tools read. Asking for a backtest here sends a modeler
+        # at a file that does not exist (measured mission 56465803efa547009cc7e054312ea7ab).
+        first = next((it for it in items if it["status"] == "todo"), None)
+        if first is not None:
+            first["next"] = True
+        return items
     items.append({"item": "compare the forecast method with the simple baselines (backtest_series)",
                   "status": "done" if backtested else "todo"})
     items.append({"item": "forecast the series (timesfm_forecast)", "status": "done" if forecasts else "todo"})

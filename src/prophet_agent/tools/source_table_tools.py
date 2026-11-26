@@ -189,7 +189,7 @@ def source_table_tools(ctx: OpenDataContext, live: LiveMounts) -> dict[str, tupl
         }),
         "diagnose_source": (Tool("diagnose_source", diagnose, idempotent=True), {
             "name": "diagnose_source", "title": "Source diagnosis", "activity": "Diagnosing a source",
-            "description": "Classify one download error. auth_denied and not_found close that address. html_page means call web_fetch and extract_page_tables. Do not invent a replacement address.",
+            "description": "Classify one download error. auth_denied and not_found close that address. html_page means extract_page_tables on a url web_fetch already stored. Do not invent a replacement address.",
             "args": {"error": "the error text from the failed download",
                      "content_type": "optional content type",
                      "url": "optional address the error belongs to"},
