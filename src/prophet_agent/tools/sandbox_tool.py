@@ -76,7 +76,7 @@ def stand_in_reason(code: str, goal: str = "") -> str | None:
             "download_market_prices (the sandbox has no network), or report what could not be found.")
 
 
-def carried_inputs(carry) -> dict[str, Path]:
+def carried_inputs(carry, inputs: dict[str, Path] | None = None) -> dict[str, Path]:
     """Files an earlier run wrote to its ``out/``, mounted read-only at ``in/carried/<file name>`` in this run.
 
     Each run starts with an empty ``out/``, so a later step that needs the scan, the forecast or a cleaned table says
@@ -87,8 +87,17 @@ def carried_inputs(carry) -> dict[str, Path]:
     if not isinstance(carry, list) or len(carry) > MAX_CARRY:
         raise ValueError(f"carry is a list of at most {MAX_CARRY} objects {{run_id, file}}")
     mounted: dict[str, Path] = {}
+    inputs = inputs or {}
     for item in carry:
-        if isinstance(item, dict) and str(item.get("file", "")).startswith("in/"):
+        name = str(item.get("file", "")) if isinstance(item, dict) else ""
+        mounted_input = inputs.get(Path(name).name) if name else None
+        if mounted_input is not None and not RUN_ID.match(str(item.get("run_id", ""))):
+            # Panel round 3 NEM and GISTEMP (2026-11-26): the planner carried downloaded files with a step number as the run
+            # id ("18") and read them from in/carried/. A download is already mounted at in/<name>; it is mounted at
+            # in/carried/<name> too, so the cell runs as written.
+            mounted[f"carried/{Path(name).name}"] = mounted_input
+            continue
+        if name.startswith("in/"):
             # Panel CPI (2026-11-26): the planner carried in/fredgraph.csv, a downloaded file already mounted in in/, and
             # was refused three times. Inputs are mounted at every call, so the item is not needed.
             continue
@@ -126,7 +135,7 @@ def make_run(datasets: dict[str, Path] | None = None):
             raise ValueError(reason)
         # Round 4, A5-10: the idempotency key seeds the run id, so a re-run after a crash returns the finished run.
         run_id = _key[:32] if isinstance(_key, str) and len(_key) >= 32 else None
-        carried = carried_inputs(args.get("carry"))
+        carried = carried_inputs(args.get("carry"), inputs)
         res = run_python(code, timeout_s=60, mem_mb=1536, inputs={**inputs, **carried}, run_id=run_id)
         d = res.to_dict()
         out = {"ok": d["ok"], "returncode": d["returncode"], "timed_out": d["timed_out"],

@@ -1029,6 +1029,27 @@ def series_item_detail(history, run_root=None) -> str:
             "A scan or a ledger is not a series.")
 
 
+_HOME = re.compile(r"^(?:home(?:[ _]?team)?|hometeam|team ?1|team1)$", re.I)
+_AWAY = re.compile(r"^(?:away(?:[ _]?team)?|awayteam|visitor(?:[ _]?team)?|team ?2|team2)$", re.I)
+
+
+def match_results_landed(obs: list) -> bool:
+    """True when a downloaded or inspected table has a home-team column and an away-team column: a match results file."""
+    for h in obs:
+        for tool in ("download_web_data", "download_open_data", "inspect_data"):
+            res = _ok_result(h, tool)
+            if not isinstance(res, dict):
+                continue
+            cols = res.get("columns")
+            if not isinstance(cols, list):
+                prof = res.get("profile") if isinstance(res.get("profile"), dict) else {}
+                cols = prof.get("columns") if isinstance(prof.get("columns"), list) else []
+            names = [str(c.get("name") if isinstance(c, dict) else str(c).split(":", 1)[0]).strip() for c in cols]
+            if any(_HOME.match(n) for n in names) and any(_AWAY.match(n) for n in names):
+                return True
+    return False
+
+
 def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
     """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
 
@@ -1044,6 +1065,18 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
     backtested = any(isinstance(_ok_result(h, t), dict) for h in obs for t in ("backtest_series", "panel_backtest"))
     stages = ledger_stages(obs, run_root)
     items: list[dict] = [{"item": "inspect the data (sandbox_python or inspect_data)", "status": "done" if inspected else "todo"}]
+    simulated = any(isinstance(_ok_result(h, "simulate_season"), dict) for h in obs)
+    if simulated or match_results_landed(obs):
+        # A league is forecast by simulating its remaining fixtures from match results, not as a time series. Panel round 3
+        # (2026-11-26): EPL simulated the season and the list still asked for out/series.json and TimesFM, so 16 calls
+        # re-saved panels; NBA downloaded all 1,207 games and spent 31 cells on the scan and ledger without simulating.
+        items.append({"item": "simulate the rest of the season from the match results (simulate_season, results naming the "
+                              "downloaded file; its backtest compares the model with equal odds, the home rate and Elo)",
+                      "status": "done" if simulated else "todo"})
+        first = next((it for it in items if it["status"] == "todo"), None)
+        if first is not None:
+            first["next"] = True
+        return items
     if run_root is not None:
         items.append({"item": "scan the data and save it (prophet_scan: sc.scan(...) then sc.write_scan(r))",
                       "status": "done" if scan_ran(obs) else "todo"})
@@ -1058,16 +1091,6 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
                               "(agent_type researcher) for the regime, scheduled events in the horizon and the main risks, or say "
                               "plainly why web research could not be used",
                       "status": "done" if researched(obs) else "todo"})
-    if any(isinstance(_ok_result(h, "simulate_season"), dict) for h in obs):
-        # Panel round 3 EPL (2026-11-26): the season was simulated from 110 results with its backtest, and the list still
-        # asked for out/series.json and a TimesFM forecast; the run spent 16 calls re-saving panels and stalled. A league is
-        # forecast by simulating its fixtures, so the simulation is the forecast and its backtest is the baseline comparison.
-        items.append({"item": "simulate the rest of the season from match results (simulate_season, with its backtest "
-                              "against equal odds, the home rate and Elo)", "status": "done"})
-        first = next((it for it in items if it["status"] == "todo"), None)
-        if first is not None:
-            first["next"] = True
-        return items
     ready = numeric_series_ready(obs, run_root)
     items.append({"item": SERIES_ITEM, "status": "done" if ready else "todo",
                   **({} if ready else {"detail": series_item_detail(obs, run_root)})})

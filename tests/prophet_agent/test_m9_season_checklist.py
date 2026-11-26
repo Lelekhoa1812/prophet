@@ -37,3 +37,21 @@ def test_fixtures_with_other_team_names_are_refused():
     played = [_m(1 + i, h, a, 1, 0) for i, (h, a) in enumerate([(h, a) for h in teams for a in teams if h != a])]
     with pytest.raises(ValueError, match="names do not match"):
         sports.simulate_season(played, [_m(25, "Club A", "B")], n_sims=50, backtest=False)
+
+
+def test_a_downloaded_results_file_sends_the_checklist_to_the_season_simulation():
+    """Panel round 3 NBA (2026-11-26): 1,207 games landed and 31 cells went to the scan and ledger instead."""
+    obs = [{"kind": "tool", "tool": "download_web_data", "args": {"url": "https://fixturedownload.com/download/nba-2026-UTC.csv"},
+            "result": {"row_count": 1207, "columns": ["Match Number", "Round Number", "Date", "Location", "Home Team",
+                                                      "Away Team", "Result"]}},
+           {"kind": "tool", "tool": "sandbox_python", "args": {"code": "print(1)"}, "result": {"ok": True, "run_id": "r"}}]
+    items = c.progress(obs, run_root="/nonexistent")
+    todo = [it for it in items if it["status"] == "todo"]
+    assert len(todo) == 1 and "simulate_season" in todo[0]["item"] and todo[0].get("next")
+    assert not any("ledger" in it["item"] or "scan" in it["item"] for it in items)
+
+
+def test_a_price_table_is_not_a_results_file():
+    obs = [{"kind": "tool", "tool": "download_web_data", "args": {},
+            "result": {"columns": ["Date", "Close", "Volume"], "row_count": 500}}]
+    assert not c.match_results_landed(obs)

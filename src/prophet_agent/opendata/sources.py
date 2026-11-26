@@ -478,6 +478,15 @@ SOURCES: dict[str, Source] = {
         params={},
         licence_key="hadcrut",
     ),
+    # Panel round 3 GISTEMP (2026-11-26): the planner asked for source "gistemp" and was refused as unknown.
+    "gistemp_monthly": Source(
+        key="gistemp_monthly",
+        title="NASA GISTEMP v4 global land-ocean monthly temperature anomaly (one row per year, Jan to Dec), as CSV",
+        url_template="https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
+        fixed_query=(),
+        params={},
+        licence_key="nasa_giss",
+    ),
     "snb_cube": Source(
         key="snb_cube",
         title="Swiss National Bank data cube, as CSV",

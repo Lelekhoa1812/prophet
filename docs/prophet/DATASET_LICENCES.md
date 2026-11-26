@@ -29,6 +29,7 @@ this table stops the script with an error rather than writing a blank licence.
 | `fao` | CC BY 4.0. FAO statistical databases may be accessed and re-disseminated. Do not use the dataset to promote a commercial enterprise. |
 | `nws` | US National Weather Service pages are in the public domain unless a page says otherwise. Do not imply NOAA endorsement. |
 | `gfz` | CC BY 4.0 for GFZ Kp and the derived indices GFZ names. Cite GFZ. The sunspot number and the 10.7 cm flux in a combined file are not this grant. |
+| `nasa_giss` | Not verified: read the GISTEMP pages at data.giss.nasa.gov/gistemp for the use and citation terms before any external use. |
 | `hadcrut` | Crown copyright under the Open Government Licence. The acknowledgement must name the analysis version, the download address, the download date, and British Crown Copyright, Met Office. |
 | `snb` | Swiss National Bank data may be saved and transmitted for non-commercial purposes with a source reference. |
 | `world_bank` | CC BY 4.0 for World Bank datasets unless the indicator metadata says otherwise. Some indicators are supplied by another publisher and may not be redistributed. Attribute the World Bank. |
