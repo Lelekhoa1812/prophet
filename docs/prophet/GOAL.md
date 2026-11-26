@@ -1228,3 +1228,38 @@ what was changed:
 Incident (2026-11-26, my error): `git add -A` in an integration worktree committed a `.venv` link, and the fast-forward
 replaced the real environment. The link was removed from the repository, `.venv` is ignored as a file or folder, the
 environment was rebuilt, and the undeclared imports duckdb and lxml are now dependencies (6eacf35, 4b40b59, 5bdf271).
+
+### Panel round 3 (measured, run 20261126-231519, API on 1c8cb0d, planner v29, 2026-11-26)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| AUUNEMP | completed | none | 22 |
+| CO2 | completed | none | 7 |
+| CPI | completed | none | 13 |
+| EPL | partial | stalled | 16 |
+| SPX | partial | unverified_figures, stalled | 14 |
+| NVDA | partial | unverified_figures, stalled | 13 |
+| NBA | partial | stalled | 31 |
+| NEM | partial | unverified_figures, stalled | 10 |
+| NGSTORAGE | partial | unverified_figures, stalled | 14 |
+| GISTEMP | partial | unverified_figures, stalled | 3 |
+
+Three of ten met (round 2: two). CPI met for the first time through the FRED source. Every mission now lands its data
+from a primary source: FRED SP500 (2,607 rows), fixturedownload results (EPL 380, NBA 1,207), EIA storage history
+(882 weekly rows), AEMO NSW price and demand (three monthly files), HadCRUT. The remaining failures are in the loop after
+the data lands. Defects read from the stored runs, and what was changed:
+- EPL and NBA: the checklist treated a league as a time series. EPL simulated the season and was still asked for
+  `out/series.json` and a TimesFM forecast (16 calls re-saving panels); NBA spent 31 cells on the scan and ledger and
+  never simulated. A results table (home and away columns) or a simulation now makes the season simulation the only
+  forecast item (3f0a836, 4a0d428).
+- EPL: a second fixtures file from another site was passed with a results file that already held the unplayed matches.
+  The results' unplayed rows are now the schedule, and fixtures with team names not in the results are refused.
+- SPX: the level sentence was added to a drift centre and the evaluator rightly called it wrong; it is now added only
+  when the centre is not a trending rule. Three cells read `finding` from a reloaded scan file; saved scans now keep
+  that alias.
+- NVDA: the series cited the Nasdaq address with part of its query dropped, and the fetch-record lookup refused it.
+  Downloads are now also recorded under the address without its query (2a34c7e).
+- NEM and GISTEMP: downloaded files were carried with a step number as the run id. Such an item now mounts the
+  download at `in/carried/<name>` (4a0d428).
+- GISTEMP: `download_open_data` had no GISTEMP source; `gistemp_monthly` added (measured live: 147 yearly rows).
+- AUUNEMP (round 2's model loop) completed with planner v29 on this build; v30 adds the ABS key for later rounds.
