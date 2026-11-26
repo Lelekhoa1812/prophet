@@ -186,7 +186,9 @@ def test_a_wrong_benchmark_claim_is_rewritten_once_and_then_passes(store):
 
 
 def test_a_claim_still_wrong_after_the_rewrite_leaves_partial(store):
-    _, out = _run(store, ["Naive is the appropriate benchmark.", "Naive is still the appropriate benchmark."])
+    # Round 10: the composer rewrites a blocked claim up to twice (CLAIM_REWRITES), so both rewrites keep the claim here.
+    _, out = _run(store, ["Naive is the appropriate benchmark.", "Naive is still the appropriate benchmark.",
+                          "Naive remains the appropriate benchmark."])
     assert out["result"]["status"] == "partial"
     assert out["result"]["contract_failures"] == ["answer_benchmark_matches"]
 

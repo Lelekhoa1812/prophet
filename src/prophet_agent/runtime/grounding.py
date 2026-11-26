@@ -530,6 +530,31 @@ def denied_findings(answer: str) -> list[tuple[str, str, bool]]:
     return out
 
 
+_COUNT_WORD = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|several|multiple|many)"
+_NO_NEGATION = r"(?:(?!\b(?:none|not|no|never|zero)\b)[^.;\n]){0,30}"
+_ACKNOWLEDGED = {
+    "level_shift": re.compile(_COUNT_WORD + r"\s+(?:major\s+|minor\s+)?(?:level[- ]shifts?|structural breaks?|breaks?|"
+                              r"changepoints?)\b|\b(?:level[- ]shifts?|breaks?)\b" + _NO_NEGATION + r"\b(?:flagged|found|detected|kept)\b",
+                              re.I),
+    "outliers": re.compile(r"outlier share|\d+(?:\.\d+)?\s*%\s+(?:of\s+\w+\s+)?(?:were\s+)?outliers?|" + _COUNT_WORD +
+                           r"\s+outliers?\b|\boutliers?\b" + _NO_NEGATION + r"\b(?:flagged|found|detected|kept|noted)\b", re.I),
+    "missing": re.compile(r"\d[\d,]*\s+(?:missing|gaps?|nulls?|holidays?)\b|\b(?:filled|interpolat\w*|imputed)\b", re.I),
+}
+
+
+def acknowledges(answer: str, topic: str, dates: list[str] = ()) -> bool:
+    """True when the answer reports the scan's finding on this topic somewhere: "the scan flagged 5 level shifts", "an
+    outlier share of 4.4%", "65 missing values were filled", or a break date the scan found. Round 10 (SPX, CO2): an answer
+    that listed the five shifts and then wrote "no regime change that would break the seasonal pattern" was blocked as a
+    denial; a later phrase about regimes does not hide findings the answer has reported."""
+    text = answer or ""
+    for unit in re.split(r"(?<=[.!?;])\s+|\n+", text):
+        m = _ACKNOWLEDGED[topic].search(unit)
+        if m and not re.search(r"\b(?:no|zero)\s+$", unit[:m.start()]):
+            return True
+    return topic == "level_shift" and any(d and d in text for d in dates)
+
+
 _SHIFT_DATE = re.compile(r"\b(?:level[- ]shifts?|structural breaks?|breaks?|regime (?:changes?|shifts?)|changepoints?)\b"
                          r"([^.;\n]{0,45})", re.I)
 _DATE_IN = re.compile(r"(?<![\d.,])((?:19|20)\d{2})(?:-(\d{2})(?:-(\d{2}))?)?(?![\d,])")
@@ -835,6 +860,92 @@ def _entity_records(name: str, history: list) -> tuple[list[float], list[float]]
     if not hit:
         return None
     return scalars + lines, series
+
+
+_DOMAIN = re.compile(r"\b((?:[a-z0-9-]+\.)+(?:gov|com|org|net|edu|int|io|info|au|uk|jp|de|fr|ca|eu))\b", re.I)
+
+
+# A citation: the domain, then its date, "latest" or "undated" ("(bls.gov, undated)", "**proactiveinvestors.com, 2026-11-23**").
+_CITED_AS = re.compile(r"\s*[,;:\u2013\u2014-]\s*(?:undated|latest|accessed|retrieved|\d{1,4}\b|(?:jan|feb|mar|apr|may|jun|jul|aug|"
+                       r"sep|oct|nov|dec)[a-z]*\b)", re.I)
+
+
+def _host(url: str) -> str:
+    m = re.match(r"^[a-z]+://([^/:?#]+)", str(url or "").strip(), re.I)
+    return m.group(1).lower() if m else ""
+
+
+def _source_texts(history: list) -> dict[str, list[str]]:
+    """What each fetched host returned, as text: research passages and fetched pages, by host name."""
+    out: dict[str, list[str]] = {}
+
+    def add(url: str, text: str) -> None:
+        host = _host(url)
+        if host and text:
+            out.setdefault(host, []).append(text)
+
+    for h in history:
+        if h.get("kind") == "subagent":
+            for host, texts in _source_texts(h.get("evidence") or []).items():
+                out.setdefault(host, []).extend(texts)
+            continue
+        if h.get("kind") != "tool":
+            continue
+        for res in (h.get("full"), h.get("result")):
+            if not isinstance(res, dict):
+                continue
+            for src in res.get("sources") or []:
+                if isinstance(src, dict):
+                    add(src.get("final_url") or src.get("url") or "",
+                        " ".join(str(p.get("text", "")) for p in src.get("passages") or [] if isinstance(p, dict)))
+            if isinstance(res.get("text"), str):
+                add(res.get("final_url") or res.get("url") or "", res["text"])
+            elif res.get("final_url") or res.get("url"):      # a download: its row count, columns and first rows
+                add(res.get("final_url") or res.get("url") or "", _as_text(res))
+    return out
+
+
+def source_bound_mismatches(answer: str, history: list) -> list[str]:
+    """Figures in a line that names a source domain (such as "(bls.gov, 13 Nov 2026)") that the text fetched from that
+    domain does not hold. A domain nothing was fetched from supports no figure.
+
+    Motivation: panel round 10 audit. CPI cited "philadelphiafed.org" for "2.5-2.7%" and "fred.stlouisfed.org" for a 2.3%
+    expectation; neither passage held a value, and both figures passed because the numbers were printed elsewhere. Round 9:
+    NEM gave Queensland's price as New South Wales's; GISTEMP put a JMA figure under NOAA. A figure stated as a source's is
+    checked against that source.
+    Logic: lines are split; a line's domains are the domain names cited in it (followed by a date, "latest" or "undated"),
+    as outside context is cited; a domain named in passing is not a citation. Its figures (years
+    excepted) must be near a number in the texts of a fetched host equal to, or ending with, one of those domains.
+    """
+    texts = _source_texts(history)
+    if not texts:
+        return []
+    missing: list[str] = []
+    for line in re.split(r"\n+", answer or ""):
+        domains = {m.group(1).lower() for m in _DOMAIN.finditer(line) if _CITED_AS.match(line[m.end():])}
+        if not domains:
+            continue
+        pool_text = " ".join(t for host, ts in texts.items() for t in ts
+                             if any(host == d or host.endswith("." + d) or d.endswith("." + host) for d in domains))
+        pool = []
+        for t in figures(pool_text, references=False):
+            v, _, _ = _parse(t)
+            pool.append(abs(v) * _scale_of(t))
+        # Addresses, code spans and dates name things; their digits are not figures ("ABS,LF,1.0.0", "2028-01-25/26").
+        body = re.sub(r"https?://\S+|`[^`]*`|\b\d{4}-\d{2}-\d{2}(?:/\d{1,2})?\b", " ", line)
+        body = _DOMAIN.sub(" ", body)
+        for token, _approx in _figures_in_context(body):
+            if _YEAR.fullmatch(token):
+                continue
+            value, decimals, pct = _parse(token)
+            value, scale = abs(value), _scale_of(token)
+            cands = [value * scale] + ([value / 100.0] if pct else [])
+            if any(_near(v, c, decimals + (2 if c != value * scale else 0), scale if c == value * scale else 1.0)
+                   for v in pool for c in cands):
+                continue
+            if token not in missing:
+                missing.append(token)
+    return missing
 
 
 def entity_row_mismatches(answer: str, history: list) -> list[str]:

@@ -23,18 +23,20 @@ def test_simulation_view_shows_the_teams_the_call_named():
     paths = {t: [{"game": g, "measured": g <= 20, "median": g * 0.5, "p10": g * 0.4, "p90": g * 0.6} for g in range(1, 83)]
              for t in named}
     view = observe_simulate({"teams": rows, "points_paths": paths, "standings": rows, "ratings": rows})
-    shown = [r["team"] for r in view["teams"]] + view.get("named_teams_not_shown", [])
+    table = view["teams"]
+    shown = [r[0] for r in table["rows"]] + view.get("named_teams_not_shown", [])
     assert shown == named
     assert len(json.dumps(view, separators=(",", ":"))) <= VIEW_BUDGET
-    assert view["teams"][0]["final"] == {"median": 36, "p10": 31, "p90": 42}       # whole numbers without a decimal point
-    assert view["teams"][0]["expected_final"] == 36.4
+    first = dict(zip(table["columns"], table["rows"][0]))
+    assert (first["p10"], first["median"], first["p90"]) == (31, 36, 42)          # whole numbers without a decimal point
+    assert first["expected_final"] == 36.4 and "expected_rank_in_group" not in table["columns"]
 
 
 def test_simulation_view_defaults_to_the_top_rows_when_every_team_has_a_path():
     rows = [_row(f"T{i}", i) for i in range(8)]
     paths = {r["team"]: [] for r in rows}
     view = observe_simulate({"teams": rows, "points_paths": paths})
-    assert [r["team"] for r in view["teams"]] == [f"T{i}" for i in range(6)]
+    assert [r[0] for r in view["teams"]["rows"]] == [f"T{i}" for i in range(6)]
 
 
 SCAN = {"findings": [
@@ -162,3 +164,88 @@ def test_a_forecast_records_where_the_observations_stop():
     assert _last_observed([1.0, 2.0, float("nan")], ["2026-11-01", "2026-11-02", "2026-11-03"]) == \
         {"value": 2.0, "date": "2026-11-02"}
     assert _last_observed([1.0, 3.5], None) == {"value": 3.5}
+
+
+# Round 10 (SPX, CO2): an answer that listed the five shifts and then wrote "no regime change that would break the seasonal
+# pattern" was blocked; a phrase about regimes does not deny findings the answer reports. AUUNEMP's denial still blocks.
+def test_a_reported_finding_is_not_denied_by_a_later_phrase(tmp_path):
+    said = ("The scan flagged 4 level shifts (1979-01-01, 1990-10-01, 2010-10-01, 2021-10-01); all were kept with no regime "
+            "change detected that would break the seasonal pattern.")
+    assert all(c["ok"] for c in contracts._scan_contradictions(said, _saved_scan(tmp_path), tmp_path))
+    denied = "Scan flagged an outlier share of 3.1%; no missing months, no level shifts detected."
+    bad = [c for c in contracts._scan_contradictions(denied, _saved_scan(tmp_path), tmp_path) if not c["ok"]]
+    assert bad and "no level shifts" in bad[0]["detail"]
+    assert not grounding.acknowledges("- **Level shifts / regime changes**: None detected;", "level_shift")
+
+
+# Round 10 (EPL): six questions were refused for a question mark mid-text or "Top 4" against "Top 6", and four more for
+# lacking "high-risk:" although the request said "Ask me which clubs to keep".
+def test_club_questions_reach_the_person():
+    from prophet_agent.runtime.questions import repair_questions, validate_for_goal
+    q = {"header": "Clubs", "multiSelect": True, "question": "Which clubs should I keep? The table has 20 teams.",
+         "options": [{"label": "Top 4 by current points", "description": "a"},
+                     {"label": "Top 6 by current points", "description": "b"}]}
+    fixed, notes = repair_questions([q])
+    assert fixed[0]["question"] == "The table has 20 teams. Which clubs should I keep?" and notes
+    assert validate_for_goal({"questions": fixed}, "") == []
+    assert goal.ASKED_TO_ASK.search("Ask me which clubs to keep if the table has many rows.")
+
+
+# Round 10 (EPL): a 22-row standings table typed from memory into validate_table.
+def test_a_typed_table_must_trace_to_fetched_data():
+    hist = [{"kind": "tool", "tool": "download_web_data",
+             "result": {"first_rows": [["1", "Arsenal", "Coventry", "3 - 0"], ["2", "Hull", "Man Utd", "2 - 0"]]}}]
+    typed = "Team,Pts\nArsenal,3\nLeicester,9\n"
+    why = goal._typed_table_refusal("validate_table", {"csv": typed}, hist, "")
+    assert why and "Leicester" in why
+    assert goal._typed_table_refusal("validate_table", {"csv": "Team,Pts\nArsenal,3\nHull,3\n"}, hist, "") is None
+    assert goal._typed_table_refusal("validate_table", {"dataset_id": "x"}, hist, "") is None
+
+
+# Round 10 (NGSTORAGE): pd.read_csv on a file with title lines failed four times and the run stalled.
+def test_a_preamble_parse_error_points_to_pl_load():
+    from prophet_agent.tools.sandbox_tool import observe
+    out = observe({"ok": False, "run_id": "r", "stdout": "", "outputs": [], "timed_out": False,
+                   "stderr": "pandas.errors.ParserError: Error tokenizing data. C error: Expected 1 fields in line 5, saw 14\n"})
+    assert "pl.load(path)" in out["hint"]
+
+
+# Round 10 (NVDA): "closed at $148.82 on 2026-11-25", where the close that day was 149.30 (148.82 was a four-day mean).
+def test_a_value_stated_for_the_last_day_is_that_days_value():
+    bad = contracts._latest_and_end("Nvidia (NVDA) closed at $148.82 on 2026-11-25.", _fc("2026-11-25", 149.30))
+    assert bad and bad[0]["name"] == "answer_latest_value"
+    assert contracts._latest_and_end("Nvidia (NVDA) closed at $149.30 on 2026-11-25.", _fc("2026-11-25", 149.30)) == []
+    assert contracts._latest_and_end("The mean of the last 4 closes on 2026-11-25 was $148.82.", _fc("2026-11-25", 149.3)) == []
+
+
+# Round 10 (CPI): outside figures cited to philadelphiafed.org and fred.stlouisfed.org that neither fetched text holds.
+def test_a_cited_source_must_hold_the_figure():
+    hist = [{"kind": "tool", "tool": "web_research", "result": {"sources": [
+        {"id": "S1", "final_url": "https://www.bls.gov/schedule/cpi.htm", "passages": [{"text": "Mar. 10, 2027 08:30 AM"}]},
+        {"id": "S2", "final_url": "https://fred.stlouisfed.org/series/EXPINF27YR", "passages": [{"text": "Notes only."}]}]}},
+        {"kind": "tool", "tool": "sandbox_python", "result": {"stdout": "2.3 2.5 2.7"}}]
+    said = ("- **Cleveland Fed expected inflation (fred.stlouisfed.org, 10 Nov 2026):** long-run expectation at 2.3%.\n"
+            "- **BLS schedule (bls.gov, undated):** the February CPI is released on 10 Mar 2027 at 08:30.\n"
+            "- All sources (bls.gov and fred.stlouisfed.org) were read; 7 passages were kept.")
+    assert grounding.source_bound_mismatches(said, hist) == ["2.3%"]
+
+
+# Round 10 (CPI): an outside figure cited to one site but printed only by another is left out.
+def test_an_outside_line_is_checked_against_the_site_it_cites(tmp_path):
+    from prophet_agent.runtime.goal import _check_outside
+    from prophet_agent.runtime.store import Store
+
+    class C:
+        pass
+    store = Store(tmp_path / "s.sqlite")
+    mid = store.create_mission("goal", {})
+    c = C(); c.store, c.mission_id = store, mid
+    store.tool_start(mid, 0, "web_research", {"queries": ["x"]}, "k0")
+    store.tool_set("k0", "done", {"sources": [
+        {"final_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL", "passages": [{"text": "2026-01-01,2.5\n2.7"}]},
+        {"final_url": "https://www.philadelphiafed.org/surveys", "passages": [{"text": "The survey is published quarterly."}]},
+        {"final_url": "https://www.bls.gov/schedule/cpi.htm", "passages": [{"text": "Mar. 10, 2027 08:30 AM"}]}]})
+    answer = ("Flat.\n\n## Outside context\n- **SPF (philadelphiafed.org, latest Q4 2026):** a pace near 2.5–2.7%.\n"
+              "- **BLS (bls.gov, undated):** February CPI on 10 Mar 2027 at 08:30.\n\n## Files\n- out/forecast.png")
+    out, removed = _check_outside(c, answer)
+    assert "2.5" in removed and "philadelphiafed" not in out and "bls.gov" in out and "1 outside claim(s)" in out

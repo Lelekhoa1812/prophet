@@ -1495,3 +1495,55 @@ What was changed:
   agg first or last), and prints which. A series built with pandas directly is not covered.
 Not yet changed: outside-context misreadings (RBA, NEM prices, GISTEMP baseline) and observed values given as forecast.
 
+
+### Panel round 10 (measured, run 20261127-060637, API on c763aa4, planner v32, evaluator v11, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| CPI | completed | none | 6 |
+| GISTEMP | completed | none | 8 |
+| NVDA | completed | none | 7 |
+| AUUNEMP | partial | blocked_by_check (answer_scan_consistent) | 7 |
+| CO2 | partial | blocked_by_check, unverified_figures (1.5) | 9 |
+| NEM | partial | blocked_by_check (answer_shift_count_matches) | 11 |
+| SPX | partial | blocked_by_check (answer_scan_consistent) | 9 |
+| EPL | partial | unverified_figures (a typed standings table) | 2 |
+| NBA | partial | unverified_figures (backtest intervals) | 4 |
+| NGSTORAGE | partial | stalled (the same failing read, repeated) | 15 |
+
+Three of ten completed by status. **M9-8 is not met.** The round 9 checks stopped the answers they were built for, and
+the composer's one rewrite mostly fixed them, but:
+- SPX and CO2 were blocked wrongly. Both rewrites listed the scan's five level shifts, then wrote "no regime changes" or "no
+  regime change that would break the seasonal pattern", which the check read as a denial. AUUNEMP was blocked rightly: the
+  rewrite still said "no level shifts detected". NEM's rewrite described one level shift where the scan found five.
+- NBA: the view of the 14 named teams was 3,681 characters, but with the call's arguments the observation passed 4,000, was
+  clipped, and the planner paged 32 times. The answer then gave backtest intervals rounded from pages, which the grounding
+  check refused.
+- EPL: six questions about which clubs to keep were refused for shape (a question mark mid-text; "Top 4" and "Top 6 by
+  current points" read as near-duplicates) and four for lacking "high-risk:", although the request says "Ask me which clubs
+  to keep". The planner then typed a 22-row standings table from memory (Leicester, Southampton, Wolves, West Ham, none in
+  the downloaded file) into validate_table. The grounding check caught its figures.
+What was changed:
+- A denial no longer blocks when the answer reports the finding elsewhere (a count, a share, a filled count or a scan date).
+  Over rounds 9 and 10 the check now blocks the five round 9 answers and round 10 AUUNEMP, and nothing else.
+- The composer rewrites a blocked claim up to twice, told the claim it kept.
+- The simulation view is one teams table (team, current, expected_final, p10, median, p90, probabilities) within 2,900
+  characters. With the call's arguments the round 9 and 10 NBA observations are 3,428 and 3,263 characters and show every
+  named team.
+- Questions: context after the question mark is moved before the question; options that differ by a number are different
+  choices; a request that says "ask me" lets a question through without "high-risk:". Each of the ten EPL questions
+  passes now.
+- A table passed as CSV text to validate_table or bind_series is refused when its rows name members no fetched data names, or
+  its figures appear in no tool output. It refuses each of the three EPL calls.
+- NGSTORAGE: a sandbox error "Error tokenizing data ... Expected 1 fields in line 5" now carries a hint to read the file
+  with pl.load, which finds the table below title lines.
+Independent audit of the three completed round 10 answers (CPI, GISTEMP, NVDA): the forecast figures traced, and each answer
+held at least one wrong claim. CPI gave June's value as October's and three outside figures no fetched passage holds (SPF
+2.5-2.7%, Cleveland Fed 2.3%); NVDA gave a four-day mean as the 25 November close and another company's earnings release as
+Nvidia's; GISTEMP reversed the CPC outlook (the passage says a strong El Nino is likely; the answer said ENSO-neutral) and
+called a measured 10-month cycle annual. These runs predate the latest-value check (a815f98).
+- The latest-value check also reads a value stated for the last observed day ("closed at $148.82 on 2026-11-25").
+- An Outside context line that cites a domain ("(philadelphiafed.org, latest Q4 2026)") is checked against what that domain
+  returned, not against every page; a figure only another source printed is left out with the line. Over the answers of
+  rounds 8 to 10 this removes only CPI's three figures.
+Not yet changed: an outside claim with no figure (GISTEMP's reversed ENSO outlook, NVDA's misattributed release).

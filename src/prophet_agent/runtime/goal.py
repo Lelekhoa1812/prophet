@@ -140,6 +140,10 @@ STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "imposs
                 "checkpoint": "budget_part_spent"}
 MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
 REPAIR_CALLS = 8          # one extra allowance, granted once, when a blocked answer meets a spent tool budget (2026-11-22)
+# Panel round 10 (EPL): the request said "Ask me which clubs to keep", and four of the planner's questions were refused for
+# lacking a "high-risk:" rationale. A request that asks to be asked is the person's own decision that the question is worth it.
+ASKED_TO_ASK = re.compile(r"\bask me\b|\bcheck with me\b|\bconfirm with me\b", re.I)
+CLAIM_REWRITES = 2       # composer rewrites for an answer claim the stored output does not support
 MAX_PREMATURE_FINISHES = 2  # round 3, A5-04: finishes refused for checklist items still to do, per run, before the evaluator judges
 MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
 _LEVEL_SENTENCE = re.compile(r"centre line is a level|center line is a level", re.I)
@@ -1308,6 +1312,36 @@ def _auto_carry(args: Any, history: list[dict]) -> Any:
     return {**args, "carry": given + extra}
 
 
+TABLE_TEXT_TOOLS = ("validate_table", "bind_series")
+
+
+def _typed_table_refusal(name: str, args: Any, history: list[dict], goal: str) -> str | None:
+    """Why a table passed as CSV text is refused: its rows name members, or carry figures, that no fetched data holds.
+
+    Motivation: panel round 10 (EPL). The planner typed a 22-row standings table into validate_table: clubs from memory
+    (Leicester, Southampton, Wolves, West Ham) that no downloaded file names, with points no tool computed. A table check that
+    accepts a typed table checks the model's memory, not the data. The grounding check caught the figures only at the end.
+    Logic: the first cell of each data row must appear in the request or in what the tools returned (case and spacing
+    ignored), and the figures in the text must pass the same grounding check as an answer. None when the call is not a
+    table tool with csv text, or when the table traces to the evidence. Decided from stored history: a replay refuses alike.
+    """
+    if name not in TABLE_TEXT_TOOLS or not isinstance(args, dict) or not isinstance(args.get("csv"), str):
+        return None
+    lines = [ln for ln in args["csv"].splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+    seen = grounding._norm_name(grounding.evidence_text(history, goal))
+    names = [ln.split(",")[0].strip().strip('"') for ln in lines[1:]]
+    unsourced = [n for n in names if n and not re.fullmatch(r"[\d.,%+-]+", n) and grounding._norm_name(n) not in seen]
+    figures = unverified(args["csv"], history, goal)
+    if not unsourced and not figures:
+        return None
+    what = (f"rows name {', '.join(unsourced[:5])}, which no fetched data names" if unsourced
+            else f"figures {', '.join(figures[:5])} appear in no tool output")
+    return (f"the csv table was not checked: {what}. A table comes from fetched data: build it in a sandbox run from the "
+            "downloaded file and pass its dataset_id or the run's output, not text typed from memory")
+
+
 def _drop_unsourced_entities(args: Any, history: list[dict], goal: str) -> tuple[Any, list[str]]:
     """A list of expected members (clubs, constituents) that the request and the fetched data do not name is left out.
 
@@ -2382,7 +2416,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             elif problems:
                 obs = {"kind": "ask_user", "error": "invalid questions: " + "; ".join(problems) + ". " + expected_shape()
                        + ("" if not repair_notes else " Repairs made: " + "; ".join(repair_notes) + ".")}
-            elif not HIGH_RISK.search(str(plan.get("rationale", ""))):
+            elif not HIGH_RISK.search(str(plan.get("rationale", ""))) and not ASKED_TO_ASK.search(goal or ""):
                 obs = {"kind": "ask_user", "error": "not asked: a question goes to the person only for a high-risk decision, "
                        "one that changes the delivered numbers materially, that the data cannot settle and where a wrong guess "
                        "is costly. Decide this yourself with the option that has the better expected outcome, state the "
@@ -2416,7 +2450,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 args = _auto_carry(args, history)
             args, unsourced = _drop_unsourced_entities(args, history, goal)
             stand_in = (stand_in_reason(str(args.get("code") or ""), goal)
-                        if name == "sandbox_python" and isinstance(args, dict) else None)
+                        if name == "sandbox_python" and isinstance(args, dict) else None) or \
+                _typed_table_refusal(name, args, history, goal)
             if stand_in:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": stand_in}     # derived from args and goal: replays alike
             elif name not in tools:
@@ -2577,12 +2612,17 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # output. The fix is in the words, so the composer rewrites once; a claim still wrong after that leaves partial.
             # Round 4: these checks were built (C3a) and tested but never called here, so none ran live.
             claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal)) if cfg.depth == 0 else []
-            if claims:
-                rewritten = _compose(ctx, brain, f"claims:{tag}:{i}", goal, history, memo, context, answer,
-                                     fixes=contracts.summarise(claims))
-                if rewritten is not None and rewritten.strip():
-                    answer = rewritten
-                    claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
+            # Round 10 (AUUNEMP): the one rewrite moved "no level shifts" to another sentence and the run ended partial. A
+            # second rewrite is told the claim it kept; the step names differ, so a replay reads each stored rewrite.
+            for attempt in range(CLAIM_REWRITES if claims else 0):
+                rewritten = _compose(ctx, brain, f"claims:{tag}:{i}" + (f":{attempt}" if attempt else ""), goal, history, memo,
+                                     context, answer, fixes=contracts.summarise(claims))
+                if rewritten is None or not rewritten.strip():
+                    break
+                answer = rewritten
+                claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
+                if not claims:
+                    break
             if claims:
                 return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
                         "reason": "This answer states something the analysis output does not support: "
@@ -2698,9 +2738,13 @@ def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
         return answer, []
     from prophet_agent.research.passages import verify_figures
     sources: list = []
-    for tool in ("web_research", "web_fetch", "web_search"):
+    fetched: list[dict] = []
+    for tool in ("web_research", "web_fetch", "web_search", "download_web_data"):
         for res in ctx.store.tool_results(ctx.mission_id, tool):
             if isinstance(res, dict):
+                fetched.append({"kind": "tool", "tool": tool, "result": res})
+                if tool == "download_web_data":
+                    continue
                 sources.extend(res.get("sources") or res.get("hits") or [])
                 if isinstance(res.get("text"), str):
                     sources.append({"text": res["text"]})
@@ -2709,6 +2753,9 @@ def _check_outside(ctx: Ctx, answer: str) -> tuple[str, list[str]]:
     kept, removed, dropped = [], [], 0
     for line in answer[m.end():end].splitlines():
         bad = verify_figures(DATE_TEXT.sub(" ", line), sources) if line.strip() else []
+        # Round 10 (CPI): "(philadelphiafed.org, latest Q4 2026) ... 2.5-2.7%" passed because 2.5 and 2.7 were printed in
+        # another source. A line that cites a domain is checked against what that domain returned.
+        bad = bad + [b for b in (grounding.source_bound_mismatches(line, fetched) if line.strip() else []) if b not in bad]
         if bad:
             removed.extend(b for b in bad if b not in removed)
             dropped += 1

@@ -2202,6 +2202,11 @@ def _scan_topic_findings(findings: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
+def _finding_dates(found: list[dict]) -> list[str]:
+    """The break dates (YYYY-MM-DD) of level-shift findings."""
+    return [str(b.get("at", ""))[:10] for f in found for b in (f.get("evidence") or {}).get("breaks") or [] if isinstance(b, dict)]
+
+
 def _finding_summary(topic: str, found: list[dict]) -> str:
     ev = found[0].get("evidence") or {}
     if topic == "level_shift":
@@ -2230,7 +2235,7 @@ def _scan_contradictions(text: str, obs: list, run_root) -> list[dict]:
     checks: list[dict] = []
     for topic, sentence, strong_only in grounding.denied_findings(text):
         found = [f for f in topics.get(topic, []) if not strong_only or f.get("severity") in ("major", "blocker")]
-        if found:
+        if found and not grounding.acknowledges(text, topic, _finding_dates(found)):
             checks.append(_check("answer_scan_consistent", False,
                                  f"the answer says there were no {TOPIC_WORDS[topic]} ({sentence[:160]}), but the saved "
                                  f"scan flagged {_finding_summary(topic, found)}; say what the scan found and what was decided"))
@@ -2263,8 +2268,9 @@ def _scan_contradictions(text: str, obs: list, run_root) -> list[dict]:
 
 _LATEST = re.compile(r"\b(?:latest|last|most recent)\s+(?:observed\s+|recorded\s+|actual\s+)?(?:value|reading|level|close|"
                      r"observation|data point|weekly value|monthly value|daily value)s?\b", re.I)
+_ON_DAY = re.compile(r"\b(?:closed|close|stood|settled|ended|finished|was|read|recorded)\s+(?:at|of|on)?\b", re.I)
 _OUTSIDE = re.compile(r"\bS\d{1,3}\b|release|reported|according|announced|survey|statement|forecast|predict|expected|"
-                      r"range|band|centre|median|naive|baseline|\bMASE\b|\brule\b|repeat", re.I)
+                      r"range|band|centre|median|naive|baseline|\bMASE\b|\brule\b|repeat|\bmean\b|average", re.I)
 _FIGURE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\d-])")
 _DATA_WORDS = re.compile(r"\b(?:observations?|observed|closes|rows|data|series|history|record|readings)\b", re.I)
 _AHEAD_WORDS = re.compile(r"\b(?:forecasts?|window|horizon|ahead|next|predict\w*|projected|steps?)\b", re.I)
@@ -2297,9 +2303,14 @@ def _latest_and_end(text: str, obs: list) -> list[dict]:
         return []
     checks: list[dict] = []
     value = _finite(last.get("value"))
+    day = str(last.get("date") or "")[:10]
     if value is not None:
         for unit in grounding.sentences(text):
             m = _LATEST.search(unit)
+            if not m and day and day in unit and _ON_DAY.search(unit):
+                # Round 10 (NVDA): "closed at $148.82 on 2026-11-25", where 148.82 was the mean of the last four closes and
+                # the close that day was 149.30. A value stated for the last observed day is that day's value.
+                m = _ON_DAY.search(unit)
             if not m or _OUTSIDE.search(unit):
                 continue
             fig = next((f for f in _FIGURE.finditer(unit[m.end():m.end() + 60])

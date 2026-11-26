@@ -199,6 +199,9 @@ def json_shape(path: Path) -> str | None:
     return "top-level keys: " + "; ".join(parts) + more
 
 
+PREAMBLE_ERROR = re.compile(r"Error tokenizing data\. C error: Expected \d+ fields? in line \d+, saw \d+")
+
+
 def observe(result: dict) -> dict:
     text = result["stdout"]
     if len(text) > SEEN_STDOUT:
@@ -234,6 +237,12 @@ def observe(result: dict) -> dict:
             out["stderr_tail"] = f"[... {len(err) - SEEN_STDERR} characters cut ...]\n" + err[-SEEN_STDERR:]
         else:
             out["stderr_tail"] = err
+        if PREAMBLE_ERROR.search(err):
+            # Panel round 10 (NGSTORAGE): pd.read_csv on an EIA file with title lines above its table failed four times
+            # ("Expected 1 fields in line 5, saw 14"), and the run stopped as a stall.
+            out["hint"] = ("the file has lines above its table (a title or notes), so pd.read_csv sees too few fields. Read "
+                           "it with df = pl.load(path), which finds the table block, or print its first 10 lines "
+                           "and pass skiprows")
     if result["timed_out"]:
         out["timed_out"] = True
     return out

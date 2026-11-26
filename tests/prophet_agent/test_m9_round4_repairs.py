@@ -283,7 +283,7 @@ def test_simulation_view_fits_one_observation():
             "settings": {"model": "normal score-margin model", "n_played": 261, "margin_sd": 15.9}}
     view = observe_simulate(full)
     assert len(json.dumps(view)) < OBS_CHARS
-    assert len(view["teams"]) == 6 and view["teams_not_shown"] == 24 and len(view["points_path_summary"]) == 6
+    assert len(view["teams"]["rows"]) == 6 and view["teams_not_shown"] == 24 and view["points_path_summary"]
     assert view["backtest"]["models"] == {"m": {"brier": 0.249, "log_loss": 0.692}}
     assert view["settings"] == {"model": "normal score-margin model", "n_played": 261}
 

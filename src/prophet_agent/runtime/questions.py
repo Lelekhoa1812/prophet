@@ -94,7 +94,27 @@ def repair_questions(raw: Any) -> tuple[Any, list[str]]:
         notes.append(f"{len(raw)} questions were sent; the first {MAX_QUESTIONS} are asked, and the others can be asked "
                      "after these answers")
         raw = raw[:MAX_QUESTIONS]
+    if isinstance(raw, list):
+        raw = [_question_last(q, notes) if isinstance(q, dict) else q for q in raw]
     return raw, notes
+
+
+def _question_last(q: dict, notes: list[str]) -> dict:
+    """A question whose asking sentence is not at the end, with its context sentences moved before it.
+
+    Panel round 10 (EPL): "Which clubs should I keep for the points-path forecast? The table has 20 teams; I can show the
+    top contenders or a custom set." was refused for its question mark, six times in a row, and the person was never asked.
+    """
+    text = q.get("question")
+    if not isinstance(text, str) or text.rstrip().endswith("?") or "?" not in text:
+        return q
+    cut = text.rindex("?") + 1
+    head, tail = text[:cut], text[cut:].strip()
+    start = max(head.rfind(". ", 0, cut - 1), head.rfind("\n", 0, cut - 1))
+    asking = head[start + 1:].strip() if start >= 0 else head.strip()
+    before = head[:start + 1].strip() if start >= 0 else ""
+    notes.append("the context after the question mark was moved before the question")
+    return {**q, "question": " ".join(p for p in (before, tail, asking) if p)}
 
 
 def validate_questions(payload: Any) -> list[str]:
@@ -171,6 +191,8 @@ def _near_duplicates(a: str, b: str) -> bool:
     # 'Day-first (DD/MM/YYYY)' and 'Month-first (MM/DD/YYYY)' share the format text but are different choices, so the
     # qualifiers only count when both labels have one that is similar.
     (main_a, qual_a), (main_b, qual_b) = _split(a), _split(b)
+    if re.findall(r"\d+", main_a) != re.findall(r"\d+", main_b):
+        return False      # 'Top 4 by current points' and 'Top 6 by current points' are different choices (round 10, EPL)
     if not _terms(main_a) or not _terms(main_b):
         return _similar(a, b)
     if not _similar(main_a, main_b):
