@@ -1671,3 +1671,37 @@ What was changed (36f30ae, 80fbaee and the batch after it):
 - The simulation view says points-path game numbers count played games too.
 Not yet changed: fabricated scan categories (a variance change or trend bend no scan reports), a passage's meaning when
 its words are quoted correctly (NVDA), and a team list the person narrowed (EPL).
+
+### Panel round 14 (measured, run 20261127-084539, API on a748afc, planner v32, evaluator v12, composer v7, 2026-11-27)
+Seven of ten completed by status (CO2, CPI, NBA, NEM, NGSTORAGE, NVDA, SPX); AUUNEMP, EPL and GISTEMP ended partial.
+**M9-8 is not met.** The independent read-only audit marked all seven completed answers not clean.
+Why the three ended partial:
+- AUUNEMP: a downloaded file carried with the id of a run that wrote nothing was refused nine times, although the file was
+  already mounted.
+- EPL: a season simulation did not count as a stored forecast, so a points forecast was blocked.
+- GISTEMP: the rewrite of a corrected answer was blocked for "Seasonality was set to 12 months (annual cycle) as
+  specified", a setting, not a measured claim.
+Audit findings in the completed answers (wrong or unsupported):
+- NBA: the "other teams above the cutoff" list left out Miami (41.9) and Phoenix (40.9); the view listed only six better teams.
+- NVDA: "ctx_2h <= +3.2 %" where the tool gives +14.0 %; "7 outliers" no tool gives; a total range and a per-step range that
+  match no output; an earnings month no source gives; "mean_last_4" described as the last season.
+- SPX: "2 variance changes, 13 outliers, 1 flat stretch" no scan reported; "filled by the index" for straight-line
+  interpolation; a no-release line citing only a navigation page.
+- CO2: a "calibrated range" never computed; "season = 365" for a forecast call that ignores season; unsourced "no
+  instrument changes".
+- CPI: a calibrated table that mixes calibrated and raw bounds when the tool said keep_raw; a cumulative increase of 4.2
+  against 3.86; "strong annual seasonality (cycle strength 0.99)" with no period; a wrong BLS release date.
+- NEM: an 80 % total range that matches neither measured range; a "100,239 MW total" with the wrong unit; a single reading
+  called the last day; a weekly cycle no tool detected.
+- NGSTORAGE: week-ending dates on the wrong weekday; "8 points flagged" where the scan says about 86; an IQR figure with no
+  source.
+What was changed (a09db69, 7f62df0):
+- A simulate_season result counts as a stored forecast.
+- A setting called annual is not a measured claim; a quoted passage is not a claim.
+- Each claim rewrite keeps the earlier corrections ("Keep these earlier corrections").
+- A carried download is mounted whatever run id the carry names; an empty series is not saved.
+- A scan category the scan does not have (variance change, trend bend, break) is not a finding.
+- The sports view names up to ten better teams not shown (budget 3,250 characters; the observation stays under 4,000).
+- Cycle strength is null when no period was measured.
+Not yet changed: a total range that matches no measured range, a calibrated-versus-raw label against the calibration
+tool's recommendation, a single-reading last day, and relative dates or source meaning in outside-context lines.

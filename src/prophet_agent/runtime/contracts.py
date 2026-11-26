@@ -1651,7 +1651,8 @@ def measured_total_range(history) -> dict | None:
 CENTRE_WORDS = {"timesfm": "TimesFM", "global_gbm": "the pooled gradient-boosted model",
                 "global_blend": "the equal-weight blend of the pooled model and TimesFM", "naive": "the last value",
                 "seasonal_naive": "the same step a season earlier", "mean_last_season": "the average of the last season",
-                "drift": "the drift rule", "blend": "the blend"}
+                "drift": "the drift rule", "blend": "the blend",
+                "damped_trend": "a damped trend", "recent_drift": "the recent average change"}
 
 
 def _panel_rules(h: dict, res: dict) -> list[str]:
@@ -3038,6 +3039,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(short)
     if (level := _flat_expected_level_sentence(text, obs)) is not None:
         checks.append(level)
+    if (tilted := _flat_claim_after_tilt(text, obs)) is not None:
+        checks.append(tilted)
     if (named := check_answer_files(text, obs)) is not None:
         checks.append(named)
     if (real := check_answer_real_series(text, goal)) is not None:
@@ -3048,17 +3051,40 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
 _LEVEL_LINE = re.compile(r"centre line is a level|center line is a level", re.I)
 
 
+_FLAT_CLAIM = re.compile(r"(?:centre|center|forecast|median)\s+line\s+is\s+(?:a\s+)?(?:level|flat)\b|\bflat\s+(?:centre|center|median|forecast)\b|"
+                         r"\bthe\s+median\s+is\s+(?:close\s+to\s+)?flat\b", re.I)
+
+
+def _flat_claim_after_tilt(text: str, obs: list) -> dict | None:
+    """The answer calls the centre line flat or a level, but the newest pack drew a trend rule its own tilt chose (owner review
+    of round 14 charts, 2026-11-27: flat lines are not accepted when the history gives a direction). Blocks."""
+    drawn = _delivered_centre(obs)
+    if drawn not in ("damped_trend", "recent_drift"):
+        return None
+    for unit in grounding.sentences(text):
+        if _FLAT_CLAIM.search(unit) and not re.search(r"\bnot\b|\bwould\b|\bwithout\b|\bif\b|\bwas\b|\bwere\b", unit, re.I):
+            return _check("answer_flat_claim_after_tilt", False,
+                          f"the answer calls the centre line flat ({unit.strip()[:140]}), but the pack drew {drawn.replace('_', ' ')} "
+                          "after finding a direction in the history; describe that line and say it is a tilt chosen on the "
+                          "backtest windows, not a validated gain")
+    return None
+
+
 def _latest_health_verdict(obs: list) -> str | None:
     return delivered_verdict(obs)
 
 
-TRENDING_CENTRES = ("drift",)
+TRENDING_CENTRES = ("drift", "damped_trend", "recent_drift")
 
 
 def _delivered_centre(obs: list) -> str | None:
     """The centre named on the newest forecast_report (timesfm when none was named); None when no pack was built."""
     for h in reversed(obs if isinstance(obs, list) else []):
         if isinstance(h, dict) and _ok_result(h, "forecast_report") is not None:
+            full = h.get("full") if isinstance(h.get("full"), dict) else {}
+            drawn = ((full.get("forecast") or {}).get("centre") or {}).get("rule") if isinstance(full.get("forecast"), dict) else None
+            if drawn in TRENDING_CENTRES:               # a trend rule chosen by the pack's own tilt, not named in the call
+                return drawn
             centre = (h.get("args") or {}).get("centre", "timesfm")
             return centre if isinstance(centre, str) else None
     return None

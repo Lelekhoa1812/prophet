@@ -99,7 +99,7 @@ def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
         if spans:
             out.append({"name": str(name), "spans": spans})
     return out
-ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre", "season"} | CONTROL_ARGS
+ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre", "season", "tilt"} | CONTROL_ARGS
 # Every simple rule backtest_series can name as best, so the pack can deliver the one that won (live retail: the backtest's
 # best rule was mean_last_season, the pack refused it, and the planner fell back to naive). "blend" is the equal-weight
 # blend of TimesFM and one of those rules, delivered only when this tool's backtest says it wins (see _blend_centre).
@@ -114,7 +114,8 @@ GLOBAL_NOTE = {"global_gbm": "Centre line from one gradient-boosted model traine
                                "backtest). The range is the average of the two bands."}
 GLOBAL_ITEM_NOTE = {"global_gbm": "centre: one model trained on all series together",
                     "global_blend": "centre: equal blend of TimesFM 3 and one model trained on all series together"}
-RULE_TEXT = {"naive": "the last value repeated", "drift": "the average historical change extended",
+RULE_TEXT = {"damped_trend": "a damped trend fitted to the history", "recent_drift": "the recent average change extended",
+             "naive": "the last value repeated", "drift": "the average historical change extended",
              "seasonal_naive": "the value one season back repeated", "mean_last_season": "the average of the last season"}
 
 
@@ -142,6 +143,10 @@ def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
     if centre and centre.get("rule") == "blend":
         return _blend_note(centre)
+    if centre and centre.get("rule") in ("damped_trend", "recent_drift"):
+        control = _method_note(config, None)
+        return (f"Centre line: {RULE_TEXT[centre['rule']]}. The line from the model was flat, so a trend rule was tried and "
+                f"delivered: {centre['reason']}. The range is the model's band, recentred on it. {control}")
     if centre:
         rule = RULE_TEXT[centre["rule"]] + (f" (season {centre['season']})" if centre.get("season") else "")
         # The pack cannot see the backtest, so it says only what it was asked to do (audit item 21).
@@ -319,7 +324,7 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     centre = args.get("centre", "timesfm")
     if centre not in CENTRES:
         raise ValueError(f"centre must be one of {list(CENTRES)}")
-    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season")}, key)
+    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season", "tilt")}, key)
     if "series" in fc:
         fc = next(iter(fc["series"].values()))
     values = [float(v) for v in named[0][1]]
@@ -329,6 +334,11 @@ def _run(args: dict, key: str) -> dict[str, Any]:
         fc = _blend_centre(fc, values, args)
     elif centre != "timesfm":
         fc = _centre(fc, values, centre, _season_arg(args))
+    if (args.get("tilt", True) is not False and not fc.get("median_point")
+            and (fc.get("health") or {}).get("verdict") != "flat_unexpected"):     # a flat line over a repeating history is a cycle the forecast missed, not a missing trend
+        from prophet_agent.forecast.direction import tilt
+        fc = tilt(fc, values)          # a flat centre gets the best-supported direction, or says why it has none
+    fc = _positive_band(fc, values)
     fc = _floor_at_zero(fc, values)
     hist_dates = run_dates(args, named[0][0])
     if hist_dates is not None and len(hist_dates) != len(values):
@@ -462,7 +472,7 @@ def _panel(args: dict, named: list[tuple[str, Any]], key: str) -> dict[str, Any]
     global_mode = centre_arg if isinstance(centre_arg, str) and centre_arg in GLOBAL_CENTRES else None
     rules = {} if global_mode else _panel_centres(centre_arg, names)
     title = str(args.get("title", "Forecast"))[:MAX_TITLE] or "Forecast"
-    fcs = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season")}, key)["series"]
+    fcs = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season", "tilt")}, key)["series"]
     horizon = len(next(iter(fcs.values()))["point"])
     pooled, fit_info = {}, {}
     if global_mode:
@@ -630,6 +640,10 @@ def observe(result: dict) -> dict:
         out["window"] = _window(result["forecast"])
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
+    if result["forecast"].get("tilt_check"):      # the centre was flat: what trend rules were tried, and whether one was delivered
+        tc = result["forecast"]["tilt_check"]
+        out["tilt_check"] = {"adopt": tc.get("adopt"), "rule": tc.get("rule"), "reason": tc.get("reason"),
+                             "tried": {k: v.get("result") for k, v in (tc.get("tried") or {}).items()}}
     if isinstance(result["forecast"].get("centre"), dict):
         # The centre the pack draws. The gate reads it to judge baseline_compared; _compact drops it. The blend's evidence is
         # the backtest behind the choice and is left out of the observation to keep it short.
@@ -644,6 +658,37 @@ def _total(fc: dict) -> float | None:
         return round(float(sum(float(v) for v in fc["point"])), 2)
     except (KeyError, TypeError, ValueError):
         return None
+
+
+BAND_FLOOR_SHARE = 0.25     # a lower quantile under this share of the centre means the additive band is too wide for a positive series
+
+
+def _positive_band(fc: dict, values: list[float]) -> dict:
+    """For a strictly positive history (a price, a rate), a lower quantile that falls to a small share of the centre line is
+    rebuilt in logarithms: each lower quantile is the centre squared over the matching upper quantile, so the band is symmetric
+    in ratio and stays above zero. The upper quantiles are not changed.
+
+    Motivation vs Logic
+    Motivation (owner review of round 14 charts, 2026-11-27): the NVDA band reached zero from the 29th day, a flat floor under
+    a price that has not been near it. An additive width on a price is not a range anyone can use.
+    Logic: only when min(history) > 0 and some step's 10 percent quantile is under BAND_FLOOR_SHARE of its centre. Recorded
+    in ``band_shape`` so the observation and the pack's note say what was changed.
+    """
+    import numpy as np
+    if not values or min(values) <= 0:
+        return fc
+    point = np.asarray(fc["point"], dtype=float)
+    q = fc["quantiles"]
+    if not (point > 0).all() or not (np.asarray(q["0.1"], dtype=float) < BAND_FLOOR_SHARE * point).any():
+        return fc
+    out = dict(q)
+    for lvl in ("0.1", "0.2", "0.3", "0.4"):
+        mirror = f"{round(1 - float(lvl), 1):.1f}"
+        if mirror in q:
+            upper = np.maximum(np.asarray(q[mirror], dtype=float), point)
+            out[lvl] = [round(float(v), 4) for v in point * point / upper]
+    return {**fc, "quantiles": out, "band_shape": {"log_symmetric": True,
+            "reason": "the additive lower band fell to under a quarter of the centre line on a series that stays positive"}}
 
 
 def _floor_at_zero(fc: dict, values: list[float]) -> dict:
@@ -670,7 +715,11 @@ def _floor_at_zero(fc: dict, values: list[float]) -> dict:
 
 def _floor_note(fc: dict) -> str:
     """The pack's note for a floored forecast, in words a reader can check against the file."""
+    shape = (" The lower range is symmetric in ratio with the upper (the additive range would have reached zero)."
+             if (fc.get("band_shape") or {}).get("log_symmetric") else "")
     f = fc.get("floor") or {}
+    if shape and not f.get("applied"):
+        return shape
     if not f.get("applied"):
         return ""
     return (f" Forecast days below zero: {f['days_below_zero']} (lowest raw day {f['raw_min_point']:,}). The history never goes "
