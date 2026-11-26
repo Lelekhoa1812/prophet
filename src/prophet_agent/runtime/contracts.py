@@ -19,7 +19,7 @@ import numbers
 import json
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from prophet_agent.forecast.timesfm import nonnegative_domain
 from prophet_agent.runtime import grounding
@@ -2283,6 +2283,92 @@ _AHEAD_WORDS = re.compile(r"\b(?:forecasts?|window|horizon|ahead|next|predict\w*
 _SPAN_END = re.compile(r"(?:\bto\b|\bthrough\b|\buntil\b|\bending\b|[–—]|\s-\s)\s*(\d{4}-\d{2}-\d{2})")
 
 
+_STRENGTH_CLAIM = re.compile(r"\b(?:cycle|seasonal(?:ity)?|season)\b[^.;\n]{0,40}?\bstrength\s*(?:of\s*|=\s*|:\s*|~\s*)?(\d?\.\d+)"
+                             r"|\bstrength\s*(?:of\s*|=\s*|:\s*|~\s*)?(\d?\.\d+)[^.;\n]{0,40}?\b(?:cycle|seasonal|season)", re.I)
+_OUTLIER_CLAIM = re.compile(r"\boutliers?\b[^.;\n]{0,25}?(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%[^.;\n]{0,25}?\boutliers?\b", re.I)
+
+
+def _keyed_values(obj: Any, key_test: Callable[[str], bool], out: list[float], depth: int = 0) -> None:
+    """Every number kept under a key that passes key_test, anywhere in a tool result."""
+    if depth > 8:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if key_test(str(k)) and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                out.append(float(v))
+            elif key_test(str(k)) and isinstance(v, dict):
+                _keyed_values(v, lambda _k: True, out, depth + 1)
+            else:
+                _keyed_values(v, key_test, out, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj[:400]:
+            _keyed_values(v, key_test, out, depth + 1)
+
+
+def _measured(obs: list, run_root, key_test: Callable[[str], bool], word: str = "") -> list[float]:
+    """Values kept under matching keys, and numbers printed within a few words after ``word`` in tool output text (a
+    helper that prints "cycle_strength 0.927" in stdout measured it too). Numbers the model typed into its own code are
+    not counted (grounding._typed_numbers)."""
+    vals: list[float] = []
+    typed = grounding._typed_numbers(obs) if word else set()
+    for h in with_delegated(obs):
+        if isinstance(h, dict) and h.get("kind") == "tool" and not h.get("error"):
+            for res in (h.get("full"), h.get("result")):
+                _keyed_values(res, key_test, vals)
+                if word and res is not None:
+                    text = grounding._as_text(res).replace("\\n", "\n")
+                    for m in re.finditer(word + r"[^\n]{0,40}", text, re.I):
+                        vals.extend(float(t.replace(",", "")) for t in re.findall(r"(?<![\w.])\d+(?:\.\d+)?", m.group(0))
+                                    if t not in typed)
+    for f in _saved_scan_findings(obs, run_root) or []:
+        _keyed_values(f.get("evidence"), key_test, vals)
+    return vals
+
+
+def _near_written(token: str, values: list[float], scale: float = 1.0) -> bool:
+    x = float(token)
+    dec = len(token.split(".")[1]) if "." in token else 0
+    tol = 0.5 * 10 ** -dec + 1e-9
+    return any(abs(v * scale - x) <= tol for v in values)
+
+
+def _named_measures(text: str, obs: list, run_root) -> list[dict]:
+    """Blocks a cycle strength or an outlier share the tools never measured.
+
+    Motivation: panel round 11 audit. AUUNEMP: "moderate annual cycle (strength 0.34)" where the scan measured seasonal
+    strength 0.0 and the forecast found no cycle, and "outliers: 1.7% of points" where the scan measured 4.4% (Hampel) and
+    5.6%; both numbers were typed into the model's own ledger text and passed because 0.34 and 1.7 occur elsewhere.
+    Logic: a strength written next to cycle or season must be a value kept under a key with "strength" in its name; an
+    outlier percentage must be a value kept under a "share" key (as a fraction) or a key with "outlier" in it.
+    """
+    checks: list[dict] = []
+    if not text:
+        return checks
+    strengths = None
+    for m in _STRENGTH_CLAIM.finditer(text):
+        token = m.group(1) or m.group(2)
+        strengths = strengths if strengths is not None else _measured(obs, run_root, lambda k: "strength" in k.lower(),
+                                                                      "strength")
+        if strengths and not _near_written(token, strengths):
+            checks.append(_check("answer_measures_match", False,
+                                 f"the answer gives a cycle strength of {token}, but no tool measured it (measured strengths: "
+                                 f"{', '.join(f'{v:.2f}' for v in sorted(set(strengths))[:6])}); give a measured value"))
+            break
+    shares = None
+    for m in _OUTLIER_CLAIM.finditer(text):
+        token = m.group(1) or m.group(2)
+        shares = shares if shares is not None else _measured(
+            obs, run_root, lambda k: "share" in k.lower() or "outlier" in k.lower() or k.lower() in ("hampel", "stl_remainder"),
+            "outlier")
+        if shares and not (_near_written(token, shares, 100.0) or _near_written(token, shares)):
+            checks.append(_check("answer_measures_match", False,
+                                 f"the answer gives an outlier share of {token}%, but the scan measured "
+                                 f"{', '.join(f'{v:.1%}' for v in sorted(set(v for v in shares if v <= 1))[:4])}; give "
+                                 "the measured share"))
+            break
+    return checks
+
+
 def _matches_value(token: str, value: float) -> bool:
     """True when a written figure is the value at its own rounding, or the value as a percentage."""
     x = float(token.replace(",", ""))
@@ -2736,13 +2822,15 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
 
     checks.extend(_scan_contradictions(text, obs, run_root))
     checks.extend(_latest_and_end(text, obs))
+    checks.extend(_named_measures(text, obs, run_root))
 
+    # Blocks since panel round 11: as a warning, causes from memory (COVID, recessions, "Pacific regime shift") reached
+    # four answers the audit marked not clean. The composer rewrite removes the cause or cites the passage that gives it.
     causes = grounding.uncited_causes(text)
     if causes:
         checks.append(_check("answer_causes_cited", False,
                              f"the answer attributes a shift to a cause with no research source id or test ({causes[0][:160]}); "
-                             "cite the S-id of a research passage or the control_lab test, or say the shift is unexplained",
-                             "warn"))
+                             "cite the S-id of a research passage or the control_lab test, or say the shift is unexplained"))
 
     reconciled = check_ledger_answer(text, obs, run_root)
     if reconciled is not None:

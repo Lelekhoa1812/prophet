@@ -291,3 +291,68 @@ def test_a_question_the_request_asks_for_is_a_checklist_item():
     done = contracts.progress([{"kind": "ask_user", "questions": [{}], "answers": {"q": "a"}}], asks=True)
     assert any("ask the person" in it["item"] and it["status"] == "done" for it in done)
     assert not any("ask the person" in it["item"] for it in contracts.progress([]))
+
+
+def _sandbox(code: str, stdout: str) -> dict:
+    return {"kind": "tool", "tool": "sandbox_python", "args": {"code": code}, "result": {"stdout": stdout}}
+
+
+# Round 11 (AUUNEMP): "strength 0.34" and "1.7% outliers" were typed into a ledger line; the sandbox printed the ledger, so
+# the numbers came back as tool output while the scan had measured 0.0 and 4.4 %.
+def test_a_number_the_model_typed_into_its_code_is_not_evidence():
+    seen = {"kind": "tool", "tool": "scan_series", "result": {"missing": 3141}}
+    code = 'L.add("seasonal strength 0.34, outliers 1.7%, 3141 days filled")\nprint(L.render())'
+    hist = [seen, _sandbox(code, "seasonal strength 0.34, outliers 1.7%, 3141 days filled")]
+    typed = grounding._typed_numbers(hist)
+    assert {"0.34", "1.7"} <= typed and "3141" not in typed            # 3141 was seen before the code typed it
+    observed = " ".join(grounding._observed(hist))
+    assert "0.34" not in observed and "3141" in observed
+
+
+def test_a_cycle_strength_or_outlier_share_no_tool_measured_blocks():
+    scan = {"kind": "tool", "tool": "scan_series",
+            "result": {"seasonality": {"strength": 0.0}, "outliers": {"hampel": {"share": 0.044}}}}
+    text = "A moderate annual cycle (strength 0.34). Outliers: 1.7% of points."
+    names = [c["detail"] for c in contracts._named_measures(text, [scan], None)]
+    assert len(names) == 2 and "0.34" in names[0] and "1.7%" in names[1]
+    good = "No cycle (seasonal strength 0.00). Outliers: 4.4% of points."
+    assert contracts._named_measures(good, [scan], None) == []
+
+
+def test_a_strength_printed_by_a_helper_counts_as_measured():
+    run = _sandbox("r = pl.seasonality(s)\nprint(r)", "cycle_strength 0.927 at lag 12")
+    assert contracts._named_measures("A clear cycle with strength 0.93.", [run], None) == []
+
+
+# Round 11 (GISTEMP): "period ~12 months" where the forecast measured 24 passed the cycle check.
+def test_an_approximate_period_is_still_a_period():
+    assert grounding.claimed_periods("A clear annual cycle (period ~12 months).")[0][0] == 12
+    assert grounding.claimed_periods("seasonal period of about 7 days")[0][0] == 7
+
+
+# Round 11 (NBA): the view held the named teams only and the answer said playoff odds "range from 72% (Lakers)" while an
+# unnamed team had 73.5 %.
+def test_the_simulation_view_names_the_extremes_over_every_team():
+    rows = [_row(f"T{i}", i) for i in range(30)]
+    rows[25]["playoff"] = 0.735
+    rows[3]["playoff"] = 0.01
+    paths = {f"T{i}": [] for i in range(10, 24)}
+    view = observe_simulate({"teams": rows, "points_paths": paths})
+    ext = view["all_teams_extremes"]
+    assert ext["playoff"] == [["T25", 0.735], ["T3", 0.01]]
+    assert ext["expected_final"] == [["T0", 46.4], ["T29", 17.4]]
+    assert len(json.dumps(view, separators=(",", ":"))) <= VIEW_BUDGET
+    assert "all_teams_extremes" not in observe_simulate({"teams": rows[:4], "points_paths": {}})
+
+
+# Round 11 (GISTEMP, AUUNEMP): causes from memory written as a gloss, with no "due to", passed as warnings.
+@pytest.mark.parametrize("text, flagged", [
+    ("A level shift around 1979 (Pacific regime shift / satellite era) is kept.", True),
+    ("One level shift after the COVID lockdown in April 2020.", True),
+    ("One level shift (2020-03-23), magnitude +2.1 points.", False),
+    ("No level shifts during the pandemic period were detected.", False),
+    ("A regime break (e.g., oil spike, tariff shock) would invalidate the range.", False),
+    ("The level shift after the 2020 lockdown matches the RBA statement in S2.", False),
+])
+def test_an_event_glossed_next_to_a_shift_is_a_cause(text, flagged):
+    assert bool(grounding.uncited_causes(text)) is flagged

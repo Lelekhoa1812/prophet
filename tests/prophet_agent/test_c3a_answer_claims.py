@@ -104,11 +104,11 @@ def test_a_level_shift_count_the_scan_does_not_hold(tmp_path, scopes, severity):
     assert len(bad) == 1 and bad[0]["severity"] == severity
 
 
-def test_a_causal_attribution_with_no_source_or_test_is_a_warning():
+def test_a_causal_attribution_with_no_source_or_test_blocks():
     checks = contracts.check_answer("The level shifts correspond to known oil-market regimes, such as the 2022 energy crisis.",
                                     [_forecast(), _backtest()])
     bad = _failing(checks, "answer_causes_cited")
-    assert len(bad) == 1 and bad[0]["severity"] == "warn"
+    assert len(bad) == 1 and bad[0]["severity"] == "block"           # a warning since C3a; blocks since panel round 11
 
 
 def test_a_causal_attribution_that_cites_a_research_source_passes():

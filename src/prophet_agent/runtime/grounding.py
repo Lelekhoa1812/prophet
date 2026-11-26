@@ -199,17 +199,97 @@ def _as_text(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(", ", ": "), ensure_ascii=False, default=str)
 
 
+def _string_literals(code: str) -> list[str]:
+    """The text of every string literal in Python code, with the literal parts of f-strings (not their computed fields)."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return [m[1] for m in re.findall(r"([\"'])((?:(?!\1).){1,400})\1", code)]
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append(node.value)
+    return out
+
+
+def _typed_numbers(history: list) -> set[str]:
+    """Numbers the model typed inside string literals of its own sandbox code (a ledger finding written as "seasonal strength
+    0.34") that no earlier tool output held, across the run, sub-agents included.
+
+    Motivation: panel round 11 audit. AUUNEMP's answer gave "strength 0.34" and "1.7% outliers", and CO2's five break dates;
+    each was a number the model wrote into a Ledger.add text. The sandbox printed the ledger, so the number came back as
+    "tool output" and passed the grounding check, while the scan had measured 0.0, 4.4% and other dates. A number the code
+    only echoes from its own text is the model's claim, not a measurement. A number copied from an earlier tool output (the
+    3,141 missing days prepare_series printed, written again into a ledger line) is not typed: it was seen first.
+    """
+    out: set[str] = set()
+    seen: list[str] = []
+    for h in _flat(history):
+        code = (h.get("args") or {}).get("code") if h.get("tool") == "sandbox_python" else None
+        if isinstance(code, str):
+            before = _number_keys(" ".join(seen))
+            for text in _string_literals(code):
+                out.update(t for t in _figures_in_text(text)
+                           if not _YEAR.fullmatch(t) and _number_key(t) not in before)
+        for key in ("result", "full"):
+            if key in h:
+                seen.append(_as_text(h[key]))
+        if h.get("kind") in ("ask_user", "evaluator_question") and "answers" in h:
+            seen.append(_as_text(h["answers"]))
+    return out
+
+
+def _flat(history: list) -> list[dict]:
+    """Tool observations and answers in order, with a sub-agent's evidence in place."""
+    out: list[dict] = []
+    for h in history:
+        if not isinstance(h, dict):
+            continue
+        if h.get("kind") == "subagent":
+            out.extend(_flat(h.get("evidence") or []))
+        elif h.get("kind") in ("tool", "ask_user", "evaluator_question"):
+            out.append(h)
+    return out
+
+
+def _number_key(token: str) -> str:
+    try:
+        return repr(float(token.replace(",", "")))
+    except ValueError:
+        return token
+
+
+def _number_keys(text: str) -> set[str]:
+    return {_number_key(t) for t in _figures_in_text(text)}
+
+
+def _figures_in_text(text: str) -> list[str]:
+    return re.findall(r"(?<![\w.])\d+(?:,\d{3})*(?:\.\d+)?(?![\w.]*\d)", text or "")
+
+
+def _scrubbed(text: str, typed: set[str] | None) -> str:
+    """Evidence text with the model's typed numbers blanked, when the result is sandbox output that may echo them."""
+    if not typed:
+        return text
+    pattern = re.compile(r"(?<![\w.])(?:" + "|".join(re.escape(t) for t in sorted(typed, key=len, reverse=True))
+                         + r")(?![\w]|\.\d)")
+    return pattern.sub(" ", text)
+
+
 def _observed(history: list):
     """What the run observed: tool results, the person's answers, and a sub-agent's own tool evidence. Arguments,
     rationale, the planner's words and a sub-agent's written answer are never yielded: the written answer is a claim
     made by the model, so a figure in it is checked against tool results, not accepted because the model wrote it
     (audit 2026-11-22, item 1)."""
+    typed = _typed_numbers(history)
     for h in history:
         kind = h.get("kind")
         if kind == "tool" and "result" in h:
-            yield _as_text(h["result"])
+            scrub = typed if h.get("tool") == "sandbox_python" else None
+            yield _scrubbed(_as_text(h["result"]), scrub)
             if "full" in h:              # what the tool really returned, before its summary cut it (round 4, live panels)
-                yield _as_text(h["full"])
+                yield _scrubbed(_as_text(h["full"]), scrub)
         elif kind in ("ask_user", "evaluator_question") and "answers" in h:
             yield _as_text(h["answers"])
         elif kind == "subagent":
@@ -359,7 +439,9 @@ def negated(unit: str, start: int) -> bool:
 
 _CYCLE_CLAIMS = (
     # No comma between the word and the number: "weekly cycle, 105 cycles in history" counts cycles, it is not a length.
-    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\s{0,2}(?:\(|of\s+|:)?\s{0,2}(\d{1,3})[- ](?:day|step|period)?\b", re.I),
+    # "period ~12 months" (round 11, GISTEMP, where the measured period was 24): an approximate length is still a claim.
+    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\s{0,2}(?:\(|of\s+|:)?\s{0,2}"
+               r"(?:~\s?|about\s+|approximately\s+|roughly\s+|around\s+)?(\d{1,3})[- ](?:day|step|period)?\b", re.I),
     # Only a space, a dash or a closing bracket between: "horizon 14 days, weekly seasonality" names a horizon, not a cycle.
     re.compile(r"\b(\d{1,3})[- ](?:day|step|period)s?\)?[\s-]{1,2}(?:weekly|cycles?|seasonal|seasonality|season|pattern|periodic|periodicity)\b", re.I),
     # "season=252" quotes an argument a tool was given, not a claim about the data (live 1969cd11), so "=" is not read.
@@ -588,10 +670,33 @@ _SHIFT_WORD = re.compile(r"\b(?:level[- ]shifts?|shifts?|breaks?|changepoints?|r
 _CITED = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b", re.I)
 
 
+# A named event glossed next to a shift: "breaks (Pacific regime shift / satellite era)", "a level shift after the COVID
+# lockdown", "outliers during the 2008 recession". Panel round 11 (GISTEMP, AUUNEMP): causes from memory with no cue word.
+_EVENT = re.compile(r"\b(?:covid|pandemic|lockdowns?|recessions?|gfc|financial crisis|crisis|wars?|invasion|el ni[nñ]o|"
+                    r"la ni[nñ]a|enso|regime shift|satellite era|warming|eruptions?|volcan\w*|tariffs?|stimulus|"
+                    r"rate (?:hikes?|cuts?)|elections?|strikes?|mergers?|stock split|earnings|halving|policy change|"
+                    r"reopening|shutdowns?|hurricanes?|droughts?|heatwaves?|bushfires?)\b", re.I)
+_EVENT_GLOSS = re.compile(r"\([^()]{0,80}\)|\b(?:after|during|following|around|amid|with)\s+(?:the\s+)?[^.;,()]{0,50}", re.I)
+
+
+def _event_glossed(unit: str) -> bool:
+    """Whether a named event sits in a bracket or an after/during phrase within a few words after a shift word."""
+    for m in _SHIFT_WORD.finditer(unit):
+        if negated(unit, m.start()):
+            continue
+        tail = unit[m.end(): m.end() + 90]
+        for g in _EVENT_GLOSS.finditer(tail):
+            # "a regime break (e.g., oil spike, tariff shock) would invalidate the range" names a risk, not a cause.
+            if g.start() <= 40 and _EVENT.search(g.group(0)) and not re.match(r"\(\s*(?:e\.g\.|for example|such as)", g.group(0), re.I):
+                return True
+    return False
+
+
 def uncited_causes(answer: str) -> list[str]:
     """Sentences that attribute a shift, break, spike or outlier to a cause, with no research source id (S1, S2 ...) and no
-    test named in the same sentence."""
-    return [u.strip() for u in sentences(answer) if _CAUSE.search(u) and _SHIFT_WORD.search(u) and not _CITED.search(u)]
+    test named in the same sentence: by a cue word ("due to", "reflects") or by a named event glossed next to it."""
+    return [u.strip() for u in sentences(answer) if _SHIFT_WORD.search(u) and not _CITED.search(u)
+            and (_CAUSE.search(u) or _event_glossed(u))]
 
 
 # A method claim names a treatment and a verb of testing. Each treatment has the words a call that runs it would carry in its

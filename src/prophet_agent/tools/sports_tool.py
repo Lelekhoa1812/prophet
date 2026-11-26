@@ -163,6 +163,30 @@ def team_table(rows: list[dict]) -> dict:
     return {"columns": cols, "rows": out}
 
 
+def extremes(rows: list[dict]) -> dict:
+    """The highest and lowest expected_final and probability over every team row, as {column: [[team, max], [team, min]]}.
+
+    Motivation: panel round 11 (NBA): the view held the 14 teams the call named, and the answer said playoff probabilities
+    "range from 72% (Lakers)", while an unnamed team (Spurs) had 73.5 %. A claim across teams needs every team's extremes.
+    """
+    out: dict = {}
+    cols: list[str] = []
+    for r in rows:
+        for k, v in r.items():
+            if k not in ("team", "current", "final", *SKIP_COLUMNS, *cols) and isinstance(v, (int, float)) \
+                    and not isinstance(v, bool) and (k == "expected_final" or 0.0 <= v <= 1.0):
+                cols.append(k)
+    for c in cols:
+        vals = [(r.get(c), str(r.get("team"))) for r in rows if isinstance(r.get(c), (int, float))
+                and not isinstance(r.get(c), bool)]
+        if len(vals) < 2:
+            continue
+        hi, lo = max(vals), min(vals)
+        out[c] = [[hi[1], _cell(round(hi[0], 1) if c == "expected_final" else hi[0])],
+                  [lo[1], _cell(round(lo[0], 1) if c == "expected_final" else lo[0])]]
+    return out
+
+
 def _size(view: dict) -> int:
     return len(json.dumps(view, ensure_ascii=False, separators=(",", ":")))
 
@@ -201,6 +225,12 @@ def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dic
                    "probabilities), the backtest verdicts and points_path_summary ([game, median, p10, p90] every tenth "
                    "unplayed game and the last); do not page through the full result. Do not sum ranges across teams.")
     paths = [(t, compact_path(paths_all[t], every=10)) for t in [r.get("team") for r in shown] if t in paths_all][:VIEW_PATHS]
+    if len(shown) < len(rows):
+        ext = extremes(rows)
+        if ext:
+            out["all_teams_extremes"] = ext
+            out["note"] += (" all_teams_extremes gives, over every team (named or not), the highest and lowest of each "
+                            "probability and of expected_final as [team, value]; a range or a leader across teams uses it.")
     left_out: list[str] = []
     while True:
         out["teams"] = team_table(shown)
