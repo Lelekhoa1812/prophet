@@ -517,3 +517,11 @@ def test_a_probability_under_a_legend_line_is_checked():
             "- San Antonio Spurs: 15 -> **46**, 74%\n- Boston Celtics: 12 -> 43, 46%")
     assert contracts._team_probabilities(text, [sim])
     assert contracts._team_probabilities(text.replace("74%", "73%"), [sim]) == []
+
+
+# Round 13 audit (NVDA): a variance change and a trend bend reported as scan findings; the scan has no such check.
+def test_a_scan_category_the_scan_does_not_have_is_invented():
+    findings = [{"id": "changepoints.level_shift"}, {"id": "outliers.share"}]
+    text = "- 7 scan findings: 3 level shifts, 2 outliers, 1 variance change, 1 trend bend."
+    assert contracts._invented_categories(text, findings)[0] == "variance change"
+    assert contracts._invented_categories("A regime change would widen the variance.", findings) is None

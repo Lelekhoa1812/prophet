@@ -2288,8 +2288,33 @@ def _scan_contradictions(text: str, obs: list, run_root) -> list[dict]:
                                  f"the answer places a level shift in {y} ({s[:160]}), but the saved scan's breaks are "
                                  f"{_finding_summary('level_shift', topics['level_shift'])}; use the scan's dates"))
     if not checks:
+        invented = _invented_categories(text, findings)
+        if invented:
+            checks.append(_check("answer_scan_consistent", False,
+                                 f"the answer reports a {invented[0]} among the scan's findings ({invented[1][:150]}), but the scan "
+                                 "has no such check and no tool reported one; list only what the scan found"))
+    if not checks:
         checks.append(_check("answer_scan_consistent", True, "the answer denies nothing the saved scan flagged"))
     return checks
+
+
+# Round 13 audit (NVDA): "7 scan findings: 3 level shifts, 2 outliers, 1 variance change, 1 trend bend". The scan reports
+# no variance or trend-change finding (its ids: changepoints.level_shift, outliers.share, gaps, calendar, seasonality,
+# stationarity, time, censoring, trend.strength), so those two were invented.
+_INVENTED = re.compile(r"\b(?:variance (?:changes?|shifts?|breaks?)|volatility (?:changes?|shifts?|breaks?|regimes?)|"
+                       r"trend (?:bends?|breaks?|changes?|kinks?)|heteroscedasticity)\b", re.I)
+_SCAN_CONTEXT = re.compile(r"\bscan\b|\bfindings?\b|\bdetected\b|\bflagged\b|\bledger\b", re.I)
+
+
+def _invented_categories(text: str, findings: list) -> tuple[str, str] | None:
+    ids = " ".join(str(f.get("id", "")) for f in findings if isinstance(f, dict))
+    if "variance" in ids or "trend.change" in ids:
+        return None
+    for unit in grounding.sentences(text):
+        m = _INVENTED.search(unit)
+        if m and _SCAN_CONTEXT.search(unit) and not grounding.negated(unit, m.start()):
+            return m.group(0), unit.strip()
+    return None
 
 
 _LATEST = re.compile(r"\b(?:latest|last|most recent)\s+(?:observed\s+|recorded\s+|actual\s+)?(?:value|reading|level|close|"
