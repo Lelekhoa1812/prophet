@@ -102,7 +102,22 @@ def test_octet_stream_with_a_binary_body_is_refused(serve):
         fetch.download(API, resolver=public_resolver)
 
 
-@pytest.mark.parametrize("content_type", ["text/html", "application/pdf", "image/png", "application/xml"])
+@pytest.mark.parametrize("content_type", ["text/html", "application/xhtml+xml; charset=utf-8"])
+def test_an_html_page_is_accepted_and_its_body_returned(serve, content_type):
+    # The page's tables are landed by html_landing; the download itself no longer refuses HTML.
+    page = b"<!doctype html><html><body><table><tr><td>a</td></tr></table></body></html>"
+    serve(lambda request: ok(page, content_type=content_type))
+    got = fetch.download(API, resolver=public_resolver)
+    assert got["bytes"] == page and got["content_type"] in fetch.HTML_TYPES
+
+
+def test_an_html_page_that_is_not_utf8_is_refused(serve):
+    serve(lambda request: ok(b"<html>\xff\xfe\x00</html>", content_type="text/html"))
+    with pytest.raises(fetch.DownloadError, match="not UTF-8"):
+        fetch.download(API, resolver=public_resolver)
+
+
+@pytest.mark.parametrize("content_type", ["application/pdf", "image/png", "application/xml"])
 def test_other_content_types_are_refused(serve, content_type):
     serve(lambda request: ok(b"<html>x</html>", content_type=content_type))
     with pytest.raises(fetch.DownloadError, match="is not allowed"):

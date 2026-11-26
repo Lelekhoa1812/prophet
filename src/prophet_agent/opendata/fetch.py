@@ -30,6 +30,8 @@ TEXT_TYPES = ("text/csv", "application/csv", "text/plain", "application/json", "
 # A generic binary type is accepted only when the body parses as CSV or JSON, or when it is a ZIP (an XLSX is a ZIP).
 # The ECB SDMX csvdata endpoint answers text/csv. OECD and ABS answer the SDMX CSV type above.
 SNIFF_TYPES = ("application/octet-stream",)
+# An HTML page is accepted; its data tables are landed by html_landing, not returned as the body.
+HTML_TYPES = ("text/html", "application/xhtml+xml")
 CONTAINER_TYPES = (
     "application/zip",
     "application/x-zip-compressed",
@@ -95,8 +97,8 @@ def _read(final_url: str, response: httpx.Response, *, max_bytes: int, deadline:
     if response.status_code != 200:
         raise DownloadError(f"HTTP {response.status_code}; only a 200 response is used")
     media = media_type(response.headers.get("content-type", ""))
-    if media not in TEXT_TYPES and media not in SNIFF_TYPES and media not in CONTAINER_TYPES:
-        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, ZIP or XLSX")
+    if media not in TEXT_TYPES and media not in SNIFF_TYPES and media not in CONTAINER_TYPES and media not in HTML_TYPES:
+        raise DownloadError(f"content type {media or '(none)'} is not allowed; use CSV, plain text, JSON, HTML, ZIP or XLSX")
     declared = response.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > max_bytes:
         raise DownloadError(f"the response is {int(declared)} bytes; the limit is {max_bytes}")

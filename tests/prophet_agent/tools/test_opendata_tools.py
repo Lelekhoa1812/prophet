@@ -178,7 +178,7 @@ def test_a_known_licence_key_is_recorded_and_an_unknown_one_is_refused(served, m
 
 
 @pytest.mark.parametrize("content_type, body, message", [
-    ("text/html", b"<html><body>a,b</body></html>", "content type"),
+    ("text/html", b"<html><body>a,b</body></html>", "no data table"),
     ("text/plain", b"<!doctype html><html>a,b</html>", "HTML"),
     ("text/plain", b"just words\nmore words\n", "numeric"),
     ("text/csv", b"a,b\n", "no data rows"),

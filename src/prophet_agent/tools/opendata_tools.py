@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from prophet_agent.datasets import DatasetStore, clean_name
-from prophet_agent.opendata import containers, fetch, sources
+from prophet_agent.opendata import containers, fetch, html_landing, sources
 from prophet_agent.opendata.store import download_to_dataset, preview
 from prophet_agent.runtime.runner import ArgumentRejected, Tool
 from prophet_agent.tools.sandbox_tool import SANDBOX_PYTHON_SPEC, make_run, sandbox_python_tool
@@ -199,7 +199,7 @@ def _web_name(url: str, name: str | None, fmt: str) -> str:
     return base if base.lower().endswith(suffix) else f"{base}{suffix}"
 
 
-def _existing_web(store: DatasetStore, url: str) -> dict | None:
+def _existing_web(store: DatasetStore, url: str, table_request: str | None = None) -> dict | None:
     if not store.root.is_dir():
         return None
     matches = []
@@ -209,47 +209,60 @@ def _existing_web(store: DatasetStore, url: str) -> dict | None:
         except KeyError:
             continue
         provenance = meta.get("provenance") or {}
-        if provenance.get("source") == "web" and provenance.get("url") == url:
+        if (provenance.get("source") == "web" and provenance.get("url") == url
+                and provenance.get("table_request") == table_request):
             matches.append(meta)
     return max(matches, key=lambda meta: meta["created"]) if matches else None
 
 
 def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
     def run(args: dict, _key: str) -> dict:
-        args = _arguments(args, {"url", "name", "licence_key"}, {"url"})
+        args = _arguments(args, {"url", "name", "licence_key", "table"}, {"url"})
         url = args["url"]
         if not isinstance(url, str) or not url.strip():
-            raise ArgumentRejected("url must be the https address of a CSV or JSON file")
+            raise ArgumentRejected("url must be the https address of a CSV, JSON or HTML file")
         url = url.strip()
         if urlsplit(url).scheme.lower() != "https":
             raise ValueError("url must start with https://")
         name = args.get("name")
         if name is not None and not isinstance(name, str):
             raise ArgumentRejected("name must be text")
+        table = args.get("table")
+        if table is not None and (isinstance(table, bool) or not isinstance(table, (int, str))):
+            raise ArgumentRejected("table must be a candidate index or a locator such as table[2] or __NEXT_DATA__:$.props")
         key = args.get("licence_key") or UNVERIFIED
         if not isinstance(key, str) or (key != UNVERIFIED and key not in KNOWN_LICENCE_KEYS):
             raise ValueError(f"licence_key must be {UNVERIFIED} or one of: {', '.join(sorted(KNOWN_LICENCE_KEYS))}")
         store = _store(ctx)
         _room(live)
-        existing = _existing_web(store, url)
+        table_request = None if table is None else str(table)
+        existing = _existing_web(store, url, table_request)
         if existing is not None:
             meta = dict(existing, preview=preview(store.path(existing["id"]).read_bytes(),
                                                   existing["provenance"]["format"]))
         else:
             fetched = fetch.download(url)          # refuses private addresses, redirects to them, and types or sizes it does not accept
-            body, media = _as_table(fetched)
-            fmt = _web_format(media, body)
-            table, fmt = _web_table(body, fmt)
-            provenance = {"source": "web", "format": fmt, "url": url, "final_url": fetched["final_url"],
-                          "content_type": fetched["content_type"], "retrieved_at": fetched["retrieved_at"],
-                          "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": key,
-                          "series_bound": False}
-            # The caller's name is not the series. The address supplies the working file name.
-            meta = dict(store.add(_web_name(url, None, fmt), body, provenance=provenance), preview=table)
+            if fetch.media_type(fetched["content_type"]) in fetch.HTML_TYPES:
+                # A page lands its best table (or the one named by table), with the other candidates listed on the result.
+                meta, _ = html_landing.land_html(fetched, store=store, name=_web_name(url, None, "csv"), url=url,
+                                                 licence_key=key, table=table)
+            else:
+                body, media = _as_table(fetched)
+                fmt = _web_format(media, body)
+                table_info, fmt = _web_table(body, fmt)
+                provenance = {"source": "web", "format": fmt, "url": url, "final_url": fetched["final_url"],
+                              "content_type": fetched["content_type"], "retrieved_at": fetched["retrieved_at"],
+                              "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": key,
+                              "series_bound": False, "table_request": None}
+                # The caller's name is not the series. The address supplies the working file name.
+                meta = dict(store.add(_web_name(url, None, fmt), body, provenance=provenance), preview=table_info)
         mount = _mount(ctx, live, meta)
         provenance = meta["provenance"]
         extra = {"source": "web", "url": provenance["url"], "final_url": provenance["final_url"],
                  "licence_key": provenance["licence_key"], "series_bound": False}
+        if provenance.get("html"):
+            extra["extraction"] = provenance["extraction"]
+            extra["other_tables"] = provenance["extraction"]["other_tables"]
         if isinstance(name, str) and name.strip():
             extra["caller_name_ignored"] = True
         return _result(meta, mount, extra)
@@ -280,14 +293,19 @@ DOWNLOAD_WEB_DATA_SPEC = {
     "name": "download_web_data",
     "title": "Web data download",
     "activity": "Downloading a web file",
-    "description": "Download one CSV, JSON, plain-text table, ZIP or workbook from an https address into the mission's "
-                   "files. The stored name comes from the address. A name you pass is ignored, and series_bound stays "
-                   "false until bind_series accepts the file. The full file is mounted at sandbox_file (in/<name>) for "
-                   "sandbox_python. Pages are refused: call web_fetch and extract_page_tables for those. Use this, not "
-                   "web_fetch, when the URL is the data file. Its licence_key is unverified unless a known key is given.",
-    "args": {"url": "https address of a CSV, JSON, plain-text, ZIP or workbook file",
+    "description": "Download one CSV, JSON, plain-text table, ZIP, workbook or HTML page from an https address into the "
+                   "mission's files. An HTML page lands its best data table (from its markup or its embedded JSON, such as "
+                   "__NEXT_DATA__) as CSV, with provenance; the result lists the other tables by index, header and row "
+                   "count, and table picks another. A page with no data table is refused: call web_fetch, then "
+                   "extract_page_tables. The stored name comes from the address. A name you pass is ignored, and "
+                   "series_bound stays false until bind_series accepts the file. The full file is mounted at sandbox_file "
+                   "(in/<name>) for sandbox_python. Use this, not web_fetch, when the URL is the data file or a page with "
+                   "a table. Its licence_key is unverified unless a known key is given.",
+    "args": {"url": "https address of a CSV, JSON, plain-text, ZIP, workbook or HTML file",
              "name": "optional; ignored. The stored name comes from the address",
-             "licence_key": f"optional known key ({', '.join(sorted(KNOWN_LICENCE_KEYS))}); leave out when unknown"},
+             "licence_key": f"optional known key ({', '.join(sorted(KNOWN_LICENCE_KEYS))}); leave out when unknown",
+             "table": "optional, for an HTML page: the index of a candidate (a whole number) or its locator, such as "
+                      "table[2] or __NEXT_DATA__:$.props.pageProps.standings; leave out for the best table"},
 }
 
 
