@@ -1141,3 +1141,49 @@ One of ten met (criterion M9-8: six of eight or more). Defects read from the sto
 - NVDA: the planner offered "Use synthetic data based on known NVDA price ranges" as an answer option.
 - NBA: 23 sandbox cells re-parsing one page, and the answer summed win-total ranges across teams.
 - SPX: a random-walk index got the flat_expected verdict and the answer missed the required level sentence.
+
+### Panel round 1 (measured, run 20261126-213734, API restarted on d6066ae, 2026-11-26)
+
+Same ten goals on the batch 1 build. First eight finished: CO2 completed; AUUNEMP, CPI, EPL, GISTEMP, NEM, NVDA and SPX
+partial. NVDA now reaches an answer from Nasdaq prices (baseline: stopped at a question). EPL landed the BBC table and
+a full results file from fixturedownload.com. Defects read from the stored runs:
+- Figure check false positives: the "27" of "2026-27" (GISTEMP), the day range of "2021-03-19-23" (SPX), "HTTP 403"
+  (AUUNEMP) and the citation list "[31, 33]" (NEM) were reported as unverified figures.
+- The entity guard refused a correct NVDA file because the Nasdaq address path gave "API" and "QUOTE" as rival tickers.
+- Yahoo answered 429 for ^GSPC and SPY, and the planner did not use FRED SP500.
+- SPX and CPI: with no data in the sandbox, cells built a placeholder or synthetic series (labelled as such; neither
+  run was reported as met).
+- CPI: three refusals for carrying a downloaded `in/` file that was already mounted.
+- EPL: the forecast carried each club's current points forward unchanged to game 38 and summed ranges across clubs; no
+  season model existed.
+- NVDA and SPX: the answer missed the level sentence that a flat_expected verdict requires.
+
+### Batch 2 (integration branch m9b2-integration, 2026-11-26)
+
+Seven sub-agent branches plus repairs from the two panel rounds:
+- **Sports.** `forecast/sports.py` and `simulate_season`: Dixon-Coles Poisson goals with time decay and the low-score
+  correction, Monte Carlo season simulation (points, title, top places, relegation), a win_loss mode for leagues
+  without draws, and a rolling backtest against equal odds, home rate and Elo. It reads an openfootball football.json
+  landed by `download_web_data`, football-data.co.uk columns, and `history` seasons that fit the ratings only.
+  Measured on the live 2026-27 en.1.json with 2025-26 as history (50 current matches; the file stops at 20 September):
+  Manchester City 45% and Arsenal 40% for the title; backtest over 161 matches, RPS 0.224 against 0.229 for equal odds
+  and 0.222 for Elo. The model does not beat Elo on this sample.
+- **Tables.** PDF tables through pdfplumber; a `#` header row is kept; HTML grids honour rowspan and colspan; a league
+  claim takes `expected_rows`, `expected_entities` or a results table, and a short table is refused with the missing
+  clubs named (synthetic fixtures).
+- **Pages and charts.** `find_in_page` searches a cached page; `web_fetch` lists a page's tables; chart series are
+  mounted for the same mission's sandbox. Page-level passages are no longer clipped to 500 characters.
+- **Claims.** A researcher's CLAIM lines are checked against the cached page text by literal membership, with no model,
+  as a ledger step. Questions that offer invented data and answers that use it in place of the real series are refused.
+- **Prices.** `forecast/price.py`: random walk, drift, EWMA and GJR-GARCH baselines on log prices with coverage and
+  Winkler scores; `backtest_series` states whether any method beat the random walk. Synthetic checks: no method beat
+  a zero-drift random walk; the drift won on a drifting series; EWMA 80% coverage 0.787.
+- **Harness.** Offline replay suite (`tests/prophet_agent/evals`, docs/prophet/EVALS.md) for the EPL and Nvidia
+  missions. It found the stall rule let the EPL re-parse run 14 times: each cell saved the same table under a new name.
+  Now a new name with content already written is not progress, and cells that print only rows already seen are a stale
+  run; the first stall fires within 4 repeats, and the rescue brief names the repeated step. Also: blank argument names
+  are dropped, query lists over eight are trimmed, an unknown licence key is stored as unverified, the level sentence is
+  added when the verdict is flat_expected, cells that build stand-in data for a real series are refused, mounted inputs
+  need no carry, and the figure check skips seasons, HTTP statuses, citations and date day ranges.
+- **Planner v28.** Routes leagues to `simulate_season`, PDFs to `download_web_data`, cached pages to `find_in_page`,
+  indexes to FRED, standings to table claims with counts, and forbids invented-data options.
