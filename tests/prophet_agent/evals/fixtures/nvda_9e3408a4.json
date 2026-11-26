@@ -263,6 +263,9 @@
  "answers": [
   {
    "Identify the": "Close"
+  },
+  {
+   "Data source": "Download from Yahoo Finance via a direct CSV link"
   }
  ],
  "results": [

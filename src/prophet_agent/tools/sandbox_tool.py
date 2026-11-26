@@ -227,7 +227,7 @@ def sandbox_python_tool(datasets: dict[str, Path] | None = None) -> Tool:
 
 
 _SPEC_TEXT = (
-    "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guardrailed sandbox: no network, no secrets, one "
+    "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guarded sandbox: no network, no secrets, one "
     "minute. pandas only: `pl` is prophet_lib, not polars (null_count, is_null, sort work). The person's uploaded files are in in/ (read-only). Import: `import prophet_lib as pl`, `import prophet_stats "
     "as ps`, `import prophet_scan as sc`. Unpack (value, report) helpers: `value, report = ...`. "
     "Entities that share dates are never summed silently: pass entity= and key=, or use pl.panel for all of them. "

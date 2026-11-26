@@ -174,6 +174,7 @@ def test_every_source_names_a_licence_key():
         "world_bank_pink_sheet": "world_bank",
         "fred": "fred",
         "gistemp_monthly": "nasa_giss",
+        "aemo_price_demand": "aemo",
     }
 
 
