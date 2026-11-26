@@ -1590,3 +1590,47 @@ What was changed (4ae90ae, 5276074 and the batch after it):
   last value, is a trend: verdict ok with median_path_note giving its start, end and change, not flat_expected.
 - The AEMO source title says timestamps are interval-ending, asks for at least six months, and names
   pl.build_series(..., freq='D', agg='mean'), which drops a partial first or last day.
+
+### Panel round 12 (measured, run 20261127-073714, API on a179888, planner v32, evaluator v12, composer v7, 2026-11-27)
+Four of ten completed by status (CO2, CPI, EPL, GISTEMP); AUUNEMP, NBA, NEM, NGSTORAGE, NVDA and SPX ended partial.
+**M9-8 is not met.** The independent read-only audit marked all four completed answers not clean.
+Why the six ended partial (each confirmed in its ledger):
+- AUUNEMP: the composer's claim rewrite dropped the level sentence that the finish had added, so the answer was refused
+  for lacking it.
+- NGSTORAGE: "used as downloaded (882 weekly points, 2010-01-01 to 2026-11-20)" was read as a value stated for the last
+  day ("was" followed later by the date).
+- NVDA: the pack's record keeps its horizon under config and window, so the baseline gate counted the 20-step and the
+  44-step backtest together. The first ranked naive best and the second drift, and the gate refused the 44-step pack on
+  each in turn.
+- SPX: FRED leaves market holidays empty; build_series(freq='D') added every weekend too (785 gaps), and save_series's
+  error did not say how to keep only the observed days, so the same save was retried seven times.
+- NEM: two AEMO months again (58 days), although the source title asks for six.
+- NBA: the call named ten teams from memory; the leaders (Spurs, Lakers, 76ers) were not among them, and the evaluator
+  refused "the top teams in each conference".
+Audit findings in the completed answers:
+- CO2: "ledger kept 5, filled 1" (3,141 days were filled); "no regime change detected" beside five kept level shifts;
+  held-out coverage of 80 % quoted without the tool's caveat that the windows chose the method.
+- CPI: a February 2027 release date one day off the BLS table (10 March, not 11); four breaks "kept because they reflect
+  real inflation episodes", where the scan asks whether each is a recording error; one interpolated month not disclosed.
+- EPL: top-four probability 87 % where the result holds 0.865; "official" for a third-party fixture site; a promotion and
+  relegation remark no source gives.
+- GISTEMP: "Annual cycle measured at 24 months" on a monthly series; "level shifts (e.g., post-1970s acceleration)" where
+  the breaks are 1936, 1987, 2001 and 2014, called "real climate regime changes"; an ENSO meaning added to a CPC quote
+  that does not carry it.
+What was changed (cf5318c and 871e353):
+- The baseline gate judges a forecast by the newest backtest at the shortest horizon that covers it, reading the horizon
+  from config or window. On the NVDA ledger it now accepts drift and refuses naive.
+- The level sentence, and a new caveat for optimistic held-out coverage, are re-applied after every composer rewrite. The
+  caveat is added when the answer quotes held-out coverage that calibrate_intervals marked as selected on the same windows.
+- A value is tied to the last day only when the verb is followed by a figure and then that day; counts ("882 weekly
+  points") are not values.
+- save_series names the fix when most gaps fall on weekends: build_series without freq, or s.dropna().
+- A one-month AEMO download returns a note naming the five earlier months to fetch.
+- The simulation view lists better_teams_not_named (unnamed teams above a named one) and drops every points path before
+  any named row. On the round 12 NBA result it shows all ten named teams and the Spurs, 76ers and four others.
+- A cycle called annual must be a year of the series' steps (12 for monthly; 365, 260 or 252 for daily) when the measured
+  period is longer than a year; "measured at 24 months" is read as a period; a shift date after "e.g." is read.
+- Shifts called "real", "genuine" or "actual" episodes, moves or regime changes, and a pronoun sentence after a shift
+  sentence ("They were kept because they reflect ..."), count as causes and need a source id or test.
+Not yet changed: a scheduled release date one day off in a section other than Outside context (CPI), a probability
+rounded the wrong way when the same figure appears elsewhere (EPL), and the count of filled days misreported in prose (CO2).
