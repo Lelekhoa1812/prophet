@@ -135,8 +135,12 @@ CREATE TABLE IF NOT EXISTS derived_versions (
 );
 """
 _ORGANISER_COLUMNS = {
-    "missions": {"title": "TEXT", "pinned": "INTEGER NOT NULL DEFAULT 0"},
-    "notebooks": {"pinned": "INTEGER NOT NULL DEFAULT 0"},
+    "missions": {"title": "TEXT", "pinned": "INTEGER NOT NULL DEFAULT 0",
+                 # Checkpoints (docs/prophet/fork_rewind_copy.md). A rewind flags the turns it drops with the rewind's id and
+                 # deletes nothing; a fork records the turn it was copied from. Readers that build a conversation skip flagged rows.
+                 "dropped_by": "TEXT", "forked_from": "TEXT"},
+    "notebooks": {"pinned": "INTEGER NOT NULL DEFAULT 0", "forked_from": "TEXT", "forked_at_seq": "INTEGER"},
+    "derived_versions": {"dropped_by": "TEXT"},
     # The profiling run's id, so deleting the notebook removes that run folder with the rest.
     "sources": {"run_id": "TEXT"},
 }
@@ -150,6 +154,22 @@ _MISSION_COLUMNS_V2 = {
     # The answer text while a free-text reply is still arriving. Not a step result: replay never reads it.
     "draft_text": "TEXT",
 }
+# One row per Rewind: which turn the conversation went back to, the text offered back as a draft, what was hidden, and
+# whether Undo has restored it. A quick forecast (no notebook) is recorded with its mission id as ``to_turn_id``.
+_DDL_REWINDS = """
+CREATE TABLE IF NOT EXISTS rewinds (
+  id TEXT PRIMARY KEY,
+  notebook_id TEXT,
+  to_turn_id TEXT NOT NULL,
+  to_seq INTEGER,
+  goal TEXT NOT NULL,
+  dropped_json TEXT NOT NULL,
+  tables_json TEXT NOT NULL DEFAULT '[]',
+  created REAL NOT NULL,
+  undone REAL
+);
+CREATE INDEX IF NOT EXISTS rewinds_by_notebook ON rewinds(notebook_id, created);
+"""
 ACTIVE = ("created", "running", "waiting_user")
 # A turn that is "created" with no lease has not been started yet. The sweep leaves it alone until it has waited this long
 # (round 6m): a fresh turn is about to start, and freeing its notebook would let a second turn begin beside it.
@@ -227,6 +247,7 @@ class Store:
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE missions ADD COLUMN {col} {decl}")
             self.conn.executescript(_DDL_V2)
+            self.conn.executescript(_DDL_REWINDS)
             # Organiser columns (sidebar title and pin) for quick forecasts and notebooks. Guarded, so older databases upgrade in place.
             for table, cols in _ORGANISER_COLUMNS.items():
                 present = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -290,11 +311,12 @@ class Store:
         with self._tx() as c:
             seq = None
             if notebook_id is not None:
-                busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND status IN (?,?,?)",
+                busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND dropped_by IS NULL AND status IN (?,?,?)",
                                  (notebook_id, *ACTIVE)).fetchone()
                 if busy:
                     raise NotebookBusy("this notebook is still working on the previous message")
-                seq = int(c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM missions WHERE notebook_id=?",
+                # Dropped turns keep their numbers; the next turn takes the number after the last one still in the conversation.
+                seq = int(c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM missions WHERE notebook_id=? AND dropped_by IS NULL",
                                     (notebook_id,)).fetchone()[0])
             c.execute("INSERT INTO missions (id, goal, status, budget_json, created, updated, notebook_id, seq, "
                       "parent_turn_id) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -542,7 +564,7 @@ class Store:
         """Delete every row of the ledger, children before parents, in one transaction. Returns the rows removed per table.
         The caller must have checked that no mission is running; the schema itself is kept."""
         order = ("events", "steps", "tool_calls", "questions", "agent_notes", "sources", "derived_versions", "derived_tables",
-                 "missions", "notebooks")
+                 "rewinds", "missions", "notebooks")
         with self._tx() as c:
             # Checked again here, inside the wipe's transaction: a mission that took a lease after the caller's check must
             # stop the wipe, not lose its ledger under it (round 6m).

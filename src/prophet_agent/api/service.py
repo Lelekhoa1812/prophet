@@ -19,9 +19,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, unreferenced_datasets
+from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, runs_still_named, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore
 from prophet_agent import mentions
+from prophet_agent.checkpoints import Checkpoints
 from prophet_agent.notebooks import Notebooks
 from prophet_agent.settings import Settings
 from prophet_agent.runtime.goal import GoalConfig, goal_program
@@ -66,6 +67,7 @@ class MissionService:
         self.tools_factory = tools_factory      # per-mission tools (they need the mission's files); None: use `tools`
         self.datasets = datasets or DatasetStore(Path(db_path).parent / "datasets")
         self.notebooks = Notebooks(self.store, self.datasets, Path(db_path).parent / "notebooks")
+        self.checkpoints = Checkpoints(self.store, self.notebooks)
         self.goal_cfg = goal_cfg or GoalConfig()
         self.model_service_wait_s = MODEL_SERVICE_WAIT_S   # 0 in tests
         self._sleep, self._clock = time.sleep, time.monotonic
@@ -182,6 +184,7 @@ class MissionService:
             run_ids = mission_run_ids(c, [mission_id])
             purge_missions(c, [mission_id])
             orphans = unreferenced_datasets(c, dataset_ids)
+            run_ids -= runs_still_named(c, run_ids)   # a fork may still use a run folder this forecast made
         # Files go after the commit: the run folder (outputs, copies of inputs) and any attached file nothing else uses.
         remove_runs(run_ids)
         remove_datasets(self.datasets.root, orphans)
@@ -197,7 +200,7 @@ class MissionService:
         self.notebooks.get(notebook_id)
         with self.store.lock:   # the shared connection is not safe to use from two request threads at once
             last = self.store.conn.execute(
-                "SELECT id FROM missions WHERE notebook_id=? ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
+                "SELECT id FROM missions WHERE notebook_id=? AND dropped_by IS NULL ORDER BY seq DESC LIMIT 1", (notebook_id,)).fetchone()
         # The notebook's provider rule is checked before any row is written. With every provider allowed this is the model as sent.
         chosen = self._allowed_model(self.get_sharing(notebook_id), model)
         budget = self.default_budget()
@@ -397,7 +400,10 @@ class MissionService:
         with self._lock:
             if self._busy(mission_id):
                 raise LeaseHeld(f"mission {mission_id} is already running")
-            program = self._resume_program(self.store.mission(mission_id))
+            mission = self.store.mission(mission_id)
+            if mission.get("dropped_by"):
+                raise ValueError("this question was removed by a rewind; undo the rewind to use it again")
+            program = self._resume_program(mission)
             self._exiting.discard(mission_id)
             # A unique owner per start: two runtimes that share an owner string would each pass the lease check.
             runtime = Runtime(self.store, owner=f"api-{uuid.uuid4().hex}")

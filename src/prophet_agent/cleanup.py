@@ -44,6 +44,24 @@ def mission_run_ids(c, mission_ids: Iterable[str]) -> set[str]:
     return found
 
 
+def runs_still_named(c, run_ids: Iterable[str]) -> set[str]:
+    """The run ids among these that some mission still in the ledger names. Call after the owner's rows are deleted.
+
+    A fork shares run folders with the turns it was copied from, so deleting one side must leave a folder the other still
+    uses. Each ledger column is searched once for each id."""
+    kept: set[str] = set()
+    for rid in dict.fromkeys(r for r in run_ids if RUN_ID.match(r)):
+        for table, column in _MISSION_LEDGER:
+            if c.execute(f"SELECT 1 FROM {table} WHERE {column} LIKE ? LIMIT 1", (f"%{rid}%",)).fetchone():
+                kept.add(rid)
+                break
+        else:
+            if c.execute("SELECT 1 FROM sources WHERE run_id=? LIMIT 1", (rid,)).fetchone() or \
+               c.execute("SELECT 1 FROM derived_versions WHERE lineage_json LIKE ? LIMIT 1", (f"%{rid}%",)).fetchone():
+                kept.add(rid)
+    return kept
+
+
 def unreferenced_datasets(c, dataset_ids: Iterable[str]) -> list[str]:
     """Dataset ids that no remaining source row or mission budget names. Call after the owner's rows are deleted."""
     orphans = []

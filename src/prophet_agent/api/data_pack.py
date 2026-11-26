@@ -123,7 +123,7 @@ def _table_entries(notebooks, notebook_id: str) -> list[tuple[str, Path]]:
     with notebooks.store.lock:
         rows = notebooks.store.conn.execute(
             "SELECT t.name, v.version, v.file_path FROM derived_versions v "
-            "JOIN derived_tables t ON t.id=v.table_id WHERE t.notebook_id=? ORDER BY t.name, v.version",
+            "JOIN derived_tables t ON t.id=v.table_id WHERE t.notebook_id=? AND v.dropped_by IS NULL ORDER BY t.name, v.version",
             (notebook_id,)).fetchall()
     entries = []
     for row in rows:

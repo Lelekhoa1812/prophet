@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, run_ids_in, unreferenced_datasets
+from prophet_agent.cleanup import mission_run_ids, remove_datasets, remove_runs, run_ids_in, runs_still_named, unreferenced_datasets
 from prophet_agent.datasets import DatasetStore, MAX_BYTES
 from prophet_agent.mentions import plain
 from prophet_agent.runtime.store import ACTIVE, Store, purge_missions
@@ -135,9 +135,9 @@ class Notebooks:
         with self.store.lock:
             rows = self.store.conn.execute(
                 "SELECT n.id, n.title, n.created, n.updated, n.pinned, "
-                "(SELECT COUNT(*) FROM missions m WHERE m.notebook_id=n.id) AS turns, "
+                "(SELECT COUNT(*) FROM missions m WHERE m.notebook_id=n.id AND m.dropped_by IS NULL) AS turns, "
                 "(SELECT COUNT(*) FROM sources s WHERE s.notebook_id=n.id AND s.removed=0) AS sources, "
-                "(SELECT status FROM missions m WHERE m.notebook_id=n.id ORDER BY seq DESC LIMIT 1) AS status "
+                "(SELECT status FROM missions m WHERE m.notebook_id=n.id AND m.dropped_by IS NULL ORDER BY seq DESC LIMIT 1) AS status "
                 "FROM notebooks n WHERE n.archived=0 ORDER BY n.pinned DESC, n.updated DESC LIMIT ?", (int(limit),)).fetchall()
         return [{**dict(r), "pinned": bool(r["pinned"])} for r in rows]
 
@@ -154,7 +154,7 @@ class Notebooks:
         if any(self._profilers[s].is_alive() for s in src_ids if s in self._profilers):
             raise ValueError("Prophet is still reading this notebook's files; try again in a moment")
         with self.store._tx() as c:
-            busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND status IN ('created','running','waiting_user')", (nid,)).fetchone()
+            busy = c.execute("SELECT 1 FROM missions WHERE notebook_id=? AND dropped_by IS NULL AND status IN ('created','running','waiting_user')", (nid,)).fetchone()
             if busy:
                 raise ValueError("Prophet is still working in this notebook; stop it first")
             mission_ids = [r[0] for r in c.execute("SELECT id FROM missions WHERE notebook_id=?", (nid,)).fetchall()]
@@ -164,11 +164,14 @@ class Notebooks:
             run_ids |= {r[0] for r in c.execute("SELECT run_id FROM sources WHERE notebook_id=? AND run_id IS NOT NULL", (nid,))}
             dataset_ids = [r[0] for r in c.execute("SELECT dataset_id FROM sources WHERE notebook_id=?", (nid,)).fetchall()]
             purge_missions(c, mission_ids)
+            c.execute("DELETE FROM rewinds WHERE notebook_id=?", (nid,))
             c.execute("DELETE FROM derived_versions WHERE table_id IN (SELECT id FROM derived_tables WHERE notebook_id=?)", (nid,))
             c.execute("DELETE FROM derived_tables WHERE notebook_id=?", (nid,))
             c.execute("DELETE FROM sources WHERE notebook_id=?", (nid,))
             c.execute("DELETE FROM notebooks WHERE id=?", (nid,))
             orphans = unreferenced_datasets(c, dataset_ids)
+            # A forked notebook shares run folders with the one it came from: keep any that a remaining turn still names.
+            run_ids -= runs_still_named(c, run_ids)
         # Files go after the commit, so a failed delete removes nothing from disk.
         remove_runs(run_ids)
         shutil.rmtree(self.root / nid, ignore_errors=True)
@@ -289,7 +292,8 @@ class Notebooks:
             rows = self.store.conn.execute(
                 "SELECT t.id, t.name, t.description, v.version, v.rows, v.columns_json, v.sha256, v.created, v.turn_id "
                 "FROM derived_tables t JOIN derived_versions v ON v.table_id=t.id "
-                "WHERE t.notebook_id=? AND v.version=(SELECT MAX(version) FROM derived_versions WHERE table_id=t.id) "
+                "WHERE t.notebook_id=? AND v.dropped_by IS NULL "
+                "AND v.version=(SELECT MAX(version) FROM derived_versions WHERE table_id=t.id AND dropped_by IS NULL) "
                 "ORDER BY t.created", (nid,)).fetchall()
         return [{**{k: r[k] for k in ("id", "name", "description", "version", "rows", "sha256", "created", "turn_id")},
                  "columns": json.loads(r["columns_json"])} for r in rows]
@@ -298,7 +302,7 @@ class Notebooks:
         with self.store.lock:
             rows = self.store.conn.execute(
                 "SELECT v.version, v.rows, v.columns_json, v.sha256, v.created, v.lineage_json, v.turn_id FROM derived_versions v "
-                "JOIN derived_tables t ON t.id=v.table_id WHERE t.notebook_id=? AND t.name=? ORDER BY v.version",
+                "JOIN derived_tables t ON t.id=v.table_id WHERE t.notebook_id=? AND t.name=? AND v.dropped_by IS NULL ORDER BY v.version",
                 (nid, name)).fetchall()
         return [{"version": r["version"], "rows": r["rows"], "columns": json.loads(r["columns_json"]),
                  "sha256": r["sha256"], "created": r["created"], "lineage": json.loads(r["lineage_json"]),
@@ -308,8 +312,8 @@ class Notebooks:
         with self.store.lock:
             row = self.store.conn.execute(
                 "SELECT v.file_path FROM derived_versions v JOIN derived_tables t ON t.id=v.table_id "
-                "WHERE t.notebook_id=? AND t.name=? " + ("AND v.version=?" if version is not None else
-                "AND v.version=(SELECT MAX(version) FROM derived_versions WHERE table_id=t.id)"),
+                "WHERE t.notebook_id=? AND t.name=? AND v.dropped_by IS NULL " + ("AND v.version=?" if version is not None else
+                "AND v.version=(SELECT MAX(version) FROM derived_versions WHERE table_id=t.id AND dropped_by IS NULL)"),
                 (nid, name, version) if version is not None else (nid, name)).fetchone()
         if row is None:
             raise KeyError(name)
@@ -356,11 +360,14 @@ class Notebooks:
                 tid = t["id"]
                 if description:
                     c.execute("UPDATE derived_tables SET description=? WHERE id=?", (description[:300], tid))
-            last = c.execute("SELECT version, sha256 FROM derived_versions WHERE table_id=? ORDER BY version DESC LIMIT 1",
-                             (tid,)).fetchone()
+            # "Unchanged" compares with the latest version still in the conversation; the number is taken after every
+            # version ever written (a hidden one keeps its number and its file).
+            last = c.execute("SELECT version, sha256 FROM derived_versions WHERE table_id=? AND dropped_by IS NULL "
+                             "ORDER BY version DESC LIMIT 1", (tid,)).fetchone()
             if last and last["sha256"] == digest:
                 return {"name": name, "version": last["version"], "rows": rows, "columns": columns, "unchanged": True}
-            version = (last["version"] + 1) if last else 1
+            top = c.execute("SELECT MAX(version) AS v FROM derived_versions WHERE table_id=?", (tid,)).fetchone()["v"]
+            version = (top + 1) if top else 1
             dest = self.root / nid / "tables" / tid / f"v{version}.csv"
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_suffix(".tmp")
@@ -380,7 +387,8 @@ class Notebooks:
     def turns(self, nid: str) -> list[dict]:
         with self.store.lock:
             rows = self.store.conn.execute(
-                "SELECT id, seq, goal, status, created, updated, answer_json FROM missions WHERE notebook_id=? ORDER BY seq",
+                "SELECT id, seq, goal, status, created, updated, answer_json FROM missions "
+                "WHERE notebook_id=? AND dropped_by IS NULL ORDER BY seq",
                 (nid,)).fetchall()
         return [{"id": r["id"], "seq": r["seq"], "goal": r["goal"], "status": r["status"], "created": r["created"],
                  "updated": r["updated"], "answer": json.loads(r["answer_json"] or "null")} for r in rows]

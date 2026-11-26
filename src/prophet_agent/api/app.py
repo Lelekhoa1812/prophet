@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from prophet_agent import mentions
+from prophet_agent.checkpoints import Busy as CheckpointBusy, Refused as CheckpointRefused
 from prophet_agent.config import ROOT
 from prophet_agent.datasets import MAX_BYTES
 from prophet_agent.nim.errors import NotConfigured
@@ -169,6 +170,10 @@ class NotebookPatch(BaseModel):
 class SourcePatch(BaseModel):
     included: bool | None = None
     removed: bool | None = None
+
+
+class ForkIn(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
 
 
 class TurnIn(BaseModel):
@@ -595,6 +600,40 @@ def create_app(service: MissionService) -> FastAPI:
         _nb(service.notebooks.get, nid)
         return service.notebooks.turns(nid)
 
+    # -- checkpoints: Fork, Rewind (docs/prophet/fork_rewind_copy.md) --------------------------------------------
+
+    def _checkpoint(fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except KeyError:
+            raise HTTPException(404, "no such question")
+        except (CheckpointBusy, CheckpointRefused) as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.post("/api/notebooks/{nid}/turns/{turn_id}/rewind")
+    def rewind_notebook(nid: str, turn_id: str) -> dict:
+        """Return the notebook to the point before this question. Later questions are hidden, not deleted; Undo restores them
+        until a question is sent. The reply carries the text to put back in the message box."""
+        return _checkpoint(service.checkpoints.rewind_notebook, nid, turn_id)
+
+    @app.post("/api/notebooks/{nid}/turns/{turn_id}/fork", status_code=201)
+    def fork_notebook(nid: str, turn_id: str, body: ForkIn | None = None) -> dict:
+        """A new notebook that starts from the point before this question. The original is not changed."""
+        return _checkpoint(service.checkpoints.fork_notebook, nid, turn_id, body.title if body else None)
+
+    @app.get("/api/notebooks/{nid}/rewinds")
+    def list_rewinds(nid: str) -> list[dict]:
+        return _nb(service.checkpoints.rewinds, nid)
+
+    @app.post("/api/missions/{mission_id}/rewind")
+    def rewind_forecast(mission_id: str) -> dict:
+        """Hide a quick forecast and give back its message, with Undo. For a notebook question use the notebook route."""
+        return _checkpoint(service.checkpoints.rewind_forecast, mission_id)
+
+    @app.post("/api/rewinds/{rewind_id}/undo")
+    def undo_rewind(rewind_id: str) -> dict:
+        return _checkpoint(service.checkpoints.undo_rewind, rewind_id)
+
     @app.post("/api/missions/{mission_id}/cancel")
     def cancel_mission(mission_id: str) -> dict:
         try:
@@ -614,6 +653,8 @@ def create_app(service: MissionService) -> FastAPI:
             raise HTTPException(409, "only an interrupted mission can be resumed")
         try:
             service.start(mission_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
         except LeaseHeld:
             raise HTTPException(409, "this mission is already running")
         except PolicyRefused as exc:
