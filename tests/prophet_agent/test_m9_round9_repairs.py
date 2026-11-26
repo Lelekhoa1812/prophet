@@ -455,3 +455,26 @@ def test_a_team_probability_must_be_the_simulated_value():
     assert contracts._team_probabilities(text, [sim])
     assert contracts._team_probabilities(text.replace("87%", "86%"), [sim]) == []
     assert contracts._team_probabilities("Arsenal title odds 34%, 95% CI from the backtest.", [sim]) == []
+
+
+# Round 13: GISTEMP was blocked for the word "annual" inside a quoted BOM passage; AUUNEMP ended partial because two
+# rewrites kept "kept as genuine regime changes".
+def test_a_quoted_passage_is_not_an_annual_claim():
+    quote = '- **BOM (bom.gov.au, 26 Nov 2026):** "timeseries are available for annual, seasonal and individual months".'
+    assert contracts._annual_word(quote, [_rec(24, 31.0)]) == []
+
+
+@pytest.mark.parametrize("text, kept", [
+    ("- Three level shifts detected (1982-09, 1999-11, 2021-11); kept as genuine regime changes.", "2021-11); kept (cause"),
+    ("- Scan flagged a level shift; they were kept because they reflect real inflation episodes.", "they were kept (cause"),
+    ("A level shift around 1979 (Pacific regime shift / satellite era) is kept.", "around 1979 is kept."),
+])
+def test_an_uncited_cause_is_taken_out(text, kept):
+    out = grounding.drop_uncited_causes(text)
+    assert kept in out and grounding.uncited_causes(out) == []
+
+
+# Round 13 (NEM): "Demand\n8,301 MW" on a fetched page; the escaped newline glued "n" to the figure, so it was refused.
+def test_a_figure_after_a_newline_in_evidence_is_read():
+    hist = [{"kind": "tool", "tool": "web_fetch", "args": {}, "result": {"text": "Spot Price\n$128.96\n/MWh\nDemand\n8,301 MW"}}]
+    assert grounding.unverified("Live demand was 8,301 MW on 26 Nov 2026.", hist, "") == []

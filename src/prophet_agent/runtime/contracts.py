@@ -2401,6 +2401,9 @@ def _annual_word(text: str, obs: list) -> list[dict]:
     year is 12 steps; round 11 the same answer called a measured 24 "annual". Logic: steps per year = 365.25 / series_step
     (days) from the newest forecast record; a measured period more than 15 percent from it is not annual.
     """
+    # Round 13 (GISTEMP): a quoted passage ("timeseries are available for annual, seasonal and individual months") is the
+    # source's words, not the answer's claim about the cycle.
+    text = re.sub(r"\"[^\"\n]{0,400}\"|“[^”\n]{0,400}”", " ", text or "")
     if not text or not _ANNUAL.search(text):
         return []
     rec = next((r for h in reversed(obs) if (r := _forecast_record(h)) is not None), None)

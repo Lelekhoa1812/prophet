@@ -2624,6 +2624,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
                 if not claims:
                     break
+            if claims and all(c["name"] == "answer_causes_cited" for c in claims):
+                # Round 13 (AUUNEMP): both rewrites kept "kept as genuine regime changes". The fix the check asks for is to
+                # take the cause out, so it is done here rather than ending the run on that phrase.
+                answer = grounding.drop_uncited_causes(answer)
+                claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
             if claims:
                 return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
                         "reason": "This answer states something the analysis output does not support: "

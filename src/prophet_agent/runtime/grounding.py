@@ -196,7 +196,9 @@ def _near(value: float, target: float, decimals: int, scale: float = 1.0) -> boo
 def _as_text(obj) -> str:
     """Evidence as text for matching. Unlike ``canonical`` (compact, used for idempotency keys), the separators are
     spaced: compact JSON reads ``[360,365,370,375]`` as one thousands-separated number, so no figure in it would match."""
-    return json.dumps(obj, sort_keys=True, separators=(", ", ": "), ensure_ascii=False, default=str)
+    # Round 13 (NEM): a fetched page held "Demand\n8,301 MW"; dumped as JSON the newline became backslash-n, the "n" sat
+    # against the figure, and 8,301 was never read from the evidence. Escaped whitespace is read as a space.
+    return re.sub(r"\\[ntr]", " ", json.dumps(obj, sort_keys=True, separators=(", ", ": "), ensure_ascii=False, default=str))
 
 
 def _string_literals(code: str) -> list[str]:
@@ -700,6 +702,42 @@ def _event_glossed(unit: str) -> bool:
             if g.start() <= 40 and _EVENT.search(g.group(0)) and not re.match(r"\(\s*(?:e\.g\.|for example|such as)", g.group(0), re.I):
                 return True
     return False
+
+
+_CLAUSE_END = re.compile(r"[.;\n]|\s[—–]\s")
+_LEAD_IN = re.compile(r"(?:\b(?:because|since|as|and)\s+(?:they|it|these|those|this)?\s*|\b(?:they|it|these|those)\s+)$", re.I)
+
+
+def drop_uncited_causes(answer: str) -> str:
+    """The answer with each uncited cause taken out of its sentence: a cause clause ("because they reflect real inflation
+    episodes", "as genuine regime changes", "corresponds to the 2022 crisis") becomes "(cause not established)", and an
+    event gloss in brackets or an after/during phrase next to a shift is removed.
+
+    Motivation: panel round 13 (AUUNEMP): two composer rewrites kept "kept as genuine regime changes", and the run ended
+    partial on that phrase alone. Taking the cause out is the fix the check asks for, so it is applied directly once the
+    rewrites have failed.
+    """
+    flagged = set(uncited_causes(answer))
+    if not flagged:
+        return answer
+    out = answer
+    for unit in flagged:
+        new = unit
+        m = _CAUSE.search(new)
+        if m:
+            end = _CLAUSE_END.search(new, m.end())
+            stop = end.start() if end else len(new)
+            lead = _LEAD_IN.search(new[:m.start()])
+            start = lead.start() if lead else m.start()
+            new = new[:start].rstrip() + " (cause not established)" + new[stop:]
+        for sm in list(_SHIFT_WORD.finditer(new))[::-1]:
+            tail_start = sm.end()
+            for g in list(_EVENT_GLOSS.finditer(new[tail_start:tail_start + 90]))[::-1]:
+                if g.start() <= 40 and _EVENT.search(g.group(0)):
+                    a, b = tail_start + g.start(), tail_start + g.end()
+                    new = new[:a].rstrip() + new[b:]
+        out = out.replace(unit, new)
+    return out
 
 
 def uncited_causes(answer: str) -> list[str]:
