@@ -772,7 +772,21 @@ def create_app(service: MissionService) -> FastAPI:
 
     if WEB_DIST.is_dir():
         from fastapi.staticfiles import StaticFiles
-        app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        class _Pages(StaticFiles):
+            """The built page, plus the app's own addresses: /n/<id> (notebook) and /c/<id> (quick forecast) are not files, so
+            they get the page and the page opens the place. Any other missing path stays a 404."""
+
+            async def get_response(self, path, scope):
+                try:
+                    return await super().get_response(path, scope)
+                except StarletteHTTPException as exc:
+                    if exc.status_code == 404 and re.fullmatch(r"(n|c)/[A-Za-z0-9_-]{1,64}/?", path):
+                        return await super().get_response("index.html", scope)
+                    raise
+
+        app.mount("/", _Pages(directory=WEB_DIST, html=True), name="web")
 
     return app
 

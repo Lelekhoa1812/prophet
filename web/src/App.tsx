@@ -11,6 +11,7 @@ import { Button, Card, IconButton, Spinner } from "./components/ui";
 import { api, type ArtifactRun, type DatasetRef, type Mission, type MissionRow, type NotebookRow, type ToolInfo } from "./lib/api";
 import { offerDraft } from "./lib/checkpoint";
 import { errorMessage } from "./lib/format";
+import { parseRoute, pathFor, routeFor } from "./lib/route";
 import { SKILLS } from "./lib/skills";
 import { useMission } from "./lib/useMission";
 import { useModelCatalog, useSelectedModel } from "./lib/useModels";
@@ -22,8 +23,15 @@ type Notice = { id: number; message: string; tone: "error" | "info"; action?: { 
 export default function App() {
   const [missions, setMissions] = useState<MissionRow[]>([]);
   const [notebooks, setNotebooks] = useState<NotebookRow[]>([]);
-  const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The address carries the place: /n/<id> opens a notebook, /c/<id> a quick forecast.
+  const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(() => {
+    const r = parseRoute(window.location.pathname);
+    return r?.kind === "n" ? r.id : null;
+  });
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    const r = parseRoute(window.location.pathname);
+    return r?.kind === "c" ? r.id : null;
+  });
   const [health, setHealth] = useState<{ ok: boolean; nim_keys_configured: boolean } | null>(null);
   const [tools, setTools] = useState<Record<string, ToolInfo>>({});
   const [navOpen, setNavOpen] = useState(false);
@@ -97,6 +105,50 @@ export default function App() {
   useEffect(() => {
     refreshList();
   }, [refreshList, selectedId, selectedNotebookId, mission?.status]);
+
+  // Keep the address in step with what is open, so the link can be copied, bookmarked or reloaded.
+  useEffect(() => {
+    const want = pathFor(routeFor(selectedNotebookId, selectedId));
+    if (window.location.pathname !== want) window.history.pushState(null, "", want);
+  }, [selectedNotebookId, selectedId]);
+
+  // Back and forward move between what was open.
+  useEffect(() => {
+    const onPop = () => {
+      const r = parseRoute(window.location.pathname);
+      setSelectedNotebookId(r?.kind === "n" ? r.id : null);
+      setSelectedId(r?.kind === "c" ? r.id : null);
+      setNavOpen(false);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // A link to something that is gone (deleted, or from another machine) lands on the start page with a notice, and a
+  // forecast that belongs to a notebook opens in its notebook.
+  useEffect(() => {
+    const r = parseRoute(window.location.pathname);
+    if (!r) return;
+    const home = (message: string) => {
+      window.history.replaceState(null, "", "/");
+      setSelectedNotebookId(null);
+      setSelectedId(null);
+      setNotice({ id: Date.now(), message, tone: "info", ttlMs: 6000 });
+    };
+    if (r.kind === "n") {
+      api.notebook(r.id).catch(() => home("That notebook isn't here. It may have been deleted."));
+    } else {
+      api
+        .mission(r.id)
+        .then((m) => {
+          if (!m.notebook_id) return;
+          window.history.replaceState(null, "", pathFor({ kind: "n", id: m.notebook_id }));
+          setSelectedId(null);
+          setSelectedNotebookId(m.notebook_id);
+        })
+        .catch(() => home("That chat isn't here. It may have been deleted."));
+    }
+  }, []);
 
   const eventCount = mission?.events.length ?? 0;
   useEffect(() => {

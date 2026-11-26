@@ -101,7 +101,9 @@ export function QuestionCard({ question, onAnswered }: { question: OpenQuestion;
                       <label
                         key={`${si}-${oi}`}
                         className={cn(
-                          "group flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors",
+                          // relative: the radio is sr-only (absolute). Without a positioned label it sits at the corner of the
+                          // page layout, and focusing it on click scrolls the whole app away from the card.
+                          "group relative flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors",
                           "border-sand-2/30 bg-night-0/40 hover:border-sand-1",
                           "has-checked:border-ember has-checked:bg-ember-soft",
                           "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ember",

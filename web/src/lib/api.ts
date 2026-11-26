@@ -38,6 +38,8 @@ export type MissionOutcome = {
 
 export type Mission = {
   id: string;
+  // Set when the question was asked inside a notebook; null for a quick forecast.
+  notebook_id?: string | null;
   goal: string;
   status: string;
   budget: Record<string, unknown>;
