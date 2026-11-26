@@ -2131,7 +2131,9 @@ def _dated_span_check(asked: str, count: int, unit: str, rec: dict, history: lis
     days, whichever is larger, which covers weekends and holidays at either end.
     """
     import datetime as dt
-    if unit in ("period", "trading_day"):
+    # Round 6 (CO2): "the next 30 days" on a daily series kept on a business-day index ran 30 steps over 42 calendar days
+    # and was blocked, and the loop wandered between 22 and 26 steps. A request in days counts daily values, as before.
+    if unit in ("period", "trading_day", "day"):
         return None
     window = rec.get("window") if isinstance(rec.get("window"), dict) else None
     if window is None:
@@ -2146,7 +2148,9 @@ def _dated_span_check(asked: str, count: int, unit: str, rec: dict, history: lis
     step = _series_step(rec)
     steps = window.get("steps")
     gap = ((last - first).days / (steps - 1)) if isinstance(steps, int) and steps > 1 else None
-    if (step is not None and (step[1] or step[0] >= 28)) or (gap is not None and gap >= 28):
+    # Weekly too (round 6, NGSTORAGE: 8 weekly steps were read as 50 days against 56 and blocked). Only a series stepped in
+    # single days, where trading days and calendar days part, is checked by its dates.
+    if (step is not None and (step[1] or step[0] >= 2)) or (gap is not None and gap >= 2):
         return None
     end = _data_facts(history).get("data_end")
     try:

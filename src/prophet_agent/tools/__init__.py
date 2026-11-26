@@ -85,18 +85,27 @@ def refuse_walled_hosts(fn):
     import re
     from urllib.parse import urlsplit
     wall = re.compile(r"^interstitial (bot_check|captcha)\b")
+    gone = re.compile(r"^HTTP (401|403|404|410)\b")      # round 6 (GISTEMP): one 404 page fetched five times
     walled: dict[str, str] = {}
+    failed: dict[str, str] = {}
 
     def run(args, key):
         url = args.get("url") if isinstance(args, dict) else None
-        host = (urlsplit(url.strip()).hostname or "").lower() if isinstance(url, str) else ""
+        address = url.strip() if isinstance(url, str) else ""
+        host = (urlsplit(address).hostname or "").lower() if address else ""
         if host and host in walled:
             raise ValueError(f"{host} answered with a {walled[host]} earlier in this mission, so its pages are not read "
                              "here; do not fetch it again. Choose another source, such as an open-data download of the "
                              "same figures")
+        if address in failed:
+            raise ValueError(f"this address already answered {failed[address]} in this mission; do not fetch it again. "
+                             "Choose another page or source")
         out = fn(args, key)
-        if host and isinstance(out, dict) and (m := wall.match(str(out.get("note") or ""))):
+        note = str(out.get("note") or "") if isinstance(out, dict) else ""
+        if host and (m := wall.match(note)):
             walled[host] = m.group(1).replace("_", " ")
+        elif address and (m := gone.match(note)):
+            failed[address] = f"HTTP {m.group(1)}"
         return out
     return run
 

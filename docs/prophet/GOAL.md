@@ -1334,3 +1334,38 @@ stored runs, and what was changed:
 - NEM: a research sub-agent fetched aemo.com.au five times after the first page answered with a bot check. A host that
   answered with a bot check or a CAPTCHA is not fetched again in the same mission.
 
+### Panel round 6 (measured, run 20261127-023758, API on 149f95a, planner v32, evaluator v11, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| CPI | completed | none | 4 |
+| NBA | completed | none | 1 |
+| NVDA | completed | none | 13 |
+| SPX | completed | none | 8 |
+| AUUNEMP | partial | stalled | 12 |
+| CO2 | partial | not_settled | 11 |
+| EPL | partial | unverified_figures, stalled | 8 |
+| GISTEMP | partial | unverified_figures, stalled | 13 |
+| NEM | partial | unverified_figures, stalled | 16 |
+| NGSTORAGE | partial | blocked_by_check, unverified_figures | 7 |
+
+Four of ten met (round 5: five). Missions move between met and not met from round to round. Two of this round's
+failures were caused by repairs of earlier rounds, read from the stored runs:
+- CO2 and NGSTORAGE: the dated horizon check (round 4, narrowed in round 5) blocked a 30-step daily forecast kept on a
+  business-day index (42 calendar days) and an 8-week weekly forecast (read as 50 days against 56). It now applies
+  only to a series stepped in single days with a request in weeks, months, quarters or years; requests in days, and
+  weekly or slower series, keep the exact period count. NVDA's "2 months" still passes by its dates.
+- EPL: round 4 removed the points paths from the planner's view of the simulation, and the evaluator could no longer see
+  the points path the goal asks for; the run repeated the simulation and stalled. A compact path (every fifth unplayed
+  game and the last) is back in the view. The run also passed the current season's file as history beside its own
+  results, fitting each played match twice; such a history file is now refused. The stall composer's probability table
+  matched no simulation, and all four of its values were caught as unverified.
+Other defects, and what was changed:
+- AUUNEMP and NEM: the provenance refusals of rounds 4 and 5 named the right download address, and the cells still cited a
+  made-up host, a page address or a dataset id until the runs stalled. A retrieved claim whose cited sources fail the
+  check, from a series traced through its inputs and carried files to downloads of this mission, is now kept with those
+  downloads as its sources. A claim with no origin, or one traced to nothing, is still refused.
+- GISTEMP: the .txt file was landed before download records existed, and download_web_data reused the stored copy, so
+  its address had no record. A stored dataset downloaded from the address now counts as fetched. A research sub-agent
+  fetched one HTTP 404 page five times; an address that answered 401, 403, 404 or 410 is not fetched again in the mission.
+

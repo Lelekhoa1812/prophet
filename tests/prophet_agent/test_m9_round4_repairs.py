@@ -131,6 +131,13 @@ def test_refusal_names_the_downloaded_address(tmp_path, monkeypatch):
     monkeypatch.setattr(series_io, "SANDBOX_ROOT", tmp_path / "sandbox")
     monkeypatch.setattr(series_io, "DATASETS_ROOT", tmp_path / "datasets")
     assert series_io.input_source_urls(run_id) == {"abs_sdmx.csv": url}
+    # Round 6: a retrieved claim traced to the download is kept, with the download as its source.
+    assert len(series_io.resolve_series({"source": {"run_id": run_id, "file": "out/series.json"}})[0][1]) == 3
+    kept = series_io.series_provenance({"source": {"run_id": run_id, "file": "out/series.json"}})
+    assert kept == {"origin": "retrieved", "source_name": "ABS", "sources": [{"id": "S1", "url": url}], "traced": True}
+    # A claim with no origin is still refused, and the refusal names the address.
+    (run / "out" / "series.json").write_text(json.dumps({"series": [4.1, 4.2, 4.3],
+                                                         "provenance": {"source_name": "ABS", "sources": []}}))
     with pytest.raises(ValueError, match=r"abs_sdmx\.csv came from https://data\.api\.abs\.gov\.au"):
         series_io.resolve_series({"source": {"run_id": run_id, "file": "out/series.json"}})
 
@@ -151,7 +158,17 @@ def test_simulation_view_leaves_out_points_paths():
     from prophet_agent.tools.sports_tool import observe_simulate
     result = {"teams": [{"team": "A"}], "points_paths": {"A": [{"game": 1, "median": 3.0}]}, "standings": [], "ratings": []}
     view = observe_simulate(result)
-    assert "points_paths" not in view and "points_paths" in result and "points paths" in view["note"]
+    assert "points_paths" not in view and "points_paths" in result and "full paths" in view["note"]
+
+
+# EPL (round 6): the goal asks for the points path, so a compact path stays in the view.
+def test_simulation_view_keeps_a_compact_path():
+    from prophet_agent.tools.sports_tool import observe_simulate
+    path = [{"game": g, "measured": g <= 10, "median": 3.0 * g, "p10": 2.0 * g, "p90": 4.0 * g} for g in range(1, 39)]
+    view = observe_simulate({"teams": [{"team": "A"}], "points_paths": {"A": path}, "standings": [], "ratings": []})
+    rows = view["points_path_summary"]["A"]
+    assert [r[0] for r in rows] == [15, 20, 25, 30, 35, 38]
+    assert rows[-1] == [38, 114.0, 76.0, 152.0]
 
 
 # CPI (round 5): six monthly steps dated at month starts end on 1 April; the dated check read 152 days and asked for 8 months.
@@ -216,3 +233,50 @@ def test_a_walled_host_is_not_fetched_again():
         guarded({"url": "https://aemo.com.au/b"}, "k2")
     guarded({"url": "https://www.aemo.com.au/data.csv"}, "k3")     # another host name is still fetched
     assert calls == ["https://aemo.com.au/a", "https://www.aemo.com.au/data.csv"]
+
+
+# EPL (round 6): the current season's file was passed as history beside its own results.
+def test_history_that_repeats_the_results_is_refused(tmp_path):
+    from prophet_agent.tools.sports_tool import simulate_season_tool
+    rows = ["home,away,date,home_goals,away_goals"]
+    teams = ["A", "B", "C", "D"]
+    for i, h in enumerate(teams):
+        for j, a in enumerate(teams):
+            if h != a:
+                rows.append(f"{h},{a},2026-09-{(i * 4 + j) % 28 + 1:02d},{(i + j) % 3},{(i * j) % 2}")
+    season = tmp_path / "season.csv"
+    season.write_text("\n".join(rows) + "\n")
+    tool = simulate_season_tool({"season.csv": season})
+    with pytest.raises(ValueError, match="history names earlier seasons"):
+        tool.fn({"results": "season.csv", "history": "season.csv", "simulations": 10, "backtest": False}, "k")
+
+
+# CO2 (round 6): a request in days counts daily values; the dated check left it alone.
+def test_a_request_in_days_keeps_the_period_count():
+    rec = {"config": {"horizon": 30, "series_step": 1.0}, "window": {"first": "2026-11-20", "last": "2026-12-31", "steps": 30}}
+    assert goal._dated_span_check("the request asks for 30 days", 30, "day", rec, []) is None
+
+
+# NGSTORAGE (round 6): eight weekly steps are eight weeks; the dated check read 50 days against 56 and blocked.
+def test_a_weekly_forecast_keeps_the_period_count():
+    rec = {"config": {"horizon": 8, "series_step": "weekly"}, "window": {"first": "2026-11-27", "last": "2027-01-15", "steps": 8}}
+    assert goal._dated_span_check("the request asks for 8 weeks", 8, "week", rec, []) is None
+
+
+# GISTEMP (round 6): a file landed before download records existed was reused, so its address had no record.
+def test_a_stored_download_counts_as_fetched(tmp_path, monkeypatch):
+    url = "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.txt"
+    ds = tmp_path / "d3"
+    ds.mkdir()
+    (ds / "meta.json").write_text(json.dumps({"sha256": "ab", "provenance": {"url": url, "final_url": url}}))
+    assert series_io._stored_download(url, tmp_path) is True
+    assert series_io._stored_download("https://data.giss.nasa.gov/other.txt", tmp_path) is False
+
+
+def test_a_missing_page_is_not_fetched_again():
+    from prophet_agent.tools import refuse_walled_hosts
+    guarded = refuse_walled_hosts(lambda args, key: {"ok": False, "note": "HTTP 404"})
+    guarded({"url": "https://data.giss.nasa.gov/gistemp/GMSTA/"}, "k1")
+    with pytest.raises(ValueError, match="already answered HTTP 404"):
+        guarded({"url": "https://data.giss.nasa.gov/gistemp/GMSTA/"}, "k2")
+    guarded({"url": "https://data.giss.nasa.gov/gistemp/"}, "k3")       # the host is not refused

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 import numpy as np
@@ -113,6 +114,29 @@ def _fetch_record_exists(url: str) -> bool:
             continue
         if isinstance(doc, dict) and doc.get("ok") is True:
             return True               # a page research read, or a file a download tool landed (opendata/fetch.py)
+    return _stored_download(url)
+
+
+def _stored_download(url: str, datasets_root: Path | None = None) -> bool:
+    """True when a stored dataset was downloaded from this address (its provenance url or final_url).
+
+    Round 6 (GISTEMP): the .txt file was landed before download records existed, and download_web_data reused the stored
+    copy without fetching again, so no record was ever written; backtest_series refused the series four times.
+    """
+    root = datasets_root or _datasets_root()
+    if not root.is_dir():
+        return False
+    want = url.strip()
+    for i, folder in enumerate(root.iterdir()):
+        if i >= MAX_DATASET_RECORDS:
+            break
+        try:
+            meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        prov = meta.get("provenance") if isinstance(meta, dict) else None
+        if isinstance(prov, dict) and want in (prov.get("url"), prov.get("final_url")) and meta.get("sha256"):
+            return True
     return False
 
 
@@ -165,6 +189,34 @@ def check_provenance(raw: Any, name: str = "series") -> dict | None:
     return {"origin": "retrieved", "source_name": name_text, "sources": clean}
 
 
+def traced_provenance(raw: Any, rel: str, run_id: str) -> dict | None:
+    """The checked provenance of a series file. A retrieved claim whose cited sources fail the check, from a series traced
+    (through carried files) to downloads of this mission, is kept with those downloads as its sources.
+
+    Motivation: panel rounds 4 to 6 (AUUNEMP, NEM, GISTEMP), the series came from download_open_data files, but the cell
+    cited a page address, a made-up host, or a dataset id instead of 'S1', and backtest_series refused it until the run
+    stalled; the hint naming the right address (round 4) was not always followed. Logic: the downloads are known from the
+    sha256 of the run's inputs and each has a download record, so the claim is supported as well as a correct citation
+    would be. Synthetic and user origins pass or fail as before; with nothing traced the refusal stands, naming the fix.
+    """
+    try:
+        return check_provenance(raw, rel)
+    except ValueError as exc:
+        urls = input_source_urls(run_id)
+        origin = raw.get("origin") if isinstance(raw, dict) else None
+        claimed = isinstance(origin, str) and (origin == "retrieved" or origin.strip().lower() in RETRIEVED_SYNONYMS)
+        if not urls or not claimed:
+            if urls:
+                listed = "; ".join(f"{name} came from {url}" for name, url in sorted(urls.items())[:6])
+                raise ValueError(f"{exc}. The files behind this series were downloaded in this mission: {listed}. Use "
+                                 "that address as the source url with origin retrieved, and save the series again") from None
+            raise
+        name = raw.get("source_name") if isinstance(raw.get("source_name"), str) and raw["source_name"].strip() else None
+        sources = [{"id": f"S{i}", "url": url} for i, url in enumerate(sorted(set(urls.values()))[:6], start=1)]
+        return {"origin": "retrieved", "source_name": (name or urlsplit(sources[0]["url"]).hostname or "download").strip(),
+                "sources": sources, "traced": True}
+
+
 def series_provenance(args: dict) -> dict | None:
     """The checked provenance of the series a call names: the block in the source file, or one passed with values. Raises
     ValueError when the block is inconsistent (see check_provenance)."""
@@ -176,7 +228,7 @@ def series_provenance(args: dict) -> dict | None:
             doc = json.loads(target.read_text(encoding="utf-8"))
         except ValueError:
             return None
-        return check_provenance(doc.get("provenance") if isinstance(doc, dict) else None, rel)
+        return traced_provenance(doc.get("provenance") if isinstance(doc, dict) else None, rel, source["run_id"])
     return check_provenance(args.get("provenance"), "series")
 
 
@@ -193,8 +245,13 @@ def provenance_label(prov: dict | None) -> str:
     return f"{prov['source_name']} ({refs})"
 
 
-DATASETS_ROOT = SANDBOX_ROOT.parent / "datasets"
+DATASETS_ROOT: Path | None = None   # None: the datasets folder beside the sandbox root in use
 MAX_DATASET_RECORDS = 2000
+
+
+def _datasets_root() -> Path:
+    """The dataset store beside the sandbox root in use, read at call time so a test that moves one moves both."""
+    return DATASETS_ROOT if DATASETS_ROOT is not None else SANDBOX_ROOT.parent / "datasets"
 
 
 def input_source_urls(run_id: str, datasets_root: Path | None = None) -> dict[str, str]:
@@ -205,7 +262,7 @@ def input_source_urls(run_id: str, datasets_root: Path | None = None) -> dict[st
     names it. Logic: hash each file in the run's in/ folder and look it up among the dataset records' provenance.
     """
     import hashlib
-    root = datasets_root or DATASETS_ROOT
+    root = datasets_root or _datasets_root()
     if not RUN_ID.match(run_id) or not root.is_dir():
         return {}
     # Round 5 (AUUNEMP, NEM): the series was built from files carried from an earlier run, whose own in/ held the download.
@@ -266,15 +323,7 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     except ValueError:
         raise ValueError(f"{rel} is not valid JSON; write it with prophet_lib.save_series")
     if isinstance(doc, dict):
-        try:
-            check_provenance(doc.get("provenance"), rel)  # a retrieved claim with no fetch record, or a synthetic one naming a source
-        except ValueError as exc:
-            urls = input_source_urls(source["run_id"])
-            if not urls:
-                raise
-            listed = "; ".join(f"{name} came from {url}" for name, url in sorted(urls.items())[:6])
-            raise ValueError(f"{exc}. The files behind this series were downloaded in this mission: {listed}. Use that address "
-                             "as the source url with origin retrieved, and save the series again") from None
+        traced_provenance(doc.get("provenance"), rel, source["run_id"])   # refuses an unsupported claim, with the fix
     body = doc.get("series") if isinstance(doc, dict) else doc
     if isinstance(body, list):
         named = {"series": body}

@@ -57,9 +57,17 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
         if not 1 <= len(names) <= 4:
             raise ValueError("history must name 1 to 4 results files of earlier seasons")
         history = []
+        played = {(m.date, m.home, m.away) for m in matches if m.played}
         for hist_name in names:
             htext, hname = _named_text(hist_name, datasets, "history")
-            history.extend(parse_matches(htext, hname))
+            earlier = parse_matches(htext, hname)
+            # Round 6 (EPL): the current season's file was passed as history beside its own parsed results, so every
+            # played match was fitted twice. History is earlier seasons only.
+            shared = sum(1 for m in earlier if m.played and (m.date, m.home, m.away) in played)
+            if shared:
+                raise ValueError(f"history file {hname} holds {shared} of the matches already in the results; history "
+                                 "names earlier seasons' files only. Leave history out, or name last season's file")
+            history.extend(earlier)
     fixtures = None
     if args.get("fixtures") is not None:
         ftext, fname = _named_text(args["fixtures"], datasets, "fixtures")
@@ -96,17 +104,31 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
     return result
 
 
+def compact_path(path: Any) -> list:
+    """The unplayed part of one team's points path: every fifth game and the last, as [game, median, p10, p90]."""
+    if not isinstance(path, list):
+        return []
+    ahead = [p for p in path if isinstance(p, dict) and not p.get("measured")]
+    keep = [p for i, p in enumerate(ahead) if i % 5 == 4 or i == len(ahead) - 1]
+    return [[p.get("game"), p.get("median"), p.get("p10"), p.get("p90")] for p in keep]
+
+
 def observe_simulate(result: dict) -> dict:
     """The planner's view: the team table, settings, backtest and the first 20 standings and ratings. The ledger keeps all."""
     if "teams" not in result:
         return result
     # Panel round 4 (EPL): the points paths were 11,315 of 24,905 characters, and the planner paged eight times to read a
     # game-by-game table it never used. The paths stay in the full result for charts and checks.
+    # Round 6 (EPL): with the paths gone the evaluator could not see the points path the goal asks for. A compact path stays:
+    # the unplayed games every fifth game and the last, as [game, median, p10, p90].
     out = {k: v for k, v in result.items() if k not in ("standings", "ratings", "points_paths")}
     out["standings"] = (result.get("standings") or [])[:20]
     out["ratings"] = (result.get("ratings") or [])[:20]
-    out["note"] = ("per-team ranges shown; the full standings, ratings and game-by-game points paths are kept in the ledger. "
-                   "Do not sum ranges across teams.")
+    if isinstance(result.get("points_paths"), dict):
+        out["points_path_summary"] = {team: compact_path(path) for team, path in result["points_paths"].items()}
+    out["note"] = ("per-team ranges shown; points_path_summary gives each team's path as [game, median, p10, p90] every "
+                   "fifth unplayed game and the last; the full paths, standings and ratings are kept in the ledger. Do not "
+                   "sum ranges across teams.")
     return out
 
 
