@@ -261,6 +261,9 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
             continue
         if token not in missing:
             missing.append(token)
+    for token in entity_row_mismatches(answer, history):
+        if token not in missing:
+            missing.append(token)
     return missing
 
 
@@ -645,3 +648,155 @@ def bound_misnamed(answer: str, lo: float, hi: float, together: bool, others: tu
 
 
 _ASSUMPTION_BACK = re.compile(r"\b(?:that|this) assumption\b", re.I)
+
+
+# ---------------------------------------------------------------------------------------------- entity-bound table rows --
+# Panel round 8 (NBA, independent audit, 2026-11-27): the standings table gave Boston Celtics 13-5, .722 and a median of 44;
+# the tools gave 12-6, .667 and 43. Every one of those numbers was printed somewhere else in the evidence, so the bag-of-numbers
+# check above passed 18 wrong figures. A number in a table row that names an entity is a claim about that entity, so it is
+# checked against that entity's own records: the tool objects that carry its name, and the printed lines that name it.
+_CELL_NUM = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?%?|(?<![\w\d])\.\d+%?")
+_ENTITY = re.compile(r"[A-Za-z][A-Za-z'&.\- ]{2,58}[A-Za-z.]")
+_SEPARATOR_ROW = re.compile(r"^\s*\|?\s*:?-{2,}")
+
+
+def _numbers_in(obj, out: list[float]) -> None:
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, (int, float)):
+        out.append(float(obj))
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _numbers_in(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _numbers_in(v, out)
+    elif isinstance(obj, str) and len(obj) < 200:
+        for m in _CELL_NUM.finditer(obj):
+            try:
+                out.append(float(m.group().rstrip("%").replace(",", "")))
+            except ValueError:
+                pass
+
+
+def _tool_objects(history: list):
+    """The raw tool results (and full results) the run observed, including a sub-agent's own tool evidence."""
+    for h in history:
+        if not isinstance(h, dict):
+            continue
+        if h.get("kind") == "tool" and "result" in h:
+            yield h["result"]
+            if "full" in h:
+                yield h["full"]
+        elif h.get("kind") == "subagent":
+            yield from _tool_objects(h.get("evidence") or [])
+
+
+def _scalars_in(obj, out: list[float]) -> None:
+    """The numbers of an object's own fields and nested objects, not of its lists (a path or a table of games)."""
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if isinstance(v, dict):
+                _scalars_in(v, out)
+            elif not isinstance(v, list):
+                _numbers_in(v, out)
+
+
+# Fields that name a real-world entity. A method or model name ("TimesFM", "seasonal_naive") is not one: its comparison
+# figures live in other objects (round 5 CO2: "29% more accurate" is a verdict's gain_pct), so its rows are left to the
+# bag-of-numbers check. Printed lines and keyed lists add to an entity's records but never make one on their own.
+_NAME_FIELDS = frozenset({"team", "name", "entity", "club", "country", "region", "ticker", "symbol", "player", "series",
+                          "home", "away", "company", "state", "city", "station", "site"})
+_PATH_HEADER = re.compile(r"\b(?:after|game|games|round|rounds|week|weeks|matchday|gw|path|step|month)\b", re.I)
+
+
+def _norm_name(text: str) -> str:
+    """A name as compared: lower case, underscores and runs of spaces as one space ("Seasonal naive" is seasonal_naive)."""
+    return re.sub(r"[_\s]+", " ", text).strip().lower()
+
+
+def _entity_records(name: str, history: list) -> tuple[list[float], list[float]] | None:
+    """(scalars, series) recorded about one entity, or None when the evidence holds no record of it. Scalars: the fields of
+    a tool object that carries its name, and the printed lines that name it. Series: the numbers of a
+    list kept under its name (a points path), read only for a table about a path."""
+    want = _norm_name(name)
+    scalars: list[float] = []
+    series: list[float] = []
+    lines: list[float] = []
+    hit = False
+
+    def walk(obj) -> None:
+        nonlocal hit
+        if isinstance(obj, dict):
+            if any(isinstance(v, str) and _norm_name(v) == want and str(k).lower() in _NAME_FIELDS for k, v in obj.items()):
+                hit = True
+                _scalars_in(obj, scalars)
+            for k, v in obj.items():
+                if isinstance(k, str) and _norm_name(k) == want:
+                    if isinstance(v, list):
+                        for item in v:
+                            if isinstance(item, dict):
+                                _numbers_in({x: y for x, y in item.items() if x not in ("game", "step", "round")}, series)
+                            else:
+                                _numbers_in(item, series)
+                    elif isinstance(v, dict):
+                        _scalars_in(v, scalars)
+                    else:
+                        _numbers_in(v, scalars)
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+        elif isinstance(obj, str) and want in _norm_name(obj):
+            for line in obj.splitlines():
+                if want in _norm_name(line):
+                    for m in _CELL_NUM.finditer(line):
+                        try:
+                            lines.append(float(m.group().rstrip("%").replace(",", "")))
+                        except ValueError:
+                            pass
+    for obj in _tool_objects(history):
+        walk(obj)
+    if not hit:
+        return None
+    return scalars + lines, series
+
+
+def entity_row_mismatches(answer: str, history: list) -> list[str]:
+    """Numbers in answer table rows that do not match the records of the entity the row names. A row whose entity has no
+    record in the evidence is not judged here (the bag-of-numbers check still covers it)."""
+    lines = (answer or "").splitlines()
+    cache: dict[str, tuple[list[float], list[float]] | None] = {}
+    out: list[str] = []
+    header = ""
+    for i, line in enumerate(lines):
+        if not line.lstrip().startswith("|"):
+            header = ""
+            continue
+        if _SEPARATOR_ROW.match(line):
+            continue
+        if i + 1 < len(lines) and _SEPARATOR_ROW.match(lines[i + 1]):
+            header = line                                     # a header row names the columns of the rows below it
+            continue
+        cells = [c.strip().strip("*").strip() for c in line.strip().strip("|").split("|")]
+        at = next((j for j, c in enumerate(cells) if _ENTITY.fullmatch(c) and not _YEAR.search(c)), None)
+        if at is None:
+            continue
+        name = cells[at]
+        if name.lower() not in cache:
+            cache[name.lower()] = _entity_records(name, history)
+        entry = cache[name.lower()]
+        if entry is None:
+            continue
+        records = entry[0] + (entry[1] if _PATH_HEADER.search(header) else [])
+        if not records:
+            continue
+        for cell in cells[at + 1:]:
+            for m in _CELL_NUM.finditer(cell.replace("\u2011", "-")):
+                token = m.group().rstrip(",")
+                value, decimals, pct = _parse(token if not token.startswith(".") else "0" + token)
+                options = [value] + ([value / 100.0] if pct else [])
+                if not any(_near(r, o, decimals + (2 if (pct and o != value) else 0)) for r in records for o in options):
+                    if token not in out:
+                        out.append(token)
+    return out

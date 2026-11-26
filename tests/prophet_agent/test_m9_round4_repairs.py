@@ -310,3 +310,46 @@ def test_ledger_open_falls_back_to_the_carried_file(tmp_path, monkeypatch, capsy
     assert "opened in/carried/ledger.json (1 entries)" in capsys.readouterr().out
     (tmp_path / "in" / "carried" / "ledger.json").unlink()
     assert ps.Ledger.open().entries == [] and "starting empty" in capsys.readouterr().out
+
+
+# NBA (round 8, independent audit): 18 wrong figures in standings and forecast rows passed, because each number was printed
+# somewhere else in the evidence. A number in a row that names an entity is checked against that entity's own records.
+def _sim_history():
+    teams = [{"team": "Boston Celtics", "current": 12.0, "final": {"median": 43.0, "p10": 38.0, "p90": 49.0}, "playoff": 0.62},
+             {"team": "Detroit Pistons", "current": 11.0, "final": {"median": 44.0, "p10": 39.0, "p90": 48.0}, "playoff": 0.58}]
+    standings = [{"team": "Boston Celtics", "played": 18, "wins": 12}, {"team": "Detroit Pistons", "played": 17, "wins": 11}]
+    paths = {"Boston Celtics": [{"game": 30, "median": 20.0, "p10": 18.0, "p90": 22.0}]}
+    stdout = "        Boston Celtics    12       6     18 0.666667\n       Detroit Pistons    11       6     17 0.647059\n"
+    return [{"kind": "tool", "tool": "simulate_season", "result": {"teams": teams, "standings": standings,
+                                                                   "points_paths": paths}},
+            {"kind": "tool", "tool": "sandbox_python", "result": {"stdout": stdout}}]
+
+
+def test_entity_rows_match_their_own_records():
+    from prophet_agent.runtime.grounding import entity_row_mismatches
+    good = ("| Team | W | L | GP | Pct |\n|---|---|---|---|---|\n| Boston Celtics | 12 | 6 | 18 | .667 |\n"
+            "| Detroit Pistons | 11 | 6 | 17 | .647 |\n\n| Team | Median | Range | Playoff |\n|---|---|---|---|\n"
+            "| Boston Celtics | 43 | 38 – 49 | 62% |\n")
+    assert entity_row_mismatches(good, _sim_history()) == []
+
+
+def test_a_figure_from_another_entity_is_caught():
+    from prophet_agent.runtime.grounding import entity_row_mismatches
+    # 44 and 39 are Detroit's numbers, and .706 is nobody's: in Boston's row they are wrong.
+    bad = "| Team | Median | Range | Pct |\n|---|---|---|---|\n| Boston Celtics | 44 | 39 – 49 | .706 |\n"
+    assert entity_row_mismatches(bad, _sim_history()) == ["44", "39", ".706"]
+    assert set(unverified(bad, _sim_history(), "forecast")) >= {"44", "39"}
+
+
+def test_path_values_count_only_in_a_path_table():
+    from prophet_agent.runtime.grounding import entity_row_mismatches
+    path_table = "| Team | After game 30 |\n|---|---|\n| Boston Celtics | 20 (18 – 22) |\n"
+    assert entity_row_mismatches(path_table, _sim_history()) == []
+    other = "| Team | Wins |\n|---|---|\n| Boston Celtics | 20 |\n"
+    assert entity_row_mismatches(other, _sim_history()) == ["20"]
+
+
+def test_method_names_are_not_entities():
+    from prophet_agent.runtime.grounding import entity_row_mismatches
+    hist = [{"kind": "tool", "tool": "backtest_series", "result": {"models": {"timesfm": {"mase": 0.313}}, "gain_pct": 29.16}}]
+    assert entity_row_mismatches("| Method | MASE | Gain |\n|---|---|---|\n| TimesFM | 0.313 | 29% |\n", hist) == []

@@ -93,6 +93,15 @@ def _acf(z: np.ndarray, lag: int) -> float:
     return float(np.mean(a[both] * b[both])) if both.any() else float("nan")
 
 
+CYCLE_DIP = 0.2   # a cycle's autocorrelation at half its lag sits at least this far below the one at the lag
+
+
+def _has_dip(z: np.ndarray, lag: int, at_lag: float) -> bool:
+    """True when the autocorrelation at half the lag is at least CYCLE_DIP below the one at the lag, as a cycle's is."""
+    half = _acf(z, max(1, lag // 2))
+    return not np.isfinite(half) or at_lag - half >= CYCLE_DIP
+
+
 def _bar(n_changes: int, n_lags: int, alpha: float) -> float:
     """The autocorrelation a candidate must clear: the Bonferroni bound over the candidate lags, floored at THRESHOLD.
 
@@ -215,7 +224,14 @@ def choose_season(values: Any, freq_hint: str | None = None, dates: Any = None, 
             return {"season": 1, "reason": f"{label}: no candidate cycle fits the history; no season assumed"}
     if not strengths:
         return {"season": 1, "reason": f"{label}: no candidate cycle has enough measured pairs; no season assumed"}
+    # Round 8 (NGSTORAGE, measured): weekly storage changes persist for weeks, so their autocorrelation decays slowly (0.99 at
+    # lag 1, 0.80 at 2, 0.73 at 3) and lag 2 was reported as the season, beside the real 52 (0.82). A cycle of k steps is
+    # out of phase at k/2, so its autocorrelation there is well below the one at k; slow decay has no such dip. A lag
+    # without the dip is persistence, not a season.
     bar = round(_bar(n_ch, len(strengths), alpha), 3)
+    persistent = {l for l, v in strengths.items() if v > bar and not _has_dip(z, l, v)}
+    if persistent:      # judged as no cycle; the level test below may still find one
+        strengths = {l: (v if l not in persistent else min(v, bar)) for l, v in strengths.items()}
     best = _shortest_repeat(strengths, bar)
     if strengths[best] > bar:
         return {"season": int(best), "reason": f"{label}: the one-step changes repeat every {best} periods "

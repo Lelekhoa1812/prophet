@@ -1400,3 +1400,42 @@ Other defects, and what was changed:
   carried file of that name, and the cell says which file it opened.
 - CO2: the planner sent finish as a tool call and got "unknown tool" until the run stalled; it is now the finish action.
 
+### Panel round 8 (measured, run 20261127-041915, API on 7636104, planner v32, evaluator v11, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| AUUNEMP | completed | none | 8 |
+| CO2 | completed | none | 7 |
+| EPL | completed | none | 1 |
+| GISTEMP | completed | none | 6 |
+| NBA | completed | none | 2 |
+| NVDA | completed | none | 7 |
+| CPI | partial | unverified_figures, stalled | 21 |
+| NEM | partial | unverified_figures, stalled | 19 |
+| NGSTORAGE | partial | blocked_by_check | 7 |
+| SPX | partial | unverified_figures, stalled | 7 |
+
+Six of ten completed by status. **M9-8 is not met.** An independent audit of the six completed answers (three read-only
+reviewers, each tracing every figure to the tool outputs) found:
+- NBA: 18 figures that match no tool output for the team they are written against: Boston Celtics 13-5, .722 and a median
+  of 44 where the tools gave 12-6, .667 and 43; Detroit and New York the same way; and a cut-off date read from a
+  text-sorted maximum. The grounding check passed them because each number was printed somewhere else in the evidence.
+- CO2: the seasonal peak, trough, amplitude and trend (May, September, ~6 ppm, ~2.5 ppm a year) exist only in the model's
+  own code text, not in any tool output; the headline range (\u00b10.5\u20130.7 ppm) fits the first days only (the 30-day band
+  is about \u00b11.0).
+- Mislabelling with correct numbers: GISTEMP called a measured 24-month cycle annual; NVDA called a 4-point mean a seasonal
+  mean, left out an adopt verdict and the optimistic-coverage warning, and gave an unsourced earnings date; EPL gave a false
+  reason for leaving Tottenham out.
+- AUUNEMP: every figure traced to a tool output.
+What was changed:
+- Entity-bound table rows: a number in an answer table row that names a real-world entity (a tool object carries the name
+  in a name field such as team, club, country or ticker) is checked against that entity's own records (its objects and the
+  printed lines that name it; its keyed path only in a table about a path). Run over every completed answer of rounds 3 to
+  8, it flags round 8 NBA ('.706', '.667', '44', '39', '42', '47') and no other completed answer; on failed runs it also
+  flags the stall composers' invented tables (round 6 EPL probabilities, round 7 EPL per-club MAE).
+- NGSTORAGE: choose_season reported a season of 2 on weekly storage. Storage changes persist for weeks (autocorrelation
+  0.99, 0.80, 0.73 at lags 1 to 3), and the tie-break swapped the real 52 (0.82) for 2. A lag above the bar now counts as a
+  cycle only when the autocorrelation at half the lag is at least 0.2 below it; on this series the season is now 52.
+Not yet changed: CO2's claims from code text pass because the bag-of-numbers check finds such numbers elsewhere; CPI's answer
+gave a last value (315.66) no tool printed, and was caught.
+
