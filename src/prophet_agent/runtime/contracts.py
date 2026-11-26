@@ -2401,6 +2401,13 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                 checks.append(_check("answer_cycle_matches_health", True,
                                      "every cycle the answer states is the period the health record measured"))
 
+    forecast_claims = grounding.claimed_forecast_results(text)
+    stored_forecast = any(_forecast_record(h) for h in obs)
+    if forecast_claims and not stored_forecast:
+        checks.append(_check(
+            "answer_forecast_stored", False,
+            "the answer states a forecast result, but no forecast tool result is stored "
+            f"({forecast_claims[0][:160]}); run the forecast, or take the result out"))
     claims = grounding.claimed_best_baselines(text)
     bt = _newest_backtest(obs)
     models = bt["models"] if bt is not None else {}

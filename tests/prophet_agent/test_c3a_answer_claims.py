@@ -71,6 +71,21 @@ def test_an_answer_with_no_claim_and_no_stored_output_checks_nothing():
     assert contracts.check_answer("The forecast is ready.", []) == []
 
 
+def test_a_forecast_result_with_no_forecast_tool_blocks_the_finish():
+    # Defects measured on mission 56465803efa547009cc7e054312ea7ab (partial). The checks stay general.
+    # The mission called web_search, web_fetch, download_web_data, sandbox_python, and web_research.
+    # It never called bind_series, timesfm_forecast, or backtest_series. Four downloads were HTML pages.
+    # The checklist then asked for a backtest, and the stuck hand-off sent a modeler.
+    # The answer said no forecast was produced. A later answer that states a result still needs a stored forecast.
+    gap = "No forecast has been produced. The table has one time and many rows."
+    assert contracts.check_answer(gap, []) == []
+    stated = "The forecast puts the series at 12."
+    bad = _failing(contracts.check_answer(stated, []), "answer_forecast_stored")
+    assert len(bad) == 1 and bad[0]["severity"] == "block"
+    assert _failing(contracts.check_answer(stated, [_forecast()]), "answer_forecast_stored") == []
+    assert _failing(contracts.check_answer("The series is forecast to rise.", []), "answer_forecast_stored")
+
+
 def test_a_level_shift_count_the_scan_does_not_hold_is_a_warning(tmp_path):
     scan = {"findings": [{"id": "changepoints.level_shift", "severity": "major", "scope": "WTI",
                           "evidence": {"count": 4, "breaks": []}}]}

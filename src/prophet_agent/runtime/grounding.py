@@ -383,6 +383,26 @@ def baselines_named(text: str) -> list[str]:
     return [n for _, n in sorted(found)]
 
 
+# A stated forecast result. "The forecast is ready" names no result. "No forecast has been produced" is a gap, not a result.
+_FORECAST_RESULT = re.compile(
+    r"\b(?:the forecast|TimesFM)\b[^.\n]{0,60}?\b(?:is|equals|shows|gives|puts|projects|expects|forecasts)\b[^.\n]{0,24}?-?\d"
+    r"|\b(?:is|are) forecast to\b"
+    r"|\bforecast(?:ed)? (?:winner|champion)\b"
+    r"|\bwill win\b",
+    re.I)
+
+
+def claimed_forecast_results(answer: str) -> list[str]:
+    """Sentences that state a forecast result. A negated sentence is a gap, not a result."""
+    out: list[str] = []
+    for unit in sentences(answer):
+        match = _FORECAST_RESULT.search(unit)
+        if not match or negated(unit, match.start()) or _NEGATION.search(unit[match.start():match.end()]):
+            continue
+        out.append(unit.strip())
+    return out
+
+
 def claimed_best_baselines(answer: str) -> list[tuple[str, str]]:
     """The simple rule the answer calls the best or the appropriate benchmark, one (rule, sentence) per sentence that names
     exactly one rule. "No model beats naive" claims naive is best. A negated claim, or a sentence that names two rules, is
