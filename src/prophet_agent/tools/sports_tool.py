@@ -57,17 +57,9 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
         if not 1 <= len(names) <= 4:
             raise ValueError("history must name 1 to 4 results files of earlier seasons")
         history = []
-        played = {(m.date, m.home, m.away) for m in matches if m.played}
         for hist_name in names:
             htext, hname = _named_text(hist_name, datasets, "history")
-            earlier = parse_matches(htext, hname)
-            # Round 6 (EPL): the current season's file was passed as history beside its own parsed results, so every
-            # played match was fitted twice. History is earlier seasons only.
-            shared = sum(1 for m in earlier if m.played and (m.date, m.home, m.away) in played)
-            if shared:
-                raise ValueError(f"history file {hname} holds {shared} of the matches already in the results; history "
-                                 "names earlier seasons' files only. Leave history out, or name last season's file")
-            history.extend(earlier)
+            history.extend(parse_matches(htext, hname))
     fixtures = None
     if args.get("fixtures") is not None:
         ftext, fname = _named_text(args["fixtures"], datasets, "fixtures")

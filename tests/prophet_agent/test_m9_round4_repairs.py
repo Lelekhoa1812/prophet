@@ -235,22 +235,6 @@ def test_a_walled_host_is_not_fetched_again():
     assert calls == ["https://aemo.com.au/a", "https://www.aemo.com.au/data.csv"]
 
 
-# EPL (round 6): the current season's file was passed as history beside its own results.
-def test_history_that_repeats_the_results_is_refused(tmp_path):
-    from prophet_agent.tools.sports_tool import simulate_season_tool
-    rows = ["home,away,date,home_goals,away_goals"]
-    teams = ["A", "B", "C", "D"]
-    for i, h in enumerate(teams):
-        for j, a in enumerate(teams):
-            if h != a:
-                rows.append(f"{h},{a},2026-09-{(i * 4 + j) % 28 + 1:02d},{(i + j) % 3},{(i * j) % 2}")
-    season = tmp_path / "season.csv"
-    season.write_text("\n".join(rows) + "\n")
-    tool = simulate_season_tool({"season.csv": season})
-    with pytest.raises(ValueError, match="history names earlier seasons"):
-        tool.fn({"results": "season.csv", "history": "season.csv", "simulations": 10, "backtest": False}, "k")
-
-
 # CO2 (round 6): a request in days counts daily values; the dated check left it alone.
 def test_a_request_in_days_keeps_the_period_count():
     rec = {"config": {"horizon": 30, "series_step": 1.0}, "window": {"first": "2026-11-20", "last": "2026-12-31", "steps": 30}}

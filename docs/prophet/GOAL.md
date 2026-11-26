@@ -1357,9 +1357,8 @@ failures were caused by repairs of earlier rounds, read from the stored runs:
   weekly or slower series, keep the exact period count. NVDA's "2 months" still passes by its dates.
 - EPL: round 4 removed the points paths from the planner's view of the simulation, and the evaluator could no longer see
   the points path the goal asks for; the run repeated the simulation and stalled. A compact path (every fifth unplayed
-  game and the last) is back in the view. The run also passed the current season's file as history beside its own
-  results, fitting each played match twice; such a history file is now refused. The stall composer's probability table
-  matched no simulation, and all four of its values were caught as unverified.
+  game and the last) is back in the view. The stall composer's probability table matched no simulation, and all four of
+  its values were caught as unverified.
 Other defects, and what was changed:
 - AUUNEMP and NEM: the provenance refusals of rounds 4 and 5 named the right download address, and the cells still cited a
   made-up host, a page address or a dataset id until the runs stalled. A retrieved claim whose cited sources fail the
