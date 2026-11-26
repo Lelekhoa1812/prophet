@@ -1187,3 +1187,44 @@ Seven sub-agent branches plus repairs from the two panel rounds:
   need no carry, and the figure check skips seasons, HTTP statuses, citations and date day ranges.
 - **Planner v28.** Routes leagues to `simulate_season`, PDFs to `download_web_data`, cached pages to `find_in_page`,
   indexes to FRED, standings to table claims with counts, and forbids invented-data options.
+
+### Panel round 2 (measured, run 20261126-222615, API on 5bdf271, 2026-11-26)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| NVDA | completed | none | 9 |
+| CO2 | completed | none | 11 |
+| SPX | partial | blocked_by_check (answer_total_range_named) | 8 |
+| NEM | partial | blocked_by_check (series_covers_download) | 6 |
+| CPI | partial | blocked_by_check, stalled | 4 |
+| GISTEMP | partial | stalled | 6 |
+| EPL | partial | unverified_figures, stalled | 26 |
+| NBA | partial | unverified_figures, stalled | 20 |
+| NGSTORAGE | partial | unverified_figures, stalled | 11 |
+| AUUNEMP | checkpoint | budget_spent | 0 |
+
+Two of ten met. NVDA completed for the first time with the goal unchanged (M9-1 met). Defects read from the stored runs, and
+what was changed:
+- SPX: the answer gave the measured 80% range of the 20-day total (132,064 to 145,108), and the check read it as the
+  together bound (130,785 to 146,388), because the two differ by under 1%. A stated figure now belongs to the nearest of
+  a total's ranges (main 64c0d6f). The title "S&P 500 Daily Close" is now read as a level, so no total is offered
+  (fd16ce5).
+- NEM: the download was a long file of several regions (604 rows); the run kept the 120 NSW rows in code and was blocked
+  as a pasted preview. A series that sandbox code derived from the downloaded file now passes; a typed list is still
+  blocked (dc0cc8a).
+- CPI: `download_open_data` had no source `fred`. A keyless FRED source (series code, optional dates) is now in the
+  registry (5ef922f); measured live: 34 monthly CPIAUCSL rows from January 2024.
+- GISTEMP: a downloaded file had no fetch record, so its provenance was refused. Downloads now leave one (c25352e).
+- NGSTORAGE: EIA's history workbook is a legacy `.xls` and was refused; the planner then retried the same failing
+  addresses. XLS workbooks now land, keeping the sheet with the most numeric rows and its header row (1c8cb0d); measured
+  live: 882 weekly Lower 48 storage rows from EIA. "return 403/404" was also flagged as a figure; status codes after a
+  fetch verb are now skipped.
+- NBA: the answer listed the Spurs at 11-6 with 3.5 games behind; the downloaded table says 15-4 and 0.5. The figure
+  check was right to flag it. Planner v29 says every figure in the answer is copied from a tool result.
+- EPL: openfootball stopped on 20 September and the run passed the current season as its own history. Planner v29 names
+  the fixturedownload results CSV and says history holds earlier seasons only (dc0cc8a).
+- AUUNEMP: a slow model call spent the model-service budget. The panel now retries a refused continue (fd16ce5).
+
+Incident (2026-11-26, my error): `git add -A` in an integration worktree committed a `.venv` link, and the fast-forward
+replaced the real environment. The link was removed from the repository, `.venv` is ignored as a file or folder, the
+environment was rebuilt, and the undeclared imports duckdb and lxml are now dependencies (6eacf35, 4b40b59, 5bdf271).
