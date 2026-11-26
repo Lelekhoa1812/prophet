@@ -500,8 +500,12 @@ SOURCES: dict[str, Source] = {
     # found holds unit prices, not demand. This file is reachable and holds 5-minute TOTALDEMAND per region (measured).
     "aemo_price_demand": Source(
         key="aemo_price_demand",
+        # Panel rounds 9 to 11 (NEM): the month file ends at 00:00, which closes the day before, so a pandas daily mean
+        # made that one reading the last "day"; round 11 also fetched two months, 58 days, too few to calibrate.
         title="AEMO National Electricity Market price and demand for one region and one month (5-minute TOTALDEMAND in "
-              "MW and RRP), as CSV",
+              "MW and RRP), as CSV. SETTLEMENTDATE is the end of each interval. For a daily forecast fetch at least 6 "
+              "months and build days with pl.build_series(df, 'TOTALDEMAND', 'SETTLEMENTDATE', freq='D', agg='mean'), "
+              "which leaves out a partial day",
         url_template="https://www.aemo.com.au/aemo/data/nem/priceanddemand/PRICE_AND_DEMAND_{month}_{region}.csv",
         fixed_query=(),
         params={

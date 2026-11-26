@@ -904,6 +904,10 @@ def _source_texts(history: list) -> dict[str, list[str]]:
     return out
 
 
+# A date in words or numbers ("20 Nov 2026", "Nov 20, 2026", "2026-11-20"): its digits are not a value.
+DATE_WORDS = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+                        r"(?:\s+\d{4})?|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?",
+                        re.I)
 _QUOTED = re.compile(r"[\"\u201c\u201d]([^\"\u201c\u201d\n]{8,240})[\"\u201c\u201d]")
 
 

@@ -272,3 +272,22 @@ def test_an_outside_line_needs_a_quote_from_its_site(tmp_path):
               "\n## Files\n- out/forecast.png")
     out, removed = _check_outside(c, answer)
     assert out.count("cpc.ncep.noaa.gov") == 1 and "strong-to-very strong" in out and "2 outside claim(s)" in out
+
+
+# Round 11: the latest-value check read a day (NGSTORAGE) and a count (NVDA) as the value, in sentences that gave it right.
+def test_a_sentence_that_gives_the_last_value_passes():
+    said = ("**Source:** EIA weekly storage (downloaded 27 Nov 2026, latest observation 20 Nov 2026 = 3,858 Bcf).")
+    assert contracts._latest_and_end(said, _fc("2026-11-20", 3858.0)) == []
+    said = ("**Source:** NVDA_daily.csv (Nasdaq historical, 2024-11-27 to 2026-11-27) -> out/series.json (close price, 521 "
+            "points, last observed **$149.3 on 2026-11-25**).")
+    assert contracts._latest_and_end(said, _fc("2026-11-25", 149.3)) == []
+    assert contracts._latest_and_end("Latest observed value: 4.1% (October 2026).", _fc("2026-10-01", 4.864833))
+
+
+# Round 11 (EPL): "Ask me which clubs to keep" was never asked.
+def test_a_question_the_request_asks_for_is_a_checklist_item():
+    items = contracts.progress([], asks=True)
+    assert any("ask the person" in it["item"] and it["status"] == "todo" for it in items)
+    done = contracts.progress([{"kind": "ask_user", "questions": [{}], "answers": {"q": "a"}}], asks=True)
+    assert any("ask the person" in it["item"] and it["status"] == "done" for it in done)
+    assert not any("ask the person" in it["item"] for it in contracts.progress([]))

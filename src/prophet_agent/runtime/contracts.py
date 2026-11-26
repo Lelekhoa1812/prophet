@@ -1078,7 +1078,7 @@ def match_results_landed(obs: list) -> bool:
     return False
 
 
-def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False) -> list[dict]:
+def progress(history, *, run_root=None, wants_files: bool = False, external: bool = False, asks: bool = False) -> list[dict]:
     """The mission checklist: what a finished forecast needs, each item done or still to do, from the evidence alone.
 
     Motivation: a model that sees only what it has done tends to finish when it has done something. Showing the whole list on
@@ -1093,6 +1093,12 @@ def progress(history, *, run_root=None, wants_files: bool = False, external: boo
     backtested = any(isinstance(_ok_result(h, t), dict) for h in obs for t in ("backtest_series", "panel_backtest"))
     stages = ledger_stages(obs, run_root)
     items: list[dict] = [{"item": "inspect the data (sandbox_python or inspect_data)", "status": "done" if inspected else "todo"}]
+    if asks:
+        # Panel round 11 (EPL): the request said "Ask me which clubs to keep", the planner never asked, and the evaluator
+        # held the answer back for it. A question the person asked to be asked is an item of its own.
+        answered = any(h.get("kind") in ("ask_user", "evaluator_question") and h.get("answers") for h in obs)
+        items.append({"item": "ask the person the question the request says to ask (ask_user), once the data shows the "
+                              "choices", "status": "done" if answered else "todo"})
     simulated = any(isinstance(_ok_result(h, "simulate_season"), dict) for h in obs)
     if simulated or match_results_landed(obs):
         # A league is forecast by simulating its remaining fixtures from match results, not as a time series. Panel round 3
@@ -2277,6 +2283,14 @@ _AHEAD_WORDS = re.compile(r"\b(?:forecasts?|window|horizon|ahead|next|predict\w*
 _SPAN_END = re.compile(r"(?:\bto\b|\bthrough\b|\buntil\b|\bending\b|[–—]|\s-\s)\s*(\d{4}-\d{2}-\d{2})")
 
 
+def _matches_value(token: str, value: float) -> bool:
+    """True when a written figure is the value at its own rounding, or the value as a percentage."""
+    x = float(token.replace(",", ""))
+    dec = len(token.split(".")[1]) if "." in token else 0
+    tol = 0.5 * 10 ** -dec + 1e-9
+    return abs(x - value) <= tol or abs(x - abs(value)) <= tol or abs(x / 100 - value) <= tol / 100
+
+
 def _last_observed(obs: list) -> dict | None:
     """The last observed point the newest single-series forecast started from ({date, value}), or None."""
     for h in reversed(obs):
@@ -2313,16 +2327,17 @@ def _latest_and_end(text: str, obs: list) -> list[dict]:
                 m = _ON_DAY.search(unit)
             if not m or _OUTSIDE.search(unit):
                 continue
-            fig = next((f for f in _FIGURE.finditer(unit[m.end():m.end() + 60])
-                        if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1))), None)
+            # Round 11: "latest observation 20 Nov 2026 = 3,858 Bcf" (NGSTORAGE) read the day as the value, and "521 points,
+            # last observed $149.3 on 2026-11-25" (NVDA) read the count. Dates are not values, and a sentence that states
+            # the last observed value anywhere states it.
+            plain = grounding.DATE_WORDS.sub(" ", unit)
+            if any(_matches_value(f.group(1), value) for f in _FIGURE.finditer(plain)):
+                continue
+            tail = grounding.DATE_WORDS.sub(" ", unit[m.end():m.end() + 60])
+            fig = next((f for f in _FIGURE.finditer(tail) if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1))), None)
             if fig is None:
                 continue
             token = fig.group(1)
-            x = float(token.replace(",", ""))
-            dec = len(token.split(".")[1]) if "." in token else 0
-            tol = 0.5 * 10 ** -dec + 1e-9
-            if abs(x - value) <= tol or abs(x - abs(value)) <= tol or abs(x / 100 - value) <= tol / 100:
-                continue
             checks.append(_check("answer_latest_value", False,
                                  f"the answer gives {token} as the latest value ({unit.strip()[:160]}), but the last observed "
                                  f"value is {value:g}{' on ' + last['date'][:10] if last.get('date') else ''}; give that value, "
@@ -2334,7 +2349,9 @@ def _latest_and_end(text: str, obs: list) -> list[dict]:
             if not _DATA_WORDS.search(unit) or _AHEAD_WORDS.search(unit):
                 continue
             stated = [d for d in _SPAN_END.findall(unit)]
-            later = [d for d in stated if d > end]
+            # A sentence that also names the last observed date (NVDA round 11: "2024-11-27 to 2026-11-27 ... last observed
+            # $149.3 on 2026-11-25") gives the requested span and the real end; it does not claim data past the end.
+            later = [d for d in stated if d > end] if end not in unit else []
             if later:
                 checks.append(_check("answer_data_end", False,
                                      f"the answer says the data runs to {later[0]} ({unit.strip()[:160]}), but the last "

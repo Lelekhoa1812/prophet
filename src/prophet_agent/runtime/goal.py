@@ -2349,7 +2349,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         if cfg.depth == 0 and FORECAST_GOAL.search(goal):
             # The checklist is derived from the evidence on every step, so it cannot drift and a resumed run sees the same one.
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
-                                       external=bool(EXTERNAL_GOAL.search(goal)))
+                                       external=bool(EXTERNAL_GOAL.search(goal)), asks=bool(ASKED_TO_ASK.search(goal)))
             note += "\n\n" + contracts.render_progress(items)
             if (asked := _asked_block(goal, "planner")):
                 note += "\n\n" + asked
@@ -2513,7 +2513,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # and the refusal names the next item. Decided from the stored history, so a resumed run refuses the same finish.
             refused = sum(1 for h in history if h.get("kind") == "finish_refused")
             items = contracts.progress(history, run_root=SANDBOX_ROOT, wants_files=bool(FILES_GOAL.search(goal)),
-                                       external=bool(EXTERNAL_GOAL.search(goal)))
+                                       external=bool(EXTERNAL_GOAL.search(goal)), asks=bool(ASKED_TO_ASK.search(goal)))
             nxt = next((it["item"] for it in items if it.get("status") != "done"), None)
             if nxt and refused < MAX_PREMATURE_FINISHES:
                 history.append({"kind": "finish_refused", "rationale": plan.get("rationale", ""), "next": nxt,
