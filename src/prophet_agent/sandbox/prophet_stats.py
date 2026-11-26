@@ -1192,7 +1192,18 @@ class Ledger:
         saved. Logic: read the file once, so ``entries`` shows the history and later ``save`` calls extend it.
         """
         led = cls()
-        led._entries = _read_ledger(path) or []
+        # Round 7 (AUUNEMP): every cell starts with an empty out/, so Ledger.open() read nothing, eight times, while the
+        # newest ledger sat at in/carried/ledger.json. A path that does not exist falls back to the carried file of that name.
+        source = path
+        if not Path(path).exists():
+            carried = Path("in") / "carried" / Path(path).name
+            if carried.exists():
+                source = str(carried)
+        led._entries = _read_ledger(source) or []
+        if source != path:
+            print(f"ledger: opened {source} ({len(led._entries)} entries); save() writes {path}")
+        elif not Path(path).exists():
+            print(f"ledger: no ledger at {path} or in/carried/; starting empty")
         return led
 
     @property

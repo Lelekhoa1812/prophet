@@ -152,12 +152,16 @@ HIGH_RISK = re.compile(r"\bhigh[- ]risk\b\s*[:,-]?\s*(.{20,})", re.I | re.S)
 
 
 def as_question_action(plan: dict) -> dict:
-    """A plan that calls a tool named ask_user with questions is the ask_user action it means.
+    """A plan that calls a tool named ask_user with questions is the ask_user action it means; one named finish is finish.
 
     Motivation: panel round 4 (EPL, 2026-11-27), the planner sent action call_tool with tool ask_user three times; each got
     "unknown tool 'ask_user'" and the run stalled on the repeat. The questions and rationale are kept as written.
     """
     args = plan.get("args") if isinstance(plan.get("args"), dict) else {}
+    # Round 7 (CO2): the planner also sent finish as a tool call; "unknown tool 'finish'" repeated until the run stalled.
+    if plan.get("action") == "call_tool" and plan.get("tool") == "finish":
+        return {**{k: v for k, v in plan.items() if k not in ("tool", "args")}, "action": "finish",
+                "rationale": plan.get("rationale") or str(args.get("rationale") or "")}
     if plan.get("action") == "call_tool" and plan.get("tool") == "ask_user" and "questions" in args:
         return {**{k: v for k, v in plan.items() if k not in ("tool", "args")}, "action": "ask_user",
                 "questions": args["questions"]}

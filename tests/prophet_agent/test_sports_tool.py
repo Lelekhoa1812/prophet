@@ -106,7 +106,7 @@ def test_tool_win_loss_with_games_per_team_and_observe_view(tmp_path):
     assert out["metric"] == "wins"
     assert all(r["final"]["p90"] <= 20 for r in out["teams"])
     view = observe_simulate(out)
-    assert len(view["standings"]) <= 20 and "note" in view and "teams" in view
+    assert "standings" not in view and len(view["teams"]) <= 6 and "note" in view   # standings stay in the full result
 
 
 @pytest.mark.parametrize("args, message", [

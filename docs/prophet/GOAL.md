@@ -1368,3 +1368,35 @@ Other defects, and what was changed:
   its address had no record. A stored dataset downloaded from the address now counts as fetched. A research sub-agent
   fetched one HTTP 404 page five times; an address that answered 401, 403, 404 or 410 is not fetched again in the mission.
 
+### Panel round 7 (measured, run 20261127-032958, API on 34297f7, planner v32, evaluator v11, 2026-11-27)
+
+| Mission | Final status | Reasons | Sandbox cells |
+|---|---|---|---|
+| CPI | completed | none | 6 |
+| GISTEMP | completed | none | 9 |
+| NVDA | completed | none | 8 |
+| SPX | completed | none | 6 |
+| AUUNEMP | partial | stalled | 22 |
+| CO2 | partial | unverified_figures, stalled | 15 |
+| EPL | partial | blocked_by_check, unverified_figures | 1 |
+| NBA | partial | unverified_figures | 5 |
+| NEM | partial | unverified_figures, stalled | 13 |
+| NGSTORAGE | partial | blocked_by_check, unverified_figures | 7 |
+
+Four of ten met (round 6: four). Unverified figures were the most common reason. Read against the stored evidence, they
+were of two kinds:
+- Made-up figures, correctly held back. NBA's answer gave backtest errors of 2.1 and 2.8 wins and a clear win over the
+  baseline; the backtest measured Brier and log loss and found no clear difference. A NGSTORAGE sub-agent wrote a latest
+  value of 3,497 Bcf that no tool printed.
+- Labels read as figures. "10/90 quantiles" (CO2) and "10\u201390% ranges" (EPL) are now labels like "10\u201390% interval".
+Other defects, and what was changed:
+- NBA: the simulation view was 13,592 characters, over the 4,000 an observation shows, so the planner paged 18 times
+  through the full result before writing the answer above. The view now fits one observation: six team rows (or the
+  named teams), the backtest's overall scores and verdicts, compact paths (every tenth unplayed game and the last) and
+  the settings an answer cites. Standings, ratings, intervals and full paths stay in the full result (measured: NBA
+  3,150 characters, EPL 3,962 and 3,477).
+- AUUNEMP: `ps.Ledger.open()` reads `out/ledger.json`, which is empty at the start of every cell, so eight cells opened an
+  empty ledger while the newest one sat at `in/carried/ledger.json`. A path that does not exist now falls back to the
+  carried file of that name, and the cell says which file it opened.
+- CO2: the planner sent finish as a tool call and got "unknown tool" until the run stalled; it is now the finish action.
+

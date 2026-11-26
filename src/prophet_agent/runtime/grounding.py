@@ -99,12 +99,14 @@ _IDENTIFIER = re.compile(
     rf"\b{_LABEL_NOUN}s?\s*#?\s*\d{{1,4}}(?:\s*(?:,\s+|-|\u2013|\u2014|/|to|through)\s*\d{{1,4}})*\b(?![.,]\d)", re.I)
 # Standard quantile levels written as a band ("10\u201390%", "5-95% interval"). Only these pairs are labels. Any other
 # range, such as an invented width "\u00b115\u201320%", is a claim the evidence has to support.
-_LEVEL_PAIR = re.compile(r"(?<![\w.])(\d{1,2}(?:\.\d+)?)\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2}(?:\.\d+)?)")
+# Round 7 (CO2): "10/90 quantiles" is the same label written with a slash.
+_LEVEL_PAIR = re.compile(r"(?<![\w.])(\d{1,2}(?:\.\d+)?)\s*(?:-|\u2013|\u2014|to|/)\s*(\d{1,2}(?:\.\d+)?)")
 _LEVEL_PAIRS = {(10.0, 90.0), (5.0, 95.0), (2.5, 97.5), (25.0, 75.0), (20.0, 80.0)}
 # A "%" makes a pair a band label only when a band word follows it ("10-90% interval", "(10-90%) range"). A bare "growth of
 # 10-90%" is a measured range and keeps its figures (audit round 6m).
-_BAND_WORD = re.compile(r"\s*%(?=\)?\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b)|"
-                        r"\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|range)\b", re.I)
+# Round 7 (EPL): "10\u201390% ranges" is the plural of the same label.
+_BAND_WORD = re.compile(r"\s*%(?=\)?\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|ranges?)\b)|"
+                        r"\s*(?:bands?|pctl|percentiles?|quantiles?|prediction|intervals?|ranges?)\b", re.I)
 
 
 def _blank(text: str, span: tuple[int, int]) -> str:

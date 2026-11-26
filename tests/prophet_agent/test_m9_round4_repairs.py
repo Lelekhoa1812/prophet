@@ -158,7 +158,7 @@ def test_simulation_view_leaves_out_points_paths():
     from prophet_agent.tools.sports_tool import observe_simulate
     result = {"teams": [{"team": "A"}], "points_paths": {"A": [{"game": 1, "median": 3.0}]}, "standings": [], "ratings": []}
     view = observe_simulate(result)
-    assert "points_paths" not in view and "points_paths" in result and "full paths" in view["note"]
+    assert "points_paths" not in view and "points_paths" in result and "do not page" in view["note"]
 
 
 # EPL (round 6): the goal asks for the points path, so a compact path stays in the view.
@@ -167,7 +167,7 @@ def test_simulation_view_keeps_a_compact_path():
     path = [{"game": g, "measured": g <= 10, "median": 3.0 * g, "p10": 2.0 * g, "p90": 4.0 * g} for g in range(1, 39)]
     view = observe_simulate({"teams": [{"team": "A"}], "points_paths": {"A": path}, "standings": [], "ratings": []})
     rows = view["points_path_summary"]["A"]
-    assert [r[0] for r in rows] == [15, 20, 25, 30, 35, 38]
+    assert [r[0] for r in rows] == [20, 30, 38]
     assert rows[-1] == [38, 114.0, 76.0, 152.0]
 
 
@@ -264,3 +264,49 @@ def test_a_missing_page_is_not_fetched_again():
     with pytest.raises(ValueError, match="already answered HTTP 404"):
         guarded({"url": "https://data.giss.nasa.gov/gistemp/GMSTA/"}, "k2")
     guarded({"url": "https://data.giss.nasa.gov/gistemp/"}, "k3")       # the host is not refused
+
+
+# NBA (round 7): a 13,592-character view was clipped, the planner paged 18 times through the full result, and the answer
+# stated backtest errors no tool produced. The view fits one observation.
+def test_simulation_view_fits_one_observation():
+    from prophet_agent.runtime.goal import OBS_CHARS
+    from prophet_agent.tools.sports_tool import observe_simulate
+    teams = [f"Team {i}" for i in range(30)]
+    rows = [{"team": t, "current": 4.0, "expected_final": 41.123456, "expected_rank_in_group": 12.3456,
+             "final": {"median": 41.0, "p10": 35.0, "p90": 47.0}, "playoff": 0.512345} for t in teams]
+    paths = {t: [{"game": g, "measured": g <= 26, "median": g * 0.5, "p10": g * 0.4, "p90": g * 0.6}
+                 for g in range(1, 83)] for t in teams}
+    bt = {"models": {"m": {"brier": 0.2492, "log_loss": 0.6916, "brier_home": 0.1}}, "n_test": 131, "origins": 6,
+          "comparisons": [{"comparison": f"m vs b{i}", "verdict": "no_clear_difference", "mean_difference": -0.0016,
+                           "ci95": [-0.005, 0.002]} for i in range(4)]}
+    full = {"teams": rows, "points_paths": paths, "standings": rows, "ratings": rows, "backtest": bt,
+            "settings": {"model": "normal score-margin model", "n_played": 261, "margin_sd": 15.9}}
+    view = observe_simulate(full)
+    assert len(json.dumps(view)) < OBS_CHARS
+    assert len(view["teams"]) == 6 and view["teams_not_shown"] == 24 and len(view["points_path_summary"]) == 6
+    assert view["backtest"]["models"] == {"m": {"brier": 0.249, "log_loss": 0.692}}
+    assert view["settings"] == {"model": "normal score-margin model", "n_played": 261}
+
+
+# Round 7: "10/90 quantiles" (CO2) and "10–90% ranges" (EPL) are labels; finish sent as a tool call is the finish action.
+@pytest.mark.parametrize("phrase", ["point forecasts and 10/90 quantiles for each day", "their median paths and 10–90% ranges"])
+def test_more_band_labels(phrase):
+    assert unverified(phrase, [], "forecast") == []
+
+
+def test_finish_tool_call_becomes_the_finish_action():
+    out = goal.as_question_action({"action": "call_tool", "tool": "finish", "args": {}, "rationale": "done"})
+    assert out == {"action": "finish", "rationale": "done"}
+
+
+# AUUNEMP (round 7): Ledger.open() read the empty out/ of a new cell while the ledger sat at in/carried/ledger.json.
+def test_ledger_open_falls_back_to_the_carried_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in" / "carried").mkdir(parents=True)
+    (tmp_path / "in" / "carried" / "ledger.json").write_text(json.dumps(
+        [{"index": 1, "stage": "coverage", "finding": "no gaps", "decision": "kept"}]))
+    led = ps.Ledger.open()
+    assert [e["stage"] for e in led.entries] == ["coverage"]
+    assert "opened in/carried/ledger.json (1 entries)" in capsys.readouterr().out
+    (tmp_path / "in" / "carried" / "ledger.json").unlink()
+    assert ps.Ledger.open().entries == [] and "starting empty" in capsys.readouterr().out

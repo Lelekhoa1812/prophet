@@ -96,31 +96,71 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
     return result
 
 
-def compact_path(path: Any) -> list:
-    """The unplayed part of one team's points path: every fifth game and the last, as [game, median, p10, p90]."""
+VIEW_TEAMS = 6           # team rows in the planner's view when no teams were named
+VIEW_PATHS = 6           # teams whose compact points path is shown
+
+
+def compact_path(path: Any, every: int = 5) -> list:
+    """The unplayed part of one team's points path: every ``every``-th game and the last, as [game, median, p10, p90]."""
     if not isinstance(path, list):
         return []
     ahead = [p for p in path if isinstance(p, dict) and not p.get("measured")]
-    keep = [p for i, p in enumerate(ahead) if i % 5 == 4 or i == len(ahead) - 1]
+    keep = [p for i, p in enumerate(ahead) if i % every == every - 1 or i == len(ahead) - 1]
     return [[p.get("game"), p.get("median"), p.get("p10"), p.get("p90")] for p in keep]
 
 
-def observe_simulate(result: dict) -> dict:
-    """The planner's view: the team table, settings, backtest and the first 20 standings and ratings. The ledger keeps all."""
+def _rounded(value: Any) -> Any:
+    if isinstance(value, float):
+        return round(value, 3)
+    if isinstance(value, dict):
+        return {k: _rounded(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rounded(v) for v in value]
+    return value
+
+
+def _compact_backtest(bt: Any) -> Any:
+    """Each model's overall scores and each comparison's verdict and mean difference (intervals stay in the full result)."""
+    if not isinstance(bt, dict) or "comparisons" not in bt:
+        return bt
+    keep = {k: bt.get(k) for k in ("n_test", "origins", "reading") if k in bt}
+    if isinstance(bt.get("models"), dict):        # the overall scores only; per-outcome scores stay in the full result
+        keep["models"] = {m: {k: v for k, v in sc.items() if k in ("brier", "rps", "log_loss", "mae")}
+                          for m, sc in bt["models"].items() if isinstance(sc, dict)}
+    keep["comparisons"] = [{k: c.get(k) for k in ("comparison", "verdict", "mean_difference")}
+                           for c in bt.get("comparisons") or [] if isinstance(c, dict)]
+    return _rounded(keep)
+
+
+def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dict:
+    """The planner's view, sized to fit one observation: the named teams' rows (or the first six), the backtest verdicts,
+    and compact points paths. The full result, with every team, the standings, ratings and paths, stays in the ledger.
+
+    Motivation: panel round 4 (EPL) paged eight times through game-by-game paths; round 6 (EPL) lost the path the goal asks
+    for when they were dropped; round 7 (NBA) the view was 13,592 characters, so it was clipped and the planner paged
+    18 times through the full result, and the answer then stated backtest errors no tool produced.
+    """
     if "teams" not in result:
         return result
-    # Panel round 4 (EPL): the points paths were 11,315 of 24,905 characters, and the planner paged eight times to read a
-    # game-by-game table it never used. The paths stay in the full result for charts and checks.
-    # Round 6 (EPL): with the paths gone the evaluator could not see the points path the goal asks for. A compact path stays:
-    # the unplayed games every fifth game and the last, as [game, median, p10, p90].
-    out = {k: v for k, v in result.items() if k not in ("standings", "ratings", "points_paths")}
-    out["standings"] = (result.get("standings") or [])[:20]
-    out["ratings"] = (result.get("ratings") or [])[:20]
+    named = [t for t in (teams_of_interest or []) if isinstance(t, str)]
+    rows = [r for r in result.get("teams") or [] if isinstance(r, dict)]
+    shown = [r for r in rows if r.get("team") in named] if named else rows[:VIEW_TEAMS]
+    out = {k: v for k, v in result.items() if k not in ("standings", "ratings", "points_paths", "teams", "backtest")}
+    out["teams"] = _rounded(shown or rows[:VIEW_TEAMS])
+    if isinstance(result.get("settings"), dict):    # the fields an answer cites; the rest stay in the full result
+        out["settings"] = {k: v for k, v in result["settings"].items()
+                           if k in ("model", "n_played", "n_remaining", "n_sims", "points_rule", "games_per_team")}
+    if len(rows) > len(out["teams"]):
+        out["teams_not_shown"] = len(rows) - len(out["teams"])
+    if "backtest" in result:
+        out["backtest"] = _compact_backtest(result["backtest"])
     if isinstance(result.get("points_paths"), dict):
-        out["points_path_summary"] = {team: compact_path(path) for team, path in result["points_paths"].items()}
-    out["note"] = ("per-team ranges shown; points_path_summary gives each team's path as [game, median, p10, p90] every "
-                   "fifth unplayed game and the last; the full paths, standings and ratings are kept in the ledger. Do not "
-                   "sum ranges across teams.")
+        order = [r.get("team") for r in out["teams"]]
+        paths = {t: result["points_paths"][t] for t in order if t in result["points_paths"]}
+        out["points_path_summary"] = {t: compact_path(p, every=10) for t, p in list(paths.items())[:VIEW_PATHS]}
+    out["note"] = ("every figure the answer needs is in this view: per-team ranges, the backtest verdicts and "
+                   "points_path_summary ([game, median, p10, p90] every tenth unplayed game and the last). The full "
+                   "standings, ratings and paths are in the ledger; do not page through them. Do not sum ranges across teams.")
     return out
 
 
