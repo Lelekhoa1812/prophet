@@ -153,6 +153,15 @@ def _code(pattern: re.Pattern, what: str) -> Callable[[Any], str]:
     return check
 
 
+def _month(value: Any) -> str:
+    """A calendar month as YYYYMM (AEMO's file names). YYYY-MM is accepted and written without the dash."""
+    text = str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) else ""
+    text = text.replace("-", "")
+    if not re.fullmatch(r"\d{6}", text) or not 1998 <= int(text[:4]) <= 2100 or not 1 <= int(text[4:]) <= 12:
+        raise ValueError("must be a month as YYYYMM, for example 202610")
+    return text
+
+
 def _years_after(start: date, years: int) -> date:
     try:
         return start.replace(year=start.year + years)
@@ -486,6 +495,21 @@ SOURCES: dict[str, Source] = {
         fixed_query=(),
         params={},
         licence_key="nasa_giss",
+    ),
+    # Panel round 4 (NEM, 2026-11-27): aemo.com.au pages answer with a bot check, and the NEMWEB dispatch file the planner
+    # found holds unit prices, not demand. This file is reachable and holds 5-minute TOTALDEMAND per region (measured).
+    "aemo_price_demand": Source(
+        key="aemo_price_demand",
+        title="AEMO National Electricity Market price and demand for one region and one month (5-minute TOTALDEMAND in "
+              "MW and RRP), as CSV",
+        url_template="https://www.aemo.com.au/aemo/data/nem/priceanddemand/PRICE_AND_DEMAND_{month}_{region}.csv",
+        fixed_query=(),
+        params={
+            "month": Param("month", True, "Month as YYYYMM, for example 202610. One file per month.", _month),
+            "region": Param("choice", True, "NEM region: NSW1, QLD1, VIC1, SA1 or TAS1.",
+                            _choice("NSW1", "QLD1", "VIC1", "SA1", "TAS1")),
+        },
+        licence_key="aemo",
     ),
     "snb_cube": Source(
         key="snb_cube",

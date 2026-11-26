@@ -1200,8 +1200,8 @@ class Ledger:
         """All entries in order, each with its running index. Read-only: a copy, so changing it changes nothing."""
         return self.to_dict()
 
-    def add(self, stage: str, finding: str, decision: str, evidence: Any = None, expected: str | None = None,
-            outcome: str | None = None) -> None:
+    def add(self, stage: str, finding: str, decision: str | None = None, evidence: Any = None, expected: str | None = None,
+            outcome: str | None = None, rationale: str | None = None) -> None:
         """Record one finding and the decision taken about it. stage, finding and decision must be non-empty text.
 
         ``expected`` is the prediction written down before the test ("the level shifted in 2024"), and ``outcome`` says
@@ -1210,7 +1210,13 @@ class Ledger:
 
         Motivation vs Logic (A4-10): none of the audited ledgers recorded a falsifiable expectation, so the method's
         hypothesis step could not be seen. The fields make it visible; a later check may require them.
+
+        ``rationale`` is the reason for the decision; it is added to the decision text (panel round 4, NVDA: a cell passed
+        rationale= and failed, and the ledger step stalled the run). Given alone it is the decision.
         """
+        if isinstance(rationale, str) and rationale.strip():
+            decision = (f"{decision.strip()} Why: {rationale.strip()}" if isinstance(decision, str) and decision.strip()
+                        else rationale.strip())
         for field_name, value in (("stage", stage), ("finding", finding), ("decision", decision)):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"every ledger entry needs a non-empty {field_name}")
@@ -1288,6 +1294,7 @@ class Ledger:
             print(f"ledger: saved with no new entry in this cell ({len(merged)} entries in {path}); no add or decide ran")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        _remember_saved_ledger(str(target), merged)
         return str(target)
 
 
@@ -1317,6 +1324,46 @@ def _scan_findings(finding_id: str) -> tuple[list[dict[str, Any]], set[str]]:
                 if f.get("id") == finding_id and f not in found:
                     found.append(f)
     return found, known
+
+
+# The entries each Ledger.save of this process wrote, by absolute path. Panel round 4 (GISTEMP, 2026-11-27): a cell saved four
+# new stages with ps.Ledger, then ran shutil.copy('in/carried/ledger.json', 'out/') and wrote the old file over the new one;
+# the checklist read one stage for five cells. At the end of the cell the lost entries are written back and the cell says so.
+_SAVED_LEDGERS: dict[str, list[dict[str, Any]]] = {}
+
+
+def _remember_saved_ledger(path: str, entries: list[dict[str, Any]]) -> None:
+    import atexit
+    import os
+    if not _SAVED_LEDGERS:
+        atexit.register(keep_saved_ledgers)
+    _SAVED_LEDGERS[os.path.abspath(path)] = [dict(e) for e in entries]
+
+
+def keep_saved_ledgers() -> list[str]:
+    """Write back the entries a later plain write removed from a ledger that Ledger.save wrote in this process. Returns the
+    paths repaired. Entries the file holds now come first; the lost ones follow."""
+    repaired = []
+    for path, saved in _SAVED_LEDGERS.items():
+        try:
+            on_disk = _read_ledger(path) or []
+        except ValueError:
+            on_disk = []
+        missing = [e for e in saved if e not in on_disk]
+        if not missing:
+            continue
+        merged = saved if saved[: len(on_disk)] == on_disk else on_disk + missing
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(json.dumps([{"index": i, **e} for i, e in enumerate(merged, start=1)], indent=2,
+                                             ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            continue
+        repaired.append(path)
+        print(f"ledger: {Path(path).name} was written over after ps.Ledger saved it in this cell; the {len(missing)} "
+              f"entries it lost were written back ({len(merged)} entries). Do not copy a carried ledger over out/; "
+              "ps.Ledger.open it and add to it")
+    return repaired
 
 
 def _read_ledger(path: str) -> list[dict[str, Any]] | None:

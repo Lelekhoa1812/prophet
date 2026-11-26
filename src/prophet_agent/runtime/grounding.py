@@ -77,7 +77,9 @@ def _drop_row_indexes(text: str) -> str:
 #   - a conventional significance threshold ("p < 0.05"), which states a decision rule rather than a measured value.
 _LIST_MARK = re.compile(r"^(\s*)\d{1,2}([.)])\s", re.M)
 _LEVEL = re.compile(
-    r"\b\d{1,2}(?:\.\d+)?\s?%\s+(?:prediction |likely |confidence |credible )?(?:interval|band)\b"
+    # Panel round 4 (EPL, NBA): "95% CI" and "95% bootstrap interval" are labels too.
+    r"\b\d{1,2}(?:\.\d+)?\s?%\s+(?:(?:prediction|likely|confidence|credible|bootstrap(?:ped)?|uncertainty|forecast)\s+)*"
+    r"(?:intervals?|bands?|CI|PI|CrI)\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)?\s*(?:-|\u2013|to|and)\s*\d{1,2}(?:st|nd|rd|th)?\s+(?:percentile|quantile)s?\b"
     r"|\b\d{1,2}(?:st|nd|rd|th)\s+(?:percentile|quantile)s?\b"
     r"|\b[Pp]\d{1,2}\b", re.I)

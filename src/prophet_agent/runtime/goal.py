@@ -149,7 +149,22 @@ _OTHER_GAP = re.compile(r"\b(total|workbook|backtest|chart|rows|table)\b", re.I)
 # declares it high-risk and says how a wrong guess changes the numbers; anything else the agent decides and states as an
 # assumption. Replaces MAX_ASKS = 8, which was set after a mission asked 109 low-value questions (mission 0c7432c7).
 HIGH_RISK = re.compile(r"\bhigh[- ]risk\b\s*[:,-]?\s*(.{20,})", re.I | re.S)
-SUB_STEPS = 14            # default step budget of a delegated sub-agent
+
+
+def as_question_action(plan: dict) -> dict:
+    """A plan that calls a tool named ask_user with questions is the ask_user action it means.
+
+    Motivation: panel round 4 (EPL, 2026-11-27), the planner sent action call_tool with tool ask_user three times; each got
+    "unknown tool 'ask_user'" and the run stalled on the repeat. The questions and rationale are kept as written.
+    """
+    args = plan.get("args") if isinstance(plan.get("args"), dict) else {}
+    if plan.get("action") == "call_tool" and plan.get("tool") == "ask_user" and "questions" in args:
+        return {**{k: v for k, v in plan.items() if k not in ("tool", "args")}, "action": "ask_user",
+                "questions": args["questions"]}
+    return plan
+
+
+SUB_STEPS = 14           # default step budget of a delegated sub-agent
 BRANCH_BLOCK = 100_000    # step numbers reserved per plan step for parallel sub-agents, and per agent within it
 BRANCH_STRIDE = 20_000
 # The horizon a goal asks for: "next 20 trading days", "60 days ahead", "horizon of 12 periods" (digits only). Units are
@@ -2100,6 +2115,44 @@ def _accept_despite_level_demand(history: list[dict]) -> dict:
     }
 
 
+def _dated_span_check(asked: str, count: int, unit: str, rec: dict, history: list[dict]) -> dict | None:
+    """The horizon check by calendar dates, for a request in days, weeks, months, quarters or years when the forecast's window
+    names its first and last dates. None when the request is in periods or trading days, or the window has no dates.
+
+    Motivation: panel round 4 (NVDA, 2026-11-27), "the next 2 months" on a trading-day series ran 40 steps from 27 November
+    2026 to 26 January 2027, two calendar months, but the period count read 2 x 30.4 = 60.9 daily periods and blocked the
+    finish; the evaluator repeated the wrong figure and the run stalled. Logic: the span runs from the data's last date (or
+    the day before the first forecast date) to the last forecast date, and must match the requested days within 5 % or 4
+    days, whichever is larger, which covers weekends and holidays at either end.
+    """
+    import datetime as dt
+    if unit in ("period", "trading_day"):
+        return None
+    window = rec.get("window") if isinstance(rec.get("window"), dict) else None
+    if window is None:
+        return None
+    try:
+        first = dt.date.fromisoformat(str(window.get("first"))[:10])
+        last = dt.date.fromisoformat(str(window.get("last"))[:10])
+    except ValueError:
+        return None
+    end = _data_facts(history).get("data_end")
+    try:
+        start = dt.date.fromisoformat(str(end)[:10]) if end else first - dt.timedelta(days=1)
+    except ValueError:
+        start = first - dt.timedelta(days=1)
+    if start >= first:
+        start = first - dt.timedelta(days=1)
+    wanted = count * UNIT_DAYS[unit]
+    span = (last - start).days
+    ok = abs(span - wanted) <= max(4.0, 0.05 * wanted)
+    detail = (f"{asked}, about {wanted:.0f} calendar days; the forecast runs from {first.isoformat()} to {last.isoformat()}, "
+              f"{span} days after the data's last date")
+    if not ok:
+        detail += ", so the plan must forecast the requested span"
+    return contracts._check("horizon_matches_request", ok, detail, "block")
+
+
 def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
     """The check that the forecast that stands runs over the horizon the goal asks for. Empty when the goal states no horizon
     or no forecast has run: the check is left out, not reported as passing.
@@ -2123,6 +2176,8 @@ def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
     horizon, rec = plan
     label = HORIZON_LABELS[unit] if count != 1 else HORIZON_LABELS[unit].rstrip("s")
     asked = f"the request asks for {count} {label}"
+    if (dated := _dated_span_check(asked, count, unit, rec, history)) is not None:
+        return [dated]
     if unit == "period":
         expected, slack = float(count), 0.5
     else:
@@ -2263,6 +2318,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                                                         finish_now=cfg.finish_now, out_of_calls=out_of_calls),
                                                           "out_of_calls": out_of_calls})
         spent = bool(plan.get("out_of_calls", out_of_calls))
+        plan = as_question_action(plan)
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
         elif plan["action"] == "ask_user":
@@ -2307,6 +2363,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         else:
             name = plan.get("tool", "")
             args = _repair_source(_drop_blank_keys(plan.get("args", {})), history)
+            if isinstance(args, dict) and "rationale" in args:
+                # No tool takes a rationale; it is the plan's own field (panel round 4, NVDA: "unknown arguments ['rationale']"
+                # five times on sandbox_python). Derived from the stored plan, so a replay drops it alike.
+                args = {k: v for k, v in args.items() if k != "rationale"}
             if name == "sandbox_python":
                 args = _auto_carry(args, history)
             stand_in = (stand_in_reason(str(args.get("code") or ""), goal)

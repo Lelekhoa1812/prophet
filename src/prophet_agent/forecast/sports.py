@@ -57,7 +57,14 @@ def _score(text: str, label: str, line: int) -> int | None:
     try:
         value = int(text)
     except ValueError:
-        raise ValueError(f"row {line}: {label} must be a whole number, got {text!r}")
+        # A score written by pandas as "121.0" is still a whole number (panel round 4, NBA).
+        try:
+            as_float = float(text)
+        except ValueError:
+            as_float = None
+        if as_float is None or not as_float.is_integer():
+            raise ValueError(f"row {line}: {label} must be a whole number, got {text!r}")
+        value = int(as_float)
     if value < 0:
         raise ValueError(f"row {line}: {label} cannot be negative")
     return value
@@ -77,8 +84,20 @@ _ISO_START = re.compile(r"^(\d{4}-\d{2}-\d{2})[T\s]")
 _RESULT = re.compile(r"^\s*(\d{1,3})\s*[-\u2013:]\s*(\d{1,3})\s*$")
 
 
-def _match_from_row(r: dict[str, str], line: int) -> Match:
-    """One match from a row whose keys are already aliased. Dates become YYYY-MM-DD; a "3 - 0" result gives both scores."""
+# A slot in a schedule whose teams are not known yet: cup knockout rounds in the fixturedownload NBA file read
+# "To be announced" on both sides (panel round 4). Such an unplayed row is left out; a played one is an error.
+PLACEHOLDER_TEAM = re.compile(r"^\s*(?:to be (?:announced|confirmed|determined|decided)|tb[acd]|winner of\b.*|loser of\b.*"
+                              r"|w\d+|l\d+)\s*$", re.I)
+
+
+def _match_from_row(r: dict[str, str], line: int) -> Match | None:
+    """One match from a row whose keys are already aliased. Dates become YYYY-MM-DD; a "3 - 0" result gives both scores.
+    An unplayed row whose teams are still placeholders gives None."""
+    if (PLACEHOLDER_TEAM.match(r.get("home") or "") or PLACEHOLDER_TEAM.match(r.get("away") or "")):
+        scored = r.get("home_goals") or r.get("away_goals") or _RESULT.match(r.get("result") or "")
+        if scored:
+            raise ValueError(f"row {line}: a played match needs both team names, got {r.get('home')!r} and {r.get('away')!r}")
+        return None
     date = r.get("date") or ""
     if (dmy := _DMY.match(date)):
         day, month, year = dmy.groups()
@@ -110,7 +129,7 @@ def read_match_records(records: list) -> list[Match]:
     rows = [_aliased(r) for r in records]
     if not {"home", "away"} <= set(rows[0]):
         raise ValueError("each match needs home and away team names (for example HomeTeam and AwayTeam)")
-    return [_match_from_row(r, i) for i, r in enumerate(rows, start=1)]
+    return [m for i, r in enumerate(rows, start=1) if (m := _match_from_row(r, i)) is not None]
 
 
 def read_matches_csv(text: str) -> list[Match]:
@@ -121,7 +140,20 @@ def read_matches_csv(text: str) -> list[Match]:
     if not {"home", "away"} <= cols:
         raise ValueError("the CSV needs columns home and away (or team1 and team2, HomeTeam and AwayTeam); date, "
                          "home_goals, away_goals and group are optional")
-    return [_match_from_row(_aliased(row), line) for line, row in enumerate(reader, start=2)]
+    return [m for line, row in enumerate(reader, start=2) if (m := _match_from_row(_aliased(row), line)) is not None]
+
+
+def placeholder_rows(text: str, filename: str = "") -> int:
+    """How many unplayed rows of a results CSV were left out because a team is still a placeholder ("To be announced")."""
+    if filename.lower().endswith(".json"):
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            return 0
+        rows = [_aliased(r) for r in doc if isinstance(r, dict)] if isinstance(doc, list) else []
+    else:
+        rows = [_aliased(row) for row in csv.DictReader(io.StringIO(text))]
+    return sum(1 for r in rows if PLACEHOLDER_TEAM.match(r.get("home") or "") or PLACEHOLDER_TEAM.match(r.get("away") or ""))
 
 
 def parse_football_json(doc: Any) -> list[Match]:

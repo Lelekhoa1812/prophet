@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from prophet_agent.forecast.sports import (DEFAULT_HALF_LIFE_DAYS, DEFAULT_POINTS, DEFAULT_PRIOR_SD, FOOTBALL, WIN_LOSS,
-                                           parse_matches, simulate_season)
+                                           parse_matches, placeholder_rows, simulate_season)
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import source_path
 
@@ -83,13 +83,17 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
     backtest = args.get("backtest", True)
     if not isinstance(backtest, bool):
         raise ValueError("backtest must be true or false")
-    return simulate_season(
+    result = simulate_season(
         matches, fixtures, sport=sport, n_sims=_int(args, "simulations", 10_000, 10, MAX_SIMS),
         seed=_int(args, "seed", 0, 0, 2**31 - 1), points=tuple(points),
         half_life_days=None if half_life is None else float(half_life), prior_sd=float(prior_sd),
         teams_of_interest=teams, relegation_places=_int(args, "relegation_places", 3, 0, 10),
         top_places=_int(args, "top_places", 4, 0, 10), playoff_places=_int(args, "playoff_places", 8, 1, 30),
         games_per_team=games, backtest=backtest, history=history)
+    if (placeholders := placeholder_rows(text, name)):
+        result.setdefault("notes", []).append(f"{placeholders} unplayed rows whose teams are not known yet (such as 'To be "
+                                              "announced') were left out of the remaining schedule")
+    return result
 
 
 def observe_simulate(result: dict) -> dict:

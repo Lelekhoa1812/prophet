@@ -94,6 +94,8 @@ def source_path(args: dict) -> Path:
 
 
 PROVENANCE_ORIGINS = ("retrieved", "user", "synthetic")
+RETRIEVED_SYNONYMS = frozenset({"market", "download", "downloaded", "official", "api", "open data", "open_data", "web",
+                                "fetched", "measured", "observed", "primary"})
 SOURCE_ID = re.compile(r"^S\d+$")          # the id web research gives each source it reads: S1, S2, ...
 HTTP_URL = re.compile(r"^https?://\S+$")
 
@@ -126,6 +128,10 @@ def check_provenance(raw: Any, name: str = "series") -> dict | None:
     if not isinstance(raw, dict):
         raise ValueError(f"provenance of {name!r} must be an object with origin, source_name and sources")
     origin = raw.get("origin")
+    # Panel round 4 (NVDA): origin "market" for a download_market_prices file was refused five times. Words that mean "fetched
+    # from a source" are read as retrieved, which still needs source_name and fetch-recorded urls below.
+    if isinstance(origin, str) and origin.strip().lower() in RETRIEVED_SYNONYMS:
+        origin = "retrieved"
     if origin not in PROVENANCE_ORIGINS:
         raise ValueError(f"provenance of {name!r} needs origin: one of {', '.join(PROVENANCE_ORIGINS)}")
     source_name = raw.get("source_name")
@@ -187,6 +193,45 @@ def provenance_label(prov: dict | None) -> str:
     return f"{prov['source_name']} ({refs})"
 
 
+DATASETS_ROOT = SANDBOX_ROOT.parent / "datasets"
+MAX_DATASET_RECORDS = 2000
+
+
+def input_source_urls(run_id: str, datasets_root: Path | None = None) -> dict[str, str]:
+    """The download address of each file the run read from in/ (not carried outputs), matched to the dataset records by sha256.
+
+    Motivation: panel round 4 (AUUNEMP, 2026-11-27), a series built from an abs_sdmx download named its source as "ABS SDMX flow
+    ABS,LF,1.0.0 key ..." and backtest_series refused it six times; the planner never had the address to copy. The refusal now
+    names it. Logic: hash each file in the run's in/ folder and look it up among the dataset records' provenance.
+    """
+    import hashlib
+    inbox = SANDBOX_ROOT / run_id / "in"
+    root = datasets_root or DATASETS_ROOT
+    if not RUN_ID.match(run_id) or not inbox.is_dir() or not root.is_dir():
+        return {}
+    wanted: dict[str, str] = {}
+    for f in inbox.iterdir():
+        if f.is_file() and not f.is_symlink():
+            try:
+                wanted[hashlib.sha256(f.read_bytes()).hexdigest()] = f.name
+            except OSError:
+                continue
+    out: dict[str, str] = {}
+    for i, folder in enumerate(root.iterdir()):
+        if i >= MAX_DATASET_RECORDS or not wanted:
+            break
+        try:
+            meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        prov = meta.get("provenance") if isinstance(meta, dict) else None
+        url = prov.get("url") if isinstance(prov, dict) else None
+        name = wanted.get(str(meta.get("sha256")))
+        if name and isinstance(url, str) and HTTP_URL.match(url):
+            out[name] = url
+    return out
+
+
 def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     values, source = args.get("values"), args.get("source")
     if (values is None) == (source is None):
@@ -204,7 +249,15 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     except ValueError:
         raise ValueError(f"{rel} is not valid JSON; write it with prophet_lib.save_series")
     if isinstance(doc, dict):
-        check_provenance(doc.get("provenance"), rel)      # a retrieved claim with no fetch record, or a synthetic one naming a source
+        try:
+            check_provenance(doc.get("provenance"), rel)  # a retrieved claim with no fetch record, or a synthetic one naming a source
+        except ValueError as exc:
+            urls = input_source_urls(source["run_id"])
+            if not urls:
+                raise
+            listed = "; ".join(f"in/{name} came from {url}" for name, url in sorted(urls.items())[:6])
+            raise ValueError(f"{exc}. The files this run read were downloaded in this mission: {listed}. Use that address "
+                             "as the source url with origin retrieved, and save the series again") from None
     body = doc.get("series") if isinstance(doc, dict) else doc
     if isinstance(body, list):
         named = {"series": body}
