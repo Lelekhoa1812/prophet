@@ -10,9 +10,16 @@ series, and writes a new series file (same values, dates, and covariates as long
 sandbox run. ``timesfm_forecast`` and ``backtest_series`` then take it by reference with future_covariates. ``detect_
 anomalies`` reports candidate ignore_ranges with their scores; it does not decide which are errors. Both run in the sandbox,
 so a malformed file cannot reach the server process, and both refuse bad arguments with the fix.
+
+Dated events (M9-4): ``dated_events`` takes the events a research call found in news text. They are normalised into an event
+table (every source URL kept), written as a CSV into the run, and turned into event features (an indicator, optional leads,
+lags and counts per type). Each feature is kept only when a rolling backtest on this series shows it beats the simple rules
+(forecast/event_check.py); the verdicts are returned with the file. ``event_features.check`` false keeps them unchecked, and
+the result says so.
 """
 from __future__ import annotations
 
+import io
 import json
 import re
 from pathlib import Path
@@ -20,11 +27,19 @@ from typing import Any
 
 import pandas as pd
 
+from prophet_agent.forecast.event_check import N_ORIGINS, check_features, guess_season
+from prophet_agent.research.event_table import CERTAINTY, EVENT_TYPES, event_table_csv, normalise_events, select_events
 from prophet_agent.runtime.runner import Tool
+from prophet_agent.sandbox import prophet_events as pe
+from prophet_agent.sandbox.prophet_events import MAX_LEAD
 from prophet_agent.sandbox.runner import OUT_DIR, SANDBOX_ROOT, run_python
 from prophet_agent.tools.series_io import SOURCE_HELP, source_path
 
 MAX_EVENTS = 50
+MAX_DATED = 200
+EVENT_KEYS = {"types", "leads", "lags", "counts", "check", "min_certainty"}
+EVENT_TABLE_IN = "in/event_table.csv"
+EVENT_TABLE_OUT = f"{OUT_DIR}/event_table.csv"
 MAX_HORIZON = 512
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 COUNTRY = re.compile(r"^[A-Z]{2}$")
@@ -119,6 +134,19 @@ for cname, spans in {spans!r}.items():
 hol = {hol!r}
 if hol:
     covs[hol["name"]] = pl.holiday_covariate(idx, hol["country"], hol["subdiv"], h, freq)
+ev_opt = {ev!r}
+if ev_opt is not None:
+    import prophet_events as pe
+    ev_table = pd.read_csv("in/event_table.csv", dtype=str, keep_default_na=False)
+    feats = pe.event_features(idx, ev_table, h, freq, types=ev_opt["types"], leads=ev_opt["leads"], lags=ev_opt["lags"],
+                              counts=ev_opt["counts"])
+    for cname in ev_opt["keep"]:
+        if cname not in feats:
+            raise SystemExit("event feature %r is not built from this table and series" % cname)
+        if cname in covs:
+            raise SystemExit("event feature %r has the same name as another driver; rename the driver" % cname)
+        covs[cname] = feats[cname]
+    open("out/event_table.csv", "wb").write(open("in/event_table.csv", "rb").read())
 if not covs:
     raise SystemExit("no driver was built")
 pl.save_series(pd.Series(values, index=idx), {out!r}, freq=freq, covariates=covs)
@@ -150,8 +178,95 @@ print(json.dumps({{"points": len(values), "candidates": len(res["indices"]), "ra
 '''
 
 
-def _run_code(code: str, source: Path) -> Any:
-    return run_python(code, timeout_s=60, mem_mb=1536, inputs={"series.json": source})
+def _run_code(code: str, source: Path, files: dict[str, bytes] | None = None) -> Any:
+    return run_python(code, timeout_s=60, mem_mb=1536, inputs={"series.json": source}, files=files)
+
+
+def _periods(raw: Any, what: str) -> list[int]:
+    if raw is None:
+        return []
+    if (not isinstance(raw, list) or len(raw) > 10
+            or not all(isinstance(k, int) and not isinstance(k, bool) and 1 <= k <= MAX_LEAD for k in raw)):
+        raise ValueError(f"{what} must be a list of up to 10 whole periods from 1 to {MAX_LEAD}")
+    return sorted(set(raw))
+
+
+def _event_options(raw: Any) -> dict:
+    """event_features: which types, leads, lags and counts to build, whether to backtest each, and the certainty floor."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict) or set(raw) - EVENT_KEYS:
+        raise ValueError(f"event_features must be an object with any of: {', '.join(sorted(EVENT_KEYS))}")
+    types = raw.get("types")
+    if types is not None and (not isinstance(types, list) or not types or not all(t in EVENT_TYPES for t in types)):
+        raise ValueError(f"event_features.types must be a non-empty list from: {', '.join(EVENT_TYPES)}")
+    counts, check = raw.get("counts", False), raw.get("check", True)
+    if not isinstance(counts, bool) or not isinstance(check, bool):
+        raise ValueError("event_features.counts and event_features.check must be true or false")
+    min_certainty = raw.get("min_certainty", "medium")
+    if min_certainty not in CERTAINTY:
+        raise ValueError(f"event_features.min_certainty must be one of {', '.join(CERTAINTY)}")
+    return {"types": None if types is None else sorted(set(types)), "leads": _periods(raw.get("leads"), "event_features.leads"),
+            "lags": _periods(raw.get("lags"), "event_features.lags"), "counts": counts, "check": check,
+            "min_certainty": min_certainty}
+
+
+def _event_plan(raw: Any, opts: Any) -> dict | None:
+    """The dated events as an event table: normalised, deduplicated and filtered by certainty. None when none were given."""
+    if raw is None:
+        if opts is not None:
+            raise ValueError("event_features needs dated_events: pass the events list of a research call")
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("dated_events must be a non-empty list of event objects (the events list of a research call)")
+    if len(raw) > MAX_DATED:
+        raise ValueError(f"dated_events takes at most {MAX_DATED} events; pass the most relevant")
+    options = _event_options(opts)
+    rows, refused = normalise_events(raw)
+    kept_rows = select_events(rows, options["min_certainty"])
+    if not kept_rows:
+        raise ValueError(f"no dated event is at least {options['min_certainty']} certain ({len(refused)} refused, "
+                         f"{len(rows)} read); set event_features.min_certainty to low to use them, or give dated events "
+                         "with a year written in the text")
+    return {"rows": kept_rows, "csv": event_table_csv(kept_rows), "refused": refused, "opts": options}
+
+
+def _saved_series(src: Path, want: str | None) -> tuple[list[float], list[str], str | None]:
+    """The values, dates and freq of the chosen series in a saved series file, read the way the sandbox reads it."""
+    doc = json.loads(src.read_text(encoding="utf-8"))
+    raw = doc["series"] if isinstance(doc, dict) and "series" in doc else doc
+    named = raw if isinstance(raw, dict) else {"series": raw}
+    if want is None and len(named) != 1:
+        raise ValueError(f"the file holds {len(named)} series; choose one with source.name: {sorted(named)[:20]}")
+    key = want or next(iter(named))
+    if key not in named:
+        raise ValueError(f"series {key!r} not in the file")
+    dates = doc.get("dates") if isinstance(doc, dict) else None
+    dates = dates.get(key) if isinstance(dates, dict) else (dates if len(named) == 1 else None)
+    if not dates or len(dates) != len(named[key]):
+        raise ValueError("this series has no saved dates; save it with pl.save_series(pd.Series(values, index=dates)) so events can be aligned")
+    return [float(v) for v in named[key]], list(dates), doc.get("freq")
+
+
+def _event_features_in_process(plan: dict, src: Path, want: str | None, horizon: int) -> tuple[dict, dict | None, list[str]]:
+    """Build the candidate event features on the series calendar, backtest each (unless check is false), and return
+    (features, verdicts, kept names)."""
+    values, dates, freq = _saved_series(src, want)
+    table = pd.read_csv(io.BytesIO(plan["csv"]), dtype=str, keep_default_na=False)
+    opts = plan["opts"]
+    feats = pe.event_features(dates, table, horizon, freq, types=opts["types"], leads=opts["leads"], lags=opts["lags"],
+                              counts=opts["counts"])
+    if not feats:
+        raise ValueError("none of the dated events falls inside the series or its horizon, so no event feature was built; "
+                         "check the dates against the series and the horizon")
+    if not opts["check"]:
+        return feats, None, sorted(feats)
+    try:
+        verdict = check_features(values, feats, horizon, season=guess_season(dates), n_origins=N_ORIGINS)
+    except ValueError as exc:
+        raise ValueError(f"the event features could not be backtested ({exc}); give a longer series, or set "
+                         "event_features.check to false to keep them unchecked") from None
+    return feats, verdict["verdicts"], verdict["kept"]
 
 
 def _read_out(run_id: str, rel: str) -> dict:
@@ -159,16 +274,18 @@ def _read_out(run_id: str, rel: str) -> dict:
 
 
 def _build(args: dict, _key: str) -> dict[str, Any]:
-    extra = sorted(set(args) - {"source", "events", "holidays", "horizon"})
+    extra = sorted(set(args) - {"source", "events", "holidays", "horizon", "dated_events", "event_features"})
     if extra:
-        raise ValueError(f"unknown arguments {extra}; allowed: source, events, holidays, horizon")
+        raise ValueError(f"unknown arguments {extra}; allowed: source, events, holidays, horizon, dated_events, event_features")
     horizon = args.get("horizon")
     if not isinstance(horizon, int) or isinstance(horizon, bool) or not 1 <= horizon <= MAX_HORIZON:
         raise ValueError(f"horizon must be an integer from 1 to {MAX_HORIZON}: the periods you will forecast")
     events = _events(args.get("events"))
     hol = _holidays(args.get("holidays"))
-    if not events and hol is None:
-        raise ValueError("give events (named date windows) and/or holidays (a public-holiday calendar)")
+    plan = _event_plan(args.get("dated_events"), args.get("event_features"))
+    if not events and hol is None and plan is None:
+        raise ValueError("give events (named date windows), holidays (a public-holiday calendar) and/or dated_events "
+                         "(the events of a research call)")
     names = [n for n, _, _ in events] + ([hol["name"]] if hol else [])
     if len(set(names)) != len(names):
         raise ValueError(f"driver names must be unique; got {names}")
@@ -176,8 +293,23 @@ def _build(args: dict, _key: str) -> dict[str, Any]:
     spans: dict[str, list[tuple[str, str]]] = {}
     for name, a, b in events:
         spans.setdefault(name, []).append((a, b))
+    event_block, ev_opt, files = None, None, None
+    if plan is not None:
+        _feats, verdicts, keep = _event_features_in_process(plan, src, _series_name(args), horizon)
+        if not keep and not events and hol is None:
+            raise ValueError("no event feature beat the simple rules in the rolling backtest, so no driver was built: "
+                             + "; ".join(f"{v['feature']} improvement {v['improvement_vs_best_rule']}"
+                                         for v in (verdicts or {}).values()) + ". Measured; see event_features.check")
+        opts = plan["opts"]
+        ev_opt = {"types": opts["types"], "leads": opts["leads"], "lags": opts["lags"], "counts": opts["counts"], "keep": keep}
+        files = {EVENT_TABLE_IN: plan["csv"]}
+        event_block = {"rows": len(plan["rows"]), "refused": len(plan["refused"]),
+                       "refused_reasons": plan["refused"][:5], "features_built": sorted(_feats), "kept": keep,
+                       "checked": opts["check"], "min_certainty": opts["min_certainty"],
+                       "verdicts": verdicts, "table_file": EVENT_TABLE_OUT}
     out = DRIVERS_OUT
-    res = _run_code(DRIVERS_CODE.format(want=_series_name(args), horizon=horizon, spans=spans, hol=hol, out=out), src)
+    res = _run_code(DRIVERS_CODE.format(want=_series_name(args), horizon=horizon, spans=spans, hol=hol, out=out, ev=ev_opt),
+                    src, files)
     if not res.ok:
         raise ValueError("the drivers could not be built: " + (res.stderr.strip()[-400:] or "timed out"))
     doc = _read_out(res.run_id, out)
@@ -185,13 +317,21 @@ def _build(args: dict, _key: str) -> dict[str, Any]:
     covs = doc.get("covariates", {})
     summary = {c: {"history_periods_active": sum(1 for v in vs[:-horizon] if v > 0) if horizon < len(vs) else 0,
                    "horizon_periods_active": sum(1 for v in vs[-horizon:] if v > 0)} for c, vs in covs.items()}
-    return {"run_id": res.run_id, "file": out, "history_points": n, "horizon": horizon,
-            "covariates": summary, "covariate_names": sorted(covs)}
+    result = {"run_id": res.run_id, "file": out, "history_points": n, "horizon": horizon,
+              "covariates": summary, "covariate_names": sorted(covs)}
+    if event_block is not None:
+        result["event_features"] = event_block
+    return result
 
 
 def _observe_build(result: dict) -> dict:
-    return {k: result[k] for k in ("run_id", "file", "history_points", "horizon", "covariates")} | {
+    out = {k: result[k] for k in ("run_id", "file", "history_points", "horizon", "covariates")} | {
         "use": "pass source {run_id, file} and future_covariates with the names above to timesfm_forecast or backtest_series"}
+    if "event_features" in result:
+        out["event_features"] = {**result["event_features"], "reading": (
+            "Event features are kept only where the rolling backtest measured a gain over the simple rules (verdicts); "
+            "the events are source claims, not measurements.")}
+    return out
 
 
 def _detect(args: dict, _key: str) -> dict[str, Any]:
@@ -245,12 +385,19 @@ BUILD_DRIVERS_SPEC = {
                    "Each driver is a 0 to 1 share of each period inside the event, as long as the history plus the horizon. "
                    "Writes a new series file that carries the same values and these driver columns; forecast that file with "
                    "timesfm_forecast (source = the returned run_id and file, future_covariates = the returned names) and check "
-                   "with backtest_series. Use it only for drivers the person told you about or that a public calendar gives.",
+                   "with backtest_series. Use it only for drivers the person told you about or that a public calendar gives. "
+                   "dated_events (the events list of a web_research call) become event features; each is kept only if a rolling "
+                   "backtest on this series beats the simple rules, and the verdicts are returned.",
     "args": {"source": SOURCE_HELP,
              "events": "optional list of {name: lowercase covariate name, start: first day, end: last day (optional, default start)}",
              "holidays": "optional {country: two-letter code such as AU, subdiv: optional state code, name: optional covariate name "
                          "(default public_holiday)}",
-             "horizon": "integer, the periods you will forecast (1 to 512); drivers cover history plus this"},
+             "horizon": "integer, the periods you will forecast (1 to 512); drivers cover history plus this",
+             "dated_events": f"optional list of up to {MAX_DATED} event objects from a research call: each needs date (YYYY-MM-DD), "
+                             "event (text) and source_url; end_date, type, entity, how_sure and date_found are optional",
+             "event_features": "optional {types: list of event types, leads: list of periods, lags: list of periods (1 to 30), "
+                               "counts: true or false, check: true (default; backtest each feature), min_certainty: high, medium "
+                               "(default) or low}"},
 }
 
 DETECT_ANOMALIES_SPEC = {
