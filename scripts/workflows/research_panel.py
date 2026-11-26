@@ -11,8 +11,8 @@ Motivation: Mission 9 is judged on open research missions that must find their o
 goals must be re-run after each batch of fixes so rounds can be compared; NVDA and EPL keep the exact goals of the two
 missions that failed on 2026-11-26.
 Logic: each mission gets its own notebook with web research on and one turn. Checkpoints are continued up to a limit. A
-question for the person is answered with its first offered option, and the record says so, because an unattended panel
-has no person to ask. Each record keeps the final status, the outcome reasons, tool-call counts, sandbox cells, blocked
+question for the person is answered as an unattended run must: the first option that neither waits for an upload nor
+swaps in invented data, or else a free-text reply to keep researching. The record keeps every answer given. Each record keeps the final status, the outcome reasons, tool-call counts, sandbox cells, blocked
 fetches and wall time; the run writes record.json per mission, the full mission JSON, and summary.json under
 data/research_panel/ (git-ignored).
 """
@@ -75,16 +75,29 @@ PANEL: dict[str, dict] = {
 }
 
 
+UNATTENDED_REPLY = ("Nobody can upload a file in this run. Keep researching public sources and use the data you can find. "
+                    "Do not use synthetic or approximate data in place of the real series.")
+AVOID = ("upload", "synthetic", "approximat", "provide your own", "i'll provide", "i will provide", "api key")
+
+
+def _pick(options: list[dict]) -> str:
+    """The first option that neither waits for a file nor swaps in invented data; otherwise a free-text reply."""
+    for option in options:
+        text = f"{option.get('label', '')} {option.get('description', '')}".lower()
+        if not any(word in text for word in AVOID):
+            return option.get("label")
+    return UNATTENDED_REPLY
+
+
 def _answer_questions(mission: dict, record: dict) -> bool:
-    """Answer every open question with its first offered option. Returns False when nothing could be answered."""
+    """Answer every open question as an unattended run must. Returns False when nothing could be answered."""
     answered = False
     for q in mission.get("questions") or []:
         answers = {}
-        for item in q.get("questions") or []:
+        items = q.get("questions") or (q.get("payload") or {}).get("questions") or []
+        for item in items:
             options = item.get("options") or []
-            if not options:
-                continue
-            label = options[0].get("label")
+            label = _pick(options) if options else UNATTENDED_REPLY
             answers[item.get("header") or item.get("question", "")[:12]] = [label] if item.get("multiSelect") else label
         if not answers:
             continue
