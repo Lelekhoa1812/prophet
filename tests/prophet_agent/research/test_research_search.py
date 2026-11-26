@@ -14,6 +14,7 @@ from prophet_agent.research.search import normalise_url, web_search
 def isolated_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("PROPHET_RESEARCH_CACHE", str(tmp_path / "cache"))
     monkeypatch.delenv("PROPHET_SEARCH_BACKENDS", raising=False)
+    search.reset_backend_health()   # cooldowns are per process; one test must not cool a backend for the next
     return tmp_path / "cache"
 
 

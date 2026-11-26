@@ -24,7 +24,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from prophet_agent.research.passages import tokens
-from prophet_agent.research.search import Hit, normalise_url
+from prophet_agent.research.primary import detect_family, registry_pages
+from prophet_agent.research.search import REGISTRY_SOURCE, Hit, normalise_url
 
 # Official publishers: central banks, statistics offices, regulators and international agencies.
 TIER1_DOMAINS = {
@@ -53,6 +54,12 @@ TITLE_SIMILARITY = 0.9
 WEIGHTS = {"news": (0.2, 0.3, 0.5), "text": (0.3, 0.5, 0.2)}
 HALF_LIFE_DAYS = {"news": 7.0, "text": 120.0}
 TIER_POINTS = {tier: score / 100 for tier, score in SCORE.items()}
+# A data-seeking query prefers pages that carry the data itself: a file, an API or a download path, or a table-heavy host.
+DATA_WEIGHT = 0.25
+DATA_EXTENSIONS = (".csv", ".tsv", ".json", ".xlsx", ".xls", ".zip", ".txt", ".xml", ".parquet")
+DATA_PATH = re.compile(r"/(data|api|download|downloads|dataset|datasets|history|historical|table|tables|csv|json)(/|$)")
+TABLE_HOSTS = {"wikipedia.org", "stooq.com", "nasdaq.com", "stockanalysis.com", "investing.com", "macrotrends.net",
+               "fred.stlouisfed.org", "ourworldindata.org", "statista.com"}
 
 
 def host_of(url: str) -> str:
@@ -148,10 +155,31 @@ def _near_same_title(key: str, kept: list[str]) -> bool:
     return any(difflib.SequenceMatcher(None, key, other).ratio() >= TITLE_SIMILARITY for other in kept)
 
 
+def data_bearing(url: str) -> float:
+    """How much the URL itself points at data: 1 for a data file, 0.6 for an API or download path, 0.5 for a
+    table-heavy host, 0 otherwise."""
+    parts = urlsplit(url)
+    path = parts.path.lower()
+    if path.endswith(DATA_EXTENSIONS):
+        return 1.0
+    if DATA_PATH.search(path):
+        return 0.6
+    if any(_matches(host_of(url), host) for host in TABLE_HOSTS):
+        return 0.5
+    return 0.0
+
+
 def rank_report(hits: list[Hit], *, recency_days: float | None = None, now: float | None = None,
                 max_per_domain: int = MAX_PER_DOMAIN, queries: list[str] | None = None,
-                kind: str = "text") -> tuple[list[Hit], int]:
-    """Rank hits as ``rank_hits`` does, and also count the repeats dropped for a duplicate URL or title."""
+                kind: str = "text", data_seeking: bool = False) -> tuple[list[Hit], int]:
+    """Rank hits as ``rank_hits`` does, and also count the repeats dropped for a duplicate URL or title.
+
+    Motivation vs Logic
+    Motivation: for a data query the useful page is the one that carries the numbers, and a news article about the
+    same subject should not outrank it.
+    Logic: when ``data_seeking`` is set, each hit gets ``DATA_WEIGHT`` times ``data_bearing`` added to its score. The
+    rest of the ranking is unchanged, so the flag only reorders hits that are otherwise close.
+    """
     now_ts = time.time() if now is None else now
     cutoff = now_ts - recency_days * 86400 if recency_days is not None else None
     scored = []
@@ -161,6 +189,8 @@ def rank_report(hits: list[Hit], *, recency_days: float | None = None, now: floa
         if cutoff is not None and when is not None and when.timestamp() < cutoff:
             continue
         value = combined_score(hit, when, now_ts, tier=tier, queries=queries, kind=kind)
+        if data_seeking:
+            value += DATA_WEIGHT * data_bearing(hit.url)
         scored.append((-value, hit.rank or 10_000, replace(hit, tier=tier, score=score)))
     scored.sort(key=lambda row: row[:2])
     seen: set[str] = set()
@@ -187,8 +217,49 @@ def rank_report(hits: list[Hit], *, recency_days: float | None = None, now: floa
 
 def rank_hits(hits: list[Hit], *, recency_days: float | None = None, now: float | None = None,
               max_per_domain: int = MAX_PER_DOMAIN, queries: list[str] | None = None,
-              kind: str = "text") -> list[Hit]:
+              kind: str = "text", data_seeking: bool = False) -> list[Hit]:
     """Deduplicate, cap per domain, drop hits older than ``recency_days`` (undated hits are kept), and order them by
     the combined relevance, tier and recency score. Each returned hit carries its tier and credibility score."""
     return rank_report(hits, recency_days=recency_days, now=now, max_per_domain=max_per_domain, queries=queries,
-                       kind=kind)[0]
+                       kind=kind, data_seeking=data_seeking)[0]
+
+
+def interleave(lists: list[list[Hit]]) -> list[Hit]:
+    """Round-robin the ranked lists (first hit of each, then second of each, ...), dropping repeated URLs.
+
+    Motivation vs Logic
+    Motivation: when one wording returns ten strong hits, appending the variants one after another would hide every
+    other wording's hits behind it.
+    Logic: take position 0 from each list in turn, then position 1, and so on, so every wording contributes early. The
+    first occurrence of a normalised URL wins.
+    """
+    out: list[Hit] = []
+    seen: set[str] = set()
+    for position in range(max((len(lst) for lst in lists), default=0)):
+        for lst in lists:
+            if position >= len(lst):
+                continue
+            hit = lst[position]
+            key = normalise_url(hit.url)
+            if key not in seen:
+                seen.add(key)
+                out.append(hit)
+    return out
+
+
+def registry_hits(query: str) -> list[Hit]:
+    """The primary pages for the query's series family, as Hits labelled ``source="registry"``.
+
+    Motivation vs Logic
+    Motivation: when search finds nothing usable, the planner still needs the official pages to read. They are useful,
+    but they are not search results, and the caller must be able to tell them apart.
+    Logic: the family comes from the query. Each registry page becomes a Hit whose source and backend are "registry",
+    so a caller that filters on ``source`` never presents one as a search hit. The list is empty when no family matches.
+    """
+    hits: list[Hit] = []
+    for page in registry_pages(detect_family(query)):
+        url = normalise_url(page["url"])
+        tier, score = credibility(url)
+        hits.append(Hit(title=page["name"], url=url, snippet=page.get("what", ""), date=None,
+                        source=REGISTRY_SOURCE, backend=REGISTRY_SOURCE, rank=len(hits) + 1, tier=tier, score=score))
+    return hits
