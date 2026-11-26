@@ -5,6 +5,8 @@ Motivation: a page often holds the grid the file download refused. The agent nee
 not as a sentence a model typed.
 Logic: each ``table`` element becomes one candidate when it has a header, one data row, and at least one numeric cell.
 Layout tables fail that test and are counted, not returned. Cells copied across a span stay one measurement.
+A table that nests another table, or whose cells are mostly running prose, is a page layout and is counted as skipped.
+A league table (rank, club, played, points, text form, signed goal difference) passes: its numbers are plain.
 """
 from __future__ import annotations
 
@@ -15,10 +17,11 @@ import re
 
 from bs4 import BeautifulSoup
 
-MAX_TABLES = 4
-MAX_SCAN = 12
+MAX_TABLES = 12
+MAX_SCAN = 60
 MAX_ROWS = 2000
 MAX_COLS = 32
+PROSE_CELL = 200            # a cell longer than this counts as prose
 _NUMBER = re.compile(r"^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$")
 
 
@@ -32,12 +35,15 @@ def html_tables(html: str, *, base_url: str = "") -> dict:
     for index, tag in enumerate(soup.find_all("table")):
         if index >= MAX_SCAN or len(candidates) >= MAX_TABLES:
             break
+        if tag.find("table") is not None:          # a table that holds a table is a page layout
+            skipped += 1
+            continue
         grid = _grid(tag)
         if grid is None:
             skipped += 1
             continue
         header, rows = grid
-        if not _has_number(rows):
+        if not _has_number(rows) or _is_prose(rows):
             skipped += 1
             continue
         text = _csv(header, rows)
@@ -98,6 +104,14 @@ def _has_number(rows: list[list[str]]) -> bool:
             if _NUMBER.match(cell.replace(" ", "")):
                 return True
     return False
+
+
+def _is_prose(rows: list[list[str]]) -> bool:
+    """True when most non-empty cells are running text rather than values: a layout built from paragraphs."""
+    cells = [cell for row in rows[:50] for cell in row if cell.strip()]
+    if not cells:
+        return False
+    return sum(1 for cell in cells if len(cell) > PROSE_CELL) * 2 > len(cells)
 
 
 def _csv(header: list[str], rows: list[list[str]]) -> str:
