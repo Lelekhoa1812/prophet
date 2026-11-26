@@ -883,3 +883,31 @@ def test_a_free_text_reply_cut_by_the_allowance_is_continued_not_returned_mid_se
     reply = client.complete([M1], MSGS)
     assert reply.text == "The forecast rises to 412 by June."
     assert len(seen) == 2 and seen[1]["messages"][-2] == {"role": "assistant", "content": "The forecast rise"}
+
+
+LOOPING = '{"action": "call_tool", "args": {"key": "M.' + "1." * 200
+
+
+def test_a_reply_cut_while_looping_is_told_of_the_loop_then_moves_to_the_next_model():
+    """Panel AUUNEMP (2026-11-26): "M.1.1.1..." until the allowance ran out, four times on one model."""
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    seen = []
+
+    def loop(request, payload):
+        seen.append((payload.get("model"), payload.get("max_tokens"), payload["messages"][-1]["content"]))
+        return sse([LOOPING], finish="length")
+
+    script = Script().on(loop, model=M1).on(lambda r, p: sse(['{"a": 7}'], finish="stop"), model=M2)
+    client, _ = make(script)
+    reply = client.complete([M1, M2], MSGS, schema=schema, max_tokens=1000)
+    assert reply.model == M2 and json.loads(reply.text) == {"a": 7}
+    assert len(seen) == 2, "one loop repair on the first model, then the next model"
+    assert seen[1][1] == 1000, "the allowance was not doubled for a loop"
+    assert "repeated '1.'" in seen[1][2] or "repeated '.1'" in seen[1][2]
+
+
+def test_repeating_tail_finds_short_loops_only():
+    from prophet_agent.nim.transport import repeating_tail
+    assert repeating_tail(LOOPING) in ("1.", ".1")
+    assert repeating_tail('{"rationale": "' + "x" * 10 + "a fair amount of ordinary text that does not repeat " * 3) == ""
+    assert repeating_tail("short") == ""

@@ -392,6 +392,22 @@ def rate_cooldown(retry_after: str | None, raw: str, headers: Mapping[str, str] 
     return _retry_after(retry_after, COOL_429_S)
 
 
+LOOP_PROMPT = ("Your reply repeated {unit!r} until it was cut off. Do not guess identifiers or codes by repeating a pattern. "
+               "Reply again with only the JSON object, short: use a code you have seen in a tool result, or choose a step "
+               "that finds it.")
+
+
+def repeating_tail(text: str, span: int = 240, max_unit: int = 40) -> str:
+    """The repeating unit when the last ``span`` characters are one short unit over and over (a degenerate loop), else ""."""
+    tail = (text or "")[-span:]
+    if len(tail) < span:
+        return ""
+    for unit in range(1, max_unit + 1):
+        if tail[unit:] == tail[:-unit] and tail[:unit].strip():
+            return tail[-unit:]
+    return ""
+
+
 def repair_hint(reason: str) -> str:
     """What to tell the model beyond the validator's line, by what went wrong. The line itself already names the path."""
     r = reason.lower()
@@ -590,7 +606,7 @@ class NimClient:
             dispatched, waitable, dead = 0, False, set()
             for model in chain:
                 shape = _Shape("strict")
-                reshapes, tried, key, reuse, repairs, truncations = 0, 0, None, False, 0, 0
+                reshapes, tried, key, reuse, repairs, truncations, loops = 0, 0, None, False, 0, 0, 0
                 repair: list[dict] = []   # the model's last reply and the reason it was refused, when repairing
                 while tried < MAX_KEYS_PER_MODEL and dispatched < MAX_DISPATCH:
                     if self.clock() >= deadline:
@@ -656,6 +672,19 @@ class NimClient:
                         tried -= 1                    # a reshape re-queues the same key and does not count as a new key
                         reuse = True
                         continue
+                    if out.kind == "truncated" and repeating_tail(out.text):
+                        # Panel AUUNEMP (2026-11-26): the model wrote an SDMX key as "M.1.1.1.1..." until the allowance ran
+                        # out, four times; a larger allowance only made the loop longer. Name the loop once on this model,
+                        # then move to the next model.
+                        if loops < 1:
+                            loops += 1
+                            repair = [{"role": "assistant", "content": out.text[:400]},
+                                      {"role": "user", "content": LOOP_PROMPT.format(unit=repeating_tail(out.text))}]
+                            tried -= 1
+                            reuse = True
+                            continue
+                        dead.add(model)
+                        break
                     if out.kind == "truncated" and truncations < MAX_TRUNCATION_RETRIES and opts.max_tokens < TRUNCATION_TOKEN_CAP:
                         # Cut by the allowance, not wrong: asking the model to shorten itself would only lose content. Ask
                         # again with more room on the same key.
