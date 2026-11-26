@@ -41,6 +41,8 @@ GRID_SATURATION = 25               # max-min channel spread below which a pixel 
 TICK_RESIDUAL = 0.005              # largest tick-fit residual, as a share of the fitted value span
 SELF_CHECK_PX = 2.0                # distance in pixels for precision and recall of the re-drawn series
 MIN_MARKER_PIXELS = 4
+DARK_TICK = 110.0                  # mean channel below which a pixel is part of an axis, spine or tick mark
+SPINE_MIN_SHARE = 0.3              # an axis spine or gridline spans at least this share of the image side
 MAX_POINTS = 400
 MAX_BYTES = 8 * 1024 * 1024
 MAX_SIDE_PX = 6000
@@ -297,16 +299,102 @@ def ask_model(client: Any, image: bytes, mime: str, models=VISION_MODELS) -> tup
     return proposal, str(reply.model)
 
 
-def _ticks(axis: dict, which: str) -> list[tuple[float, float]]:
-    out = []
-    for t in axis.get("ticks", []):
-        value = _parse_label(t.get("label", ""))
-        if value is None:
-            continue                                   # a label that is not a number is not a tick
-        out.append((float(t["pixel"]), value))
-    if len(out) < 2:
-        raise ChartReadError(f"the {which} axis has fewer than two numeric ticks")
-    return out
+def _label_values(axis: dict, which: str) -> list[float]:
+    values = [v for v in (_parse_label(t.get("label", "")) for t in axis.get("ticks", [])) if v is not None]
+    if len(values) < 2:
+        raise ChartReadError(f"the {which} axis has fewer than two numeric tick labels")
+    return values
+
+
+def _longest_run(line: np.ndarray) -> int:
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], line.astype(np.int8), [0]])))
+    lengths = edges[1::2] - edges[0::2]
+    return int(lengths.max()) if lengths.size else 0
+
+
+def _centres(indices: np.ndarray) -> list[float]:
+    if indices.size == 0:
+        return []
+    groups = np.split(indices, np.flatnonzero(np.diff(indices) > 2) + 1)
+    return [float(g.mean()) for g in groups]
+
+
+def detect_ticks(arr: np.ndarray, axis: str) -> list[float]:
+    """Pixel positions of the tick marks on one axis, found in the image itself.
+
+    Motivation vs Logic
+    Motivation: the model's own pixel estimates were measured on a live chart and were scaled by about 0.77 on both axes,
+    so a fit on them would put every value about 1.3 times out. The tick marks are where the pixels are.
+    Logic: the axis spine is the longest dark straight line (bottom row for x, left column for y). Tick marks are dark
+    pixels on the outer side of the spine, 2 to 4 pixels from it. When the chart has no spine, the grey gridlines are
+    used instead: the long low-saturation straight runs, one per tick. The side with more ticks wins. Returns ascending
+    positions (columns for x, rows for y).
+    """
+    h, w, _ = arr.shape
+    dark = arr.mean(axis=2) < DARK_TICK
+    grey = (arr.max(axis=2) - arr.min(axis=2)) < GRID_SATURATION
+    if axis == "x":
+        best = _spine_ticks(dark, [r for r in range(h) if _longest_run(dark[r]) >= SPINE_MIN_SHARE * w], "x")
+        if best:
+            return best
+        long_cols = _long_runs(grey, 0, int(SPINE_MIN_SHARE * h)).any(axis=0)
+        return _centres(np.flatnonzero(long_cols))
+    best = _spine_ticks(dark, [c for c in range(w) if _longest_run(dark[:, c]) >= SPINE_MIN_SHARE * h], "y")
+    if best:
+        return best
+    long_rows = _long_runs(grey, 1, int(SPINE_MIN_SHARE * w)).any(axis=1)
+    return _centres(np.flatnonzero(long_rows))
+
+
+def _spine_ticks(dark: np.ndarray, lines: list[int], which: str) -> list[float]:
+    """Tick positions for the best candidate spine. Every long dark line is tried, on both sides, because a chart often
+    has a top spine as well as a bottom one (equal length), and only the bottom one carries ticks. The candidate with the
+    most tick marks wins; ties keep the first. Ticks are dark for three pixels at offsets 2 to 4 from the line."""
+    h, w = dark.shape
+    best: list[float] = []
+    for line in lines:
+        # A tick lies on the spine, so only columns (rows) inside the spine's own extent count. This drops the strokes of
+        # a y tick label sitting in the corner beside the x axis.
+        line_pixels = dark[line] if which == "x" else dark[:, line]
+        start, end = _longest_span(line_pixels)
+        for side in (1, -1):
+            offsets = [line + side * k for k in (2, 3, 4)]
+            if which == "x":
+                if not all(0 <= r < h for r in offsets):
+                    continue
+                hits = dark[offsets[0]] & dark[offsets[1]] & dark[offsets[2]]
+            else:
+                if not all(0 <= c < w for c in offsets):
+                    continue
+                hits = dark[:, offsets[0]] & dark[:, offsets[1]] & dark[:, offsets[2]]
+            inside = np.zeros_like(hits)
+            inside[max(0, start - 2):end + 3] = True
+            found = _centres(np.flatnonzero(hits & inside))
+            if len(found) > len(best):
+                best = found
+    return best
+
+
+def _longest_span(line: np.ndarray) -> tuple[int, int]:
+    """Start and end index of the longest dark run on a line."""
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], line.astype(np.int8), [0]])))
+    starts, ends = edges[0::2], edges[1::2]
+    if starts.size == 0:
+        return 0, -1
+    i = int(np.argmax(ends - starts))
+    return int(starts[i]), int(ends[i]) - 1
+
+
+def match_ticks(values: list[float], positions: list[float], which: str, hints: list[float]) -> list[tuple[float, float]]:
+    """Pairs each tick value with a detected tick position, in order. The count must agree exactly; the model's pixel
+    hints are compared and reported, never used for the fit. Returns (pixel, value) pairs."""
+    if len(positions) != len(values):
+        raise ChartReadError(f"the {which} axis has {len(values)} tick labels but {len(positions)} tick marks were found")
+    if which == "x":
+        pairs = list(zip(sorted(positions), sorted(values)))
+    else:
+        pairs = list(zip(sorted(positions, reverse=True), sorted(values)))
+    return pairs
 
 
 def digitise_image(image: bytes, *, client: Any = None, models=VISION_MODELS, proposal: dict | None = None,
@@ -326,12 +414,13 @@ def digitise_image(image: bytes, *, client: Any = None, models=VISION_MODELS, pr
     elif problem := validate(proposal, PROPOSAL_SCHEMA):
         raise ChartReadError(f"the proposal failed the schema: {problem}")
     model_name = model_name or "replay"
-    x_fit = fit_axis(_ticks(proposal["x_axis"], "x"), proposal["x_axis"]["scale"])
-    y_fit = fit_axis(_ticks(proposal["y_axis"], "y"), proposal["y_axis"]["scale"])
-    for name, fit, axis in (("x", x_fit, proposal["x_axis"]), ("y", y_fit, proposal["y_axis"])):
-        extent = w if name == "x" else h
-        if any(not (0 <= float(t["pixel"]) <= extent) for t in axis["ticks"]):
-            raise ChartReadError(f"a {name} tick lies outside the image")
+    tick_pairs = {}
+    for which in ("x", "y"):
+        axis = proposal[f"{which}_axis"]
+        tick_pairs[which] = match_ticks(_label_values(axis, which), detect_ticks(arr, which), which,
+                                        [float(t["pixel"]) for t in axis["ticks"]])
+    x_fit = fit_axis(tick_pairs["x"], proposal["x_axis"]["scale"])
+    y_fit = fit_axis(tick_pairs["y"], proposal["y_axis"]["scale"])
     markers = proposal["chart_type"] == "scatter"
     series_out, notes = [], []
     for s in proposal["series"]:
@@ -364,9 +453,11 @@ def digitise_image(image: bytes, *, client: Any = None, models=VISION_MODELS, pr
         "image_sha256": hashlib.sha256(image).hexdigest(), "image_px": [w, h],
         "axes": {
             "x": {"title": proposal["x_axis"]["title"], "unit": proposal["x_axis"]["unit"], "fit": _fit_dict(x_fit),
-                  "ticks": proposal["x_axis"]["ticks"]},
+                  "proposal_ticks": proposal["x_axis"]["ticks"],
+                  "ticks": [{"pixel": round(p, 2), "value": v} for p, v in tick_pairs["x"]]},
             "y": {"title": proposal["y_axis"]["title"], "unit": proposal["y_axis"]["unit"], "fit": _fit_dict(y_fit),
-                  "ticks": proposal["y_axis"]["ticks"]},
+                  "proposal_ticks": proposal["y_axis"]["ticks"],
+                  "ticks": [{"pixel": round(p, 2), "value": v} for p, v in tick_pairs["y"]]},
         },
         "tolerance": {"colour_d2": COLOUR_D2, "grid_min_share": GRID_MIN_SHARE, "tick_residual": TICK_RESIDUAL,
                       "self_check_px": SELF_CHECK_PX, "background": list(_background(arr))},

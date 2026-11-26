@@ -28,9 +28,11 @@ def render(x, y, *, ylog=False):
     ax = fig.add_axes([0.12, 0.14, 0.84, 0.78])
     ax.plot(x, y, color=np.array(COLOUR) / 255.0, linewidth=2.0)
     ax.set_xlim(0, 10)
-    ax.set_ylim(0, 120) if not ylog else ax.set_yscale("log")
     if ylog:
+        ax.set_yscale("log")
         ax.set_ylim(1, 1000)
+    else:
+        ax.set_ylim(0, 120)
     ax.set_xticks([0, 2, 4, 6, 8, 10])
     yticks = [0, 20, 40, 60, 80, 100, 120] if not ylog else [1, 10, 100, 1000]
     ax.yaxis.set_major_locator(FixedLocator(yticks))

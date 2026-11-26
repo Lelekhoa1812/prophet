@@ -132,12 +132,36 @@ def test_refuses_a_non_image_and_a_bad_schema(linear_chart):
         digitise_image(png, proposal=bad)
 
 
-def test_ticks_outside_the_image_are_refused(linear_chart):
+def test_tick_labels_must_match_the_tick_marks_in_the_image(linear_chart):
     png, proposal, _, _ = linear_chart
     bad = copy.deepcopy(proposal)
-    bad["y_axis"]["ticks"][0]["pixel"] = 9000
-    with pytest.raises(ChartReadError):
+    bad["y_axis"]["ticks"] = bad["y_axis"]["ticks"][:-1]          # one label missing: the counts disagree
+    with pytest.raises(ChartReadError, match="tick marks"):
         digitise_image(png, proposal=bad)
+
+
+def test_model_pixel_hints_do_not_change_the_fit(linear_chart):
+    png, proposal, x, y = linear_chart
+    scaled = copy.deepcopy(proposal)
+    for axis in ("x_axis", "y_axis"):
+        for t in scaled[axis]["ticks"]:
+            t["pixel"] = t["pixel"] * 0.77                       # the live model's measured scale error
+    a = digitise_image(png, proposal=proposal, model_name="m")
+    b = digitise_image(png, proposal=scaled, model_name="m")
+    assert a["series"][0]["y"] == b["series"][0]["y"]
+
+
+def test_detected_ticks_match_the_known_axes(linear_chart):
+    from prophet_agent.research.chart_vision import _decode, detect_ticks
+    png, proposal, _, _ = linear_chart
+    arr, _ = _decode(png)
+    xs = detect_ticks(arr, "x")
+    ys = detect_ticks(arr, "y")
+    assert len(xs) == 6 and len(ys) == 7
+    for got, want in zip(sorted(xs), [t["pixel"] for t in proposal["x_axis"]["ticks"]]):
+        assert abs(got - want) <= 1.5
+    for got, want in zip(sorted(ys, reverse=True), [t["pixel"] for t in proposal["y_axis"]["ticks"]]):
+        assert abs(got - want) <= 1.5
 
 
 def test_ask_model_rejects_non_json_reply():
