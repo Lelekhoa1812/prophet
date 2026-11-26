@@ -254,3 +254,13 @@ def test_builder_reads_a_database_read_only(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         ro.execute("update missions set status = 'changed'")
     ro.close()
+
+
+def test_the_rescue_analyst_is_told_what_the_lead_repeated():
+    """EPL 56465803: after the first stall, the fresh analyst's brief names the repeated step and asks for another route."""
+    _, outcome = _replayed("epl_56465803")
+    evidence = (outcome.result or {}).get("evidence") or []
+    rescue = next(h for h in evidence if h.get("kind") == "stall_rescue")
+    assert "sandbox_python" in rescue.get("repeated", "")
+    briefs = json.dumps([h for h in evidence if h.get("kind") == "subagent"])
+    assert "The lead stalled repeating" in briefs and "different route" in briefs

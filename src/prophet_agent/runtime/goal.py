@@ -2231,8 +2231,15 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             nxt = nxt_item["item"] if nxt_item else None
             # The item's detail rides along for the rescue brief only (live retail_biz rep6: the ledger item's analyst got
             # the item's name, not the cell that closes it, and printed the scan 14 times). The dedup key stays the item.
-            stuck = ((nxt, STUCK_CALLS if rescue else calls_now - calls_at_best, nxt_item.get("detail") or "")
-                     if nxt else None)
+            detail = nxt_item.get("detail") or "" if nxt_item else ""
+            if rescue and (last := next((h for h in reversed(history) if h.get("kind") == "stall_rescue"), None)):
+                # EPL 56465803 replay: the rescue analyst re-parsed the same 11-club table three more times. It is told
+                # what the lead repeated, so it takes another route instead.
+                detail = (detail + " " if detail else "") + (
+                    f"The lead stalled repeating {last.get('repeated', 'one step')}. That result already exists: do not "
+                    "re-read or re-parse it. Take a different route (another source, find_in_page on a page already "
+                    "fetched, or a complete table), or report what is missing.")
+            stuck = (nxt, STUCK_CALLS if rescue else calls_now - calls_at_best, detail) if nxt else None
             rescue = False
             _status(ctx, i, history, items, started)
         if (stall_note := _stall_notice(history, stuck[0] if stuck else None)):
@@ -2322,7 +2329,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 # The first stall is not the end: the next checklist item goes to a fresh analyst, and only a second stall
                 # stops the run (live retail: four identical diagnostics cells ended the mission at 11 calls, no forecast).
                 history.append({"kind": "stall_rescue", "note": "the same step repeated with the same result; the next "
-                                "checklist item (" + stuck[0] + ") goes to a fresh analyst. Build on its report."})
+                                "checklist item (" + stuck[0] + ") goes to a fresh analyst. Build on its report.",
+                                "repeated": _stall_label(_run_of_same_result(history) or [obs])})
                 rescue = True
                 continue
             # Repeating the same call will not help. Judge what was found so far: a best answer, labelled partial,
