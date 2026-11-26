@@ -114,7 +114,7 @@ GLOBAL_NOTE = {"global_gbm": "Centre line from one gradient-boosted model traine
                                "backtest). The range is the average of the two bands."}
 GLOBAL_ITEM_NOTE = {"global_gbm": "centre: one model trained on all series together",
                     "global_blend": "centre: equal blend of TimesFM 3 and one model trained on all series together"}
-RULE_TEXT = {"damped_trend": "a damped trend fitted to the history", "recent_drift": "the recent average change extended",
+RULE_TEXT = {"momentum": "the recent change, over the last few horizons, extended", "damped_trend": "a damped trend fitted to the history", "recent_drift": "the recent average change extended",
              "naive": "the last value repeated", "drift": "the average historical change extended",
              "seasonal_naive": "the value one season back repeated", "mean_last_season": "the average of the last season"}
 
@@ -143,7 +143,7 @@ def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
     if centre and centre.get("rule") == "blend":
         return _blend_note(centre)
-    if centre and centre.get("rule") in ("damped_trend", "recent_drift"):
+    if centre and centre.get("rule") in ("damped_trend", "recent_drift", "momentum"):
         control = _method_note(config, None)
         return (f"Centre line: {RULE_TEXT[centre['rule']]}. The line from the model was flat, so a trend rule was tried and "
                 f"delivered: {centre['reason']}. The range is the model's band, recentred on it. {control}")

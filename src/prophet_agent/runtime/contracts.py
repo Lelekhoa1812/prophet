@@ -1652,7 +1652,8 @@ CENTRE_WORDS = {"timesfm": "TimesFM", "global_gbm": "the pooled gradient-boosted
                 "global_blend": "the equal-weight blend of the pooled model and TimesFM", "naive": "the last value",
                 "seasonal_naive": "the same step a season earlier", "mean_last_season": "the average of the last season",
                 "drift": "the drift rule", "blend": "the blend",
-                "damped_trend": "a damped trend", "recent_drift": "the recent average change"}
+                "damped_trend": "a damped trend", "recent_drift": "the recent average change",
+                "momentum": "the recent change"}
 
 
 def _panel_rules(h: dict, res: dict) -> list[str]:
@@ -3059,7 +3060,7 @@ def _flat_claim_after_tilt(text: str, obs: list) -> dict | None:
     """The answer calls the centre line flat or a level, but the newest pack drew a trend rule its own tilt chose (owner review
     of round 14 charts, 2026-11-27: flat lines are not accepted when the history gives a direction). Blocks."""
     drawn = _delivered_centre(obs)
-    if drawn not in ("damped_trend", "recent_drift"):
+    if drawn not in ("damped_trend", "recent_drift", "momentum"):
         return None
     for unit in grounding.sentences(text):
         if _FLAT_CLAIM.search(unit) and not re.search(r"\bnot\b|\bwould\b|\bwithout\b|\bif\b|\bwas\b|\bwere\b", unit, re.I):
@@ -3074,7 +3075,7 @@ def _latest_health_verdict(obs: list) -> str | None:
     return delivered_verdict(obs)
 
 
-TRENDING_CENTRES = ("drift", "damped_trend", "recent_drift")
+TRENDING_CENTRES = ("drift", "damped_trend", "recent_drift", "momentum")
 
 
 def _delivered_centre(obs: list) -> str | None:

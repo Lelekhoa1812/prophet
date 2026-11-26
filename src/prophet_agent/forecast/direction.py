@@ -74,7 +74,26 @@ def recent_drift_path(x: Any, h: int) -> np.ndarray | None:
     return np.exp(path) if positive else path
 
 
-CANDIDATES = {"damped_trend": damped_path, "recent_drift": recent_drift_path}
+MOMENTUM_HORIZONS = 4   # the momentum window is this many horizons long (at least 12 points): the trend at the scale being forecast
+
+
+def momentum_path(x: Any, h: int) -> np.ndarray | None:
+    """The average change over the last MOMENTUM_HORIZONS horizons (at least 12 points, at most DRIFT_POINTS), extended. It
+    reads what the series did lately at the scale of the forecast; a rate that has climbed for a year shows it where a
+    twenty-year drift and a smoothed trend average it away (round 15, AUUNEMP)."""
+    w = int(min(max(MOMENTUM_HORIZONS * h, 12), DRIFT_POINTS))
+    y = np.asarray(x, dtype=float)[-w:]
+    if len(y) < MIN_POINTS // 2 or not np.isfinite(y).all():
+        return None
+    positive = bool(y.min() > 0)
+    z = np.log(y) if positive else y
+    slope = (z[-1] - z[0]) / (len(z) - 1)
+    path = z[-1] + slope * np.arange(1, h + 1)
+    return np.exp(path) if positive else path
+
+
+CANDIDATES = {"damped_trend": damped_path, "recent_drift": recent_drift_path, "momentum": momentum_path}
+TILT_RULES = tuple(CANDIDATES)
 
 
 def _origins(n: int, h: int) -> list[int]:

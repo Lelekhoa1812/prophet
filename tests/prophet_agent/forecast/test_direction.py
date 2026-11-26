@@ -88,3 +88,14 @@ def test_a_trend_rule_that_contradicts_the_models_own_direction_is_not_drawn():
     out = d.tilt(fc, x)
     assert out["tilt_check"]["adopt"] is False
     assert all("no agreement" in t["result"] for t in out["tilt_check"]["tried"].values())
+
+
+def test_a_recent_climb_is_drawn_where_a_long_drift_averages_it_away():
+    rng = np.random.default_rng(4)
+    flat = 4.0 + rng.normal(0, 0.05, 500)
+    climb = 4.0 + np.linspace(0, 0.9, 40) + rng.normal(0, 0.03, 40)       # a year of climbing after a long level stretch
+    x = np.concatenate([flat, climb])
+    out = d.tilt(_flat_fc(float(x[-1]), 6, 0.3), x)
+    assert out["tilt_check"]["adopt"] is True and out["centre"]["rule"] in d.TILT_RULES
+    assert out["point"][-1] > out["point"][0] > float(x[-1])
+    assert out["tilt_check"]["tried"]["recent_drift"]["result"].startswith("moves under")
