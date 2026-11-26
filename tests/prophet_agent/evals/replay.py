@@ -79,8 +79,11 @@ class ReplayTools:
 
     def __init__(self, results: list[dict]):
         self._by_key: dict[tuple[str, str], list[dict]] = {}
+        self._by_code: dict[tuple[str, str], list[dict]] = {}
         for rec in results:
             self._by_key.setdefault((rec["tool"], _canon(rec["args"])), []).append(rec)
+            if rec["tool"] == "sandbox_python":
+                self._by_code.setdefault((rec["tool"], _canon(_without_carry(rec["args"]))), []).append(rec)
         self._served: dict[tuple[str, str], int] = {}
         self.names = sorted({rec["tool"] for rec in results})
         self.log: list[dict] = []
@@ -97,6 +100,11 @@ class ReplayTools:
     def _serve(self, name: str, args: dict) -> Any:
         key = (name, _canon(args))
         options = self._by_key.get(key)
+        if not options and name == "sandbox_python":
+            # The carry list is built by the harness (_auto_carry) from the run ids before the call, so it changes when a
+            # harness change moves a stop or a rescue. The planner's own decision is the code: match on that.
+            key = (name, _canon(_without_carry(args)))
+            options = self._by_code.get(key)
         if not options:
             self.misses.append({"tool": name, "args": args})
             raise RuntimeError(f"replay: no recorded result for {name} with these arguments")
@@ -115,6 +123,10 @@ class ReplayTools:
                 raise
         self.log.append({"tool": name, "args": args, "ok": True, "error": None, "result": result})
         return result
+
+
+def _without_carry(args: Any) -> Any:
+    return {k: v for k, v in args.items() if k != "carry"} if isinstance(args, dict) else args
 
 
 def _guard_download(args: dict, result: Any) -> None:

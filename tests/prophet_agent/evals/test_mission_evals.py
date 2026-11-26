@@ -54,7 +54,9 @@ def _cases() -> list[tuple[str, dict]]:
     cases = []
     for fixture_id in _fixture_ids():
         fixture = load(FIXTURES / f"{fixture_id}.json")
-        for spec in list(fixture.get("checks", [])) + BUILT_IN_CHECKS:
+        own = list(fixture.get("checks", []))
+        named = {spec["check"] for spec in own}
+        for spec in own + [b for b in BUILT_IN_CHECKS if b["check"] not in named]:    # a fixture may set its own
             cases.append((fixture_id, spec))
     return cases
 
@@ -81,7 +83,8 @@ def _stdout(entry: dict) -> str:
 
 @_check("no_unrecorded_calls")
 def _(spec: dict, o: Outcome) -> str | None:
-    if not o.misses:
+    allowed = int(spec.get("allowed", 0))
+    if len(o.misses) <= allowed:
         return None
     first = o.misses[0]
     return f"{len(o.misses)} call(s) had no recorded result; first: {first['tool']} {json.dumps(first['args'])[:160]}"
@@ -124,6 +127,38 @@ def _(spec: dict, o: Outcome) -> str | None:
     if repeats > spec["max_repeats"]:
         return f"{repeats} repeats of the re-parse ran before the stop (limit {spec['max_repeats']})"
     return None
+
+
+def _lead_stdout(h: dict) -> str:
+    res = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+    return str(res.get("stdout") or "") if isinstance(res, dict) else ""
+
+
+@_check("first_stall_within_repeats")
+def _(spec: dict, o: Outcome) -> str | None:
+    """The harness's own part of M9-7: the stall rule fires (a rescue or a stop) within max_repeats repeats of the re-parse.
+    What a rescue analyst does next comes from the recording, so it is checked separately (rescues_at_most)."""
+    if o.result is None:
+        return f"the mission produced no result (runtime status {o.runtime_status})"
+    evidence = o.result.get("evidence") or []
+    stop = next((i for i, h in enumerate(evidence) if h.get("kind") == "stall_rescue"), len(evidence))
+    hits = [h for h in evidence[:stop] if h.get("kind") == "tool" and h.get("tool") == spec["tool"]
+            and all(m in _lead_stdout(h) for m in spec["contains"])]
+    if not hits:
+        return f"no {spec['tool']} call before the first stall printed {spec['contains']}"
+    if stop == len(evidence) and o.result.get("status") != "partial":
+        return "the stall rule never fired"
+    repeats = len(hits) - 1
+    return None if repeats <= spec["max_repeats"] else (
+        f"{repeats} repeats of the re-parse ran before the first stall (limit {spec['max_repeats']})")
+
+
+@_check("rescues_at_most")
+def _(spec: dict, o: Outcome) -> str | None:
+    if o.result is None:
+        return f"the mission produced no result (runtime status {o.runtime_status})"
+    rescues = sum(1 for h in o.result.get("evidence") or [] if h.get("kind") == "stall_rescue")
+    return None if rescues <= spec["count"] else f"{rescues} stall rescues ran (limit {spec['count']})"
 
 
 @_check("no_unverified")

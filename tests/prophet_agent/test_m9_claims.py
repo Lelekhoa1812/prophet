@@ -236,3 +236,11 @@ def test_a_resumed_run_reuses_the_stored_verification_and_does_not_read_the_cach
     # Verifying from scratch against the changed page would have refused the claim, so the reuse is what keeps it.
     assert verify_claim(parse_claims(REPORT)[0], "The page was rewritten and no longer quotes Brent.", "d" * 64).status == "unverified"
 
+
+
+def test_blank_argument_names_are_dropped_before_the_call():
+    """Baseline panel 2026-11-26: list_open_data_sources({"": {}}) was refused as an unknown argument three times."""
+    from prophet_agent.runtime.goal import _drop_blank_keys
+    assert _drop_blank_keys({"": {}}) == {}
+    assert _drop_blank_keys({" ": 1, "url": "https://x"}) == {"url": "https://x"}
+    assert _drop_blank_keys(["not", "a", "dict"]) == ["not", "a", "dict"]

@@ -5548,14 +5548,19 @@
    "why": "reason code: the loop stopped as stalled or partial, not budget or failure"
   },
   {
-   "check": "stall_within_repeats",
+   "check": "first_stall_within_repeats",
    "tool": "sandbox_python",
    "contains": [
     "Arsenal",
     "(11, 9)"
    ],
    "max_repeats": 4,
-   "why": "M9-7: the stall rule catches a near-duplicate re-parse of the standings within 4 repeats"
+   "why": "M9-7: the stall rule catches a near-duplicate re-parse of the standings within 4 repeats (a rescue or a stop)"
+  },
+  {
+   "check": "rescues_at_most",
+   "count": 1,
+   "why": "after the first stall one fresh analyst may try; a second stall stops the run"
   },
   {
    "check": "runs_before_step",
@@ -5570,6 +5575,11 @@
   {
    "check": "no_unverified",
    "why": "no figure in the answer may be missing from the analysis output and the pages read"
+  },
+  {
+   "check": "no_unrecorded_calls",
+   "allowed": 1,
+   "why": "with the stall rule now firing at call 20 (live: step 63), the rescue analyst's history differs from the live run, and one of its recorded decisions runs where live had turned it into a repeat. More than one miss means the replay no longer follows the recording."
   }
  ]
 }

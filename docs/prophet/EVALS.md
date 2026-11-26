@@ -69,11 +69,13 @@ Every fixture also runs `no_unrecorded_calls`.
 
 | Check | Arguments | Passes when |
 | --- | --- | --- |
-| `no_unrecorded_calls` | none | every call the replayed loop made had a recorded result. A miss means the replay diverged from the recording. |
+| `no_unrecorded_calls` | optional `allowed` | every call the replayed loop made had a recorded result, or at most `allowed` did. A miss means the replay diverged from the recording; a fixture that allows one says why (a harness change that moves a stop changes what a later, recorded decision meets). |
 | `final_status_in` | `values` | the result status is one of `values` (for example `partial`, `stalled`, `met`). |
 | `stop_reason_in` | `values` | the reason code (`stop_reason`) is one of `values`. |
 | `runs_before_step` | `step` | the loop finished in fewer than `step` steps. Use it to show a run did not go to the old step count. |
 | `stall_within_repeats` | `tool`, `contains`, `max_repeats` | the loop stopped before more than `max_repeats` executed calls to `tool` printed every string in `contains`, after the first one. The loop must stop: running out of recorded decisions fails the check. |
+| `first_stall_within_repeats` | `tool`, `contains`, `max_repeats` | in the lead's evidence before the first stall rescue (or the stop), at most `max_repeats` calls to `tool` after the first printed every string in `contains`. This is the harness's part: what a rescue analyst does next comes from the recording. |
+| `rescues_at_most` | `count` | at most `count` stall rescues ran; a second stall stops the run. |
 | `file_named` | `name`, optional `present` | some executed call wrote a sandbox output whose path ends in `name` (`present: false` inverts it). |
 | `download_refused` | `tool`, `name`, `reason_contains` | a call to `tool` under the file name `name` failed with an error containing every string in `reason_contains`, and none succeeded. |
 | `no_download_accepted` | `name` | no download under `name` succeeded. |

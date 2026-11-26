@@ -88,10 +88,18 @@ def test_near_only_repeat_is_caught_without_an_exact_match():
 
 
 def test_a_new_file_is_progress_not_a_repeat():
-    cells = [_cell(f"act:d0:{i}", TABLE, outputs=[{"path": f"out/part{i}.csv", "bytes": 10, "sha256": "x"}]) for i in range(4)]
+    cells = [_cell(f"act:d0:{i}", TABLE, outputs=[{"path": f"out/part{i}.csv", "bytes": 10, "sha256": f"x{i}"}])
+             for i in range(4)]
     hist = _history(cells)
     assert G._near_run(hist) == []
     assert G._stall_notice(hist, None) is None
+
+
+def test_the_same_content_under_a_new_name_is_not_progress():
+    """EPL 56465803 replay: the standings were saved as _full.csv and then _clean.csv with the same sha256."""
+    cells = [_cell(f"act:d0:{i}", TABLE, outputs=[{"path": f"out/part{i}.csv", "bytes": 10, "sha256": "same"}])
+             for i in range(4)]
+    assert len(G._near_run(_history(cells))) == 4
 
 
 def test_a_new_table_shape_is_progress():

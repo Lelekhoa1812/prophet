@@ -1282,6 +1282,19 @@ def _auto_carry(args: Any, history: list[dict]) -> Any:
     return {**args, "carry": given + extra}
 
 
+def _drop_blank_keys(args: Any) -> Any:
+    """Arguments without blank names.
+
+    Motivation: baseline panel 2026-11-26 (CPI, NEM, AUUNEMP) called list_open_data_sources with {"": {}}, and the tool
+    refused it as an unknown argument. A key with no name carries nothing the tool could read.
+    Logic: top-level keys that are empty or only whitespace are dropped; everything else is passed as sent. Deterministic,
+    so a replay builds the same arguments.
+    """
+    if not isinstance(args, dict):
+        return args
+    return {k: v for k, v in args.items() if not (isinstance(k, str) and not k.strip())}
+
+
 def _repair_source(args: Any, history: list[dict]) -> Any:
     """A planner sometimes writes a run id that never existed (a model copies the shape of an id, not the id). When the
     named run has no such file on disk, the newest run of THIS mission that wrote the file stands in. Runs of other missions
@@ -1468,6 +1481,101 @@ def _sandbox_files(obs: dict, history: list[dict]) -> frozenset[str]:
     return frozenset(_FILE_NAME.findall(code)) | frozenset(written)
 
 
+def _sandbox_new_content(obs: dict, history: list[dict], earlier: list[dict], *, new_name_only: bool = False) -> bool:
+    """Whether a cell wrote content no earlier cell wrote.
+
+    Motivation: replay of EPL 56465803 (tests/prophet_agent/evals): the re-parse cells wrote the same table under new names
+    (pl_standings_2026_27_full.csv, then _clean.csv, both sha256 a9f0ca43), and a new name counted as progress, so the
+    loop ran 14 times. Logic: an output is new when its sha256 is new; an output with no sha256 is new when its name is.
+    With ``new_name_only`` an output must also have a new name: a rewrite of a file seen before (a running ledger.json)
+    is judged by what the cell printed instead.
+    """
+    def outputs(h: dict) -> list[tuple[str, str]]:
+        src = _resolved(h, history)
+        res = src.get("full") if isinstance(src.get("full"), dict) else src.get("result")
+        out = []
+        for o in (res.get("outputs") or []) if isinstance(res, dict) else []:
+            if isinstance(o, dict) and isinstance(o.get("path"), str):
+                out.append((o["path"], str(o.get("sha256") or "")))
+            elif isinstance(o, str):
+                out.append((o.split(" (")[0], ""))
+        return out
+
+    seen_names, seen_digests = set(), set()
+    for h in earlier:
+        for name, digest in outputs(h):
+            seen_names.add(name)
+            if digest:
+                seen_digests.add(digest)
+    if new_name_only:
+        return any(name not in seen_names and (not digest or digest not in seen_digests) for name, digest in outputs(obs))
+    return any((digest not in seen_digests) if digest else (name not in seen_names) for name, digest in outputs(obs))
+
+
+def _no_new_information(profile: dict, earlier: list[dict]) -> bool:
+    """A cell whose printed table rows (or, with no rows, its word shingles) were nearly all printed by earlier cells that
+    showed the same table shapes. Motivation: the EPL loop printed the same 11-club table between cells that differed in
+    other ways, so no two neighbours were near-duplicates. Logic: coverage of the newest cell's rows by the union of earlier
+    cells with the same shapes, at least NEAR_SIMILARITY; a cell that prints no table shape is never counted."""
+    if not profile["shapes"]:
+        return False
+    same = [p for p in earlier if p["shapes"] == profile["shapes"]]
+    if not same:
+        return False
+    key = "lines" if profile["lines"] else "shingles"
+    mine = profile[key]
+    if not mine:
+        return False
+    union = frozenset().union(*(p[key] for p in same))
+    return len(mine & union) / len(mine) >= NEAR_SIMILARITY
+
+
+_ARTEFACT = re.compile(r"\.(?:png|svg|pdf|docx|xlsx|html?|jpe?g)$", re.I)
+
+
+def _new_artefact(obs: dict, history: list[dict], earlier: list[dict]) -> bool:
+    """A chart or document file no earlier cell wrote: work for the answer, whatever the cell printed."""
+    seen = set()
+    for h in earlier:
+        seen |= _sandbox_files(h, history)
+    return any(_ARTEFACT.search(name) and name not in seen for name in _sandbox_files(obs, history))
+
+
+def _stale_run(history: list[dict]) -> list[dict]:
+    """The newest sandbox cells, newest first, that printed no new information compared with every cell before them.
+
+    Motivation: replay of EPL 56465803: six cells in a row printed the same 11-club table; each also wrote a newly named
+    assessment JSON, and a rule that compared only neighbours let the loop run on. Logic: a cell that printed only table
+    rows already printed under the same shapes is stale. A cell that wrote a new chart or document, wrote a file with a new
+    name and new content, failed, or printed new rows ends the run. A cell that printed no table shape is skipped.
+    """
+    calls = [h for h in history if h.get("kind") == "tool" and not h.get("rejected")]
+    sandbox = [h for h in calls if h.get("tool") == "sandbox_python"]
+    profiles = [(h, _sandbox_profile(h, history)) for h in sandbox]
+    run: list[dict] = []
+    for k in range(len(profiles) - 1, 0, -1):
+        h, p = profiles[k]
+        if p is None or (p["ok"] and not p["shapes"] and not _sandbox_new_content(h, history, [x for x, _ in profiles[:k]])):
+            continue
+        before = [h2 for h2, _ in profiles[:k]]
+        earlier = [p2 for _, p2 in profiles[:k] if p2 is not None]
+        if (not p["ok"] or _new_artefact(h, history, before) or _sandbox_new_content(h, history, before, new_name_only=True)
+                or not _no_new_information(p, earlier)):
+            break
+        run.append(h)
+    return run
+
+
+def _row_lines(text: str) -> set[str]:
+    """The table rows a cell printed, each as one normalised line (tokens joined), so a changed number is a new row."""
+    out: set[str] = set()
+    for ln in text.splitlines():
+        toks = _TOKEN.findall(ln.lower())
+        if sum(t[0].isdigit() for t in toks) >= 3 and any(t[0].isalpha() for t in toks):
+            out.add(" ".join(toks))
+    return out
+
+
 def _row_tokens(text: str) -> set[str]:
     """The tokens of the lines that carry numbers and a word (table rows): numbers kept, layout and spacing dropped."""
     out: set[str] = set()
@@ -1500,6 +1608,7 @@ def _sandbox_profile(obs: dict, history: list[dict]) -> dict | None:
     tokens = _TOKEN.findall(text.lower())
     return {"ok": res.get("ok") is True, "files": _sandbox_files(src, history),
             "shapes": tuple(sorted(set(_SHAPE.findall(stdout)))), "rows": frozenset(_row_tokens(text)),
+            "lines": frozenset(_row_lines(text)),
             "shingles": frozenset(tuple(tokens[i:i + NEAR_SHINGLE]) for i in range(max(0, len(tokens) - NEAR_SHINGLE + 1)))}
 
 
@@ -1527,10 +1636,15 @@ def _near_run(history: list[dict]) -> list[dict]:
     newest = _sandbox_profile(sandbox[-1], history)
     if newest is None:
         return []
-    earlier: set[str] = set()
+    earlier_names: set[str] = set()
     for h in sandbox[:-1]:
-        earlier |= _sandbox_files(h, history)
-    if newest["files"] - earlier:
+        earlier_names |= _sandbox_files(h, history)
+    newest_obs = _resolved(sandbox[-1], history)
+    code = str((newest_obs.get("args") or {}).get("code") or "") if isinstance(newest_obs.get("args"), dict) else ""
+    # A file the code reads for the first time is new input; an output is new work unless it repeats content already written
+    # under another name (EPL 56465803 replay: _full.csv and _clean.csv were the same table).
+    if (frozenset(_FILE_NAME.findall(code)) - earlier_names
+            or _sandbox_new_content(sandbox[-1], history, sandbox[:-1], new_name_only=True)):
         return []
     run = [sandbox[-1]]
     for h in reversed(sandbox[:-1]):
@@ -1547,7 +1661,8 @@ def _run_of_same_result(history: list[dict]) -> list[dict]:
     """The run the stall rule and the notice use: the longer of the exact run (same progress key) and the near-duplicate run."""
     exact = _exact_run(history)
     near = _near_run(history)
-    return near if len(near) > len(exact) else exact
+    stale = _stale_run(history)
+    return max((near, stale, exact), key=len)
 
 
 def _outcome_line(obs: dict) -> str:
@@ -1604,7 +1719,7 @@ def _stalled(history: list[dict], window: int) -> bool:
         return True
     # Mission 9: `window` sandbox cells that are near-duplicates of the newest one (same files, shapes and rows) are the same loop.
     # The pointers are resolved against the full history, so the positions they carry still point at the right calls.
-    if len(_near_run(full)) >= window:
+    if len(_near_run(full)) >= window or len(_stale_run(full)) >= window:
         return True
     tool_obs = [h for h in history if h.get("kind") == "tool"]
     if len(tool_obs) < window:
@@ -2183,7 +2298,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             obs = delegated[-1]
         else:
             name = plan.get("tool", "")
-            args = _repair_source(plan.get("args", {}), history)
+            args = _repair_source(_drop_blank_keys(plan.get("args", {})), history)
             if name == "sandbox_python":
                 args = _auto_carry(args, history)
             if name not in tools:
