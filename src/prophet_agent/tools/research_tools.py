@@ -1,4 +1,5 @@
-"""The three web research tools the goal loop can call: search, fetch one page, and a combined research pass.
+"""The web research tools the goal loop can call: search, fetch one page, search a page already read, and a combined
+research pass.
 
 Motivation vs Logic
 Motivation: the planner needs outside facts with sources it can cite. One search rarely gives enough; reading whole pages
@@ -9,7 +10,8 @@ the research modules. web_research works in rounds: round 0 reads the primary re
 search, the same fetch path as any page), round 1 searches the queries and reads the top new pages. Repeats are removed by
 normalised URL and near-identical title, and URLs the planner already read (exclude_urls) are never fetched again. Each
 call reports metrics (domains, tier-1 sources, dated sources, date range, new and duplicate counts) so that the planner
-can stop when a round adds nothing. The three tools are idempotent: the ledger keeps the result of a finished call, so a
+can stop when a round adds nothing. find_in_page reads only the research cache, so a page already fetched is searched
+again (for a table, say) without a second download. The tools are idempotent: the ledger keeps the result of a finished call, so a
 resumed mission never searches or fetches twice, and the duplicate check uses only the arguments, never earlier calls.
 The observe function trims what the planner sees to about 9,000 characters and says how much was cut; the ledger keeps
 all. No tool runs JavaScript, submits a form or opens a file:// URL.
@@ -17,13 +19,14 @@ all. No tool runs JavaScript, submits a form or opens a file:// URL.
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
 from prophet_agent.research.events import dated_events, iso_day
-from prophet_agent.research.fetch import HTML_MEDIA, Page, fetch_page, looks_like_data_table
+from prophet_agent.research.fetch import HTML_MEDIA, Page, fetch_page, looks_like_data_table, stored_page
 from prophet_agent.research.passages import best_passages, select_passages, stated_date
 from prophet_agent.research.primary import (REGIONAL_FAMILIES, detect_family, family_names, is_us_grid_query,
                                             is_us_region, registry_pages, resolve_family)
@@ -48,6 +51,14 @@ MAX_EXCLUDE = 200
 MAX_REGISTRY = 6
 MIN_USABLE_CHARS = 100   # a fetched page with less text than this is thin: it counts as failed and is backfilled (A3-07)
 MAX_CHARS_LIMIT = 20000  # the web_fetch schema cap; a larger request is clamped and the clamp is reported (A3-07)
+FIND_ARGS = {"url", "queries", "regex"}
+MAX_FIND_PASSAGES = 6    # passages find_in_page returns, for queries or for regex matches
+MAX_REGEX_CHARS = 200    # the longest regex find_in_page accepts
+REGEX_CONTEXT = 350      # characters of page text on each side of a regex match
+MAX_REGEX_SCAN = 500     # matches looked at before find_in_page stops scanning a page
+TABLES_LISTED = 8        # data tables listed on a page result; the rest are counted
+TABLE_HEADER_COLUMNS = 8 # header names listed per table
+TABLE_NAME_CHARS = 40    # characters kept per header name
 
 
 def _allow(args: Any, allowed: set[str]) -> dict:
@@ -294,6 +305,22 @@ _DATA_FILE_NOTE = ("this is a data table, not an article. preview is the first r
                    "Do not paste rows into sandbox code and do not build a stand-in series.")
 
 
+_TABLE_NOTE = ("tables are the data tables on this page, by index, with header, row_count and locator. Call "
+               "download_web_data with this url and table set to an index to land one as a file.")
+
+
+def _table_view(tables: list) -> list[dict]:
+    """The page's table candidates as a bounded list: index, header names and row count, with the locator download_web_data
+    takes. The full grid stays in the cache and is landed by download_web_data, not returned here."""
+    listed = []
+    for table in tables[:TABLES_LISTED]:
+        columns = [str(name)[:TABLE_NAME_CHARS] for name in (table.get("columns") or [])]
+        header = columns[:TABLE_HEADER_COLUMNS] + (["..."] if len(columns) > TABLE_HEADER_COLUMNS else [])
+        listed.append({"index": table.get("index"), "header": header, "row_count": table.get("row_count"),
+                       "locator": table.get("locator")})
+    return listed
+
+
 def web_fetch_tool(args: Any, _key: str) -> dict:
     args = _allow(args, FETCH_ARGS)
     url = args.get("url")
@@ -315,6 +342,10 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
     if not page.ok:
         return out
     out = _with_file_links(out, page)
+    if page.tables:
+        out["tables"] = _table_view(page.tables)
+        out["table_count"] = len(page.tables)
+        out["note"] = "; ".join(part for part in (out.get("note"), _TABLE_NOTE) if part)
     if _is_data_page(page):
         # SciRes re-run 2026-11-24 read a cached page with no media type and pasted 13 rows from 1974.
         out["data_file"] = True
@@ -328,6 +359,77 @@ def web_fetch_tool(args: Any, _key: str) -> dict:
         return out
     out["text"] = page.text[:max_chars]
     out["text_truncated"] = len(page.text) > max_chars
+    return out
+
+
+def _regex(value: Any) -> re.Pattern:
+    if not isinstance(value, str) or not value:
+        raise ValueError("regex must be a non-empty pattern string")
+    if len(value) > MAX_REGEX_CHARS:
+        raise ValueError(f"regex is longer than {MAX_REGEX_CHARS} characters")
+    try:
+        return re.compile(value, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"regex does not compile: {exc}") from None
+
+
+def _regex_passages(text: str, pattern: re.Pattern) -> list[dict]:
+    """Each regex match with REGEX_CONTEXT characters either side, as exact slices of the page text. A window that overlaps
+    the one before it is skipped, since its match is already in that passage."""
+    passages: list[dict] = []
+    covered = -1
+    for scanned, match in enumerate(pattern.finditer(text)):
+        if scanned >= MAX_REGEX_SCAN or len(passages) >= MAX_FIND_PASSAGES:
+            break
+        if match.end() == match.start():
+            continue
+        start = max(0, match.start() - REGEX_CONTEXT)
+        end = min(len(text), match.end() + REGEX_CONTEXT)
+        if start < covered:
+            continue
+        covered = end
+        passages.append({"text": text[start:end], "start": start, "end": end, "match": match.group(0)[:200]})
+    return passages
+
+
+def find_in_page_tool(args: Any, _key: str) -> dict:
+    """Searches a page this mission already read, from the research cache. No network: a page not in the cache is
+    refused with the advice to call web_fetch, so the planner does not fetch the same page again to look for a table."""
+    args = _allow(args, FIND_ARGS)
+    url = args.get("url")
+    if not isinstance(url, str) or not url.strip().lower().startswith(("http://", "https://")):
+        raise ValueError("url must be the http or https address of a page read with web_fetch")
+    url = url.strip()
+    queries, pattern = args.get("queries"), args.get("regex")
+    if (queries is None) == (pattern is None):
+        raise ValueError("give exactly one of queries (1 to 8 strings) or regex (one pattern)")
+    if queries is not None:
+        queries = _queries(queries, low=1, high=MAX_QUERIES)
+    else:
+        pattern = _regex(pattern)
+    cached = stored_page(url)
+    if cached is None:
+        return {"ok": False, "url": url, "in_cache": False,
+                "note": "this page is not in the research cache, so it was not searched and nothing was fetched. Call "
+                        "web_fetch with this url first, then find_in_page again."}
+    text = cached.get("text") or ""
+    if queries is not None:
+        passages = [{"text": p["text"], "start": p["start"], "end": p["start"] + len(p["text"]), "score": p["score"]}
+                    for p in select_passages(text, queries, k=MAX_FIND_PASSAGES) if p["reason"] == "query"]
+        mode = "queries"
+    else:
+        passages = _regex_passages(text, pattern)
+        mode = "regex"
+    tables = cached.get("tables") or []
+    out: dict[str, Any] = {"ok": True, "url": url, "in_cache": True, "mode": mode, "final_url": cached.get("final_url"),
+                           "title": cached.get("title") or "", "fetched_at": cached.get("fetched_at") or "",
+                           "chars": len(text), "passages": passages, "table_count": len(tables),
+                           "tables": _table_view(tables)}
+    if not passages:
+        out["note"] = ("no passage matches in the cached page. Try other words or a regex; "
+                       f"the page has {len(text)} characters.")
+    if tables:
+        out["note"] = "; ".join(part for part in (out.get("note"), _TABLE_NOTE) if part)
     return out
 
 
@@ -422,8 +524,9 @@ def web_research_tool(args: Any, _key: str) -> dict:
 
 def _clip_passages(data: dict) -> int:
     clipped = 0
-    for source in data.get("sources", []):
-        for passage in source.get("passages", []):
+    groups = [source.get("passages", []) for source in data.get("sources", [])] + [data.get("passages") or []]
+    for passages in groups:
+        for passage in passages:
             if len(passage["text"]) > PASSAGE_SEEN_CHARS:
                 passage["text"] = passage["text"][:PASSAGE_SEEN_CHARS] + "..."
                 clipped += 1
@@ -435,6 +538,9 @@ def _drop_last_passage(data: dict) -> bool:
         if source.get("passages"):
             source["passages"].pop()
             return True
+    if data.get("passages"):
+        data["passages"].pop()      # find_in_page returns its passages at the top level
+        return True
     return False
 
 
@@ -457,6 +563,9 @@ def observe(result: dict) -> dict:
         elif data.get("events"):
             data["events"].pop()
             dropped["events"] = dropped.get("events", 0) + 1
+        elif data.get("tables"):
+            data["tables"].pop()
+            dropped["tables"] = dropped.get("tables", 0) + 1
         elif isinstance(data.get("text"), str):
             excess = size() - OBSERVE_CHARS
             data["text"] = data["text"][:max(len(data["text"]) - excess - 200, 500)]
@@ -512,6 +621,21 @@ WEB_FETCH_SPEC = {
                        "built by JavaScript (slower; default false). A JavaScript-looking page is drawn without it"},
 }
 
+FIND_IN_PAGE_SPEC = {
+    "name": "find_in_page",
+    "title": "Find in a page",
+    "activity": "Searching a page already read",
+    "description": "Search a page that web_fetch already read, from the research cache, with no network. Returns the best "
+                   "matching passages with start and end character offsets in the page text, and the page's data tables "
+                   "(index, header, row_count, locator), so a table is found without fetching the page again. Give queries "
+                   "or one regex. A page that is not in the cache is not searched: the result says so and asks for web_fetch "
+                   "first.",
+    "args": {"url": "the address of a page already read with web_fetch",
+             "queries": "list of 1 to 8 strings to find in the page, best passages first",
+             "regex": f"one regular expression, case-insensitive, up to {MAX_REGEX_CHARS} characters; each match comes back "
+                      f"with {REGEX_CONTEXT} characters of context on each side"},
+}
+
 WEB_RESEARCH_SPEC = {
     "name": "web_research",
     "title": "Research",
@@ -546,6 +670,6 @@ WEB_RESEARCH_SPEC = {
 def tools() -> list[tuple[Tool, dict]]:
     """The three research tools with their specs, in the same shape as the other tool modules."""
     specs = [(WEB_SEARCH_SPEC, web_search_tool), (WEB_FETCH_SPEC, web_fetch_tool),
-             (WEB_RESEARCH_SPEC, web_research_tool)]
+             (FIND_IN_PAGE_SPEC, find_in_page_tool), (WEB_RESEARCH_SPEC, web_research_tool)]
     return [(Tool(spec["name"], fn, idempotent=True, doc=_spec_doc(spec), title=spec["title"],
                   activity=spec["activity"], observe=observe), spec) for spec, fn in specs]

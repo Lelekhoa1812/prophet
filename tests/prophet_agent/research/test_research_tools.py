@@ -41,9 +41,9 @@ def fake_fetch(url, **kwargs):
                 sha256="def456", fetched_at="now", status=200, ok=True)
 
 
-def test_three_tools_are_declared_idempotent_with_specs():
+def test_the_research_tools_are_declared_idempotent_with_specs():
     tools = tools_by_name()
-    assert set(tools) == {"web_search", "web_fetch", "web_research"}
+    assert set(tools) == {"web_search", "web_fetch", "find_in_page", "web_research"}
     for tool, spec in tools.values():
         assert tool.idempotent is True
         assert spec["name"] == tool.name and spec["title"] and spec["activity"] and spec["description"]
