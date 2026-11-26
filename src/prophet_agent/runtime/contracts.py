@@ -437,6 +437,41 @@ def _scope_text(names: list[str], show: int = 3) -> str:
     return f"{len(names)} series: {head}" + (f" and {len(names) - show} more" if len(names) > show else "")
 
 
+def _ledger_carry(history) -> str:
+    """How a cell opens the newest saved ledger: the carry item and the Ledger.open call, or a new ledger when none is saved."""
+    newest = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
+                   if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
+                   and any(LEDGER_FILE.fullmatch(_output_path(o)) for o in (h["result"].get("outputs") or []))), None)
+    ledger_path = next((_output_path(o) for h in reversed(with_delegated(history))
+                        if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
+                        and h["result"].get("run_id") == newest
+                        for o in (h["result"].get("outputs") or []) if LEDGER_FILE.fullmatch(_output_path(o))), "out/ledger.json")
+    return (f"carry=[{{run_id: '{newest}', file: '{ledger_path}'}}], then led = ps.Ledger.open('in/carried/{ledger_path.split('/')[-1]}')"
+            if newest else "led = ps.Ledger()")
+
+
+LEDGER_STAGE_NAMES = ("time index", "coverage", "zeros and censoring", "outliers and level shifts", "seasonality")
+
+
+def _stage_recipe(history, run_root) -> str:
+    """The cell that adds the stages the newest ledger still lacks, by name, when every scan finding is already decided.
+
+    Panel round 3 NGSTORAGE and SPX (2026-11-26): changepoints and outliers both count as "outliers and level shifts", so
+    four decisions made three stages; the recipe was blank because no scan id was open, and the lead spent eight cells
+    guessing which stage was missing."""
+    ledgers = _saved_ledgers(history, run_root)
+    recorded = {str(e.get("stage", "")).strip().lower() for e in (ledgers[0] if ledgers else [])
+                if isinstance(e, dict) and str(e.get("finding", "")).strip() and str(e.get("decision", "")).strip()}
+    need = MIN_LEDGER_STAGES - len(recorded - {""})
+    missing = [s for s in LEDGER_STAGE_NAMES if s not in recorded][:max(need, 0)]
+    if not missing:
+        return ""
+    adds = "; ".join(f"led.add('{s}', '<what you checked and the measured result>', '<your decision and why>')"
+                     for s in missing)
+    return (f"; recorded stages: {', '.join(sorted(recorded - {''})) or 'none'}. Missing: {', '.join(missing)}. One cell does "
+            f"it: {_ledger_carry(history)}; {adds}; led.save()")
+
+
 def _decision_recipe(findings: list[dict], missing: list[str], history, run_root) -> str:
     """The cell that closes the check, in this mission's own names: the ledger to carry, and one add per undecided major
     finding with its scope. The decision text is left for the planner to write.
@@ -452,15 +487,7 @@ def _decision_recipe(findings: list[dict], missing: list[str], history, run_root
             if str(f.get("scope")) not in got:
                 got.append(str(f.get("scope")))
     rows = [(i, _scope_text(scopes[i])) for i in missing if i in scopes]
-    newest = next((h["result"]["run_id"] for h in reversed(with_delegated(history))
-                   if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
-                   and any(LEDGER_FILE.fullmatch(_output_path(o)) for o in (h["result"].get("outputs") or []))), None)
-    ledger_path = next((_output_path(o) for h in reversed(with_delegated(history))
-                        if isinstance(h, dict) and h.get("tool") == "sandbox_python" and isinstance(h.get("result"), dict)
-                        and h["result"].get("run_id") == newest
-                        for o in (h["result"].get("outputs") or []) if LEDGER_FILE.fullmatch(_output_path(o))), "out/ledger.json")
-    carry = (f"carry=[{{run_id: '{newest}', file: '{ledger_path}'}}], then led = ps.Ledger.open('in/carried/{ledger_path.split('/')[-1]}')"
-             if newest else "led = ps.Ledger()")
+    carry = _ledger_carry(history)
     # led.decide reads the stage and the finding text from the saved scan, so the cell has no scan parsing to get wrong
     # (live retail_biz rep5: guards on scan keys that do not exist skipped both adds, and the save changed nothing).
     adds = "; ".join(f"led.decide('{i}', '<your decision and why>')  # {scope}" for i, scope in rows)
@@ -828,12 +855,12 @@ def _ledger_recipe(history, run_root) -> str:
         if f["id"] not in ids:
             ids.append(f["id"])
     if not ids:
-        return ""
+        return _stage_recipe(history, run_root)
     texts = [" ".join(str(e.get(k, "")) for k in ("stage", "finding", "decision")) for entries in _saved_ledgers(history, run_root)
              for e in entries if isinstance(e, dict)]
     open_ids = [i for i in ids if not any(i in t for t in texts)][:8]
     if not open_ids:
-        return ""
+        return _stage_recipe(history, run_root)
     return ("; " + _decision_recipe(findings, open_ids, history, run_root).lstrip(". ")
             + ". Printing the scan again does not count: only saved decisions do")
 

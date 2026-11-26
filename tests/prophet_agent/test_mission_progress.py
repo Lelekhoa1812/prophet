@@ -33,7 +33,10 @@ def test_the_checklist_ticks_items_from_the_evidence_and_counts_ledger_stages(tm
     items = {it["item"].split(" (")[0].split(":")[0]: it for it in contracts.progress(history, run_root=tmp_path)}
     assert items["inspect the data"]["status"] == "done"
     ledger = next(it for k, it in items.items() if k.startswith("analysis ledger"))
-    assert ledger["status"] == "todo" and ledger["detail"] == f"2 of {contracts.MIN_LEDGER_STAGES} recorded"
+    assert ledger["status"] == "todo" and ledger["detail"].startswith(f"2 of {contracts.MIN_LEDGER_STAGES} recorded")
+    # Panel round 3 NGSTORAGE (2026-11-26): with no scan id open, the detail names the missing stages and the cell to add them.
+    assert "Missing: zeros and censoring, outliers and level shifts" in ledger["detail"]
+    assert "led.add('zeros and censoring'" in ledger["detail"]
     assert ledger.get("next"), "the first undone item is the next one"
 
 
