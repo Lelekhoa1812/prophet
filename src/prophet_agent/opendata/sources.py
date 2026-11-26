@@ -36,6 +36,7 @@ LOWER_CODE = re.compile(r"[A-Za-z0-9_]{1,40}")
 DIM_SEL = re.compile(r"[A-Z0-9(),]{1,80}")
 CUBE = re.compile(r"[a-z0-9]{1,20}")
 SERIES_ID = re.compile(r"[A-Za-z0-9._-]{1,80}")
+FRED_ID = re.compile(r"[A-Z0-9_]{1,40}")
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,11 @@ def _check_boe(canonical: dict) -> None:
     end = datetime.strptime(canonical["Dateto"], "%d/%b/%Y")
     if end < start:
         raise ValueError("Dateto is before Datefrom")
+
+
+def _check_fred(canonical: dict) -> None:
+    if "cosd" in canonical and "coed" in canonical and canonical["coed"] < canonical["cosd"]:
+        raise ValueError("coed is before cosd")
 
 
 def _check_span(canonical: dict) -> None:
@@ -516,6 +522,21 @@ SOURCES: dict[str, Source] = {
         params={},
         licence_key="world_bank",
         body_kind="xlsx",
+    ),
+    # Panel CPI (2026-11-26): the planner asked download_open_data for source "fred" and was refused as unknown, then spent
+    # its budget on web research. FRED's graph CSV needs no key; the series code is the only required value.
+    "fred": Source(
+        key="fred",
+        title="FRED series (St. Louis Fed) as CSV, by series code, for example CPIAUCSL, UNRATE, SP500, DCOILWTICO",
+        url_template="https://fred.stlouisfed.org/graph/fredgraph.csv",
+        fixed_query=(),
+        params={
+            "id": Param("code", True, "One FRED series code, for example CPIAUCSL.", _code(FRED_ID, "FRED series code")),
+            "cosd": Param("date", False, "First observation date, YYYY-MM-DD. Omit for the full history.", _date),
+            "coed": Param("date", False, "Last observation date, YYYY-MM-DD. Omit for the latest.", _date),
+        },
+        licence_key="fred",
+        cross_check=_check_fred,
     ),
 }
 

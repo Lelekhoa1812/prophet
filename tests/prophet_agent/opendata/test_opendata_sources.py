@@ -172,4 +172,17 @@ def test_every_source_names_a_licence_key():
         "world_bank": "world_bank",
         "eia_bulk": "eia",
         "world_bank_pink_sheet": "world_bank",
+        "fred": "fred",
     }
+
+
+def test_fred_builds_a_keyless_graph_csv_url_and_refuses_bad_codes_and_spans():
+    assert sources.build_url("fred", {"id": "CPIAUCSL"}) == "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL"
+    assert sources.build_url("fred", {"id": "SP500", "cosd": "2025-01-01", "coed": "2026-11-20"}) == (
+        "https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500&cosd=2025-01-01&coed=2026-11-20")
+    with pytest.raises(ValueError, match="'id'"):
+        sources.build_url("fred", {"id": "CPI&api_key=x"})
+    with pytest.raises(ValueError, match="missing required parameter 'id'"):
+        sources.build_url("fred", {})
+    with pytest.raises(ValueError, match="coed is before cosd"):
+        sources.build_url("fred", {"id": "UNRATE", "cosd": "2026-01-01", "coed": "2025-01-01"})
