@@ -450,7 +450,7 @@ def download_market_prices_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
                           "row_count": got["row_count"], "first_date": got["first_date"],
                           "last_date": got["last_date"], "format": "csv",
                           "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body),
-                          "licence_key": market.LICENCE_KEY, "series_bound": False}
+                          "series_bound": False}
         if isinstance(name, str) and name.strip():
             claimed = _name_ticker(name)
             if claimed is not None and claimed != symbol.lstrip("^"):

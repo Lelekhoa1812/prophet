@@ -29,7 +29,6 @@ import httpx
 
 from prophet_agent.research.netguard import Resolver, UnsafeURL, open_pinned, read_capped
 
-LICENCE_KEY = "market"
 DEFAULT_TIMEOUT_S = 20.0
 MAX_BYTES = 5 * 1024 * 1024
 BROWSER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
