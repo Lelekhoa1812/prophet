@@ -128,16 +128,41 @@ def _drop_labels(text: str) -> str:
     return text
 
 
-def _cleaned(text: str) -> str:
+# Labels the panel of 2026-11-26 flagged as figures: a season or fiscal year written as a range ("2026-27", "2026/27"),
+# the day range after an ISO date ("2021-03-19-23"), an HTTP status ("HTTP 403"), and a citation list ("[31, 33]").
+_SEASON = re.compile(r"\b(?:FY\s?)?(?:19|20)\d\d\s?[/-]\s?\d\d\b(?![-/]\d)")
+_DATE_DAY_RANGE = re.compile(r"(\b\d{4}-\d{2}-\d{2})-(\d{1,2})\b")
+_HTTP_STATUS = re.compile(r"\b(?:HTTP|status(?: code)?|error)\s?[1-5]\d\d\b", re.I)
+_CITATION = re.compile(r"\[\s?\d{1,3}(?:\s?,\s?\d{1,3})*\s?\]")
+
+
+def _drop_reference_labels(text: str) -> str:
+    text = _DATE_DAY_RANGE.sub(lambda m: m.group(1) + " " * (len(m.group(0)) - len(m.group(1))), text)
+    for pattern in (_HTTP_STATUS, _CITATION):
+        text = pattern.sub(lambda m: " " * len(m.group(0)), text)
+    # A season range is dropped whole only when its two years run on ("2026-27"); "2026-11" is a month and stays for _DATE.
+    return _SEASON.sub(lambda m: " " * len(m.group(0)) if _consecutive_years(m.group(0)) else m.group(0), text)
+
+
+def _consecutive_years(token: str) -> bool:
+    digits = re.findall(r"\d+", token)
+    return len(digits) == 2 and int(digits[1]) == (int(digits[0]) + 1) % 100
+
+
+def _cleaned(text: str, references: bool = True) -> str:
+    """The text with dates and labels blanked. ``references`` drops the reference labels of written answers (seasons,
+    HTTP statuses, citation lists); evidence keeps them, since a JSON list such as [360, 365] holds real figures."""
     text = _drop_row_indexes((text or "").translate(_DASHES))
+    if references:
+        text = _drop_reference_labels(text)
     # Dates are read before labels are blanked: "Week 2026-01-05" must not leave "-01" and "05" behind as figures.
     text = _DAY_MONTH.sub("", _DATE.sub("", text or ""))
     return _drop_labels(text)
 
 
-def figures(text: str) -> list[str]:
-    """The numeric tokens in a text, in order of appearance."""
-    return [m.group().rstrip(",") for m in _NUM.finditer(_cleaned(text))]
+def figures(text: str, references: bool = True) -> list[str]:
+    """The numeric tokens in a text, in order of appearance (``references`` as in _cleaned)."""
+    return [m.group().rstrip(",") for m in _NUM.finditer(_cleaned(text, references))]
 
 
 # A writer who says "about 44,500" or "~13%" has rounded a printed figure, and says so. Such a figure is matched to the evidence
@@ -204,7 +229,7 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
     """Figures in the answer that no number in the evidence or the goal supports. Empty means grounded."""
     # Magnitudes: "a loss of 1,683.5" or "-\u00a31,683.5" is the printed -1683.5, whose sign the prose carries in its words.
     pool = []
-    for t in figures(evidence_text(history, goal)):
+    for t in figures(evidence_text(history, goal), references=False):
         v, _, _ = _parse(t)
         pool.append(abs(v) * _scale_of(t))
     missing: list[str] = []
@@ -250,7 +275,7 @@ def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, st
     if not bad:
         return answer, []
     printed = {}
-    for t in figures(evidence_text(history, goal)):
+    for t in figures(evidence_text(history, goal), references=False):
         v, dec, pct = _parse(t)
         if dec > 0 and not pct and _scale_of(t) == 1.0:
             printed[abs(v)] = dec

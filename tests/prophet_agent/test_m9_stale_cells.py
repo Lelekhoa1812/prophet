@@ -37,3 +37,14 @@ def test_new_rows_or_a_new_chart_are_progress():
 def test_a_cell_with_no_table_neither_starts_nor_breaks_a_run():
     history = [cell(TABLE), cell(TABLE), cell("saved notes\n"), cell(TABLE), cell(TABLE)]
     assert len(G._stale_run(history)) == 3
+
+
+# --- figure check: labels the panel flagged as figures (round 1, 2026-11-26) ---------------------------------------------
+
+def test_reference_labels_are_not_figures():
+    from prophet_agent.runtime.grounding import figures
+    assert figures("NOAA expects El Niño through winter 2026–27; the 2026/27 table") == []      # GISTEMP, EPL
+    assert figures("Hampel flagged 2021-03-19–23 as outliers") == []                             # SPX
+    assert figures("the SDMX endpoint returned HTTP 403") == []                                  # AUUNEMP
+    assert figures("the tool errors on this source [31, 33]") == []                              # NEM
+    assert figures("a level of 23 points and growth from 2026 to 2027") == ["23", "2026", "2027"]
