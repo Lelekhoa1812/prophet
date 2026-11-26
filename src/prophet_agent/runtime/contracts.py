@@ -2299,11 +2299,16 @@ def _misnamed_bound(text: str, obs: list) -> dict | None:
     words = (f"if every one of the {what} misses the same way at once", f"if the {what} miss independently")
     both = "; ".join(f"{w}: {b['q10']:,.0f} to {b['q90']:,.0f}" for w, k in zip(words, keys)
                      if isinstance(b := tr.get(k), dict) and all(isinstance(b.get(x), (int, float)) for x in ("q10", "q90")))
+    ranges = {k: (v["q10"], v["q90"]) for k in keys
+              if isinstance(v := tr.get(k), dict) and all(isinstance(v.get(x), (int, float)) for x in ("q10", "q90"))}
+    if measured and all(isinstance(measured.get(x), (int, float)) for x in ("q10", "q90")):
+        ranges["measured"] = (measured["q10"], measured["q90"])
     for key, together in zip(keys, (True, False)):
         b = tr.get(key)
         if not isinstance(b, dict) or not all(isinstance(b.get(k), (int, float)) for k in ("q10", "q90")):
             continue
-        s = grounding.bound_misnamed(text, b["q10"], b["q90"], together)
+        others = tuple(r for k, r in ranges.items() if k != key)
+        s = grounding.bound_misnamed(text, b["q10"], b["q90"], together, others)
         if s:
             assumes = f"every one of the {what} misses the same way at once" if together else f"the {what} miss independently"
             fix = (f"; the measured 80% range is {measured['q10']:,.0f} to {measured['q90']:,.0f}: give that as the range"

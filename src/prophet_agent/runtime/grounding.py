@@ -609,16 +609,22 @@ def _sentence_values(sentence: str) -> list[float]:
     return out
 
 
-def bound_misnamed(answer: str, lo: float, hi: float, together: bool) -> str | None:
+def bound_misnamed(answer: str, lo: float, hi: float, together: bool, others: tuple = ()) -> str | None:
     """The first sentence that states both edges of a total's bound (within 1 percent) without naming what the bound assumes:
-    "all miss the same way at once" for the together bound, "independently" for the other. None when no sentence does."""
+    "all miss the same way at once" for the together bound, "independently" for the other. None when no sentence does.
+
+    others: other (lo, hi) ranges of the same total (the measured range, the other bound). A stated figure counts for this
+    bound only when it is at least as close to it as to the matching edge of every other range. Panel SPX (2026-11-26): a
+    20-day total of an index level made the ranges differ by under 1 percent, and the measured range 132,064 to 145,108 was
+    read as the together bound 130,785 to 146,388, which blocked a correct answer."""
     if not (lo and hi) or hi <= lo:
         return None
     need = _TOGETHER_WORDS if together else _INDEPENDENT_WORDS
+    alts = {lo: [o[0] for o in others if o and o[0]], hi: [o[1] for o in others if o and o[1]]}
     prev = ""
     for s in sentences(answer):
         vals = _sentence_values(s)
-        hit = lambda t: any(abs(v - t) <= 0.01 * abs(t) for v in vals)
+        hit = lambda t: any(abs(v - t) <= 0.01 * abs(t) and all(abs(v - t) <= abs(v - a) for a in alts[t]) for v in vals)
         # "under that assumption" refers back to the assumption named in the sentence directly before it (stored 139db236).
         names = need.search(s) or (_ASSUMPTION_BACK.search(s) and need.search(prev))
         if hit(lo) and hit(hi) and not names:
