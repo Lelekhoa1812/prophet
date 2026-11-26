@@ -443,7 +443,8 @@ def negated(unit: str, start: int) -> bool:
 _CYCLE_CLAIMS = (
     # No comma between the word and the number: "weekly cycle, 105 cycles in history" counts cycles, it is not a length.
     # "period ~12 months" (round 11, GISTEMP, where the measured period was 24): an approximate length is still a claim.
-    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\s{0,2}(?:\(|of\s+|:)?\s{0,2}"
+    # "Annual cycle measured at 24 months" (round 12, GISTEMP) states a length too.
+    re.compile(r"\b(?:weekly|cycle|season|seasonal|period|periodic)\s{0,2}(?:\(|of\s+|:|(?:measured\s+|detected\s+|estimated\s+)?at\s+)?\s{0,2}"
                r"(?:~\s?|about\s+|approximately\s+|roughly\s+|around\s+)?(\d{1,3})[- ](?:day|step|period)?\b", re.I),
     # Only a space, a dash or a closing bracket between: "horizon 14 days, weekly seasonality" names a horizon, not a cycle.
     re.compile(r"\b(\d{1,3})[- ](?:day|step|period)s?\)?[\s-]{1,2}(?:weekly|cycles?|seasonal|seasonality|season|pattern|periodic|periodicity)\b", re.I),
@@ -652,6 +653,8 @@ def claimed_shift_dates(answer: str) -> list[tuple[int, str, "date | None"]]:
     from datetime import date
     out: list[tuple[int, str, date | None]] = []
     for unit in sentences(answer):
+        # Round 12 (GISTEMP): "Level shifts detected (e.g., post-1970s acceleration)": the dots of "e.g." ended the tail.
+        unit = re.sub(r"\b(e\.g|i\.e)\.", lambda m: m.group(1).replace(".", ""), unit)
         for m in _SHIFT_DATE.finditer(unit):
             if negated(unit, m.start()):
                 continue
@@ -671,7 +674,8 @@ def claimed_shift_dates(answer: str) -> list[tuple[int, str, "date | None"]]:
 # "each aligns with known recessions or COVID" (round 11, AUUNEMP) attributes as surely as "due to".
 _CAUSE = re.compile(r"\b(?:correspond(?:s|ed)? to|caused by|due to|driven by|because of|reflects?|reflecting|as a result of|"
                     r"align(?:s|ed)? with|coincid(?:es|ed|ing) with|linked to|attributable to|tied to|associated with|"
-                    r"explained by|triggered by)\b", re.I)
+                    r"explained by|triggered by|(?:are|were|is|was|as)\s+(?:real|genuine|actual)\b[^.;\n]{0,30}?"
+                    r"\b(?:episodes?|events?|regimes?|changes?|moves?|shifts?|movements?))\b", re.I)
 _SHIFT_WORD = re.compile(r"\b(?:level[- ]shifts?|shifts?|breaks?|changepoints?|regimes?|spikes?|outliers?)\b", re.I)
 _CITED = re.compile(r"\bS\d{1,3}\b|control_lab|backtest|walk-forward|ignore_ranges|\btested\b", re.I)
 
@@ -701,8 +705,16 @@ def _event_glossed(unit: str) -> bool:
 def uncited_causes(answer: str) -> list[str]:
     """Sentences that attribute a shift, break, spike or outlier to a cause, with no research source id (S1, S2 ...) and no
     test named in the same sentence: by a cue word ("due to", "reflects") or by a named event glossed next to it."""
-    return [u.strip() for u in sentences(answer) if _SHIFT_WORD.search(u) and not _CITED.search(u)
-            and (_CAUSE.search(u) or _event_glossed(u))]
+    out: list[str] = []
+    prev = ""
+    for u in sentences(answer):
+        # Round 12 (CPI): "Four level shifts were found. They were kept because they reflect real inflation episodes." The
+        # cause sits in the next sentence, under a pronoun.
+        about_shift = _SHIFT_WORD.search(u) or (_SHIFT_WORD.search(prev) and re.match(r"\W*(?:they|these|those|both|all|each|it)\b", u, re.I))
+        if about_shift and not _CITED.search(u) and (_CAUSE.search(u) or _event_glossed(u)):
+            out.append(u.strip())
+        prev = u
+    return out
 
 
 # A method claim names a treatment and a verb of testing. Each treatment has the words a call that runs it would carry in its

@@ -401,3 +401,46 @@ def test_the_simulation_view_lists_better_teams_the_call_did_not_name():
     view = observe_simulate({"teams": rows, "points_paths": paths})
     assert [r[0] for r in view["better_teams_not_named"]] == ["T0", "T1", "T2", "T3", "T4"]
     assert len(json.dumps(view, separators=(",", ":"))) <= VIEW_BUDGET
+
+
+def _rec(period, step, **extra):
+    return {"kind": "tool", "tool": "timesfm_forecast", "args": {},
+            "result": {"point": [1.0, 2.0], "q10": [0.5, 1.5], "q90": [1.5, 2.5], "window": {"steps": 2},
+                       "config": {"series_step": step, "horizon": 2}, "health": {"verdict": "ok", "period": period}, **extra}}
+
+
+# Round 12 audit (GISTEMP): "Annual cycle measured at 24 months" on a monthly series; "Level shifts detected (e.g.,
+# post-1970s acceleration)" where the scan's breaks were 1936, 1987, 2001 and 2014.
+def test_a_cycle_called_annual_must_be_a_year_of_steps():
+    obs = [_rec(24, 31.0)]
+    assert contracts._annual_word("Annual cycle measured at 24 months (strength 0.55).", obs)
+    assert contracts._annual_word("A strong annual cycle.", [_rec(12, 31.0)]) == []
+    assert contracts._annual_word("A strong annual cycle.", [_rec(260, 1.0)]) == []       # business days
+    assert contracts._annual_word("A strong annual cycle.", [_rec(10, 31.0)]) == []       # a short measured period
+    assert grounding.claimed_periods("Annual cycle measured at 24 months.")[0][0] == 24
+
+
+def test_a_shift_date_after_e_g_is_read():
+    dates = grounding.claimed_shift_dates("Level shifts detected (e.g., post-1970s acceleration) are kept as observed.")
+    assert dates and dates[0][0] == 1970
+
+
+# Round 12 audit (CO2, CPI, GISTEMP): held-out coverage quoted without the tool's caveat that it is optimistic.
+def test_optimistic_held_out_coverage_gets_its_caveat():
+    cal = {"kind": "tool", "tool": "calibrate_intervals", "args": {},
+           "result": {"heldout_coverage_raw": 0.69, "heldout_windows": 4, "selection": {"optimistic": True}}}
+    text = "The calibrated band held 80% on held-out windows."
+    out = contracts.add_calibration_caveat(text, [cal])
+    assert out.endswith("chosen on the same 4 windows they are measured on.")
+    assert contracts.add_calibration_caveat(out, [cal]) == out
+    assert contracts.add_calibration_caveat("The forecast is 430 ppm.", [cal]) == "The forecast is 430 ppm."
+
+
+# Round 12 audit (CPI, GISTEMP): shifts called real episodes while the scan asks whether they are recording errors.
+@pytest.mark.parametrize("text", [
+    "Scan flagged a level shift and several outliers; they were kept because they reflect real inflation episodes.",
+    "Level shifts are real climate regime changes, not unit changes or errors.",
+    "Four level shifts were found. They are genuine market moves.",
+])
+def test_calling_a_shift_real_is_a_cause(text):
+    assert grounding.uncited_causes(text)

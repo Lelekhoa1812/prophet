@@ -2389,6 +2389,41 @@ def _named_measures(text: str, obs: list, run_root) -> list[dict]:
     return checks
 
 
+_ANNUAL = re.compile(r"\b(?:annual|yearly|12-month|twelve-month)\b[^.;\n]{0,25}?\b(?:cycle|season\w*|pattern|periodicity)\b|"
+                     r"\b(?:cycle|season\w*|pattern|periodicity)\b[^.;\n]{0,15}?\b(?:annual|yearly)\b", re.I)
+
+
+def _annual_word(text: str, obs: list) -> list[dict]:
+    """Blocks a cycle called annual when the measured period is not a year in the series' own steps.
+
+    Motivation: panel round 12 (GISTEMP): "Annual cycle measured at 24 months (strength 0.55)" on a monthly series, where a
+    year is 12 steps; round 11 the same answer called a measured 24 "annual". Logic: steps per year = 365.25 / series_step
+    (days) from the newest forecast record; a measured period more than 15 percent from it is not annual.
+    """
+    if not text or not _ANNUAL.search(text):
+        return []
+    rec = next((r for h in reversed(obs) if (r := _forecast_record(h)) is not None), None)
+    if rec is None:
+        return []
+    period = _health_period(rec)
+    step = _finite((rec.get("config") or {}).get("series_step")) if isinstance(rec.get("config"), dict) else None
+    if not period or not step or step <= 0:
+        return []
+    # A daily step may be a trading or business calendar (252 or 260 steps a year). Only a measured period longer than a year
+    # is read: a short one (2 or 10 steps against a stated annual cycle) is usually the health measure missing the season,
+    # and the cycle-length check already reads a stated number.
+    years = [365.25 / step] + ([252.0, 260.0] if step <= 1.5 else [])
+    per_year = min(years, key=lambda y: abs(period - y))
+    if period <= per_year * 1.15:
+        return []
+    unit = next((u for u in grounding.sentences(text) if _ANNUAL.search(u)), "")
+    if grounding.negated(unit, _ANNUAL.search(unit).start()):
+        return []
+    return [_check("answer_cycle_matches_health", False,
+                   f"the answer calls the cycle annual ({unit.strip()[:140]}), but the measured period is {period} steps and "
+                   f"a year is about {per_year:.0f} steps of this series; describe it as a {period}-step cycle, not annual")]
+
+
 def _matches_value(token: str, value: float) -> bool:
     """True when a written figure is the value at its own rounding, or the value as a percentage."""
     x = float(token.replace(",", ""))
@@ -2784,6 +2819,8 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
                 checks.append(_check("answer_cycle_matches_health", True,
                                      "every cycle the answer states is the period the health record measured"))
 
+    checks.extend(_annual_word(text, obs))
+
     forecast_claims = grounding.claimed_forecast_results(text)
     stored_forecast = any(_forecast_record(h) for h in obs)
     if forecast_claims and not stored_forecast:
@@ -2948,6 +2985,34 @@ def _flat_expected_level_sentence(text: str, obs: list) -> dict | None:
     return _check("answer_level_sentence", False,
                   "the health verdict is flat_expected, so the answer must say the centre line is a level because "
                   "the history shows no repeating pattern. A check verdict does not require this sentence.")
+
+
+_HELDOUT_CLAIM = re.compile(r"\bheld[- ]out\b|\bcoverage\b|\b(?:held|captured|contained)\s+\d+(?:\.\d+)?\s*%", re.I)
+_OPTIMISTIC = re.compile(r"\boptimistic|same (?:\d+ )?windows|in-sample|chosen on (?:the|these) (?:same )?windows", re.I)
+
+
+def add_calibration_caveat(text: str, obs: list) -> str:
+    """The answer with one sentence added when it quotes held-out coverage that calibrate_intervals marked optimistic.
+
+    Motivation: panel round 12 audit: CO2, CPI and GISTEMP each quoted held-out coverage ("held 80% on held-out windows")
+    without the tool's caveat that the method and level were chosen on those same windows. The caveat follows from the
+    stored selection flag, like the level sentence, so it is added rather than argued over.
+    """
+    cal = next((r for h in reversed(obs) if isinstance(h, dict) and isinstance(r := _ok_result(h, "calibrate_intervals"), dict)
+                and "heldout_coverage_raw" in r), None)
+    sel = cal.get("selection") if isinstance(cal, dict) else None
+    if not (isinstance(sel, dict) and sel.get("optimistic")) or not text or not _HELDOUT_CLAIM.search(text) \
+            or _OPTIMISTIC.search(text):
+        return text
+    n = cal.get("heldout_windows")
+    windows = f"the same {n} windows" if _is_int(n) else "the same windows"
+    return (text.rstrip() + "\n\nThe held-out coverage figures are optimistic: the calibration method and level were chosen on "
+            f"{windows} they are measured on.")
+
+
+def finishing_sentences(text: str, obs: list) -> str:
+    """The sentences that follow from stored results alone: the level sentence and the calibration caveat."""
+    return add_calibration_caveat(add_level_sentence(text, obs), obs)
 
 
 LEVEL_SENTENCE = ("The centre line is a level: the history shows no repeating pattern, so the line carries no directional "
