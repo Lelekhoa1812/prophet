@@ -117,7 +117,7 @@ def test_a_chart_saved_as_png_and_svg_is_listed_once(tmp_path, monkeypatch):
     nb = client.post("/api/notebooks", json={"title": "twins"}).json()["id"]
     turn = client.post(f"/api/notebooks/{nb}/turns", json={"goal": "a chart"}).json()["id"]
     service.wait(turn, timeout=20)
-    rows = [{"path": "out/fc.png", "sha256": "aa"}, {"path": "out/fc.svg", "sha256": "bb"},
+    rows = [{"path": "out/fc.png", "sha256": "a0"}, {"path": "out/fc.png", "sha256": "aa"}, {"path": "out/fc.svg", "sha256": "bb"},
             {"path": "out/other.svg", "sha256": "cc"}, {"path": "out/fc.csv", "sha256": "dd"}]
     monkeypatch.setattr(activity, "_calls", lambda store, mid: [{"step": 1, "tool": "sandbox_python", "args": {}, "status": "done",
                                                                   "result": {"ok": True, "run_id": "f" * 32}, "error": None,
@@ -128,3 +128,5 @@ def test_a_chart_saved_as_png_and_svg_is_listed_once(tmp_path, monkeypatch):
     got = client.get(f"/api/notebooks/{nb}/activity").json()
     names = sorted(f["name"] for g in got["files"] for f in g["files"])
     assert names == ["fc.csv", "fc.png", "other.svg"]       # the PNG stands for its SVG twin; a different chart still shows
+    shas = [f["sha256"] for g in got["files"] for f in g["files"] if f["name"] == "fc.png"]
+    assert shas == ["aa"], "a chart rebuilt later in the same question replaces the earlier one"
