@@ -305,9 +305,11 @@ def test_automatic_parts_are_capped_and_the_person_gets_the_checkpoint_after_the
     assert snap["budget"]["auto_continued"] == 2
 
 
-def test_automatic_parts_stop_when_the_checklist_did_not_advance(tmp_path):
-    """More automatic parts of a mission that is not moving would repeat the same failures: the person decides instead."""
+def test_automatic_parts_keep_going_without_checklist_progress_up_to_a_set_cap(tmp_path):
+    """No boundary (owner, 2026-11-27): a part that added nothing is recorded, not a stop. Only a cap the person set ends it."""
     from prophet_agent.runtime.goal import GoalConfig
+    from prophet_agent.api import service as service_mod
+    assert service_mod.AUTO_CONTINUE_PARTS is None, "no default limit on automatic parts"
     brain = ScriptedBrain([{"action": "finish", "rationale": "a"}] * 3, [{"verdict": "not_met", "reason": "need more"}] * 3)
     service = MissionService(tmp_path / "api.sqlite", lambda: brain, default_tools(), GoalConfig(max_iterations=1))
     service._checklist_done = lambda mission_id: 2                  # never advances
@@ -316,8 +318,8 @@ def test_automatic_parts_stop_when_the_checklist_did_not_advance(tmp_path):
     service.wait(mid, timeout=10)
     snap = service.snapshot(mid)
     assert snap["status"] == "checkpoint"
-    assert sum(1 for e in snap["events"] if e["kind"] == "mission.auto_continue") == 1
-    assert any(e["kind"] == "mission.auto_continue_stopped" for e in snap["events"])
+    assert sum(1 for e in snap["events"] if e["kind"] == "mission.auto_continue") == 2
+    assert any(e["kind"] == "mission.auto_continue_no_progress" for e in snap["events"])
 
 
 def test_settings_show_masked_keys_and_bounded_limits_and_refuse_bad_input(tmp_path):

@@ -31,10 +31,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prophet_workflows import CHECKPOINT_STATUSES, POLL_SECONDS, ROOT, call  # noqa: E402
 
-MAX_CONTINUES = 4
+MAX_CONTINUES = 10**9   # no boundary (owner, 2026-11-27): a mission runs until it finishes
 MAX_ANSWERS = 3
 MAX_REFUSALS = 5     # refused continues (lease still held) retried before the panel stops watching
-MAX_MINUTES = 120
+MAX_MINUTES = 10**9     # no wall-clock limit
 
 PANEL: dict[str, dict] = {
     # The owner's six topics (2026-11-27). Every other mission was dropped from the panel and its notebooks deleted.
