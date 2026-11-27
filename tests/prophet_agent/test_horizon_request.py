@@ -63,7 +63,7 @@ def _tools(step=None):
         config = {"horizon": h, "history_points": 60}
         if step is not None:
             config["series_step"] = step
-        return {"point": [10.0] * h, "config": config}
+        return {"point": [10.0] * h, "config": config, "outputs": ["out/forecast.png"]}   # a prediction comes with its chart
 
     def backtest(args, key):
         return {"models": {"naive": {"mase": 1.2}, "timesfm": {"mase": 0.9}}, "best_baseline": "naive",
