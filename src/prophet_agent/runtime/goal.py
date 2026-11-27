@@ -2884,7 +2884,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # delegated sub-agent, whose brief may name a span of its own.
             horizon = horizon_checks(goal, history, run_today) if cfg.depth == 0 else []
             if cfg.depth == 0:                       # the lead's prediction is drawn, and its centre line is not flat
-                horizon = horizon + prediction_quality.prediction_checks(history)
+                horizon = horizon + prediction_quality.prediction_checks(history, goal, answer)
             blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT) + horizon)
             if (blocked and out_of_calls and not repair_granted and cfg.depth == 0 and cfg.tool_budget is not None
                     and _may_block_again(history, blocked) and not last and not cfg.finish_now):

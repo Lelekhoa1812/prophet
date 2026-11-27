@@ -179,7 +179,7 @@ def test_the_planner_prompt_forbids_representing_data_for_a_named_source():
     from prophet_agent import prompts
     planner = prompts.current("planner")
     text = planner.text.lower()
-    assert planner.version == "planner.v40"
+    assert planner.version == "planner.v41"
     assert "never generate, simulate" in text and "represent" in text
     assert "not retrieved" in text
     assert "provenance" in text and "origin" in text

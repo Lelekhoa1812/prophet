@@ -68,13 +68,34 @@ UNATTENDED_REPLY = ("Nobody can upload a file in this run. Keep researching publ
 AVOID = ("upload", "synthetic", "approximat", "provide your own", "i'll provide", "i will provide", "api key")
 
 
+SHORTCUT = ("deliver now", "deliver as is", "finish now", "stop here", "stop now", "skip", "no further", "without testing",
+            "end here", "keep it as is", "accept as is")
+
+
+def _usable(options: list[dict]) -> list[dict]:
+    """Options that neither wait for a file nor swap in invented data."""
+    return [o for o in options if not any(w in f"{o.get('label', '')} {o.get('description', '')}".lower() for w in AVOID)]
+
+
 def _pick(options: list[dict]) -> str:
-    """The first option that neither waits for a file nor swaps in invented data; otherwise a free-text reply."""
-    for option in options:
-        text = f"{option.get('label', '')} {option.get('description', '')}".lower()
-        if not any(word in text for word in AVOID):
-            return option.get("label")
-    return UNATTENDED_REPLY
+    """One option for an unattended run: the one marked recommended, else the first that keeps working (round 22, AURATE:
+    the first option was "Deliver now", which dropped the driver test the planner had offered), else the first usable one;
+    otherwise a free-text reply."""
+    usable = _usable(options)
+    if not usable:
+        return UNATTENDED_REPLY
+    marked = [o for o in usable if "recommended" in str(o.get("label", "")).lower()]
+    if marked:
+        return marked[0].get("label")
+    working = [o for o in usable if not any(w in f"{o.get('label', '')} {o.get('description', '')}".lower() for w in SHORTCUT)]
+    return (working or usable)[0].get("label")
+
+
+def _pick_many(options: list[dict]) -> list[str]:
+    """Every usable option of a multiple-choice question (round 22, EPL: "which clubs to keep" was answered with the first
+    club only, so the forecast covered one contender)."""
+    usable = _usable(options)
+    return [o.get("label") for o in usable] or [UNATTENDED_REPLY]
 
 
 def _answer_questions(mission: dict, record: dict) -> bool:
@@ -85,8 +106,11 @@ def _answer_questions(mission: dict, record: dict) -> bool:
         items = q.get("questions") or (q.get("payload") or {}).get("questions") or []
         for item in items:
             options = item.get("options") or []
-            label = _pick(options) if options else UNATTENDED_REPLY
-            answers[item.get("header") or item.get("question", "")[:12]] = [label] if item.get("multiSelect") else label
+            key = item.get("header") or item.get("question", "")[:12]
+            if item.get("multiSelect"):
+                answers[key] = _pick_many(options) if options else [UNATTENDED_REPLY]
+            else:
+                answers[key] = _pick(options) if options else UNATTENDED_REPLY
         if not answers:
             continue
         call("POST", f"/api/questions/{q['id']}/answer", {"answers": answers})

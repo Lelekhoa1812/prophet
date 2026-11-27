@@ -27,28 +27,28 @@ FLAT_STRATEGIES = 4
 CHART_SUFFIXES = (".png", ".svg")
 PREDICTION_TOOLS = ("forecast_report", "timesfm_forecast", "simulate_season")
 
-# Each strategy: (key, what to do, pattern over the tool names, arguments and code a call used).
-_STRATEGIES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+# Each strategy: (key, what to do). Whether it was tried is read from successful calls only (``_tried``): a forecasting
+# attempt, not a word in a scan, a brief or a default argument. Round 22 (AURATE, AUUNEMP): a first version matched words
+# ("trend" in a scan cell, the backtest's default "combine", open-data searches) and passed every flat line.
+_STRATEGIES: tuple[tuple[str, str], ...] = (
     ("trend", "a trend rule on the cleaned history (damped trend, recent drift, momentum or a pull to a long-run level) scored "
-              "on rolling origins",
-     re.compile(r"damped|drift|momentum|mean_reversion|holt|trend|\"tilt_check\"", re.I)),
+              "on rolling origins"),
     ("steps", "a step path where the series moves in decisions or regimes (policy rates, prices set in rounds, level shifts): "
-              "when the next steps are, how large, and the probability of each",
-     re.compile(r"level[_ ]shift|regime|changepoint|change[_ ]point|piecewise|breakpoint|step[_ ]path|stepwise|hmm|markov", re.I)),
-    ("seasonal", "the cycle or calendar (season profile, day of week, holidays, fixtures) added back to the level",
-     re.compile(r"seasonal|season_profile|\"period\"|stl|calendar|holiday|fourier", re.I)),
+              "when the next steps are, how large, and the probability of each"),
+    ("seasonal", "the cycle or calendar (season profile, day of week, holidays, fixtures) added back to the level"),
     ("drivers", "outside drivers: a related series, a leading indicator, rates, weather, fixtures, saved as covariates and "
-                "scored with control_lab (with_covariates)",
-     re.compile(r"with_covariates|past_covariates|future_covariates|covariate|exog|driver", re.I)),
+                "scored with control_lab (with_covariates)"),
     ("blend", "a combination of several forecasters (TimesFM, a trend rule, a seasonal rule, a gradient-boosted model) weighted "
-              "by rolling-origin error",
-     re.compile(r"\"centre\":\s*\"blend\"|ensemble|combine|stack|global_gbm|\bgbm\b|\bblend\b", re.I)),
+              "by rolling-origin error, delivered with forecast_report centre 'blend'"),
     ("cleaning", "cleaning before fitting: outliers (Hampel or winsorising), recording breaks, a smoothed or filtered level "
-                 "(local level or Kalman), revisions and missing months",
-     re.compile(r"hampel|winsor|outlier|denois|kalman|savgol|rolling_median|interpolat|reindex|deseason", re.I)),
-    ("research", "outside research for what the history cannot show (scheduled events, policy path, consensus, fixtures)",
-     re.compile(r"web_search|fetch_page|researcher|read_source|open_data|opendata", re.I)),
+                 "(local level or Kalman), revisions and missing months, scored against the raw series"),
+    ("research", "outside research for what the history cannot show (scheduled events, policy path, consensus, fixtures)"),
 )
+TRENDING = ("drift", "damped_trend", "recent_drift", "momentum", "mean_reversion")
+_STEP_CODE = re.compile(r"step_path|stepwise|piecewise|markov|MarkovRegression|\bhmm\b|regime_switch|meeting|decision_dates", re.I)
+_SEASON_CODE = re.compile(r"\bSTL\(|seasonal_decompose|fourier|holiday|season_profile|seasonal_naive", re.I)
+_BLEND_CODE = re.compile(r"GradientBoosting|HistGradient|lightgbm|LGBM|xgboost|ensemble|stacking|weighted_average", re.I)
+_CLEAN_CODE = re.compile(r"hampel|winsor|\.clip\(|kalman|UnobservedComponents|savgol|rolling\([^)]*\)\.median|interpolate\(", re.I)
 
 
 def _flatten(history: Any) -> list[dict]:
@@ -98,22 +98,41 @@ def _flat_centre(history: Any) -> bool:
     return moves is not None and not moves[0]
 
 
+def _ok_call(h: dict) -> bool:
+    if h.get("kind") != "tool" or h.get("error") or "result" not in h:
+        return False
+    res = h["result"]
+    return not (isinstance(res, dict) and res.get("ok") is False)
+
+
+def _tried(key: str, h: dict) -> bool:
+    tool, args = h.get("tool"), h.get("args") if isinstance(h.get("args"), dict) else {}
+    code = str(args.get("code") or "") if tool == "sandbox_python" else ""
+    if key == "trend":
+        tc = (h.get("result") or {}).get("tilt_check") if tool == "forecast_report" and isinstance(h.get("result"), dict) else None
+        centre = args.get("centre")
+        return bool(tc) or (tool == "forecast_report" and isinstance(centre, str) and centre in TRENDING)
+    if key == "steps":
+        return bool(_STEP_CODE.search(code))
+    if key == "seasonal":
+        return (tool in ("backtest_series", "forecast_report", "control_lab", "timesfm_forecast")
+                and bool(args.get("season") or args.get("period"))) or bool(_SEASON_CODE.search(code))
+    if key == "drivers":
+        return contracts._signal_searched([h])
+    if key == "blend":
+        return (tool == "forecast_report" and (args.get("centre") == "blend" or isinstance(args.get("centre"), dict))) \
+            or bool(_BLEND_CODE.search(code))
+    if key == "cleaning":
+        return bool(args.get("ignore_ranges")) or bool(_CLEAN_CODE.search(code))
+    if key == "research":
+        return tool in contracts.RESEARCH_TOOLS
+    return False
+
+
 def strategies_tried(history: Any) -> list[str]:
-    """The keys of the strategies the observations show: tool names, arguments and code of every call, and the tilt the pack
-    itself tried when its centre was flat."""
-    keys: list[str] = []
-    flat = _flatten(history)
-    for key, _what, pattern in _STRATEGIES:
-        for h in flat:
-            if h.get("kind") not in ("tool", "subagent"):
-                continue
-            blob = json.dumps({"tool": h.get("tool"), "args": h.get("args"), "answer": h.get("answer")}, default=str)[:20000]
-            if h.get("kind") == "tool" and _ok_result(h, "forecast_report") is not None:
-                blob += json.dumps((_ok_result(h, "forecast_report") or {}).get("tilt_check"), default=str)
-            if pattern.search(blob) or (key == "research" and h.get("tool") in contracts.RESEARCH_TOOLS):
-                keys.append(key)
-                break
-    return keys
+    """The keys of the strategies successful calls show (sub-agents' calls included)."""
+    calls = [h for h in _flatten(history) if _ok_call(h)]
+    return [key for key, _what in _STRATEGIES if any(_tried(key, h) for h in calls)]
 
 
 def check_flat_centre(history: Any) -> dict | None:
@@ -124,7 +143,7 @@ def check_flat_centre(history: Any) -> dict | None:
     tried = strategies_tried(history)
     if len(tried) >= FLAT_STRATEGIES:
         return _check("centre_not_flat", True, f"the centre line is flat after {len(tried)} strategies: {', '.join(tried)}")
-    todo = [(k, what) for k, what, _ in _STRATEGIES if k not in tried]
+    todo = [(k, what) for k, what in _STRATEGIES if k not in tried]
     menu = "; ".join(f"{k}: {what}" for k, what in todo[:5])
     return _check("centre_not_flat", False,
                   f"the centre line is a flat horizontal line, which is not an acceptable prediction ({len(tried)} of "
@@ -133,14 +152,27 @@ def check_flat_centre(history: Any) -> dict | None:
                   "best, and rebuild the pack with it as the centre")
 
 
-def check_signals_gathered(history: Any) -> dict | None:
-    """A warning (it does not block) when a single-series prediction was delivered with no outside signal gathered: no driver
-    tested as a covariate and no outside research. The planner sees it beside the blocking checks. None when there is no
-    prediction or a signal was gathered."""
+DRIVER_GOAL = re.compile(r"\bdrivers?\b|\bsignals?\b|what moves|\bfactors?\b|\bleading indicators?\b", re.I)
+
+
+def check_signals_gathered(history: Any, goal: str = "") -> dict | None:
+    """Outside signals were gathered for a single-series prediction. A goal that asks for the drivers or signals ("Search for
+    the signals that move it") needs a driver tested as a covariate (a successful control_lab with_covariates or a call that
+    passed covariates), and blocks without one; round 22: GOLD searched only for the price series and AURATE downloaded the
+    Australian 10-year yield and never tested it. Any other prediction made from the series' own history only, with no
+    driver tested and no outside research, gets a warning. None when there is no prediction or the condition holds."""
     flat = _flatten(history)
     if not any(_ok_result(h, t) is not None for h in flat for t in ("forecast_report", "timesfm_forecast")):
         return None
     tried = set(strategies_tried(history))
+    if DRIVER_GOAL.search(goal or ""):
+        if "drivers" in tried:
+            return _check("signals_gathered", True, "a driver was tested as a covariate, as the request asks")
+        return _check("signals_gathered", False,
+                      "the request asks for the drivers or signals that move the series, and none was tested. Download the "
+                      "candidates (related and leading series, rates, the dollar, prices, survey or consensus data), align "
+                      "them to the target's dates, save them as covariates with the series, and score them with control_lab "
+                      "(with_covariates); keep those that win, and say which were tested and dropped")
     if tried & {"drivers", "research"}:
         return None
     return _check("signals_gathered", False,
@@ -149,12 +181,110 @@ def check_signals_gathered(history: Any) -> dict | None:
                   "warn")
 
 
-def prediction_checks(history: Any) -> list[dict]:
+# The grain a goal asks for, and the step lengths in days that deliver it.
+_GRAINS: tuple[tuple[str, re.Pattern[str], tuple[float, float]], ...] = (
+    ("monthly", re.compile(r"\bmonth[- ]by[- ]month\b|\bmonthly\b|\b(?:per|each|every) month\b", re.I), (28.0, 31.5)),
+    ("quarterly", re.compile(r"\bquarter[- ]by[- ]quarter\b|\bquarterly\b|\b(?:per|each|every) quarter\b", re.I), (89.0, 92.5)),
+    ("weekly", re.compile(r"\bweek[- ]by[- ]week\b|\bweekly\b|\b(?:per|each|every) week\b", re.I), (6.5, 7.5)),
+    ("yearly", re.compile(r"\byear[- ]by[- ]year\b|\byearly\b|\bannual(?:ly)?\b|\b(?:per|each|every) year\b", re.I), (364.0, 366.5)),
+)
+
+
+def check_grain(goal: str, history: Any) -> dict | None:
+    """The standing single-series forecast runs at the grain the goal asks for ("month by month", "quarterly", "weekly").
+
+    Panel round 22 (SPX, 2026-11-27): "forecast it month by month over the next 2 years" was delivered as 504 business-day
+    points, and the answer called them 24 months; the horizon check converted the span and passed. A step finer than the grain
+    asked blocks (aggregate first: the month-end close for a price or index, the mean for a rate, the sum for a flow, then
+    forecast in that grain). A step coarser than asked is a warning (derive the finer path, or say only the coarser grain is
+    published). None when the goal names no grain, names several, or no forecast with a recorded step stands."""
+    from prophet_agent.runtime import goal as goal_mod
+    asked = [(name, span) for name, pattern, span in _GRAINS if pattern.search(goal or "")]
+    if len(asked) != 1:
+        return None
+    name, (lo, hi) = asked[0]
+    plan = goal_mod._plan_horizon([h for h in history if isinstance(h, dict)] if isinstance(history, list) else [])
+    if plan is None:
+        return None
+    step = goal_mod._series_step(plan[1])
+    if step is None:
+        return None
+    days = float(step[0])
+    if lo <= days <= hi:
+        return _check("grain_matches_request", True, f"the forecast is {name}, as asked")
+    if days < lo:
+        return _check("grain_matches_request", False,
+                      f"the request asks for a {name} forecast, but the standing forecast steps every {days:g} days "
+                      f"({plan[0]} periods). Aggregate the series to {name} first (the period-end close for a price or "
+                      f"index, the mean for a rate, the sum for a flow), save it, and forecast it in {name} periods; then "
+                      "rebuild the pack and describe the periods as they are")
+    return _check("grain_matches_request", False,
+                  f"the request asks for a {name} forecast, but the series steps every {days:g} days. Derive the {name} "
+                  "path (temporal disaggregation such as Denton, or a related series published at that grain) or say "
+                  f"plainly that only a coarser grain is published", "warn")
+
+
+_NUMBER = re.compile(r"(?<![\w.])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?<![\w.])-?\d+(?:\.\d+)?")
+_RANGE_PAIR = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*%?\s*(?:to|–|—|and)\s*\$?(\d[\d,]*(?:\.\d+)?)", re.I)
+_RANGE_WORD = re.compile(r"\brange\b|\bband\b|\binterval\b|\b10(?:th)?\s*(?:–|-|to)\s*90|\bp10\b", re.I)
+
+
+def _delivered_band(history: Any) -> tuple[float, float] | None:
+    """(q10, q90) at the last step of the newest single-series pack, or None."""
+    for h in reversed(history if isinstance(history, list) else []):
+        if isinstance(h, dict) and isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else {}
+            q = ((full.get("forecast") or {}).get("quantiles") or {}) if isinstance(full.get("forecast"), dict) else {}
+            lo, hi = q.get("0.1"), q.get("0.9")
+            if isinstance(lo, list) and isinstance(hi, list) and lo and hi:
+                return float(lo[-1]), float(hi[-1])
+            return None
+    return None
+
+
+def _stated(text: str, value: float) -> bool:
+    """True when the answer states ``value`` at some precision it uses (rounded to the number's own decimals)."""
+    for m in _NUMBER.finditer(text):
+        raw = m.group(0).replace(",", "")
+        try:
+            n = float(raw)
+        except ValueError:
+            continue
+        decimals = len(raw.split(".")[1]) if "." in raw else 0
+        if abs(n - value) <= 0.5 * 10 ** (-decimals) + 1e-9 or abs(n - value) <= 0.005 * abs(value):
+            return True
+    return False
+
+
+def check_answer_band(answer: str, history: Any) -> dict | None:
+    """The answer that states a range must state the range the delivered pack ends with.
+
+    Panel round 22 (AUUNEMP, 2026-11-27): the pack and its chart end at 2.63 to 8.23, and the answer said "a likely range of
+    4.3% to 5.5% by October 2028", figures from an earlier draft with no tool behind them. Blocks when the answer states a
+    range (a range word and an "A to B" pair) and neither the delivered end-of-horizon 10th nor 90th percentile appears in it.
+    None when no single-series pack or no range is stated."""
+    text = answer if isinstance(answer, str) else ""
+    band = _delivered_band(history)
+    if band is None or not (_RANGE_WORD.search(text) and _RANGE_PAIR.search(text)):
+        return None
+    lo, hi = band
+    if _stated(text, lo) and _stated(text, hi):
+        return _check("answer_band_matches_pack", True, "the answer states the delivered end-of-horizon range")
+    return _check("answer_band_matches_pack", False,
+                  f"the answer states a range, but the pack it delivers ends at {lo:.4g} to {hi:.4g} (10th to 90th "
+                  "percentile at the last step) and the answer does not state those figures. State the range the pack and "
+                  "its chart show, or rebuild the pack that produced the range the answer gives")
+
+
+def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
-    for fn in (check_prediction_chart, check_flat_centre, check_signals_gathered):
+    calls = (lambda: check_prediction_chart(history), lambda: check_flat_centre(history),
+             lambda: check_grain(goal, history), lambda: check_answer_band(answer, history),
+             lambda: check_signals_gathered(history, goal))
+    for fn in calls:
         try:
-            c = fn(history)
+            c = fn()
         except Exception:                      # noqa: BLE001 - a quality gate must not break a finish
             c = None
         if c is not None:
