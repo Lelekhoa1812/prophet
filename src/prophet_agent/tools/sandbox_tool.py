@@ -151,9 +151,9 @@ def make_run(datasets: dict[str, Path] | None = None):
     inputs = dict(datasets or {})
 
     def _run(args: dict, _key: str) -> dict:
-        extra = sorted(set(args) - {"code", "carry"})
+        extra = sorted(set(args) - {"code", "carry", "name"})
         if extra:
-            raise ValueError(f"unknown arguments {extra}; allowed: code, carry")
+            raise ValueError(f"unknown arguments {extra}; allowed: code, carry, name")
         code = args.get("code")
         if not isinstance(code, str) or not code.strip():
             raise ValueError("code must be a non-empty string")
@@ -330,5 +330,6 @@ SANDBOX_PYTHON_SPEC = {
     "activity": "Running an analysis",
     "description": _SPEC_TEXT + build_catalogue(),
     "args": {"code": "Python source, at most 20000 characters",
-             "carry": "optional list of {run_id, file} outputs of earlier runs, mounted read-only at in/carried/<file name>"},
+             "carry": "optional list of {run_id, file} outputs of earlier runs, mounted read-only at in/carried/<file name>",
+             "name": "optional 1 to 4 words saying what this code does, such as 'Backtest seasonal baselines'"},
 }

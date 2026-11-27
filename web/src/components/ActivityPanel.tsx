@@ -57,9 +57,15 @@ export function StateDot({ status }: { status: string }) {
   );
 }
 
-export function agentName(a: { agent_id: string; lane: boolean }) {
+// "Lane 3" or "Sub-agent 3": the number, shown beside the agent's own 1 to 4 word name.
+export function agentNumber(a: { agent_id: string; lane: boolean }) {
   const n = a.agent_id.replace(/^a/, "");
   return a.lane ? `Lane ${n}` : `Sub-agent ${n}`;
+}
+
+// The agent's own short name, or its number when the record has none (runs from before names existed).
+export function agentName(a: { agent_id: string; lane: boolean; name?: string }) {
+  return a.name?.trim() || agentNumber(a);
 }
 
 function remembered(key: string, fallback: boolean): boolean {
@@ -104,7 +110,8 @@ function Section({ id, title, count, icon, children, defaultOpen = true }: { id:
   );
 }
 
-function CodeRunRow({ run }: { run: CodeRun }) {
+function CodeRunRow({ run, agents }: { run: CodeRun; agents: Map<string, AgentRow> }) {
+  const owner = agents.get(run.agent);
   const s = stateOf(run.status);
   return (
     <li className="flex items-start gap-2 py-1">
@@ -112,7 +119,7 @@ function CodeRunRow({ run }: { run: CodeRun }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-caption text-sand-0" title={run.title}>{run.title}</p>
         <p className="text-micro text-sand-2">
-          {s.label} · {run.agent === "lead" ? "main thread" : agentName({ agent_id: run.agent, lane: false }).toLowerCase()} · step {run.step}
+          {s.label} · {run.agent === "lead" ? "main thread" : owner ? agentName(owner) : agentNumber({ agent_id: run.agent, lane: false })} · step {run.step}
         </p>
       </div>
     </li>
@@ -131,12 +138,12 @@ function AgentRowButton({ agent, onOpen }: { agent: AgentRow; onOpen: () => void
         <StateDot status={agent.status} />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2">
-            <span className="text-caption font-semibold text-sand-0">{agentName(agent)}</span>
+            <span className="min-w-0 truncate text-caption font-semibold text-sand-0" title={agentName(agent)}>{agentName(agent)}</span>
             <span className="shrink-0 text-micro text-sand-2">{s.label}</span>
           </span>
           <span className="line-clamp-2 text-micro text-sand-1">{agent.task || humanise(agent.agent_type)}</span>
           <span className="text-micro text-sand-2">
-            {humanise(agent.agent_type)} · {agent.tool_calls} tool {agent.tool_calls === 1 ? "call" : "calls"}
+            {agentNumber(agent)} · {humanise(agent.agent_type)} · {agent.tool_calls} tool {agent.tool_calls === 1 ? "call" : "calls"}
           </span>
         </span>
         <ChevronRight aria-hidden="true" className="mt-1 size-4 shrink-0 text-sand-2" />
@@ -202,6 +209,7 @@ export function ActivityPanel({ target, onClose }: { target: ActivityTarget | nu
   const finished = (data?.code ?? []).filter((r) => !isRunning(r.status)).reverse();
   const shownFinished = allRuns ? finished : finished.slice(0, 5);
   const agents = data?.agents ?? [];
+  const byId = new Map(agents.map((a) => [a.agent_id, a] as const));
   const liveAgents = agents.filter((a) => isRunning(a.status)).length;
   const fileCount = (data?.files ?? []).reduce((n, g) => n + g.files.length, 0);
 
@@ -242,8 +250,8 @@ export function ActivityPanel({ target, onClose }: { target: ActivityTarget | nu
                 <>
                   <p className="mt-2 mb-0.5 text-micro font-semibold text-sand-2">Code</p>
                   <ul>
-                    {running.map((r) => <CodeRunRow key={`r${r.step}`} run={r} />)}
-                    {shownFinished.map((r) => <CodeRunRow key={`f${r.step}`} run={r} />)}
+                    {running.map((r) => <CodeRunRow key={`r${r.step}`} run={r} agents={byId} />)}
+                    {shownFinished.map((r) => <CodeRunRow key={`f${r.step}`} run={r} agents={byId} />)}
                   </ul>
                   {finished.length > 5 && (
                     <button type="button" onClick={() => setAllRuns((v) => !v)} className="mt-1 text-micro text-sand-2 underline-offset-2 hover:text-sand-0 hover:underline">

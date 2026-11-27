@@ -16,6 +16,7 @@ export type MainThread = {
 export type CodeRun = { step: number; tool: string; title: string; agent: string; status: string; run_id: string | null; updated: number };
 export type AgentRow = {
   agent_id: string;
+  name?: string;
   agent_type: string;
   task: string;
   lane: boolean;
@@ -43,6 +44,7 @@ export type SessionEntry =
 export type AgentSession = {
   mission_id: string;
   agent_id: string;
+  name?: string;
   agent_type: string;
   task: string;
   deliverable: string;

@@ -45,7 +45,7 @@ from . import contracts
 from . import grounding
 from .grounding import snap, snap_note, unverified
 from . import agents
-from . import lanes
+from . import lanes, names
 from . import claims as claim_checks
 from .questions import QUESTIONS_SCHEMA, expected_shape, repair_questions, validate_for_goal
 from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
@@ -64,6 +64,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         "args": {"type": "object"},
         "questions": QUESTIONS_SCHEMA["properties"]["questions"],
         "task": {"type": "string", "maxLength": 1200},
+        "name": {"type": "string", "maxLength": 60},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
         "agent_type": {"type": "string", "enum": sorted(agents.TYPES)},
         "deliverable": {"type": "string", "maxLength": 600},
@@ -72,6 +73,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         "tasks": {"type": "array", "maxItems": agents.MAX_PARALLEL, "items": {
             "type": "object", "required": ["task"], "additionalProperties": False,
             "properties": {"task": {"type": "string", "maxLength": 1200},
+                           "name": {"type": "string", "maxLength": 60},
                            "agent_type": {"type": "string", "enum": sorted(agents.TYPES)},
                            "deliverable": {"type": "string", "maxLength": 600},
                            "constraints": {"type": "string", "maxLength": 600},
@@ -1339,7 +1341,8 @@ def _signature(obs: dict) -> str:
         # the same ledger cell ran 57 times with new carry ids each time, so no window of identical calls was ever seen.
         # Round 6m: the code is compared as Python reads it, and a run folder in the output (a traceback names one) is not an
         # outcome. Before, an identical failure in another folder looked like progress, and the stall rule never fired.
-        args = {k: (_code_form(v) if k == "code" and isinstance(v, str) else v) for k, v in args.items() if k != "carry"}
+        args = {k: (_code_form(v) if k == "code" and isinstance(v, str) else v)
+                for k, v in args.items() if k not in ("carry", "name")}      # a new name on the same code is a repeat
         sig = canonical({"tool": obs.get("tool"), "args": args, "result": res, "error": obs.get("error")})
         return RUN_FOLDER.sub("<run>", sig)
     return canonical({"tool": obs.get("tool"), "args": args, "result": res, "error": obs.get("error")})
@@ -1959,7 +1962,7 @@ def _pivot(history: list[dict], why: str, repeated: str = "") -> bool:
 
 def _specs(plan: dict) -> list[dict]:
     """The delegations in a plan: ``tasks`` (parallel) or the single ``task`` with its optional fields."""
-    keys = ("task", "agent_type", "deliverable", "constraints", "tools", "resume")
+    keys = ("task", "agent_type", "deliverable", "constraints", "tools", "resume", "name")
     raw = plan.get("tasks")
     if isinstance(raw, list) and raw:
         return [{k: t.get(k) for k in keys} for t in raw if isinstance(t, dict)][: agents.MAX_PARALLEL]
@@ -2026,7 +2029,8 @@ def _agent_started(ctx: Ctx, agent_id: str, agent_type: str, spec: dict, lane: b
     try:
         ctx.store.append_event_once(ctx.mission_id, "agent.started", {
             "agent_id": agent_id, "agent_type": agent_type, "task": str(spec.get("task") or "")[:2000],
-            "deliverable": str(spec.get("deliverable") or "")[:600], "lane": lane, "resumed": bool(spec.get("resume"))},
+            "deliverable": str(spec.get("deliverable") or "")[:600], "lane": lane, "resumed": bool(spec.get("resume")),
+            "name": str(spec.get("name") or "")[:60]},
             key="agent_id")
     except Exception:
         pass
@@ -2066,7 +2070,8 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     goal = _brief(spec, agent, agent_id, prior is not None)
     if lane:
         goal += "\n\n" + lane["brief"]
-    _agent_started(ctx, agent_id, agent.name, spec, bool(lane))
+    label = names.for_task(spec.get("task"), spec.get("name"), fallback=f"{agent.name.capitalize()} {number}")
+    _agent_started(ctx, agent_id, agent.name, {**spec, "name": label}, bool(lane))
     play = agents.playbooks(agent)
     sub_context = (context + "\n\n" if context else "") + (play[:7000] if play else "")
     # Sub-agent steps are top-level steps of the same ledger, numbered in call order like any others, so a resumed run
@@ -2086,7 +2091,7 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     task = str(spec["task"]).strip()
     # A sub-agent's figures are checked against the tool results it saw, never against its brief: the task is the lead
     # agent's own words, so a figure repeated from it would pass without any tool having printed it (audit item 3).
-    obs = {"kind": "subagent", "agent_id": agent_id, "agent_type": agent.name, "task": task,
+    obs = {"kind": "subagent", "agent_id": agent_id, "name": label, "agent_type": agent.name, "task": task,
            "tools": sorted(sub_tools), "status": status, "answer": answer, "reason": reason,
            "steps": len(sub_history), "files": _files_of(sub_history), "evidence": sub_history,
            "findings": [str(f)[:300] for f in sub.get("findings") or []][:12],

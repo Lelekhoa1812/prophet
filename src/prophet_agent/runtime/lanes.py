@@ -34,6 +34,7 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from prophet_agent.runtime.runner import BudgetExceeded, Cancelled, Ctx, OutcomeUnknown, Paused, Tool
+from prophet_agent.runtime import names
 from prophet_agent.runtime.store import LeaseLost
 
 MAX_LANES = 50              # lanes one plan may start
@@ -149,8 +150,8 @@ def lane_brief(lane_id: str, roster: str) -> str:
 def _digest(results: list[dict], board_to_lead: list[dict]) -> dict:
     rows = []
     for r in results:
-        rows.append({"lane": r.get("agent_id"), "type": r.get("agent_type"), "status": r.get("status"),
-                     "task": str(r.get("task") or "")[:140],
+        rows.append({"lane": r.get("agent_id"), "name": r.get("name"), "type": r.get("agent_type"),
+                     "status": r.get("status"), "task": str(r.get("task") or "")[:140],
                      "findings": [str(f)[:200] for f in (r.get("findings") or [])][:4],
                      "figures": [f for f in (r.get("figures") or [])][:6],
                      "files": (r.get("files") or [])[:6],
@@ -207,11 +208,15 @@ def run_lanes(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: Any
             if exc.which == "max_seconds":
                 stops[k] = exc          # the mission's own time is up: checkpoint, and the lane resumes on Continue
                 return
-            obs = {"kind": "subagent", "agent_id": ids[k], "agent_type": lane_specs[k]["agent_type"],
+            obs = {"kind": "subagent", "agent_id": ids[k],
+                   "name": names.for_task(lane_specs[k]["task"], lane_specs[k].get("name")),
+                   "agent_type": lane_specs[k]["agent_type"],
                    "task": str(lane_specs[k]["task"]).strip(), "status": "budget", "answer": "",
                    "reason": f"the lane reached its {exc.which} allowance", "evidence": []}
         except Exception as exc:        # noqa: BLE001 - one lane's failure is its result, not the mission's
-            obs = {"kind": "subagent", "agent_id": ids[k], "agent_type": lane_specs[k]["agent_type"],
+            obs = {"kind": "subagent", "agent_id": ids[k],
+                   "name": names.for_task(lane_specs[k]["task"], lane_specs[k].get("name")),
+                   "agent_type": lane_specs[k]["agent_type"],
                    "task": str(lane_specs[k]["task"]).strip(), "status": "failed", "answer": "",
                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}", "evidence": []}
         obs = {**obs, "lane": True}

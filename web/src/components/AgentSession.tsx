@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useAgentSession, type SessionEntry } from "../lib/activity";
 import { humanise } from "../lib/format";
 import { cn } from "../lib/utils";
-import { agentName, stateOf, StateDot } from "./ActivityPanel";
+import { agentName, agentNumber, stateOf, StateDot } from "./ActivityPanel";
 import { IconButton, Spinner } from "./ui";
 
 function Entry({ e }: { e: SessionEntry }) {
@@ -83,7 +83,7 @@ export function AgentSessionView({ missionId, agentId, onBack, onClose }: { miss
             <div className="flex items-start gap-2">
               <StateDot status={session.status} />
               <p className="text-micro text-sand-2">
-                {stateOf(session.status).label} · {humanise(session.agent_type)}
+                {stateOf(session.status).label} · {agentNumber(session)} · {humanise(session.agent_type)}
                 {session.lane && " · research lane"}
               </p>
             </div>

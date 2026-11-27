@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from prophet_agent import mentions
+from prophet_agent.runtime import names
 
 STEP_TAG = re.compile(r"^(?P<kind>[a-z_]+):(?P<tag>d\d+(?:\.a\d+)*)(?::(?P<i>\d+))?")
 AGENT_IN_TAG = re.compile(r"a(\d+)$")
@@ -52,14 +53,19 @@ def _short(value: Any, n: int = TEXT_CHARS) -> str:
 
 
 def _code_title(args: dict, tool: str) -> str:
-    code = str(args.get("code") or "")
-    for line in code.splitlines():
-        line = line.strip()
-        if line.startswith("#") and len(line) > 2:
-            return line.lstrip("# ").strip()[:120]
-    if tool == "forecast_report":
-        return "Forecast report"
-    return "Python analysis" if code else tool.replace("_", " ").capitalize()
+    """The run's 1 to 4 word name: the planner's ``name``, else derived from the code; a tool without code goes by its name."""
+    if args.get("code"):
+        return names.for_code(args.get("code"), args.get("name"))
+    return names.clean(args.get("name")) or ("Forecast report" if tool == "forecast_report"
+                                             else tool.replace("_", " ").capitalize())
+
+
+def _agent_name(agent_id: str, info: dict, report: dict | None) -> str:
+    """The sub-agent's 1 to 4 word name: the one it started with, else the planner's, else derived from its brief."""
+    rep = report or {}
+    number = agent_id[1:] if agent_id[1:].isdigit() else agent_id
+    fallback = f"{'Lane' if info.get('lane') else 'Sub-agent'} {number}"
+    return names.for_task(info.get("task") or rep.get("task"), info.get("name") or rep.get("name"), fallback=fallback)
 
 
 def _started_events(store, mission_id: str) -> dict[str, dict]:
@@ -133,7 +139,7 @@ def _planned(steps: list[dict]) -> dict[str, dict]:
         for spec in specs:
             n += 1
             out[f"a{n}"] = {"task": spec.get("task"), "agent_type": spec.get("agent_type"),
-                            "deliverable": spec.get("deliverable"), "lane": lane}
+                            "deliverable": spec.get("deliverable"), "lane": lane, "name": spec.get("name")}
     return out
 
 
@@ -180,7 +186,7 @@ def _agents(steps: list[dict], started: dict[str, dict], mission_status: str) ->
     for a in ids:
         info, rep, row = started.get(a, {}), reports.get(a), seen.get(a, {})
         status = _status(a, rep, verdicts, steps, mission_status)
-        out.append({"agent_id": a, "agent_type": info.get("agent_type") or (rep or {}).get("agent_type") or "general",
+        out.append({"agent_id": a, "name": _agent_name(a, info, rep), "agent_type": info.get("agent_type") or (rep or {}).get("agent_type") or "general",
                     "task": str(info.get("task") or (rep or {}).get("task") or "")[:600], "lane": bool(info.get("lane")),
                     "status": status, "steps": row.get("steps", 0), "tool_calls": row.get("tool_calls", 0),
                     "last_tool": row.get("last"), "started": info.get("started")})
@@ -321,7 +327,7 @@ def agent_session(service, mission_id: str, agent_id: str) -> dict:
                             "text": str(v.get("reason") or "")[:1500]})
         elif kind == "inbox" and v:
             entries.append({"role": "board", "step": s["idx"], "text": _short(v, 1500)})
-    return {"mission_id": mission_id, "agent_id": agent_id,
+    return {"mission_id": mission_id, "agent_id": agent_id, "name": _agent_name(agent_id, info, report),
             "agent_type": info.get("agent_type") or (report or {}).get("agent_type") or "general",
             "task": info.get("task") or (report or {}).get("task") or "", "deliverable": info.get("deliverable") or "",
             "lane": bool(info.get("lane")),
