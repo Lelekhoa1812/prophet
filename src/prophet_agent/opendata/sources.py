@@ -43,6 +43,8 @@ DBN_PROVIDER = re.compile(r"[A-Za-z0-9_-]{1,40}")
 DBN_CODE = re.compile(r"[A-Za-z0-9_.:@+-]{1,160}")
 CUBE = re.compile(r"[a-z0-9]{1,20}")
 SERIES_ID = re.compile(r"[A-Za-z0-9._-]{1,80}")
+RBA_TABLE = re.compile(r"[a-j]\d{1,2}(?:\.\d{1,2})?")
+RBA_SERIES = re.compile(r"[A-Z][A-Z0-9]{2,19}")
 FRED_ID = re.compile(r"[A-Z0-9_]{1,40}")
 
 
@@ -63,7 +65,7 @@ class Source:
     params: dict               # name -> Param, in the order they appear in the URL
     licence_key: str           # must name a row in docs/prophet/DATASET_LICENCES.md
     cross_check: Callable[[dict], None] = lambda canonical: None
-    body_kind: str = "csv"     # csv, json, text, zip or xlsx. zip and xlsx are stored as csv
+    body_kind: str = "csv"     # csv, json, text, zip, xlsx, dbnomics or rba. All but json and text are stored as csv
     local_params: tuple = ()   # checked and stored, never placed on the URL
     defaults: tuple = ()       # ((name, value), ...) filled in when the caller omits an optional parameter
     query_names: tuple = ()    # ((name, name on the URL), ...) where the server's name differs from the parameter's
@@ -422,11 +424,20 @@ SOURCES: dict[str, Source] = {
     ),
     "rba_cash_rate": Source(
         key="rba_cash_rate",
-        title="Reserve Bank of Australia cash-rate table F1.1, as CSV",
-        url_template="https://www.rba.gov.au/statistics/tables/csv/f1.1-data.csv",
+        title=("Reserve Bank of Australia statistics table as CSV: date and one column per series ID (default F1.1, the "
+               "monthly cash rate target FIRMMCRT; F1 is daily, F13 international policy rates, G1 consumer prices)"),
+        url_template="https://www.rba.gov.au/statistics/tables/csv/{table}-data.csv",
         fixed_query=(),
-        params={},
+        params={
+            "table": Param("code", False, "RBA table code in lower case, for example f1.1, f1, f13, g1 or h5. Defaults to f1.1.",
+                           _code(RBA_TABLE, "RBA table code")),
+            "series": Param("code", False, "One series ID to keep, for example FIRMMCRT. Omit for every series in the table.",
+                            _code(RBA_SERIES, "RBA series ID")),
+        },
         licence_key="rba",
+        body_kind="rba",
+        local_params=("series",),
+        defaults=(("table", "f1.1"),),
     ),
     "fhfa_hpi": Source(
         key="fhfa_hpi",

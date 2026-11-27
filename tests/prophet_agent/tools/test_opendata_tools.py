@@ -498,6 +498,40 @@ def test_a_stale_ilo_mirror_copy_is_fetched_from_ilostat_itself(monkeypatch, mis
     assert "2026-Q2" in mission.store.path(out["dataset_id"]).read_text()
 
 
+def test_a_stale_rba_mirror_copy_is_fetched_from_the_rba_successor_table(monkeypatch, mission):
+    """Round 21 (AURATE, 2026-11-27): the mirror's RBA F13 cash rate ended 2024-01-31, a day-dated period that the age rule
+    did not read, and the forecast started in February 2024. The copy is now judged by its frequency and re-fetched from the
+    RBA's F1.1 table, which carries the same rate to October 2026."""
+    import json as _json
+    from datetime import date
+    from prophet_agent.tools import opendata_tools as ot
+    seen = []
+    mirror = _json.dumps({"series": {"docs": [{
+        "series_code": "FOOIRATCR", "series_name": "Australia Target Cash Rate", "@frequency": "monthly",
+        "indexed_at": "2025-01-30T11:00:10Z", "period": ["2023-12-31", "2024-01-31"],
+        "period_start_day": ["2023-12-31", "2024-01-31"], "value": [4.35, 4.35]}]}}).encode()
+    rba = ("﻿F1.1 INTEREST RATES AND YIELDS\r\nTitle,Cash Rate Target\r\nUnits,Per cent\r\nSeries ID,FIRMMCRT\r\n"
+           "30/09/2026,4.36\r\n31/10/2026,4.60\r\n").encode("utf-8")
+
+    def handler(request):
+        seen.append(str(request.url))
+        if "rba.gov.au" in request.headers.get("host", "") + str(request.url):
+            return httpx.Response(200, headers={"content-type": "application/octet-stream"}, content=rba)
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=mirror)
+
+    monkeypatch.setattr(fetch, "open_client", lambda timeout_s: httpx.Client(transport=httpx.MockTransport(handler),
+                                                                              follow_redirects=False))
+    monkeypatch.setattr(netguard, "_default_resolver", lambda host, port: [PUBLIC])
+    monkeypatch.setattr(ot, "_today", lambda: date(2026, 11, 27))
+    tool = default_tools(opendata=mission.context())["download_open_data"]
+    out = tool.fn({"source": "dbnomics", "params": {"provider": "RBA", "dataset": "F13", "series": "FOOIRATCR"}}, "k")
+    assert out["source"] == "rba_cash_rate" and "RBA's own statistics table" in out["rerouted"]
+    assert "f1.1" in out["rerouted"] and "FIRMMCRT" in out["rerouted"]
+    assert any(u.endswith("/statistics/tables/csv/f1.1-data.csv") for u in seen)
+    assert mission.store.path(out["dataset_id"]).read_text().splitlines() == ["date,FIRMMCRT", "2026-09-30,4.36",
+                                                                             "2026-10-31,4.60"]
+
+
 def test_a_stale_mirror_copy_that_cannot_be_rerouted_says_how_old_it_is(served, mission, monkeypatch):
     from datetime import date
     from prophet_agent.tools import opendata_tools as ot

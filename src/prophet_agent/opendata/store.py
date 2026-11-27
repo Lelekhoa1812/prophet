@@ -247,6 +247,84 @@ def _find_existing(datasets: DatasetStore, source_key: str, digest: str) -> dict
     return max(matches, key=lambda meta: meta["created"]) if matches else None
 
 
+RBA_META = ("Title", "Description", "Frequency", "Type", "Units", "Source", "Publication date")
+RBA_DATE_FORMATS = ("%d/%m/%Y", "%d-%b-%Y")
+
+
+def _rba_day(cell: str) -> str | None:
+    """An RBA date cell as ISO: DD/MM/YYYY and DD-Mon-YYYY as given, Mon-YYYY (monthly tables such as F13) as the month's
+    last day, like the other monthly tables."""
+    import calendar
+    from datetime import date, datetime
+
+    for fmt in RBA_DATE_FORMATS:
+        try:
+            return datetime.strptime(cell, fmt).date().isoformat()
+        except ValueError:
+            continue
+    try:
+        month = datetime.strptime(cell, "%b-%Y")
+    except ValueError:
+        return None
+    return date(month.year, month.month, calendar.monthrange(month.year, month.month)[1]).isoformat()
+
+
+def rba_csv(raw: bytes, series: str | None = None) -> tuple[bytes, dict]:
+    """A Reserve Bank of Australia statistics table as a CSV of date (ISO) and one column per series ID, with each series'
+    title, description, frequency, units, source and publication date kept in provenance.
+
+    Motivation: round 21 (AURATE, 2026-11-27) forecast the cash rate from a DBnomics copy that ended in January 2024 while
+    the RBA's own table F1.1 ran to October 2026. That table was listed as a source but never downloaded: its first line is a
+    one-cell title and the series codes sit nine lines down, under rows of metadata.
+    Logic: the rows before "Series ID" are metadata; the rows after it whose first cell is a date are observations (dates
+    are DD/MM/YYYY, DD-Mon-YYYY or Mon-YYYY). Rows with no value at all are dropped. ``series`` keeps one series. Raises ValueError
+    when the table has no Series ID row, no dated rows, or not the asked series."""
+    import io
+
+    text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    rows = list(csv.reader(io.StringIO(text)))
+    head = next((k for k, r in enumerate(rows) if r and r[0].strip() == "Series ID"), None)
+    if head is None:
+        raise ValueError("this RBA table has no Series ID row; check the table code on rba.gov.au/statistics/tables")
+    ids = [c.strip() for c in rows[head][1:]]
+    meta = {r[0].strip(): r[1:] for r in rows[:head] if r and r[0].strip() in RBA_META}
+    keep = [k for k, i in enumerate(ids) if i]
+    if series:
+        if series not in ids:
+            raise ValueError(f"this RBA table has no series {series!r}; its series are: {', '.join(i for i in ids if i)}")
+        keep = [ids.index(series)]
+    out = []
+    last: dict[str, str] = {}
+    for r in rows[head + 1:]:
+        if not r or not r[0].strip():
+            continue
+        day = _rba_day(r[0].strip())
+        if day is None:
+            continue
+        cells = [(r[k + 1].strip() if k + 1 < len(r) else "") for k in keep]
+        if not any(cells):
+            continue
+        for k, cell in zip(keep, cells):
+            if cell:
+                last[ids[k]] = day
+        out.append([day, *cells])
+    if not out:
+        raise ValueError("this RBA table has no dated observations")
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["date", *[ids[k] for k in keep]])
+    w.writerows(out)
+
+    def field(name: str, k: int) -> str:
+        values = meta.get(name) or []
+        return values[k].strip()[:300] if k < len(values) else ""
+
+    info = {ids[k]: {"title": field("Title", k), "description": field("Description", k), "frequency": field("Frequency", k),
+                     "units": field("Units", k), "source": field("Source", k), "published": field("Publication date", k),
+                     "last_date": last.get(ids[k], "")} for k in keep}
+    return buf.getvalue().encode("utf-8"), {"rba": {"series": info}}
+
+
 def dbnomics_csv(raw: bytes) -> tuple[bytes, dict]:
     """A DBnomics series document as a CSV of period, period_start_day and value, with what the mirror says about itself
     (series name, frequency, when it indexed the provider). Raises ValueError when the document holds no series."""
@@ -292,6 +370,9 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
         fmt = "csv"
     elif source.body_kind == "dbnomics":
         table_bytes, extra_provenance = dbnomics_csv(downloaded)
+        fmt = "csv"
+    elif source.body_kind == "rba":
+        table_bytes, extra_provenance = rba_csv(downloaded, canonical.get("series"))
         fmt = "csv"
     table = preview(table_bytes, fmt)     # nothing is stored unless the body parses as the table it claims to be
     # The stored file is the table alone, so a reader of the file sees the header first. The location block that came

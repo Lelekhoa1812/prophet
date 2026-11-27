@@ -168,10 +168,15 @@ def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         dbn = meta.get("provenance", {}).get("dbnomics")
         stale = _stale_mirror(dbn) if source == "dbnomics" and dbn else None
         rerouted = None
-        if stale and str(params.get("provider", "")).upper() == "ILO":
+        provider = str(params.get("provider", "")).upper()
+        if stale and provider == "ILO":
             rerouted = _from_ilostat(store, live, params)
             if rerouted:
                 stale_meta, meta, source = meta, rerouted, "ilostat_sdmx"
+        elif stale and provider == "RBA":
+            rerouted = _from_rba(store, live, params, stale)
+            if rerouted:
+                stale_meta, meta, source = meta, rerouted, "rba_cash_rate"
         mount = _mount(ctx, live, meta)
         extra = {"source": source}
         if resolved:
@@ -179,8 +184,12 @@ def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
         if dbn:
             extra["mirror"] = dbn
         if stale and rerouted:
+            origin = "ILOSTAT itself" if source == "ilostat_sdmx" else "the RBA's own statistics table"
             extra["rerouted"] = (f"the mirror's copy ends {stale['last_period']} ({stale['age_days']} days ago), so the series "
-                                 f"was fetched from ILOSTAT itself; the mirror's copy is dataset {stale_meta['id']}")
+                                 f"was fetched from {origin}; the mirror's copy is dataset {stale_meta['id']}")
+            if source == "rba_cash_rate":
+                extra["rerouted"] += (f" (table {meta['provenance']['params'].get('table')}, series "
+                                      f"{meta['provenance']['params'].get('series')})")
         elif stale:
             extra["stale"] = (f"the mirror's copy ends {stale['last_period']}, {stale['age_days']} days ago. Do not call it "
                               "the latest figure. Fetch the series from the provider's own service (search_open_data names "
@@ -194,6 +203,10 @@ def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
 
 
 STALE_AFTER_DAYS = {"M": 150, "Q": 270, "A": 640}
+MIRROR_FREQ = {"monthly": "M", "quarterly": "Q", "annual": "A"}
+# RBA series a mirror still carries after the RBA stopped them, with the live series that replaced them (table, series).
+# F13's Australian target cash rate ends in 2024; F1.1's FIRMMCRT is the same rate, published monthly.
+RBA_SUCCESSORS = {"FOOIRATCR": ("f1.1", "FIRMMCRT")}
 
 
 def _today():
@@ -214,7 +227,11 @@ def _stale_mirror(dbn: dict) -> dict | None:
     if not parsed:
         return None
     label, start = parsed
-    freq = "Q" if "-Q" in label else "M" if re.fullmatch(r"\d{4}-\d{2}", label) else "A" if re.fullmatch(r"\d{4}", label) else ""
+    # The mirror names its frequency; the label is the fallback. Round 21 (AURATE): the RBA copy's last period was a day,
+    # 2024-01-31, which no label rule matched, so a copy 22 months old was never flagged.
+    freq = MIRROR_FREQ.get(str((dbn or {}).get("frequency") or "").lower(), "")
+    if not freq:
+        freq = "Q" if "-Q" in label else "M" if re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", label) else "A" if re.fullmatch(r"\d{4}", label) else ""
     if not freq:
         return None
     age = (_today() - date.fromisoformat(start)).days
@@ -235,6 +252,28 @@ def _from_ilostat(store, live: LiveMounts, params: dict) -> dict | None:
     except (fetch.DownloadError, ValueError) as exc:
         live.failed[sources.build_url("ilostat_sdmx", direct)] = str(exc)[:160]
         return None
+
+
+def _from_rba(store, live: LiveMounts, params: dict, stale: dict) -> dict | None:
+    """The same RBA series from the RBA's own statistics table (or its live successor), or None when it cannot be fetched
+    or is no newer than the mirror's copy."""
+    series = str(params.get("series", "")).strip()
+    table, series = RBA_SUCCESSORS.get(series, (str(params.get("dataset", "")).strip().lower(), series))
+    direct = {"table": table, "series": series}
+    try:
+        url = sources.build_url("rba_cash_rate", direct)
+    except ValueError:
+        return None
+    if url in live.failed:
+        return None
+    try:
+        meta = download_to_dataset("rba_cash_rate", direct, store)
+    except (fetch.DownloadError, ValueError) as exc:
+        live.failed[url] = str(exc)[:160]
+        return None
+    last = (((meta.get("provenance") or {}).get("rba") or {}).get("series") or {}).get(series, {}).get("last_date", "")
+    mirror_last = str(stale.get("last_period") or "")[:10]
+    return meta if last and last[:7] > mirror_last[:7] else None
 
 
 def _next_after_failure(source: str, params: dict) -> str:

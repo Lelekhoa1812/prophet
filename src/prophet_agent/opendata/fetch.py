@@ -194,7 +194,8 @@ def _csv_like(text: str) -> bool:
         rows = [row for row in csv.reader(lines) if any(cell.strip() for cell in row)]
     except csv.Error:
         return False
-    return bool(rows) and len(rows[0]) >= 2
+    # A table may open with a one-cell title line (RBA statistics tables do); a header within the first three rows counts.
+    return any(len(row) >= 2 for row in rows[:3])
 
 
 def _json_like(text: str) -> bool:
