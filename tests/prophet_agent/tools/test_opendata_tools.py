@@ -543,3 +543,19 @@ def test_a_stale_mirror_copy_that_cannot_be_rerouted_says_how_old_it_is(served, 
     assert "ends 2023-Q4" in out["stale"] and "latest" in out["stale"]
     fresh = ot._stale_mirror({"last_period": "2026-Q2"})
     assert fresh is None
+
+
+def test_a_commodity_search_names_the_world_bank_workbook_first(monkeypatch):
+    """Live GOLD (round 20261128-063203): the search found an INSEE series that stopped in 2017; the World Bank's monthly
+    workbook had gold to October 2026 and was never called."""
+    from prophet_agent.opendata import catalogue
+
+    def down(url):
+        raise RuntimeError("HTTP 404")
+    monkeypatch.setattr(catalogue, "_get", down)
+    out = catalogue.search("gold price US dollars per troy ounce monthly")
+    assert out["direct"][0]["call"]["args"]["source"] == "world_bank_pink_sheet" and "call it first" in out["note"]
+    assert catalogue.search("RBA cash rate target")["direct"][0]["call"] == {"tool": "market_benchmark",
+                                                                           "args": {"kind": "au_cash_rate"}}
+    with pytest.raises(RuntimeError):
+        catalogue.search("Viet Nam unemployment rate")

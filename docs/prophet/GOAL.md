@@ -1888,3 +1888,47 @@ Changes:
 - driver_map plan returns ready lane briefs (two families per lane, plus one for benchmarks and market-priced scenario
   odds) for the existing lanes runtime.
 Not yet measured on a live panel round. **M9-8 is not met.**
+
+### Round 25: first live rounds on the round 24 code, three audits, and the fixes (2026-11-28)
+
+Two panel rounds ran on 7ef9136 (fundamentals check in warn mode). Round 20261128-051301: SPX completed; the rest partial,
+GOLD out of time. Round 20261128-063203: EPL and SPX completed, AURATE, AUUNEMP and VNUNEMP partial, GOLD failed. Three
+read-only Haiku audits (two missions each) and the replayed checks found:
+- GOLD failed with "replay diverged at step 18": inspect_data was offered only when a mission started with files, so the
+  tool set grew between the first and second part. GOLD had also forecast October 2017 to September 2018 from an INSEE
+  series that stopped in 2017; the World Bank's monthly workbook (gold to October 2026, $4,105) was never called.
+- AURATE's lane claims cited bankofengland.co.uk and boj.or.jp for RBA quotes: each web call numbered its sources from S1.
+- Warn mode was not enough: SPX, EPL and GOLD never called driver_map; SPX delivered a drift line the evaluator judged
+  met; AURATE's unattended answer picked "Univariate forecast only (current path)". Replayed, every forecasting mission
+  of round 063203 fails signals_gathered and fundamentals_covered.
+- Lane waste: sub-agents planned "lanes" 924 times (VNUNEMP), 126 of 166 decisions (AUUNEMP), 14 in a row (SPX, EPL lane
+  a5), each refused; AURATE re-sent the same six briefs fifteen times; twenty analyst lanes had no download tool.
+- Market pricing was in the sources and unused: AURATE's centre rose to 5.44% while lanes read that the market prices
+  cuts; SPX's 24-month range (7,170 to 9,135, backtest coverage 56%) sat beside a VIX of 26.6.
+- Also found and not fixed in this round: AURATE's monthly series is forward-filled from meeting dates and missed the
+  4 November decision (newest_level_used blocks this now); SPX named two level-shift dates no tool printed; EPL's typed
+  table put Nottingham Forest on 18 points (the file says 9) and claimed xG and market weights the run did not have.
+
+Fixes (gated and pushed):
+- Replay follows the ledger where the tool set grew; inspect_data is always offered on the live files.
+- Mission-wide source numbers (one address, one S-number for the lead and every lane, stored with the observation); the
+  claim check resolves an old reused id to the page that holds the quote.
+- A nested planner is offered call_tool, ask_user and finish only; a lane brief that already reported is not re-run; a
+  brief's tools come from the mission's tools; analysts get the open-data and market downloads and control_lab.
+- fundamentals_covered blocks by default (PROPHET_FUNDAMENTALS_GATE=warn reverts it); signals_gathered blocks for policy
+  rate, labour market, metal, equity, currency and commodity targets whatever the wording; the unattended panel never
+  picks an option that drops drivers.
+- market_benchmark: the RBA cash rate path the bank bill curve implies (F1 bank bills less each tenor's median spread to
+  OIS, measured 2011 to 2022, n = 2,994 days; on 26 November 2026: 4.71% for months 0-1, 4.73% for 1-3, 5.02% for 3-6,
+  against a 4.85% target), and the options-implied range for the S&P 500 (VIX) and gold (GVZ), with volatility reverting
+  to its long-run median. band_vs_market blocks a delivered range under 0.6 times the implied range; SPX's round 063203
+  range fails it.
+- The catalogue search names the World Bank workbook first for a commodity, and market_benchmark for the RBA cash rate
+  and implied volatility.
+
+Domain research (Haiku lanes, notes in research_notes/Fundamentals driven forecasting methods/): RBA unemployment
+forecasts beat a random walk in year 1 but not year 2 (RDP 2012-07); job ads and the RBA's leading indicator beat AR(1)
+for 3 to 6 quarters; no 12-month model reliably beats a random walk for gold or the S&P 500, so for those the market's
+implied range and scenario weighting carry the value; equal-weight combination remains the benchmark to beat (M4, ECB
+SPF). Many figures in the notes are from search snippets and are marked unverified there.
+Not yet measured on a live panel round. **M9-8 is not met.**

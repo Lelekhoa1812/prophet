@@ -129,6 +129,32 @@ def _place(query: str) -> str:
     return rest or query
 
 
+# Sources that answer a measure directly, ahead of the mirror's catalogue. Live GOLD (round 20261128-063203) found only an
+# INSEE series that stopped in 2017, guessed FRED codes that no longer exist and forecast 2017-2018; the World Bank's monthly
+# workbook had gold to October 2026 and was never called.
+DIRECT: tuple[tuple[re.Pattern[str], dict], ...] = (
+    (re.compile(r"\b(gold|silver|platinum|copper|aluminium|aluminum|nickel|zinc|iron ore|crude|brent|wti|oil price|"
+                r"natural gas|coal|wheat|maize|corn|soybean|coffee|cocoa|sugar|commodit)", re.I),
+     {"source": "world_bank_pink_sheet", "frequency": "M",
+      "what": "World Bank Pink Sheet: monthly prices of about 70 commodities in nominal US dollars, 1960 to last month",
+      "call": {"tool": "download_open_data", "args": {"source": "world_bank_pink_sheet", "params": {}}},
+      "read": "sheet 'Monthly Prices': the names are on the row after 'Updated on ...' (for example 'Gold'), the units on "
+              "the next row ('($/troy oz)'), then one row per month with dates like 2026M10 in the first column"}),
+    (re.compile(r"\b(cash rate|rba|bank bill|australia\w* interest rate)", re.I),
+     {"source": "market_benchmark", "frequency": "D",
+      "what": "RBA F1: the cash rate target by day, its decisions, and the path the bank bill curve implies",
+      "call": {"tool": "market_benchmark", "args": {"kind": "au_cash_rate"}}}),
+    (re.compile(r"\b(vix|volatility index|gvz|implied volatility)", re.I),
+     {"source": "market_benchmark", "frequency": "D",
+      "what": "options-implied volatility (VIX for the S&P 500, GVZ for gold) and the implied range around a level",
+      "call": {"tool": "market_benchmark", "args": {"kind": "vix", "level": "<last close>"}}}),
+)
+
+
+def direct_sources(query: str) -> list[dict]:
+    return [dict(hint) for rx, hint in DIRECT if rx.search(query or "")]
+
+
 def search(query: Any, dataset: Any = None, limit: Any = 10) -> dict:
     """Datasets matching the query, or, with dataset as PROVIDER/DATASET, the series inside it that match the query."""
     if not isinstance(query, str) or not query.strip():
@@ -138,9 +164,21 @@ def search(query: Any, dataset: Any = None, limit: Any = 10) -> dict:
         limit = 10
     limit = max(1, min(MAX_LIMIT, limit))
     if dataset is None:
-        found = _datasets(query, limit)
+        direct = direct_sources(query)
+        try:
+            found = _datasets(query, limit)
+        except Exception:
+            if not direct:
+                raise
+            found = []
         out: dict = {"query": query, "datasets": found}
-        if not found:
+        if direct:
+            out["direct"] = direct
+        if direct:
+            out["note"] = ("direct holds a source that answers this measure itself: call it first. "
+                           + ("Otherwise pick a dataset and call search_open_data again with dataset set to its provider/dataset"
+                              if found else "The mirror's catalogue matched nothing."))
+        elif not found:
             out["note"] = ("no dataset matched; use fewer words (the measure and the country's UN name, such as 'Viet Nam' "
                            "or 'Korea, Republic of'), or the measure alone")
         else:
