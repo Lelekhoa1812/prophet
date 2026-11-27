@@ -95,6 +95,12 @@ CREATE TABLE IF NOT EXISTS lane_board (
   created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS lane_board_by_mission ON lane_board(mission_id, seq);
+CREATE TABLE IF NOT EXISTS source_ids (
+  mission_id TEXT NOT NULL,
+  url TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  PRIMARY KEY (mission_id, url)
+);
 """
 
 
@@ -204,6 +210,7 @@ def purge_missions(c: sqlite3.Connection, mission_ids: list[str]) -> None:
         c.execute("DELETE FROM events WHERE mission_id=?", (mid,))
         c.execute("DELETE FROM agent_notes WHERE mission_id=?", (mid,))
         c.execute("DELETE FROM lane_board WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM source_ids WHERE mission_id=?", (mid,))
         c.execute("DELETE FROM missions WHERE id=?", (mid,))
 
 
@@ -586,7 +593,7 @@ class Store:
     def wipe_ledger(self) -> dict[str, int]:
         """Delete every row of the ledger, children before parents, in one transaction. Returns the rows removed per table.
         The caller must have checked that no mission is running; the schema itself is kept."""
-        order = ("events", "steps", "tool_calls", "questions", "agent_notes", "lane_board", "sources", "derived_versions", "derived_tables",
+        order = ("events", "steps", "tool_calls", "questions", "agent_notes", "lane_board", "source_ids", "sources", "derived_versions", "derived_tables",
                  "rewinds", "missions", "notebooks")
         with self._tx() as c:
             # Checked again here, inside the wipe's transaction: a mission that took a lease after the caller's check must
@@ -649,6 +656,26 @@ class Store:
             cur = c.execute("INSERT INTO lane_board (mission_id, sender, recipient, kind, topic, text, idem_key, created) "
                             "VALUES (?,?,?,?,?,?,?,?)", (mission_id, sender, recipient, kind, topic, text, key, time.time()))
             return int(cur.lastrowid)
+
+    def source_numbers(self, mission_id: str, urls: list[str]) -> dict[str, int]:
+        """One number per source address for the whole mission: an address keeps the number it got first, a new one takes the
+        next. Live AURATE (round 20261128-063203): each web_research call numbered its own sources S1, S2..., so "S1" named a
+        different page in every call and a claim quoted from rba.gov.au was checked against bankofengland.co.uk."""
+        out: dict[str, int] = {}
+        with self._tx() as c:
+            top = int(c.execute("SELECT COALESCE(MAX(n), 0) AS m FROM source_ids WHERE mission_id=?",
+                                (mission_id,)).fetchone()["m"])
+            for url in urls:
+                if url in out:
+                    continue
+                row = c.execute("SELECT n FROM source_ids WHERE mission_id=? AND url=?", (mission_id, url)).fetchone()
+                if row is not None:
+                    out[url] = int(row["n"])
+                    continue
+                top += 1
+                c.execute("INSERT INTO source_ids (mission_id, url, n) VALUES (?,?,?)", (mission_id, url, top))
+                out[url] = top
+        return out
 
     def board_read(self, mission_id: str, reader: str | None = None, after: int = 0, limit: int = 50,
                    kinds: tuple[str, ...] | None = None) -> list[dict]:

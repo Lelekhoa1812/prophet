@@ -1577,6 +1577,7 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> d
             result = tool.observe(result)
         except Exception:  # a broken summariser must not hide the result from the planner
             pass
+    _number_sources(ctx, result, full)
     obs = {"kind": "tool", "tool": name, "args": args, "result": result}
     # Round 4 (live Beijing and electricity panels, 2026-11-23): the summary cut the middle of long output, and
     # read_observation could only page the cut text, so analysts re-ran cells to see it. The full result is kept beside
@@ -1587,6 +1588,52 @@ def _act(ctx: Ctx, tool: Tool, name: str, args: dict, tool_names: Any = ()) -> d
     if (hint := tool_module_hint(result, tool_names)) is not None:
         obs["hint"] = hint
     return obs
+
+
+_SOURCE_ID = re.compile(r"^S\d+$")
+
+
+def _number_sources(ctx: Ctx, *results: Any) -> None:
+    """Gives every web source in a tool result its mission-wide number, in place: the same address is the same S-number for
+    the lead and every lane, in this call and all later ones. A fetched page (web_fetch) gets one too, so it can be cited.
+
+    Motivation: live AURATE (round 20261128-063203). Each web_research call numbered its sources from S1, so a lane's
+    "S1" pointed at the Bank of England page while the quote came from the RBA's Statement on Monetary Policy; the claim
+    check read the wrong page and the answer's [S1] meant something different in every call.
+    Logic: runs inside the act step, so the numbers are stored with the observation and a replay reads the same ones. The
+    registry lives in the store (one row per mission and address). Event rows that carry a source_id are renumbered alike.
+    """
+    store, mid = getattr(ctx, "store", None), getattr(ctx, "mission_id", None)
+    if store is None or mid is None or not hasattr(store, "source_numbers"):
+        return
+    holders: list[tuple[dict, str]] = []
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        for src in res.get("sources") or []:
+            if isinstance(src, dict) and isinstance(src.get("url"), str) and src["url"]:
+                holders.append((src, src.get("final_url") or src["url"]))
+        if "sources" not in res and isinstance(res.get("url"), str) and isinstance(res.get("text") or res.get("passages"),
+                                                                                    (str, list)):
+            holders.append((res, res.get("final_url") or res["url"]))
+    if not holders:
+        return
+    try:
+        numbers = store.source_numbers(mid, [u for _, u in holders])
+    except Exception:
+        return            # numbering is a convenience for citations; it must never fail the tool call
+    remap: dict[str, str] = {}
+    for holder, url in holders:
+        new = f"S{numbers[url]}"
+        old = holder.get("id")
+        if isinstance(old, str) and _SOURCE_ID.match(old):
+            remap[old] = new
+        holder["id"] = new
+    for res in results:
+        if isinstance(res, dict):
+            for ev in res.get("events") or []:
+                if isinstance(ev, dict) and ev.get("source_id") in remap:
+                    ev["source_id"] = remap[ev["source_id"]]
 
 
 def _status(ctx: Ctx, i: int, history: list[dict], items: list[dict], started: float) -> None:

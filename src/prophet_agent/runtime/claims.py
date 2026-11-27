@@ -168,6 +168,38 @@ def _registry(evidence: Any) -> tuple[dict[str, str], dict[str, str]]:
     return sha_by_url, url_by_id
 
 
+def _ids_to_urls(evidence: Any) -> dict[str, list[str]]:
+    """Source id -> every address that id named in the evidence, newest first. Before mission-wide numbering each web call
+    numbered its sources from S1, so one id can name several pages (live AURATE, round 20261128-063203)."""
+    out: dict[str, list[str]] = {}
+    for h in evidence if isinstance(evidence, list) else []:
+        result = h.get("result") if isinstance(h, dict) else None
+        if not isinstance(result, dict):
+            continue
+        for src in [result, *[x for x in result.get("sources") or [] if isinstance(x, dict)]]:
+            url = next((str(src[k]) for k in ("url", "final_url") if isinstance(src.get(k), str) and src.get(k)), "")
+            if url and isinstance(src.get("id"), str) and src["id"]:
+                seen = out.setdefault(src["id"], [])
+                if url in seen:
+                    seen.remove(url)
+                seen.insert(0, url)
+    return out
+
+
+def _pick_by_quote(claim: "Claim", urls: list[str], pages: dict[str, dict | None]) -> str:
+    """The address among ``urls`` whose stored page holds the claim's quote; the newest when none does or only one exists."""
+    if len(urls) <= 1:
+        return urls[0] if urls else ""
+    want = re.sub(r"\s+", " ", (claim.quote or "").strip().lower())[:120]
+    for url in urls:
+        if url not in pages:
+            pages[url] = stored_page(url)
+        text = re.sub(r"\s+", " ", str((pages[url] or {}).get("text") or "").lower())
+        if want and want in text:
+            return url
+    return urls[0]
+
+
 def summarise(claims: list[dict]) -> str:
     counts = {s: sum(1 for c in claims if c.get("status") == s) for s in STATUSES}
     noun = "claim" if len(claims) == 1 else "claims"
@@ -187,11 +219,12 @@ def check_report_claims(report: Any, evidence: Any) -> dict:
     claims = parse_claims(report)
     if not claims:
         return {"claims": [], "summary": ""}
-    sha_by_url, url_by_id = _registry(evidence)
+    sha_by_url, _ = _registry(evidence)
+    ids = _ids_to_urls(evidence)
     pages: dict[str, dict | None] = {}
     checked: list[Claim] = []
     for claim in claims:
-        url = claim.url or url_by_id.get(claim.source_id, "")
+        url = claim.url or _pick_by_quote(claim, ids.get(claim.source_id, []), pages)
         snapshot = claim.snapshot_sha256 or sha_by_url.get(url, "")
         claim = replace(claim, url=url, snapshot_sha256=snapshot)
         if not url:
