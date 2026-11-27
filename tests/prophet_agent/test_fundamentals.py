@@ -162,3 +162,12 @@ def test_club_adjustments_move_the_remaining_matches_and_outright_prices_are_com
     assert "Brighton & Hove Albion title model 45%" in cmp["note"]
     with pytest.raises(ValueError, match="no club named"):
         compare_outright(rows, {"title": {"Spurs": 5.0}})
+
+
+def test_plan_gives_ready_lane_briefs_that_cover_every_family_once():
+    p = dfam.plan("Forecast the RBA cash rate target over the next 5 years")
+    lanes = p["lanes"]
+    covered = [f["family"] for f in p["families"] if sum(f["family"] + ":" in ln["task"] for ln in lanes) == 1]
+    assert covered == [f["family"] for f in p["families"]]
+    assert all(len(ln["name"].split()) <= 4 and ln["deliverable"] and ln["agent_type"] == "researcher" for ln in lanes)
+    assert "market pricing" in lanes[-1]["task"] and "The other lanes cover" in lanes[0]["task"]

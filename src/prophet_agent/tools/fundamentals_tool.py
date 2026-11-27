@@ -157,7 +157,9 @@ def _driver_map(args: dict, _key: str) -> dict[str, Any]:
         if not target:
             raise ValueError("plan needs target: the forecast asked for, in words (for example 'RBA cash rate, next 5 years')")
         p = dfam.plan(target, domain)
-        return {**p, "next": ("Research the families broadly (one research lane per family or two, action lanes), fetch the "
+        return {**p, "next": ("Research the families broadly: pass `lanes` from this result to the plan action lanes as they "
+                              "are (one research lane per two families and one for the benchmarks and scenario odds; edit "
+                              "them if the goal needs it), fetch the "
                               "data each one names, and test the measurable ones against the target (control_lab "
                               "with_covariates, backtest_series with covariates, or a lead-lag or regression cell). Read the "
                               "benchmarks and note their values. State two or more scenarios for the political, policy and "

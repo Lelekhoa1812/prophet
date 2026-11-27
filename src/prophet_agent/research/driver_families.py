@@ -227,7 +227,41 @@ def plan(goal: str, domain: str | None = None, year: int | None = None) -> dict:
         fams.append({"family": f["key"], "what": f["what"], "data": list(f["data"]),
                      "queries": [q.format(place=place, target=target, year=yr) for q in f["queries"]]})
     return {"domain": name, "place": place, "families": fams, "benchmarks": list(spec["benchmarks"]),
-            "minimum": dict(spec["minimum"])}
+            "minimum": dict(spec["minimum"]), "lanes": lane_briefs(target, fams, list(spec["benchmarks"]))}
+
+
+def lane_briefs(target: str, fams: list[dict], benchmarks: list[str], per_lane: int = 2) -> list[dict]:
+    """Ready research-lane briefs for the families, two per lane, plus one lane for the benchmarks and the market-priced
+    scenario probabilities, in the shape the planner's ``lanes`` action takes.
+
+    Owner review (2026-11-27): search broadly, then surgically. Each lane covers its families only, is told what the others
+    cover, returns dated figures with their source URLs, and stops when its families are covered."""
+    groups = [fams[i:i + per_lane] for i in range(0, len(fams), per_lane)]
+    names_all = [", ".join(f["family"] for f in g) for g in groups] + ["benchmarks and market-priced scenarios"]
+    out = []
+    for k, g in enumerate(groups):
+        others = "; ".join(n for j, n in enumerate(names_all) if j != k)
+        fam_text = " ".join(f"{f['family']}: {f['what']} Data: {'; '.join(f['data'][:3])}. Start with: "
+                            f"{'; '.join(repr(q) for q in f['queries'][:3])}." for f in g)
+        word = lambda key: max(key.split("_"), key=len)
+        out.append({"name": " and ".join(word(f["family"]) for f in g).capitalize() + " research",
+                    "agent_type": "researcher",
+                    "task": f"Driver research for {target}. Cover only these families. {fam_text} The other lanes cover: "
+                            f"{others}.",
+                    "deliverable": "for each family: the newest dated facts and figures that push the target up or down, "
+                                   "each with its date and source URL; the series that measures it (where to download it); "
+                                   "and the direction and rough size of its effect",
+                    "constraints": "newest first, nothing older than three years unless it is the long-run series; no figure "
+                                   "without its source URL; stop when each family has two solid dated findings"})
+    out.append({"name": "benchmarks and scenario odds", "agent_type": "researcher",
+                "task": f"Benchmarks for {target}: " + "; ".join(benchmarks[:4]) + ". Also find market pricing for the "
+                        "events that could move the target (rate futures or a rate tracker, outright odds, prediction "
+                        f"markets), so scenario probabilities come from markets where a market exists. Other lanes cover: "
+                        + "; ".join(names_all[:-1]) + ".",
+                "deliverable": "each benchmark's forecast value of the target with its date and URL; each priced event "
+                               "with its market probability, date and URL",
+                "constraints": "official and market sources first; say where no market prices an event"})
+    return out
 
 
 def family_keys(domain: str) -> list[str]:
