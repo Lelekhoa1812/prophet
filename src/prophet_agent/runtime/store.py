@@ -488,6 +488,16 @@ class Store:
             self._fence(c, mission_id)
             return self._emit(c, mission_id, kind, payload)
 
+    def append_event_once(self, mission_id: str, kind: str, payload: dict, key: str) -> int | None:
+        """Write the event unless one of the same kind already carries the same ``payload[key]``. Check and write share a
+        transaction, so two threads cannot both write it. Returns the new seq, or None when it was already there."""
+        with self._tx() as c:
+            self._fence(c, mission_id)
+            for (old,) in c.execute("SELECT payload_json FROM events WHERE mission_id=? AND kind=?", (mission_id, kind)):
+                if json.loads(old).get(key) == payload.get(key):
+                    return None
+            return self._emit(c, mission_id, kind, payload)
+
     def _emit(self, c: sqlite3.Connection, mission_id: str, kind: str, payload: dict) -> int:
         """Write an event inside the caller's transaction, so a state change and its event commit or fail together (round
         6m). A crash between the two used to leave a finished step with no event, or a waiting mission with no record."""

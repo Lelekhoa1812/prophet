@@ -32,6 +32,7 @@ from prophet_agent.settings import view as settings_view
 from prophet_agent.sandbox.runner import SANDBOX_ROOT, OUT_DIR
 from prophet_agent.usage import ledger_for
 
+from . import activity
 from .bundle import build_bundle
 from .data_pack import build_mission_pack, build_notebook_pack, merge_output_files
 from .panels import entity_page, panel_summary
@@ -379,6 +380,34 @@ def create_app(service: MissionService) -> FastAPI:
         except NotConfigured:
             raise HTTPException(503, planner_problem() or "the planner is not configured")
         return {"mission_id": mission_id}
+
+    @app.get("/api/missions/{mission_id}/activity")
+    def mission_activity(mission_id: str) -> dict:
+        """The right-hand panel for one mission: main thread, code runs, sub-agents, files, tools and skills."""
+        try:
+            service.store.mission(mission_id)
+            return activity.mission_activity(service, [mission_id], SANDBOX_ROOT, merge_output_files)
+        except KeyError:
+            raise HTTPException(404, "no such mission")
+
+    @app.get("/api/notebooks/{nid}/activity")
+    def notebook_activity(nid: str) -> dict:
+        """The panel for a notebook: this round is its newest question; files come from every question, grouped by it."""
+        _nb(service.notebooks.get, nid)
+        turns = [t["id"] for t in service.notebooks.turns(nid)]
+        if not turns:
+            return {"main": None, "code": [], "agents": [], "files": [], "tools": [], "skills": []}
+        return activity.mission_activity(service, turns, SANDBOX_ROOT, merge_output_files)
+
+    @app.get("/api/missions/{mission_id}/agents/{agent_id}")
+    def agent_session(mission_id: str, agent_id: str) -> dict:
+        """One sub-agent's brief, status, report and whole session (plans, tool results, board reads, evaluations)."""
+        if not re.fullmatch(r"a\d{1,4}", agent_id):
+            raise HTTPException(404, "no such sub-agent")
+        try:
+            return activity.agent_session(service, mission_id, agent_id)
+        except KeyError:
+            raise HTTPException(404, "no such sub-agent")
 
     @app.get("/api/missions/{mission_id}/artifacts")
     def list_artifacts(mission_id: str) -> list[dict]:

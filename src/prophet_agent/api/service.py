@@ -36,8 +36,10 @@ from prophet_agent.nim.providers import CATALOG, MODELS, PROVIDERS
 
 BrainFactory = Callable[[], Any]
 ToolsFactory = Callable[..., dict[str, Tool]]
-DEFAULT_BUDGET = {"max_seconds": 900}
-AUTO_CONTINUE_PARTS = 2   # parts a mission may start by itself after the first; a proposal, set per mission with budget["auto_continue"]
+DEFAULT_BUDGET = {"max_seconds": 1800}
+# Owner, 2026-11-27: complex missions stopped short of their goal. A mission now continues by itself for up to five parts of
+# 30 minutes, still only while each part adds checklist progress (see _auto_continue).
+AUTO_CONTINUE_PARTS = 5   # parts a mission may start by itself after the first; a proposal, set per mission with budget["auto_continue"]
 # Statuses a person can continue or answer now from. The two legacy names are missions that stopped at a limit before
 # checkpoints existed; their stored steps are intact, so they resume the same way instead of being stranded.
 RESUMABLE_AT_CHECKPOINT = ("checkpoint", "budget_exhausted", "iteration_budget")

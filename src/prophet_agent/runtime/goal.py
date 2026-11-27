@@ -121,11 +121,11 @@ SUB_EVAL_SCHEMA: dict[str, Any] = {
 }
 
 OBS_CHARS = 4000          # one observation, as the planner sees it
-VIEW_CHARS = 16000        # uncompacted observations shown before the older ones fold into the memo
-KEEP_RECENT = 4           # newest observations never compacted
+VIEW_CHARS = 32000        # uncompacted observations shown before the older ones fold into the memo
+KEEP_RECENT = 6           # newest observations never compacted
 MIN_FOLD = 3              # older observations folded per compaction, unless the view is far over its limit
 HARD_VIEW_FACTOR = 2.5    # the view may grow to this many times VIEW_CHARS before a smaller fold is forced
-MEMORY_CHARS = 8000       # hard cap on the memo; a memo over this is cut and says so
+MEMORY_CHARS = 20000       # hard cap on the memo; a memo over this is cut and says so
 ASKS_KEEP_CHARS = 2000    # head of the memo (the ASKS section) that a cut to fit never removes
 EXTERNAL_GOAL = re.compile(r"\b(?:wti|brent|crude|oil|gas|gold|silver|copper|commodit\w*|fx|forex|exchange rate|usd|eur|gbp|jpy|aud|"
                            r"stock|equit\w*|share price|s&p|nasdaq|index|yield|bond|treasur\w*|bitcoin|btc|crypto\w*|spot price|"
@@ -149,14 +149,20 @@ DONE_WHEN = ("the evaluator judges the goal met", "the deterministic checks pass
 MUST_NOT_CHANGE = ("synthetic or expected numbers are never presented as observed", "the 15 percent improvement bar is not moved")
 STOP_REASONS = {"met": "done_verified", "partial": "partial_unverified", "impossible": "impossible", "stalled": "stalled",
                 "checkpoint": "budget_part_spent"}
-MAX_CONTRACT_BLOCKS = 2    # times a failed deterministic check may send a finished answer back before it leaves as partial
+MAX_CONTRACT_BLOCKS = 5    # times a failed deterministic check may send a finished answer back before it leaves as partial
+# Owner, 2026-11-27: complex missions ended partial while the work was still moving. A block repeats only while the failing
+# checks change; the same failing set on consecutive blocks means the repairs are not landing (CRITIC's stop rule: unchanged
+# across two corrections), and the answer leaves as partial then, or at MAX_CONTRACT_BLOCKS.
+SAME_BLOCKS_TO_STOP = 2
+MAX_PIVOTS = 2             # stalls after the rescue that turn into a change of strategy before the run is written up
 REPAIR_CALLS = 8          # one extra allowance, granted once, when a blocked answer meets a spent tool budget (2026-11-22)
 # Panel round 10 (EPL): the request said "Ask me which clubs to keep", and four of the planner's questions were refused for
 # lacking a "high-risk:" rationale. A request that asks to be asked is the person's own decision that the question is worth it.
 ASKED_TO_ASK = re.compile(r"\bask me\b|\bcheck with me\b|\bconfirm with me\b", re.I)
 CLAIM_REWRITES = 2       # composer rewrites for an answer claim the stored output does not support
 MAX_PREMATURE_FINISHES = 2  # round 3, A5-04: finishes refused for checklist items still to do, per run, before the evaluator judges
-MAX_REJECTED_FINISHES = 3  # finishes the evaluator may reject in a row before the work is written up as it stands
+MAX_REJECTED_FINISHES = 5  # finishes the evaluator may reject in a row before the work is written up as it stands
+PIVOT_AFTER_REJECTIONS = 3  # rejections in a row that first turn into a change of strategy
 _LEVEL_SENTENCE = re.compile(r"centre line is a level|center line is a level", re.I)
 _RATIONALE_JUDGED = re.compile(r"finish rationale|required language", re.I)
 # A refusal that also names a missing result is not only the level sentence. Do not turn that into met.
@@ -1211,6 +1217,27 @@ def _stub(obs: dict, n: int) -> str:
     return f"{n}. {obs.get('kind')}: {canonical(_view(obs))[:STUB_CHARS]}"
 
 
+ROLLUP_CHARS = 600
+_STUB_LINE = re.compile(r"^(\d+)\. (?:sub-agent (a\d+)|([A-Za-z_]+)\()", re.M)
+
+
+def _rollup(cut: str) -> str:
+    """One line for the part of the memory cut to fit: which observations it held, by tool, so the planner still knows they
+    exist and can page any back. Owner, 2026-11-27: the cut said only "[middle of the memory cut to fit]", and the steps in it
+    were lost from the planner's sight."""
+    found = _STUB_LINE.findall(cut)
+    if not found:
+        return "[part of the memory was cut to fit; the full record is kept, read_observation pages any step]"
+    steps = [int(n) for n, _, _ in found]
+    counts: dict[str, int] = {}
+    for _, agent, tool in found:
+        name = f"sub-agent {agent}" if agent else tool
+        counts[name] = counts.get(name, 0) + 1
+    tools = ", ".join(f"{k} x{v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]))
+    return (f"[observations {min(steps)} to {max(steps)} were folded out of this memory to fit ({tools}); their results are "
+            "kept, and read_observation with the step pages any of them]")[:ROLLUP_CHARS]
+
+
 def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, tag: str, *,
              view_chars: int = VIEW_CHARS, keep_recent: int = KEEP_RECENT,
              memory_chars: int = MEMORY_CHARS, boundary: bool = False) -> None:
@@ -1238,7 +1265,8 @@ def _compact(ctx: Ctx, brain: Any, goal: str, history: list[dict], memo: Memo, t
     if len(text) > memory_chars:
         # The head holds the person's asks, copied unchanged from one memory to the next: it is what a cut must not lose.
         keep_head = min(ASKS_KEEP_CHARS, memory_chars // 3)
-        text = text[:keep_head] + "\n[middle of the memory cut to fit]\n" + text[-(memory_chars - keep_head):]
+        tail = text[-(memory_chars - keep_head - ROLLUP_CHARS):]
+        text = text[:keep_head] + "\n" + _rollup(text[keep_head:len(text) - len(tail)]) + "\n" + tail
     memo.text = text
     memo.covered = cut
 
@@ -1890,6 +1918,27 @@ def _stalled(history: list[dict], window: int) -> bool:
     return window >= 3 and len(set(last)) == 2 and all(last[k] == last[k - 2] for k in range(2, len(last)))
 
 
+def _may_block_again(history: list[dict], blocked: list[dict]) -> bool:
+    """Another repair round for a blocked answer while the failing checks keep changing, at most MAX_CONTRACT_BLOCKS."""
+    earlier = [tuple(sorted(h["contract"])) for h in history if h.get("kind") == "evaluation" and h.get("contract")]
+    if len(earlier) >= MAX_CONTRACT_BLOCKS:
+        return False
+    now = tuple(sorted(c["name"] for c in blocked))
+    recent = earlier[-(SAME_BLOCKS_TO_STOP):]
+    return not (len(recent) == SAME_BLOCKS_TO_STOP and all(r == now for r in recent))
+
+
+def _pivot(history: list[dict], why: str, repeated: str = "") -> bool:
+    """Turn a stop into a change of strategy while pivots remain. Returns True when a pivot was added."""
+    if sum(1 for h in history if h.get("kind") == "pivot") >= MAX_PIVOTS:
+        return False
+    history.append({"kind": "pivot", "why": why, **({"repeated": repeated} if repeated else {}),
+                    "note": "This path is exhausted; do not repeat it. Change strategy: another source or method for the "
+                            "open item, a fan-out of research lanes on the open question (action lanes, each lane a different "
+                            "angle), or a question to the person if a decision blocks you. Then finish when the checks pass."})
+    return True
+
+
 def _specs(plan: dict) -> list[dict]:
     """The delegations in a plan: ``tasks`` (parallel) or the single ``task`` with its optional fields."""
     keys = ("task", "agent_type", "deliverable", "constraints", "tools", "resume")
@@ -1953,6 +2002,18 @@ def seed_history(history: list[dict]) -> list[dict]:
     return [{**h, "seeded": True} for h in usable[-SEED_RESULTS:]]
 
 
+def _agent_started(ctx: Ctx, agent_id: str, agent_type: str, spec: dict, lane: bool) -> None:
+    """One ``agent.started`` event per sub-agent, so the console can show a running lane's brief before its report exists.
+    Written once: a resumed run that replays the agent finds the event and writes nothing. Never raises."""
+    try:
+        ctx.store.append_event_once(ctx.mission_id, "agent.started", {
+            "agent_id": agent_id, "agent_type": agent_type, "task": str(spec.get("task") or "")[:2000],
+            "deliverable": str(spec.get("deliverable") or "")[:600], "lane": lane, "resumed": bool(spec.get("resume"))},
+            key="agent_id")
+    except Exception:
+        pass
+
+
 def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, Tool], cfg: GoalConfig, context: str,
                history: list[dict], lane: dict | None = None) -> dict:
     """Runs one sub-agent with its own history, memo, notes and a tool list scoped by its type. ``lane`` (from
@@ -1987,6 +2048,7 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     goal = _brief(spec, agent, agent_id, prior is not None)
     if lane:
         goal += "\n\n" + lane["brief"]
+    _agent_started(ctx, agent_id, agent.name, spec, bool(lane))
     play = agents.playbooks(agent)
     sub_context = (context + "\n\n" if context else "") + (play[:7000] if play else "")
     # Sub-agent steps are top-level steps of the same ledger, numbered in call order like any others, so a resumed run
@@ -2584,6 +2646,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                 "repeated": _stall_label(_run_of_same_result(history) or [obs])})
                 rescue = True
                 continue
+            if (cfg.depth == 0 and not cfg.finish_now and not out_of_calls and i < cfg.end - 1
+                    and _pivot(history, "stall", _stall_label(_run_of_same_result(history) or [obs]))):
+                continue
             # Repeating the same call will not help. Judge what was found so far: a best answer, labelled partial,
             # beats an empty "stalled".
             verdict = ctx.step(f"evalstall:{tag}:{i}", lambda c: brain.decide(_eval_messages(goal, history, memo, context),
@@ -2703,7 +2768,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             horizon = horizon_checks(goal, history) if cfg.depth == 0 else []
             blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT) + horizon)
             if (blocked and out_of_calls and not repair_granted and cfg.depth == 0 and cfg.tool_budget is not None
-                    and contract_blocks < MAX_CONTRACT_BLOCKS and not last and not cfg.finish_now):
+                    and _may_block_again(history, blocked) and not last and not cfg.finish_now):
                 # The tool budget is spent, so the fix could not run and the answer would leave partial for want of one call.
                 # Live (WTI rep2 and retail rep1, 2026-11-22) both blocked answers met a spent budget. One allowance, for this
                 # fix only, goes to the config and to the runtime's own limit, so the planner's notes and the enforcement agree.
@@ -2718,7 +2783,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                                 + f". Fix the cause with a tool call before finishing. A repair allowance of {REPAIR_CALLS} "
                                 "tool calls was granted for this fix only."})
                 continue
-            if blocked and contract_blocks < MAX_CONTRACT_BLOCKS and not last and not out_of_calls and not cfg.finish_now:
+            if blocked and _may_block_again(history, blocked) and not last and not out_of_calls and not cfg.finish_now:
                 contract_blocks += 1
                 history.append({"kind": "evaluation", "verdict": "not_met", "contract": [c["name"] for c in blocked],
                                 "missing": "A required check failed on the evidence: " + contracts.summarise(blocked)
@@ -2823,6 +2888,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     "draft": verdict.get("answer", ""), "evidence": history, "memory": memo.text}
         if plan["action"] == "finish":
             rejected_finishes += 1
+            if (rejected_finishes == PIVOT_AFTER_REJECTIONS and cfg.depth == 0 and not cfg.finish_now
+                    and _pivot(history, "rejected finishes: " + str(verdict.get("reason") or "")[:200])):
+                continue
             if rejected_finishes >= MAX_REJECTED_FINISHES:
                 # The planner keeps saying it is done and the evaluator keeps saying it is not: more passes will not settle
                 # it. Write up what is established, say what is not, and label it partial (seen live: 90 rejected finishes).

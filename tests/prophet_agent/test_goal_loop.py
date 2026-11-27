@@ -90,6 +90,7 @@ def test_impossible_verdict_stops_the_loop(store):
     assert out["result"]["reason"] == "no data for that region"
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_stall_detected_when_the_same_call_returns_the_same_result(store):
     plans = [call("a", {"k": 1})] * 5
     brain = ScriptedBrain(plans=plans, evals=[{"verdict": "not_met", "reason": "stuck"}])
@@ -438,6 +439,7 @@ def test_the_models_own_arguments_and_rationale_are_not_evidence():
     assert unverified("Sold 1 unit", history, "") == []
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_a_partial_stalled_answer_is_grounded_and_its_unsupported_figures_listed(store):
     # Audit M10: the stall answer gets one repair of unsupported figures; a figure the repair keeps is still listed.
     brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
@@ -448,6 +450,7 @@ def test_a_partial_stalled_answer_is_grounded_and_its_unsupported_figures_listed
     assert out["result"]["unverified"] == ["99"], "a partial answer is grounded too, not only a met one"
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_a_stalled_answer_with_an_unsupported_figure_is_repaired_once(store):
     brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
                          writes=["**North 99 so far.**", "**North 42 so far.**"])
@@ -477,6 +480,7 @@ def test_met_with_nothing_to_read_is_never_reported_as_met(store):
     assert out["result"]["status"] == "partial" and out["result"]["answer"] == ""
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_a_stalled_run_gives_a_partial_answer_from_what_was_found(store):
     brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
                          writes=["**North 42 so far.**"])
@@ -754,6 +758,7 @@ def test_a_finish_writes_the_answer_before_the_evaluator_sees_it(store, monkeypa
     assert brain.seen and "Written answer to judge:\n" + written in brain.seen[0]
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_a_level_sentence_refusal_that_also_names_a_missing_total_stays_unmet(store):
     reason = (SCIRES_LEVEL_REFUSAL + " The answer does not state the 14-day total or the daily table.")
     refusal = {"verdict": "not_met", "reason": reason, "answer": "The range is not stated."}
@@ -777,6 +782,7 @@ def test_a_check_verdict_is_not_refused_for_the_flat_expected_level_sentence(sto
     assert brain.calls == {"plan": 2, "eval": 1}
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_a_flat_expected_verdict_still_rejects_a_missing_level_sentence(store):
     refusal = {"verdict": "not_met", "reason": SCIRES_LEVEL_REFUSAL, "answer": "The level stands."}
     brain = ScriptedBrain(plans=[call("forecast_report"), finish(), finish(), finish()],
@@ -788,6 +794,7 @@ def test_a_flat_expected_verdict_still_rejects_a_missing_level_sentence(store):
     assert brain.calls["eval"] == 3
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_three_rejected_finishes_in_a_row_end_as_a_partial_answer_not_a_loop(store):
     # Regression: a planner said finish 90 times and the evaluator said not_met 89 times, so the mission never ended.
     gap = {"verdict": "not_met", "reason": "workbook not shown", "answer": "The forecast is established; the workbook is not."}

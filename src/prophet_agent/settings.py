@@ -61,8 +61,10 @@ def _forget_data_bytes(root: Path) -> None:
 
 
 DEFAULTS: dict[str, dict[str, int]] = {
-    "agent": {"part_steps": 200, "part_seconds": 900, "sub_steps": 12},
-    "context": {"view_chars": 16000, "keep_recent": 4, "memory_chars": 8000},
+    # Owner, 2026-11-27: longer parts and a larger working view. The view stays well inside the range where long-context
+    # recall holds (NoLiMa: effective lengths of 4K to 8K tokens on non-literal recall), and what is folded stays indexed.
+    "agent": {"part_steps": 200, "part_seconds": 1800, "sub_steps": 12},
+    "context": {"view_chars": 32000, "keep_recent": 6, "memory_chars": 20000},
 }
 # (low, high) for every numeric setting. Anything outside is refused, never clamped silently.
 BOUNDS: dict[tuple[str, str], tuple[int, int]] = {

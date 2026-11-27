@@ -161,7 +161,7 @@ def test_a_memory_cut_to_fit_keeps_the_asks_at_its_head(store):
     assert second["result"]["status"] == "met"
     last = brain.prompts[-1]
     assert "keep this exactly. keep this exactly." in last, "the head of the memory (the asks) survived the cut"
-    assert "[middle of the memory cut to fit]" in last
+    assert "were folded out of this memory to fit" in last or "part of the memory was cut to fit" in last
 
 
 def test_compactor_v2_has_fixed_sections_and_is_current():

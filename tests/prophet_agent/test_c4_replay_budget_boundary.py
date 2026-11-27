@@ -48,7 +48,12 @@ def _call(k):
     return {"action": "call_tool", "tool": "a", "args": {"k": k}, "rationale": "work"}
 
 
-def test_resume_across_a_topup_takes_the_same_branch_and_finishes(store):
+def test_resume_across_a_topup_takes_the_same_branch_and_finishes(store, monkeypatch):
+    # The scripted path ends at the third rejected finish. This test is about replay across a top-up, so it pins the
+    # rejection limits it was written for; the pivot and the later write-up have their own tests.
+    import prophet_agent.runtime.goal as goal_mod
+    monkeypatch.setattr(goal_mod, "MAX_REJECTED_FINISHES", 3)
+    monkeypatch.setattr(goal_mod, "PIVOT_AFTER_REJECTIONS", 99)
     counter = {"a": 0}
 
     def a(args, key):

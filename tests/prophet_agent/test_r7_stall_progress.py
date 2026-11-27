@@ -70,6 +70,7 @@ def _sandbox_obs(code, stdout, step, stderr="", ok=True):
 
 # --- the bound, reproduced offline -------------------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_the_same_cell_with_the_same_output_stops_at_the_three_call_window(store):
     # The existing bound: three identical calls in a row stop the loop (stall_window = 3). Kept, and now named in the reason.
     brain = RecordingBrain(plans=[call("sandbox_python", {"code": "print(1)"})] * 5, evals=[partial()])
@@ -80,6 +81,7 @@ def test_the_same_cell_with_the_same_output_stops_at_the_three_call_window(store
     assert "sandbox_python" in out["result"]["reason"] and "kept repeating the same step" in out["result"]["reason"]
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_different_cells_with_the_same_output_stop_at_the_same_three_call_window(store):
     # Reproduction of the open item: the code differs on every call, the printed output does not. Before the fix nothing stopped
     # the loop before the iteration cap (six planner decisions here).
@@ -93,6 +95,7 @@ def test_different_cells_with_the_same_output_stop_at_the_same_three_call_window
 
 # --- the notice, one repeat before the stop -----------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_the_planner_is_told_after_one_repeat_that_the_result_already_exists(store):
     brain = RecordingBrain(plans=[call("sandbox_python", {"code": c}) for c in SAME_OUTPUT_CODES[:3]], evals=[partial()])
     run(store, goal_program(GOAL, {"sandbox_python": cell(lambda code: SAME_OUTPUT)}, brain,

@@ -53,6 +53,7 @@ def test_a_window_of_two_does_not_read_any_two_different_calls_as_a_loop():
     assert G._stalled([_obs("a", {"n": 1}), _obs("b", {"m": 2})], 2) is False
 
 
+@pytest.mark.usefixtures("old_stop_gate")
 def test_the_loop_stops_after_a_then_b_then_a_instead_of_running_on(store):
     # Three planned calls only: a fourth planner decision would exhaust the script and fail the mission, so a stop here is the
     # stall detector firing on A, B, A.
