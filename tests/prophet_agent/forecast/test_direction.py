@@ -120,3 +120,31 @@ def test_the_signal_search_is_satisfied_by_a_covariate_test_or_a_drawn_trend():
     assert contracts._signal_search_missing([_pack(True)]) is None
     null_only = {"kind": "tool", "tool": "calibrate_intervals", "args": {"past_covariates": None, "future_covariates": None}, "result": {}}
     assert contracts._signal_search_missing([null_only, _pack(False)])
+
+
+def _moving_obs(point, verdict="flat_expected"):
+    return [{"kind": "tool", "tool": "forecast_report", "args": {"centre": "timesfm"}, "result": {"forecast": {}},
+             "full": {"forecast": {"point": point, "quantiles": {"0.1": [x - 0.3 for x in point], "0.9": [x + 0.3 for x in point]},
+                                   "health": {"verdict": verdict}}}}]
+
+
+def test_a_line_that_moves_is_not_a_level_whatever_the_health_verdict_says():
+    from prophet_agent.runtime import contracts
+    rising = _moving_obs([4.9, 4.92, 4.96, 4.99, 5.01, 5.04])
+    assert contracts._drawn_line_moves(rising)[0] is True
+    assert contracts._level_line_applies(rising) is False
+    bad = contracts._flat_claim_after_tilt("The centre line is a flat level, so read the range.", rising)
+    assert bad and bad["name"] == "answer_flat_claim_after_tilt"
+    level = _moving_obs([5.0] * 6)
+    assert contracts._drawn_line_moves(level)[0] is False
+    assert contracts._flat_claim_after_tilt("The centre line is a flat level.", level) is None
+
+
+def test_a_four_point_mean_is_not_called_a_season_mean():
+    from prophet_agent.runtime import contracts
+    bt = {"kind": "tool", "tool": "backtest_series", "args": {}, "result": {
+        "models": {"timesfm": {"mase": 5.42}, "mean_last_season": {"mase": 4.8}}, "best_baseline": "mean_last_season",
+        "origins": 11, "horizon": 42, "verdict": "baseline_better", "timesfm_vs_best_baseline_pct": -12.9,
+        "mean_last_season_window": {"points": 4, "season": 1, "note": "mean of the last 4 points"}}}
+    text = contracts.trust_statement([bt])
+    assert "average of the last 4 points" in text and "average of the last season" not in text

@@ -1576,7 +1576,8 @@ def trust_facts(history) -> dict | None:
     facts = {"origins": bt.get("origins") or bt.get("n_origins"), "horizon": bt.get("horizon"), "timesfm_mase": tf,
              "best_baseline": best, "baseline_mase": base, "gain_pct": bt.get("timesfm_vs_best_baseline_pct"),
              "backtest_coverage": bt.get("timesfm_range_coverage_80"), "verdict": bt.get("verdict"),
-             "random_walk": (bt.get("random_walk") or {}).get("verdict")}
+             "random_walk": (bt.get("random_walk") or {}).get("verdict"),
+             "mean_last_window": bt.get("mean_last_season_window")}
     te = bt.get("total_error")
     if isinstance(te, dict) and isinstance(te.get("variance_ratio"), (int, float)):
         facts.update(total_variance_ratio=te.get("variance_ratio"), total_origins=te.get("origins"),
@@ -2165,6 +2166,9 @@ def trust_statement(history) -> str:
     if not f or not isinstance(f.get("timesfm_mase"), (int, float)) or not isinstance(f.get("baseline_mase"), (int, float)):
         return ("**Accuracy check (computed from the stored backtest):**" + extra) if extra else ""
     rule = BASELINE_NAMES.get(f["best_baseline"], str(f["best_baseline"]))
+    mlw = f.get("mean_last_window")
+    if f["best_baseline"] == "mean_last_season" and isinstance(mlw, dict) and mlw.get("season", 2) <= 1 and mlw.get("points"):
+        rule = f"the average of the last {mlw['points']} points; no season was found, so it is not a season mean"
     head = (f"Over {f['origins']} past windows of {f['horizon']} steps, TimesFM scored MASE {f['timesfm_mase']:.3g} against "
             f"{f['baseline_mase']:.3g} for the best simple rule ({rule}).")
     v = f.get("verdict")
@@ -3098,14 +3102,20 @@ def _flat_claim_after_tilt(text: str, obs: list) -> dict | None:
     """The answer calls the centre line flat or a level, but the newest pack drew a trend rule its own tilt chose (owner review
     of round 14 charts, 2026-11-27: flat lines are not accepted when the history gives a direction). Blocks."""
     drawn = _delivered_centre(obs)
-    if drawn not in ("damped_trend", "recent_drift", "momentum"):
+    tilted = drawn in ("damped_trend", "recent_drift", "momentum")
+    moves = _drawn_line_moves(obs)
+    if not tilted and not (moves and moves[0]):
         return None
     for unit in grounding.sentences(text):
         if _FLAT_CLAIM.search(unit) and not re.search(r"\bnot\b|\bwould\b|\bwithout\b|\bif\b|\bwas\b|\bwere\b", unit, re.I):
+            if tilted:
+                why = (f"the pack drew {str(drawn).replace('_', ' ')} after finding a direction in the history; describe that "
+                       "line and say it is a tilt chosen on the backtest windows, not a validated gain")
+            else:
+                why = (f"the drawn line moves {moves[1]:+.4g} from the first step to the last; describe its direction and shape "
+                       "(a trend, a cycle) and give those two values")
             return _check("answer_flat_claim_after_tilt", False,
-                          f"the answer calls the centre line flat ({unit.strip()[:140]}), but the pack drew {drawn.replace('_', ' ')} "
-                          "after finding a direction in the history; describe that line and say it is a tilt chosen on the "
-                          "backtest windows, not a validated gain")
+                          f"the answer calls the centre line flat ({unit.strip()[:140]}), but {why}")
     return None
 
 
@@ -3129,9 +3139,29 @@ def _delivered_centre(obs: list) -> str | None:
     return None
 
 
+def _drawn_line_moves(obs: list) -> tuple[bool, float] | None:
+    """(moves, change) for the newest single-series pack: whether the drawn centre line moves visibly against its band, and by
+    how much from the first step to the last. None when no pack or no stored forecast. Round 16 AUUNEMP: the line rose from
+    4.89 to 5.04 and the answer called it a flat level because the health verdict said flat_expected."""
+    from prophet_agent.forecast.direction import is_flat
+    for h in reversed(obs if isinstance(obs, list) else []):
+        if isinstance(h, dict) and isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else {}
+            fc = full.get("forecast") if isinstance(full.get("forecast"), dict) else None
+            q = (fc or {}).get("quantiles") or {}
+            point = (fc or {}).get("point")
+            if not point or "0.1" not in q or "0.9" not in q or len(point) < 2:
+                return None
+            return (not is_flat(point, q["0.1"], q["0.9"]), float(point[-1]) - float(point[0]))
+    return None
+
+
 def _level_line_applies(obs: list) -> bool:
     """flat_expected, and the delivered centre is not a trending rule. Panel round 3 SPX (2026-11-26): the pack's centre was
     drift, the sentence "the centre line is a level" was added, and the evaluator rightly called the answer wrong."""
+    moves = _drawn_line_moves(obs)
+    if moves is not None and moves[0]:            # the drawn line rises or falls visibly: it is not a level
+        return False
     return _latest_health_verdict(obs) == "flat_expected" and _delivered_centre(obs) not in TRENDING_CENTRES
 
 
