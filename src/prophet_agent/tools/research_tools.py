@@ -310,8 +310,32 @@ def _registry_hits(query: str) -> list[dict]:
 
 
 def _is_data_page(page: Page) -> bool:
-    """A numeric table. A cached page has no media type. An HTML page stays an article."""
-    return (page.media or "") not in HTML_MEDIA and looks_like_data_table(page.text)
+    """A numeric table, or a JSON API answer holding records. A cached page has no media type. An HTML page stays an
+    article. VN Unemployment (2026-11-27): the World Bank API's JSON was shown as passages, the analyst copied five of its
+    66 values by hand, and the copy was forecast; as a data file it lands whole in in/."""
+    if (page.media or "") in HTML_MEDIA:
+        return False
+    return looks_like_data_table(page.text) or _json_records(page.text)
+
+
+def _json_records(text: str) -> bool:
+    """True when the text is JSON holding a list of at least three objects, at the top or one level down."""
+    head = (text or "").lstrip()[:1]
+    if head not in ("[", "{"):
+        return False
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    candidates = [data] + (list(data.values()) if isinstance(data, dict) else list(data) if isinstance(data, list) else [])
+    for item in candidates:
+        if isinstance(item, list) and len(item) >= 3 and all(isinstance(x, dict) for x in item[:3]):
+            return True
+        if isinstance(item, dict):
+            for inner in item.values():
+                if isinstance(inner, list) and len(inner) >= 3 and all(isinstance(x, dict) for x in inner[:3]):
+                    return True
+    return False
 
 
 def _data_preview(page: Page) -> str:

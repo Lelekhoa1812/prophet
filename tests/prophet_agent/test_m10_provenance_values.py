@@ -37,3 +37,18 @@ def test_recency_is_ignored_for_dataset_and_history_queries_only():
     assert rt._recency({"recency": "year"}, ["Vietnam unemployment rate quarterly data download"]) == (None, None)
     assert rt._recency({"recency": "year"}, ["Vietnam central bank rate decision"]) == rt.RECENCY["year"]
     assert rt._recency({"recency": "year"}, ["Vietnam monthly statistics", "Vietnam election news"]) == rt.RECENCY["year"]
+
+
+def test_the_lab_default_folds_can_reach_an_adoption_after_holm():
+    from prophet_agent.forecast import lab
+    assert lab._holm_floor(8, 7) > lab.HOLM_ALPHA, "the old default could adopt nothing across seven treatments"
+    assert lab._holm_floor(lab.DEFAULT_FOLDS, 10) < lab.HOLM_ALPHA
+    assert lab._holm_floor(5, 1) == 1.0
+
+
+def test_a_json_api_answer_with_records_is_a_data_file_and_an_html_page_is_not():
+    from prophet_agent.tools import research_tools as rt
+    wb = '[{"page":1,"pages":1,"total":66},[{"date":"2025","value":1.523},{"date":"2024","value":1.602},{"date":"2023","value":1.645}]]'
+    assert rt._json_records(wb)
+    assert not rt._json_records('{"status": "ok"}')
+    assert not rt._json_records("<html><body>[1,2,3]</body></html>")

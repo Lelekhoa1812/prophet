@@ -432,6 +432,78 @@ def download_web_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
     return Tool("download_web_data", run, idempotent=True)
 
 
+def extract_text_figures_tool(ctx: OpenDataContext, live: LiveMounts, fetch_fn: Callable | None = None,
+                              client: Any = None) -> Tool:
+    """Dated figures stated in a page's sentences, verified against the page and stored as a CSV with provenance."""
+    def run(args: dict, _key: str) -> dict:
+        from prophet_agent.research import archive, text_figures
+        args = _arguments(args, {"url", "measure", "entity"}, {"url", "measure"})
+        url = args["url"]
+        if not isinstance(url, str) or urlsplit(url.strip()).scheme.lower() != "https":
+            raise ArgumentRejected("url must be the https address of the page that states the figures")
+        url = url.strip()
+        entity = args.get("entity") if isinstance(args.get("entity"), str) else None
+        if fetch_fn is None:
+            from prophet_agent.research.fetch import fetch_page as fetch_one
+        else:
+            fetch_one = fetch_fn
+        page = fetch_one(url)
+        archived = None
+        if not page.ok and str(page.note or "").startswith("interstitial"):
+            snap = archive.snapshot(url)
+            if snap:
+                copy = fetch_one(snap["url"])
+                if copy.ok:
+                    page, archived = copy, snap
+        if not page.ok:
+            raise ValueError(f"the page could not be read ({str(page.note)[:160]}); choose another page or source")
+        try:
+            found = text_figures.extract(page.text, args["measure"], entity=entity, client=client)
+        except text_figures.TextFigureError as exc:
+            raise ValueError(str(exc)) from None
+        rejected = [{k: r.get(k) for k in ("period", "value", "quote", "reason")} for r in found["rejected"][:12]]
+        if not found["rows"]:
+            return {"rows": 0, "rejected": rejected, "sentences_read": found["sentences_read"],
+                    "note": "no figure on this page could be verified against its sentences; nothing was stored"}
+        store = _store(ctx)
+        _room(live)
+        body = text_figures.to_csv(found["rows"])
+        provenance = {"source": "web", "format": "csv", "url": url, "final_url": page.final_url,
+                      "content_type": "text/csv", "retrieved_at": page.fetched_at,
+                      "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "licence_key": UNVERIFIED,
+                      "series_bound": False, "table_request": None,
+                      "extraction": {"method": "text_figures", "measure": args["measure"], "model": found["model"],
+                                     "sentences_read": found["sentences_read"], "rows": len(found["rows"]),
+                                     "rejected": len(found["rejected"]), "page_sha256": page.sha256,
+                                     **({"archived_snapshot": archived["url"], "snapshot_date": archived["date"]}
+                                        if archived else {})}}
+        meta = dict(store.add(_web_name(url, None, "csv").replace(".csv", "_figures.csv"), body, provenance=provenance),
+                    preview=preview(body, "csv"))
+        mount = _mount(ctx, live, meta)
+        extra = {"source": "web_text", "url": url, "rejected": rejected, "sentences_read": found["sentences_read"],
+                 "note": "each row is a figure the page states, with its quote; rows the page contradicts are left out"}
+        if archived:
+            extra["archived"] = {"snapshot": archived["url"], "snapshot_date": archived["date"]}
+        return _result(meta, mount, extra)
+    return Tool("extract_text_figures", run, idempotent=True)
+
+
+EXTRACT_TEXT_FIGURES_SPEC = {
+    "name": "extract_text_figures",
+    "title": "Figures from page text",
+    "activity": "Extracting figures from text",
+    "description": "Turn figures a page states in its sentences (a press release, a statistical report, a news article) "
+                   "into a dated CSV in in/: one row per period with value, unit, entity and the exact quote. A model "
+                   "proposes the rows and code keeps only those whose quote is in the page word for word, whose number is in "
+                   "the quote and whose period is one dated period; rows that contradict each other are left out and "
+                   "listed. Use it when the figures exist only as text; never retype numbers from a passage into a cell. "
+                   "The file's address is its source.",
+    "args": {"url": "https address of the page that states the figures",
+             "measure": "what is measured, for example 'unemployment rate'",
+             "entity": "optional country, region or group the figures are for"},
+}
+
+
 LIST_SOURCES_SPEC = {
     "name": "list_open_data_sources",
     "title": "Open data sources",
@@ -593,6 +665,7 @@ def open_data_tools(datasets: dict[str, Path] | None, context: OpenDataContext |
     if context is not None:
         pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)
         pairs["download_open_data"] = (download_open_data_tool(context, live), DOWNLOAD_OPEN_DATA_SPEC)
+        pairs["extract_text_figures"] = (extract_text_figures_tool(context, live), EXTRACT_TEXT_FIGURES_SPEC)
         pairs["download_web_data"] = (download_web_data_tool(context, live), DOWNLOAD_WEB_DATA_SPEC)
         pairs["download_market_prices"] = (download_market_prices_tool(context, live), MARKET_PRICES_SPEC)
         from prophet_agent.tools.source_table_tools import source_table_tools

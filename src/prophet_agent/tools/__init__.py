@@ -12,7 +12,8 @@ from .lab_tool import lab_tool as make_lab_tool
 from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_drivers_tool, detect_anomalies_tool)
 from .notebook_tools import SAVE_TABLE_SPEC, NotebookBinding, save_table_tool
 from .opendata_tools import (DOWNLOAD_OPEN_DATA_SPEC, DOWNLOAD_WEB_DATA_SPEC, LIST_SOURCES_SPEC, MARKET_PRICES_SPEC,
-                             SEARCH_OPEN_DATA_SPEC, search_open_data_tool,
+                             SEARCH_OPEN_DATA_SPEC, search_open_data_tool, EXTRACT_TEXT_FIGURES_SPEC,
+                             extract_text_figures_tool,
                              LiveMounts, OpenDataContext, download_market_prices_tool, download_open_data_tool,
                              download_web_data_tool, list_sources_tool, live_sandbox_tool)
 from .research_tools import tools as research_tool_pairs
@@ -147,6 +148,7 @@ def _open_data_tools(context: OpenDataContext | None, live: LiveMounts) -> dict[
         return pairs
     pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)
     pairs["download_open_data"] = (download_open_data_tool(context, live), DOWNLOAD_OPEN_DATA_SPEC)
+    pairs["extract_text_figures"] = (extract_text_figures_tool(context, live), EXTRACT_TEXT_FIGURES_SPEC)
     pairs["download_web_data"] = (download_web_data_tool(context, live), DOWNLOAD_WEB_DATA_SPEC)
     pairs["download_market_prices"] = (download_market_prices_tool(context, live), MARKET_PRICES_SPEC)
     pairs.update(source_table_tools(context, live))

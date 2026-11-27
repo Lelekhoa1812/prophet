@@ -439,12 +439,22 @@ def test_the_models_own_arguments_and_rationale_are_not_evidence():
 
 
 def test_a_partial_stalled_answer_is_grounded_and_its_unsupported_figures_listed(store):
+    # Audit M10: the stall answer gets one repair of unsupported figures; a figure the repair keeps is still listed.
     brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
-                         writes=["**North 99 so far.**"])
+                         writes=["**North 99 so far.**", "**North 99 so far.**"])
     program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
     _, out = run(store, program)
     assert out["result"]["status"] == "partial"
     assert out["result"]["unverified"] == ["99"], "a partial answer is grounded too, not only a met one"
+
+
+def test_a_stalled_answer_with_an_unsupported_figure_is_repaired_once(store):
+    brain = WritingBrain(plans=[call("a")] * 3, evals=[{"verdict": "not_met", "reason": "stuck", "answer": "North 42 so far"}],
+                         writes=["**North 99 so far.**", "**North 42 so far.**"])
+    program = goal_program("totals", {"a": _tool("a", lambda args, key: {"north": 42})}, brain)
+    _, out = run(store, program)
+    assert out["result"]["status"] == "partial" and out["result"]["answer"] == "**North 42 so far.**"
+    assert not out["result"].get("unverified")
 
 
 def test_a_met_verdict_without_an_answer_is_written_from_its_reason(store):

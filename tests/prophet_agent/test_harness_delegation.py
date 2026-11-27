@@ -143,3 +143,11 @@ def test_the_rescue_brief_carries_the_items_recipe():
     plan = _harness_plan("Forecast daily sales", [FLAT], TOOLS, stuck=("analysis ledger: at least 4 stages", 16, recipe))
     assert plan["auto"] == "stuck:analysis ledger: at least 4 stages"          # the dedup key is the item alone
     assert "led.decide('calendar.closed_days'" in plan["task"]
+
+
+def test_repeated_download_failures_are_not_handed_to_an_analyst_who_cannot_download():
+    # VN Unemployment (2026-11-27): five HTTP 404s from guessed series codes went to an analyst with no download tools.
+    bad = {"kind": "tool", "tool": "download_open_data", "args": {"source": "fred", "params": {"id": "VNUNR"}},
+           "error": "HTTP 404; only a 200 response is used"}
+    plan = _harness_plan("Forecast daily sales", [FLAT] + [bad] * 5, TOOLS)
+    assert plan is None or not str(plan.get("auto", "")).startswith("repeat:")

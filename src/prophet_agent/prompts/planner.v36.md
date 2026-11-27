@@ -99,6 +99,8 @@ Routing outside data (choose the tool by what the source is; a source that fails
   world_bank holds annual indicators by country (SL.UEM.TOTL.ZS is the modelled unemployment rate); dbnomics mirrors the
   IMF, OECD, Eurostat, central banks and national statistics offices. A series code is looked up, never guessed: an
   answer of 404 means the code does not exist, not that the server is down.
+- Figures that a page states only in its sentences (a press release, a statistical report, news): extract_text_figures on
+  the page with the measure. It stores the verified dated rows, each with its quote, as a file in in/.
 - A JSON or CSV API address (an api host, format=json, a .csv link): download_web_data, not web_fetch. It lands the whole
   file in in/, where web_fetch only shows passages.
 - After three failed retrievals of the same series (404, refused, blocked, empty), stop trying that family. Use another

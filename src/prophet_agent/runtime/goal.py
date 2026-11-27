@@ -629,6 +629,14 @@ def _last_failure(history: list[dict]) -> tuple[str, str]:
     return "", ""
 
 
+def _last_failed_tool(history: list[dict]) -> str | None:
+    """The tool of the newest failed call, or None."""
+    for h in reversed(history):
+        if h.get("kind") == "tool" and _error_signature(h):
+            return h.get("tool")
+    return None
+
+
 def _stored_step_name(ctx: Ctx) -> str | None:
     """The name of the step the ledger already holds at the next position, or None on a fresh run."""
     store, mid = getattr(ctx, "store", None), getattr(ctx, "mission_id", None)
@@ -687,7 +695,10 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
     if max(_error_run(history), _error_recurrence(history)) >= AUTO_REPEAT:
         code, err = _last_failure(history)
         key = "repeat:" + err
-        if key not in kinds and "sandbox_python" in tools:
+        # VN Unemployment (2026-11-27): repeated HTTP 404s from downloads were handed to an analyst, who has no download
+        # tools and could only retype numbers. A failing download is the planner's to reroute (the refusal names the next
+        # call); only a failing analysis cell goes to a fresh analyst.
+        if key not in kinds and "sandbox_python" in tools and _last_failed_tool(history) == "sandbox_python":
             return {"action": "delegate", "auto": key, "agent_type": "analyst",
                     "rationale": "the same step failed five times in a row; a fresh context gets it working",
                     "task": "A lead agent working on this goal could not get one analysis step to run: " + goal + "\n\nIts last "
@@ -2503,8 +2514,32 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # Round 7: the reason names the repeated step, and keeps the words the outcome mapping reads as reason "stalled".
             reason = ("The analysis kept repeating the same step (" + _stall_label(_run_of_same_result(history) or [obs])
                       + "), so this answer rests on what was found before that.")
+            failures: list[str] = []
+            if text.strip() and verdict["verdict"] != "impossible" and cfg.depth == 0:
+                # Audit M10 (2026-11-27): a stalled run returned its answer with no answer checks, and the VN notebook's third
+                # turn sent a forecast of an interpolated series as "Vietnam's unemployment rate". The stall answer meets the
+                # same claim checks and figure checks as a finished one, with one rewrite each.
+                claims = contracts.blocking(contracts.check_answer(text, history, run_root=SANDBOX_ROOT, goal=goal))
+                if claims:
+                    fixed = _compose(ctx, brain, f"claimsstall:{tag}:{i}", goal, history, memo, context, text,
+                                     fixes=contracts.summarise(claims))
+                    if fixed is not None and fixed.strip():
+                        text = contracts.finishing_sentences(fixed, history)
+                        claims = contracts.blocking(contracts.check_answer(text, history, run_root=SANDBOX_ROOT, goal=goal))
+                bad = unverified(text, history, goal)
+                if bad:
+                    repaired = _compose(ctx, brain, f"repairstall:{tag}:{i}", goal, history, memo, context, text, bad)
+                    if repaired is not None and repaired.strip():
+                        text = repaired
+                        claims = contracts.blocking(contracts.check_answer(text, history, run_root=SANDBOX_ROOT, goal=goal))
+                failures = [c["name"] for c in claims]
+                if failures:
+                    reason += " It still states something the analysis output does not support: " + contracts.summarise(claims)
             if text.strip() and verdict["verdict"] != "impossible":
-                return {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history, "reason": reason}
+                out = {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history, "reason": reason}
+                if failures:
+                    out["contract_failures"] = failures
+                return out
             return {"status": "stalled", "iterations": i + 1, "evidence": history, "reason": reason}
 
         last = i == cfg.end - 1

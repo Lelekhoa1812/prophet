@@ -43,12 +43,14 @@ PINBALL_TOLERANCE = 0.0     # adopt needs mean pinball loss no worse than the de
 WILCOXON_MIN_FOLDS = 6      # below six folds the exact signed-rank test cannot reach conventional p-values
 
 # ------------------------------------------------------------------------------------------- experiment shape --
-DEFAULT_FOLDS = 8           # origins scored for every treatment
+# Audit M10 (2026-11-27): at 8 folds the exact two-sided signed-rank test cannot go below 2/2**8 = 0.0078, and Holm across
+# seven or more treatments multiplies that above 0.05, so no treatment could ever be adopted. Twelve folds reach 0.00049.
+DEFAULT_FOLDS = 12          # origins scored for every treatment, when the history holds them
 MIN_FOLDS = 6               # fewer folds makes the win rate jump by more than 15 points and the interval unreadable
 MAX_FOLDS = 30
 FOLD_GAP_HORIZONS = 1       # horizons left unscored between one test window and the next origin
 MIN_HISTORY = 16            # points before the first origin; shorter histories say nothing about the model or a season
-MAX_CALLS = 240             # engine calls per run; the full grid over 8 folds needs about 70, the rest is headroom
+MAX_CALLS = 240             # engine calls per run; the full grid over 12 folds needs about 110, the rest is headroom
 MAX_HORIZON = 512           # the same limit as timesfm_forecast
 HOLM_ALPHA = 0.05           # family-wise level for adopting a treatment when several are tested on the same folds
 BASELINE_GATE_PCT = 5.0     # a simple baseline with this much lower MASE than the default is reported as beating it
@@ -440,6 +442,14 @@ def _holm(pvals: Mapping[str, float | None]) -> dict[str, float]:
     return out
 
 
+def _holm_floor(folds: int, treatments: int) -> float:
+    """The smallest Holm-adjusted p-value reachable: the exact two-sided signed-rank minimum, 2 / 2**folds, times the family
+    size. Above HOLM_ALPHA, the lab cannot adopt anything whatever the data say."""
+    if folds < WILCOXON_MIN_FOLDS or treatments < 1:
+        return 1.0
+    return min(1.0, treatments * 2.0 / 2 ** folds)
+
+
 def _wilcoxon(diffs: np.ndarray) -> float | None:
     if len(diffs) < WILCOXON_MIN_FOLDS or not np.any(diffs != 0):
         return None
@@ -711,6 +721,11 @@ def run_lab(series: Any, horizon: int, engine: Any, candidates: Sequence[str] | 
     if baseline_beats is not None:
         caveats.append(f"{best} has {baseline_beats['gain']:.1f}% lower MASE than the default on these folds "
                        "(gain measured against the default's MASE).")
+    floor = _holm_floor(F, len(holm))
+    if holm and floor > HOLM_ALPHA:
+        caveats.append(f"With {F} folds the smallest Holm-adjusted p-value any treatment can reach across {len(holm)} "
+                       f"treatments is {floor:.3f}, above {HOLM_ALPHA}: no treatment could be adopted on these folds. Fewer "
+                       "treatments (candidates=) or a longer series (more folds) can change that.")
     if adopted:
         caveats.append(f"Adopted treatments pass a Holm correction at {HOLM_ALPHA:.0%} across the {len(holm)} treatments with a p-value.")
     if len(adopted) > 1:
