@@ -19,7 +19,7 @@ import datetime as dt
 import io
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -43,10 +43,97 @@ class Match:
     home_goals: int | None
     away_goals: int | None
     group: str | None = None
+    xg: tuple[float, float] | None = None                     # expected goals (home, away), when the file carries them
+    market: tuple[float, float, float] | None = None          # bookmaker probabilities (home, draw, away), overround removed
+    over25: float | None = None                               # bookmaker probability of more than 2.5 goals
 
     @property
     def played(self) -> bool:
         return self.home_goals is not None and self.away_goals is not None
+
+
+# ---------------------------------------------------------------- strength signals beyond goals
+#
+# Owner review (EPL 6e19a3b6, 2026-11-27): after 11 matchdays the model put Brighton first for the title at 45 per cent from
+# a +17 goal difference, with no earlier season, no expected goals and no bookmaker prices in the fit. Eleven matches of
+# goals are mostly finishing luck; expected goals settle in about a third of the matches goals need, and closing prices carry
+# everything the market knows (squad, injuries, managers, transfers). Both enter the fit as pseudo-matches: a match's xG pair,
+# and the expected-goals pair its closing prices imply, scored by the same Poisson likelihood with their own weights.
+
+# Price columns in order of preference: closing averages, Pinnacle closing, Bet365 closing, then the pre-match versions.
+_ODDS_TRIPLES = (("avgch", "avgcd", "avgca"), ("psch", "pscd", "psca"), ("b365ch", "b365cd", "b365ca"),
+                 ("avgh", "avgd", "avga"), ("psh", "psd", "psa"), ("b365h", "b365d", "b365a"),
+                 ("odds_home", "odds_draw", "odds_away"))
+_PROB_TRIPLE = ("p_home", "p_draw", "p_away")
+_OVER_PAIRS = (("avgc>2.5", "avgc<2.5"), ("avg>2.5", "avg<2.5"), ("pc>2.5", "pc<2.5"), ("b365c>2.5", "b365c<2.5"),
+               ("b365>2.5", "b365<2.5"))
+_XG_PAIRS = (("hxg", "axg"), ("home_xg", "away_xg"), ("xg_home", "xg_away"), ("xg1", "xg2"))
+
+
+def _positive(text: Any) -> float | None:
+    try:
+        v = float(text)
+    except (TypeError, ValueError):
+        return None
+    return v if np.isfinite(v) and v > 0 else None
+
+
+def _row_signals(r: dict[str, str]) -> dict[str, Any]:
+    """xG, market probabilities and the over-2.5 probability from one aliased row; missing ones are left out."""
+    out: dict[str, Any] = {}
+    for h, a in _XG_PAIRS:
+        xh, xa = _positive(r.get(h)), _positive(r.get(a))
+        if xh is not None and xa is not None:
+            out["xg"] = (xh, xa)
+            break
+    probs = [_positive(r.get(k)) for k in _PROB_TRIPLE]
+    if all(p is not None for p in probs) and sum(probs) > 0:
+        out["market"] = tuple(p / sum(probs) for p in probs)
+    else:
+        for triple in _ODDS_TRIPLES:
+            odds = [_positive(r.get(k)) for k in triple]
+            if all(o is not None and o > 1 for o in odds):
+                inv = [1 / o for o in odds]
+                out["market"] = tuple(v / sum(inv) for v in inv)
+                break
+    for over, under in _OVER_PAIRS:
+        o, u = _positive(r.get(over)), _positive(r.get(under))
+        if o and u and o > 1 and u > 1:
+            out["over25"] = (1 / o) / (1 / o + 1 / u)
+            break
+    return out
+
+
+def _poisson_outcomes(lam: float, mu: float, n: int = 11) -> tuple[float, float, float, float]:
+    """(home, draw, away, over 2.5) for independent Poisson goals."""
+    k = np.arange(n)
+    ph = np.exp(-lam + k * np.log(lam) - gammaln(k + 1))
+    pa = np.exp(-mu + k * np.log(mu) - gammaln(k + 1))
+    g = np.outer(ph, pa)
+    tot = np.add.outer(k, k)
+    return float(np.tril(g, -1).sum()), float(np.trace(g)), float(np.triu(g, 1).sum()), float(g[tot > 2].sum())
+
+
+def implied_goals(market: tuple[float, float, float], over25: float | None = None) -> tuple[float, float]:
+    """The expected-goals pair (home, away) whose independent Poisson outcome probabilities are closest to the prices.
+
+    Motivation vs Logic
+    Motivation: a price is a probability of a result, and the rating model is a model of goals; the pair of goal rates that
+    reproduces the prices puts the market on the model's scale. Logic: least squares on the log rates over the home and away
+    win probabilities, plus the over-2.5 probability when it is priced (which fixes the total); bounded to 0.05..6 goals.
+    """
+    ph, _pd, pa = market
+    target = [ph, pa] + ([over25] if over25 is not None else [])
+
+    def loss(z):
+        h, d, a, o = _poisson_outcomes(float(np.exp(z[0])), float(np.exp(z[1])))
+        got = [h, a] + ([o] if over25 is not None else [])
+        return float(sum((g - t) ** 2 for g, t in zip(got, target)))
+
+    res = optimize.minimize(loss, np.log([1.45, 1.15]), method="Nelder-Mead",
+                            options={"xatol": 1e-4, "fatol": 1e-9, "maxiter": 400})
+    lam, mu = np.clip(np.exp(res.x), 0.05, 6.0)
+    return float(lam), float(mu)
 
 
 # ---------------------------------------------------------------- reading results
@@ -114,7 +201,9 @@ def _match_from_row(r: dict[str, str], line: int) -> Match | None:
         hg, ag = int(res.group(1)), int(res.group(2))
     if (hg is None) != (ag is None):
         raise ValueError(f"row {line}: give both scores or neither")
-    return Match(date or None, r["home"], r["away"], hg, ag, r.get("group") or None)
+    sig = _row_signals(r)
+    return Match(date or None, r["home"], r["away"], hg, ag, r.get("group") or None, sig.get("xg"), sig.get("market"),
+                 sig.get("over25"))
 
 
 def _aliased(row: dict) -> dict[str, str]:
@@ -189,6 +278,7 @@ def parse_football_json(doc: Any) -> list[Match]:
 
 def parse_matches(text: str, filename: str = "") -> list[Match]:
     """Matches from a CSV or an openfootball football.json, chosen by the file name."""
+    text = text.lstrip("\ufeff")          # football-data.co.uk files start with a byte-order mark
     if filename.lower().endswith(".json"):
         try:
             doc = json.loads(text)
@@ -287,7 +377,7 @@ def _tau(x, y, lam, mu, rho):
     return tau
 
 
-def _objective(theta, hi, ai, x, y, w, n_teams, prior_var):
+def _objective(theta, hi, ai, x, y, w, n_teams, prior_var, real=None):
     """Penalised negative log-likelihood and its gradient.
 
     Motivation vs Logic
@@ -296,6 +386,8 @@ def _objective(theta, hi, ai, x, y, w, n_teams, prior_var):
     Logic: home goals ~ Poisson(lam), away goals ~ Poisson(mu) with log lam = att[home] - dfn[away] + home_adv and
     log mu = att[away] - dfn[home]; the log tau correction is differentiated term by term. A Gaussian ridge with variance
     prior_var pulls attack and defence toward zero, which also removes the shift between them that the likelihood cannot see.
+    ``real`` marks the rows that are played scores; the other rows are pseudo-matches (an xG pair, or the goals a market
+    price implies), fractional counts that get no low-score correction.
     """
     T = n_teams
     att, dfn = theta[:T], theta[T:2 * T]
@@ -303,15 +395,18 @@ def _objective(theta, hi, ai, x, y, w, n_teams, prior_var):
     eta_l = att[hi] - dfn[ai] + home
     eta_m = att[ai] - dfn[hi]
     lam, mu = np.exp(eta_l), np.exp(eta_m)
-    raw = _tau(x, y, lam, mu, rho)
+    if real is None:
+        real = np.ones(x.shape, bool)
+    raw = np.where(real, _tau(x, y, lam, mu, rho), 1.0)
     tau = np.maximum(raw, 1e-8)
-    ll = np.sum(w * (np.log(tau) + x * eta_l - lam + y * eta_m - mu))
+    ll_pois = x * eta_l - lam + y * eta_m - mu
+    ll = np.sum(w * (np.log(tau) + ll_pois))
     f = -ll + 0.5 / prior_var * (att @ att + dfn @ dfn)
 
-    c00 = (x == 0) & (y == 0)
-    c01 = (x == 0) & (y == 1)
-    c10 = (x == 1) & (y == 0)
-    c11 = (x == 1) & (y == 1)
+    c00 = (x == 0) & (y == 0) & real
+    c01 = (x == 0) & (y == 1) & real
+    c10 = (x == 1) & (y == 0) & real
+    c11 = (x == 1) & (y == 1) & real
     dtl = np.where(c00, -rho * lam * mu, np.where(c01, rho * lam, 0.0))
     dtm = np.where(c00, -rho * lam * mu, np.where(c10, rho * mu, 0.0))
     dtr = np.where(c00, -lam * mu, np.where(c01, lam, np.where(c10, mu, np.where(c11, -1.0, 0.0))))
@@ -340,6 +435,7 @@ class DixonColes:
     half_life_days: float | None
     prior_sd: float
     converged: bool
+    signals: dict = field(default_factory=dict)   # rows per signal in the fit: goals, xg, market, market_fixtures
 
     @property
     def index(self) -> dict[str, int]:
@@ -366,16 +462,48 @@ class DixonColes:
         return float(self.theta[2 * self.n_teams])
 
 
+DEFAULT_XG_WEIGHT = 1.0       # one xG pair counts as much as one score; a default, scored by the backtest beside it
+DEFAULT_MARKET_WEIGHT = 1.0   # one priced match counts as much as one score
+
+
+def signal_rows(matches: list[Match], weights: np.ndarray, *, xg_weight: float, market_weight: float,
+                priced_fixtures: list[Match] = ()) -> tuple[list[tuple], dict[str, int]]:
+    """Rows (home, away, x, y, weight, real) for the fit: each played score, each xG pair and each market-implied pair of
+    a played match (weighted like its score), and each priced unplayed fixture at full weight (the market's view of now).
+    Returns the rows and a count per signal."""
+    rows, counts = [], {"goals": 0, "xg": 0, "market": 0, "market_fixtures": 0}
+    for m, wt in zip(matches, weights):
+        rows.append((m.home, m.away, float(m.home_goals), float(m.away_goals), float(wt), True))
+        counts["goals"] += 1
+        if xg_weight > 0 and m.xg:
+            rows.append((m.home, m.away, m.xg[0], m.xg[1], float(wt) * xg_weight, False))
+            counts["xg"] += 1
+        if market_weight > 0 and m.market:
+            lam, mu = implied_goals(m.market, m.over25)
+            rows.append((m.home, m.away, lam, mu, float(wt) * market_weight, False))
+            counts["market"] += 1
+    if market_weight > 0:
+        for m in priced_fixtures:
+            if m.market and not m.played:
+                lam, mu = implied_goals(m.market, m.over25)
+                rows.append((m.home, m.away, lam, mu, market_weight, False))
+                counts["market_fixtures"] += 1
+    return rows, counts
+
+
 def fit_dixon_coles(matches: list[Match], *, teams: list[str] | None = None,
                     half_life_days: float | None = DEFAULT_HALF_LIFE_DAYS,
-                    prior_sd: float = DEFAULT_PRIOR_SD) -> DixonColes:
-    """Fit the Dixon-Coles model by penalised maximum likelihood on played matches.
+                    prior_sd: float = DEFAULT_PRIOR_SD, xg_weight: float = 0.0, market_weight: float = 0.0,
+                    priced_fixtures: list[Match] = ()) -> DixonColes:
+    """Fit the Dixon-Coles model by penalised maximum likelihood on played matches, and on xG and market signals when given.
 
     Motivation vs Logic
     Motivation: a team with ten matches must not get an extreme rating from them, and a recent season should count more than an
-    old one. Logic: exponential time decay with the given half life (weights relative to the latest match), a Gaussian prior on
-    each attack and defence with standard deviation prior_sd, and the Laplace approximation (inverse Hessian at the optimum) for
-    the spread of the ratings. Refuses when there are fewer than four played matches per team.
+    old one. Goals alone are noisy early in a season (owner review, EPL, 2026-11-27), so expected goals and bookmaker prices
+    can enter as pseudo-matches. Logic: exponential time decay with the given half life (weights relative to the latest match),
+    a Gaussian prior on each attack and defence with standard deviation prior_sd, xG and market rows weighted by xg_weight
+    and market_weight (0 leaves them out), and the Laplace approximation (inverse Hessian at the optimum) for the spread of the
+    ratings. Refuses when there are fewer than four played matches per team.
     """
     played, times = _chronological([m for m in matches if m.played])
     teams = teams or _team_list(played)
@@ -384,13 +512,17 @@ def fit_dixon_coles(matches: list[Match], *, teams: list[str] | None = None,
                          f"at least {4 * len(teams)} are needed")
     times = _timeline(played)
     idx = {t: i for i, t in enumerate(teams)}
-    hi = np.array([idx[m.home] for m in played])
-    ai = np.array([idx[m.away] for m in played])
-    x = np.array([m.home_goals for m in played], dtype=float)
-    y = np.array([m.away_goals for m in played], dtype=float)
-    w = _decay_weights(times, half_life_days)
+    w0 = _decay_weights(times, half_life_days)
+    known = [f for f in priced_fixtures if f.home in idx and f.away in idx]
+    rows, counts = signal_rows(played, w0, xg_weight=xg_weight, market_weight=market_weight, priced_fixtures=known)
+    hi = np.array([idx[r[0]] for r in rows])
+    ai = np.array([idx[r[1]] for r in rows])
+    x = np.array([r[2] for r in rows], dtype=float)
+    y = np.array([r[3] for r in rows], dtype=float)
+    w = np.array([r[4] for r in rows], dtype=float)
+    real = np.array([r[5] for r in rows], dtype=bool)
     T = len(teams)
-    args = (hi, ai, x, y, w, T, prior_sd ** 2)
+    args = (hi, ai, x, y, w, T, prior_sd ** 2, real)
     theta0 = np.zeros(2 * T + 2)
     theta0[2 * T] = 0.25
     bounds = [(None, None)] * (2 * T + 1) + [(-0.5, 0.5)]
@@ -404,7 +536,7 @@ def fit_dixon_coles(matches: list[Match], *, teams: list[str] | None = None,
         e[i] = h
         H[:, i] = (_objective(theta + e, *args)[1] - _objective(theta - e, *args)[1]) / (2 * h)
     cov = _psd_inverse(H)
-    return DixonColes(teams, theta, cov, len(played), half_life_days, prior_sd, bool(res.success))
+    return DixonColes(teams, theta, cov, len(played), half_life_days, prior_sd, bool(res.success), counts)
 
 
 def score_grid(lam: float, mu: float, rho: float) -> np.ndarray:
@@ -682,25 +814,34 @@ def _rps_brier(p: np.ndarray, o: np.ndarray):
 
 
 def backtest_football(matches: list[Match], teams: list[str], *, half_life_days, prior_sd,
-                      min_train: int | None = None, block: int | None = None) -> dict:
+                      min_train: int | None = None, block: int | None = None, xg_weight: float = 0.0,
+                      market_weight: float = 0.0) -> dict:
     """Rolling-origin backtest: fit on matches before each origin, score the next block, against equal probabilities, home
     rate and Elo. Motivation: the model must beat the simple rules on the same matches before any season is simulated.
     Logic: origins step through the chronological list; each block is scored with RPS and Brier; differences are paired
-    per match with a bootstrap interval."""
+    per match with a bootstrap interval. With xG or market weights, the same fit on goals alone is scored beside it, so the
+    signals are kept only on evidence; when every test match is priced, the closing prices are scored as the reference a
+    model has to approach (they know the team news of the day, so they are a ceiling, not a rule to beat)."""
     played, _ = _chronological([m for m in matches if m.played])
     n = len(played)
     min_train = min_train or max(n // 2, 4 * len(teams))
     block = block or max(1, n // 10)
     if min_train >= n:
         return {"skipped": "too few matches for a backtest after the training minimum"}
-    scores = {k: [] for k in ("dixon_coles", "equal", "home_rate", "elo")}
+    signals = (xg_weight > 0 and any(m.xg for m in played)) or (market_weight > 0 and any(m.market for m in played))
+    priced = all(m.market for m in played[min_train:])
+    names = ["dixon_coles", "equal", "home_rate", "elo"] + (["goals_only"] if signals else []) + (["market"] if priced else [])
+    scores = {k: [] for k in names}
     outcomes, briers = [], {k: [] for k in scores}
     origins = 0
     notes = []
     for s, e in _origins(n, min_train, block):
         train, test = played[:s], played[s:e]
         try:
-            model = fit_dixon_coles(train, teams=teams, half_life_days=half_life_days, prior_sd=prior_sd)
+            model = fit_dixon_coles(train, teams=teams, half_life_days=half_life_days, prior_sd=prior_sd,
+                                    xg_weight=xg_weight, market_weight=market_weight)
+            plain = (fit_dixon_coles(train, teams=teams, half_life_days=half_life_days, prior_sd=prior_sd)
+                     if signals else None)
         except ValueError as exc:
             notes.append(f"origin {s}: {exc}")
             continue
@@ -711,6 +852,10 @@ def backtest_football(matches: list[Match], teams: list[str], *, half_life_days,
         elo = _elo_probs(train, test, draw_rate=float(rates[1]))
         preds = {"dixon_coles": dc, "equal": [(1 / 3, 1 / 3, 1 / 3)] * len(test), "home_rate": [home_rate] * len(test),
                  "elo": elo}
+        if plain is not None:
+            preds["goals_only"] = [predict_football(plain, m.home, m.away) for m in test]
+        if priced:
+            preds["market"] = [m.market for m in test]
         outcomes.extend(_outcome_index(m) for m in test)
         for name, rows in preds.items():
             p = np.array([[pa, pd, ph] for ph, pd, pa in rows])   # ordinal order: away, draw, home
@@ -734,6 +879,10 @@ def backtest_football(matches: list[Match], teams: list[str], *, half_life_days,
         comparisons.append(_compare(rps_arr["dixon_coles"], rps_arr[base], f"dixon_coles vs {base} (rps)", rng))
         comparisons.append(_compare(brier_arr["dixon_coles"], brier_arr[base], f"dixon_coles vs {base} (brier)", rng))
     comparisons.append(_compare(rps_arr["elo"], rps_arr["equal"], "elo vs equal (rps)", rng))
+    if "goals_only" in rps_arr:
+        comparisons.append(_compare(rps_arr["dixon_coles"], rps_arr["goals_only"], "dixon_coles vs goals_only (rps)", rng))
+    if "market" in rps_arr:
+        comparisons.append(_compare(rps_arr["dixon_coles"], rps_arr["market"], "dixon_coles vs market (rps)", rng))
     return {"origins": origins, "n_test": int(o.size), "min_train": int(min_train), "block": int(block),
             "models": models, "comparisons": comparisons, "notes": notes,
             "reading": "Scores are lower-is-better. Verdicts are measured on these matches only; a verdict of "
@@ -794,11 +943,11 @@ def _team_index(teams: list[str]) -> dict[str, int]:
 
 def _football_season(played: list[Match], rem: list[Match], teams: list[str], *, n_sims: int, seed: int,
                      points, half_life_days, prior_sd, interest: list[str], relegation_places: int, top_places: int,
-                     fit_extra: list[Match] = ()) -> dict:
+                     fit_extra: list[Match] = (), xg_weight: float = 0.0, market_weight: float = 0.0) -> dict:
     """Simulate the remaining football matches; ranking by points, goal difference, goals for, then name. ``fit_extra``
     (earlier seasons) is used to fit the ratings only; the table and the simulation start from ``played``."""
     model = fit_dixon_coles(_chronological(list(fit_extra) + list(played))[0], teams=teams, half_life_days=half_life_days,
-                            prior_sd=prior_sd)
+                            prior_sd=prior_sd, xg_weight=xg_weight, market_weight=market_weight, priced_fixtures=rem)
     T = len(teams)
     idx = _team_index(teams)
     hi = np.array([idx[m.home] for m in rem], int)
@@ -821,15 +970,37 @@ def _football_season(played: list[Match], rem: list[Match], teams: list[str], *,
             "relegation": (pos >= T - relegation_places).mean(0), "expected_position": pos.mean(0) + 1}
     values = {t: np.vstack([p["values"][idx[t]] for p in parts]) for t in interest}
     ratings = [{"team": t, "attack": float(model.theta[i]), "defence": float(model.theta[T + i]),
+                "strength": float(model.theta[i] + model.theta[T + i]),
                 "attack_sd": float(np.sqrt(model.cov[i, i])), "defence_sd": float(np.sqrt(model.cov[T + i, T + i]))}
                for i, t in enumerate(teams)]
+    ratings.sort(key=lambda r: -r["strength"])
     settings = {"sport": FOOTBALL, "model": "Dixon-Coles Poisson with low-score correction and time decay",
                 "home_advantage": model.home_advantage, "rho": model.rho, "half_life_days": half_life_days,
                 "prior_sd": prior_sd, "points_rule": list(points), "converged": model.converged,
                 "n_played": len(played), "n_remaining": len(rem), "top_places": top_places,
-                "relegation_places": relegation_places, "n_sims": n_sims, "seed": seed}
+                "relegation_places": relegation_places, "n_sims": n_sims, "seed": seed,
+                "xg_weight": xg_weight, "market_weight": market_weight,
+                "signals": {**model.signals, "history_matches": len(fit_extra)}}
     return {"totals": total, "prob": prob, "values": values, "ratings": ratings, "settings": settings,
-            "standing": standings(played, points), "groups": None, "metric": "points"}
+            "standing": standings(played, points), "groups": None, "metric": "points",
+            "finishing": finishing_gaps(played)}
+
+
+def finishing_gaps(played: list[Match], threshold: float = 4.0) -> list[dict]:
+    """Clubs whose goal difference this season runs ahead of (or behind) their expected-goal difference by more than
+    ``threshold`` goals: the part of the table most likely to revert. Empty when the results carry no xG."""
+    tally: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0])
+    for m in played:
+        if not m.xg:
+            continue
+        for team, gd, xgd in ((m.home, m.home_goals - m.away_goals, m.xg[0] - m.xg[1]),
+                              (m.away, m.away_goals - m.home_goals, m.xg[1] - m.xg[0])):
+            tally[team][0] += gd
+            tally[team][1] += xgd
+            tally[team][2] += 1
+    rows = [{"team": t, "matches": int(n), "goal_difference": round(gd, 1), "xg_difference": round(xgd, 1),
+             "gap": round(gd - xgd, 1)} for t, (gd, xgd, n) in tally.items() if abs(gd - xgd) > threshold]
+    return sorted(rows, key=lambda r: -abs(r["gap"]))
 
 
 def _winloss_season(played: list[Match], rem: list[Match], teams: list[str], groups: dict[str, str], *, n_sims: int,
@@ -902,12 +1073,52 @@ def _winloss_season(played: list[Match], rem: list[Match], teams: list[str], gro
             "standing": standing, "groups": groups or None, "metric": "wins", "notes": notes}
 
 
+# Spellings that differ between results sites, reduced to one key. Words that only mark a club type are dropped first.
+_CLUB_WORDS = re.compile(r"\b(?:fc|afc|cf|sc|the)\b")
+_CLUB_ALIASES = {"manchester city": "man city", "manchester united": "man united", "man utd": "man united",
+                 "nottingham forest": "nottm forest", "notts forest": "nottm forest", "forest": "nottm forest",
+                 "tottenham hotspur": "tottenham", "spurs": "tottenham", "brighton & hove albion": "brighton",
+                 "brighton and hove albion": "brighton", "brighton hove albion": "brighton",
+                 "wolverhampton wanderers": "wolves", "wolverhampton": "wolves", "newcastle united": "newcastle",
+                 "west ham united": "west ham", "leeds united": "leeds", "leicester city": "leicester",
+                 "ipswich town": "ipswich", "luton town": "luton", "coventry city": "coventry", "norwich city": "norwich",
+                 "cardiff city": "cardiff", "swansea city": "swansea", "stoke city": "stoke", "hull city": "hull",
+                 "west bromwich albion": "west brom", "huddersfield town": "huddersfield", "sheffield utd": "sheffield united",
+                 "queens park rangers": "qpr", "birmingham city": "birmingham", "derby county": "derby"}
+
+
+def club_key(name: str) -> str:
+    """A spelling-free key for a club name: lower case, club-type words and dots dropped, known long forms shortened."""
+    k = re.sub(r"\s+", " ", _CLUB_WORDS.sub(" ", re.sub(r"[.'\u2019]", "", str(name).lower()))).strip()
+    return _CLUB_ALIASES.get(k, k)
+
+
+def _same_names(history: list[Match], teams: list[str]) -> tuple[list[Match], dict[str, str]]:
+    """History matches with each club renamed to this season's spelling when the two share a club_key."""
+    by_key = {club_key(t): t for t in teams}
+    renamed: dict[str, str] = {}
+
+    def fix(name: str) -> str:
+        if name in by_key.values():
+            return name
+        hit = by_key.get(club_key(name))
+        if hit:
+            renamed[name] = hit
+            return hit
+        return name
+
+    out = [Match(m.date, fix(m.home), fix(m.away), m.home_goals, m.away_goals, m.group, m.xg, m.market, m.over25)
+           for m in history]
+    return out, renamed
+
+
 def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *, sport: str = FOOTBALL,
                     n_sims: int = 10_000, seed: int = 0, points: tuple[int, int, int] = DEFAULT_POINTS,
                     half_life_days: float | None = DEFAULT_HALF_LIFE_DAYS, prior_sd: float = DEFAULT_PRIOR_SD,
                     teams_of_interest: list[str] | None = None, relegation_places: int = 3, top_places: int = 4,
                     playoff_places: int = 8, games_per_team: int | None = None, backtest: bool = True,
-                    history: list[Match] | None = None) -> dict[str, Any]:
+                    history: list[Match] | None = None, xg_weight: float | None = None,
+                    market_weight: float | None = None) -> dict[str, Any]:
     """Fit the model on the played matches and simulate the rest of the season n_sims times.
 
     Motivation vs Logic
@@ -933,6 +1144,18 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
         fixtures = None
     if fixtures:
         known = _team_list(list(matches))
+        fixtures, renamed_fx = _same_names(list(fixtures), known)
+        if renamed_fx:
+            notes.append("fixture club names mapped to the results' spelling: "
+                         + ", ".join(f"{a} -> {b}" for a, b in sorted(renamed_fx.items())[:12]))
+        # Owner review (EPL, 2026-11-27): a fixtures file from another site (fixturedownload) also holds this season's
+        # played results, and the 110 matches were counted twice. Only its unplayed rows are the remaining schedule (a
+        # pairing can recur in a season, as in basketball, so rows are not matched to results by teams).
+        kept = [f for f in fixtures if not f.played]
+        if len(kept) < len(fixtures):
+            notes.append(f"{len(fixtures) - len(kept)} fixture rows were already played (in the results) and were not "
+                         f"counted again; {len(kept)} remaining matches come from the fixtures file")
+        fixtures = kept
         strangers = sorted({name for m in fixtures for name in (m.home, m.away)} - set(known))
         if strangers:
             raise ValueError("the fixtures name teams that are not in the results, so the names do not match: "
@@ -953,6 +1176,12 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     # current season alone is too small to rate the teams. Matches with a club outside this season are left out, so a
     # promoted club is rated from this season and the shrinkage toward the mean.
     in_season = set(teams)
+    # Owner review (EPL, 2026-11-27): earlier seasons from another site spell the clubs differently ("Manchester City FC",
+    # "Man City"), and every such match would be dropped without a word. History names are mapped to this season's spelling.
+    history, renamed = _same_names(list(history or []), teams)
+    if renamed:
+        notes.append("history club names mapped to this season's spelling: "
+                     + ", ".join(f"{a} -> {b}" for a, b in sorted(renamed.items())[:12]))
     # Round 2 EPL (2026-11-26): the planner passed the current file as history too, so every match counted twice and the
     # note read as if earlier seasons had been used. A history match that is also a current match is dropped.
     current_keys = {(m.date, m.home, m.away) for m in everything}
@@ -978,10 +1207,24 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     else:
         interest = sorted(teams, key=lambda t: (-current[t], t))[:4]
 
+    pool = list(fit_extra) + list(played)
+    has_xg, has_market = any(m.xg for m in pool), any(m.market for m in pool) or any(m.market for m in rem)
+    xg_w = (DEFAULT_XG_WEIGHT if has_xg else 0.0) if xg_weight is None else float(xg_weight)
+    mk_w = (DEFAULT_MARKET_WEIGHT if has_market else 0.0) if market_weight is None else float(market_weight)
     if sport == FOOTBALL:
         core = _football_season(played, rem, teams, n_sims=n_sims, seed=seed, points=points, half_life_days=half_life_days,
                                 prior_sd=prior_sd, interest=interest, relegation_places=relegation_places, top_places=top_places,
-                                fit_extra=fit_extra)
+                                fit_extra=fit_extra, xg_weight=xg_w, market_weight=mk_w)
+        per_team = len(played) * 2 / max(len(teams), 1)
+        if not fit_extra and per_team < 19 and not (xg_w and has_xg) and not (mk_w and has_market):
+            notes.append(f"thin ratings: each club's rating rests on about {per_team:.0f} of this season's results and nothing "
+                         "else, so a hot start reads as strength. Pass earlier seasons as history and a results file with "
+                         "expected goals or bookmaker prices (football-data.co.uk carries both) before quoting chances")
+        if core.get("finishing"):
+            lead = core["finishing"][0]
+            notes.append(f"finishing luck: {lead['team']}'s goal difference ({lead['goal_difference']:+.0f}) is "
+                         f"{lead['gap']:+.1f} from its expected-goal difference ({lead['xg_difference']:+.1f}) over "
+                         f"{lead['matches']} matches; gaps like this usually shrink, and the xG rows weigh against it")
     else:
         core = _winloss_season(played, rem, teams, groups, n_sims=n_sims, seed=seed, half_life_days=half_life_days,
                                prior_sd=prior_sd, interest=interest, playoff_places=playoff_places, games_per_team=games_per_team,
@@ -1012,7 +1255,8 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
 
     if backtest:
         if sport == FOOTBALL:
-            bt = backtest_football(fit_extra + everything, teams, half_life_days=half_life_days, prior_sd=prior_sd)
+            bt = backtest_football(fit_extra + everything, teams, half_life_days=half_life_days, prior_sd=prior_sd,
+                                   xg_weight=xg_w, market_weight=mk_w)
         else:
             bt = backtest_winloss(fit_extra + everything, teams, half_life_days=half_life_days, prior_sd=prior_sd)
     else:
@@ -1020,5 +1264,6 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     return {"sport": sport, "metric": core["metric"], "figure_label": FIGURE_LABEL,
             "settings": core["settings"], "ratings": core["ratings"], "standings": core["standing"],
             "teams": team_rows, "points_paths": paths, "backtest": bt, "notes": notes,
+            **({"finishing": core["finishing"]} if core.get("finishing") else {}),
             "reading": ("Each team's range is its own; do not add ranges across teams. Probabilities and paths are simulated "
                         f"from fitted ratings ({FIGURE_LABEL}), not observed results.")}

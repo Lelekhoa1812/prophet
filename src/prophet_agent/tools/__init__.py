@@ -20,6 +20,8 @@ from .research_tools import tools as research_tool_pairs
 from .source_table_tools import source_table_tools
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .sports_tool import SIMULATE_SEASON_SPEC, simulate_season_tool
+from .fundamentals_tool import (DRIVER_MAP_SPEC, SCENARIO_FORECAST_SPEC, driver_map_tool,
+                                scenario_forecast_tool)
 from .sandbox_tool import SANDBOX_PYTHON_SPEC, sandbox_python_tool
 from .skill_tool import ANALYST_SKILL_SPEC, skill_tool
 from .timesfm_tool import QUANTILE_LEVELS, TIMESFM_TOOL_SPEC, timesfm_tool
@@ -50,6 +52,8 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         "calibrate_intervals": (calibrate_tool(), CALIBRATE_SPEC),
         "panel_backtest": (panel_backtest_tool(), PANEL_BACKTEST_SPEC),
         "reconcile_forecasts": (reconcile_forecasts_tool(), RECONCILE_FORECASTS_SPEC),
+        "driver_map": (driver_map_tool(), DRIVER_MAP_SPEC),
+        "scenario_forecast": (scenario_forecast_tool(), SCENARIO_FORECAST_SPEC),
     }
     for tool, spec in research_tool_pairs():
         specs[tool.name] = (tool, spec)

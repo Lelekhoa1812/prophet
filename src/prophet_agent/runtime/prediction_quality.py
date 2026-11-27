@@ -25,7 +25,7 @@ from prophet_agent.runtime.contracts import _check, _ok_result
 
 FLAT_STRATEGIES = 4
 CHART_SUFFIXES = (".png", ".svg")
-PREDICTION_TOOLS = ("forecast_report", "timesfm_forecast", "simulate_season")
+PREDICTION_TOOLS = ("forecast_report", "timesfm_forecast", "simulate_season", "scenario_forecast")
 
 # Each strategy: (key, what to do). Whether it was tried is read from successful calls only (``_tried``): a forecasting
 # attempt, not a word in a scan, a brief or a default argument. Round 22 (AURATE, AUUNEMP): a first version matched words
@@ -230,8 +230,14 @@ _RANGE_WORD = re.compile(r"\brange\b|\bband\b|\binterval\b|\b10(?:th)?\s*(?:–|
 
 
 def _delivered_band(history: Any) -> tuple[float, float] | None:
-    """(q10, q90) at the last step of the newest single-series pack, or None."""
+    """(q10, q90) at the last step of the newest single-series pack, or of a newer scenario_forecast built on it, or None."""
     for h in reversed(history if isinstance(history, list) else []):
+        sc = _ok_result(h, "scenario_forecast") if isinstance(h, dict) else None
+        if isinstance(sc, dict) and isinstance(sc.get("end"), dict):
+            try:
+                return float(sc["end"]["q10"]), float(sc["end"]["q90"])
+            except (KeyError, TypeError, ValueError):
+                return None
         if isinstance(h, dict) and isinstance(_ok_result(h, "forecast_report"), dict):
             full = h.get("full") if isinstance(h.get("full"), dict) else {}
             q = ((full.get("forecast") or {}).get("quantiles") or {}) if isinstance(full.get("forecast"), dict) else {}
@@ -276,12 +282,169 @@ def check_answer_band(answer: str, history: Any) -> dict | None:
                   "its chart show, or rebuild the pack that produced the range the answer gives")
 
 
+def check_league_signals(history: Any) -> dict | None:
+    """A football season simulation rests on more than this season's goals.
+
+    Owner review (EPL 6e19a3b6, 2026-11-27): after 11 matchdays the simulation rated Brighton the title favourite at 45 per
+    cent from a +17 goal difference that was 10.9 goals ahead of its expected-goal difference, with no earlier season and no
+    bookmaker prices in the fit; with two earlier seasons, xG and closing prices the same model gives Brighton 3 per cent.
+    Blocks until the newest football simulation fitted earlier seasons and at least one of expected goals or market prices.
+    None when no football simulation stands."""
+    flat = _flatten(history)
+    for h in reversed(flat):
+        res = _ok_result(h, "simulate_season")
+        if not isinstance(res, dict):
+            continue
+        full = h.get("full") if isinstance(h.get("full"), dict) else res
+        if (full.get("sport") or res.get("sport") or "football") != "football":
+            return None
+        settings = full.get("settings") if isinstance(full.get("settings"), dict) else (res.get("settings") or {})
+        sig = settings.get("signals") if isinstance(settings.get("signals"), dict) else {}
+        hist_n = int(sig.get("history_matches") or 0)
+        xg = int(sig.get("xg") or 0)
+        mk = int(sig.get("market") or 0) + int(sig.get("market_fixtures") or 0)
+        if hist_n > 0 and (xg > 0 or mk > 0):
+            return _check("league_signals", True, f"the ratings fit {hist_n} earlier-season matches, {xg} xG pairs and "
+                                                  f"{mk} priced matches beside this season's results")
+        missing = ([] if hist_n else ["earlier seasons (history)"]) + \
+                  ([] if (xg or mk) else ["expected goals or bookmaker prices"])
+        return _check("league_signals", False,
+                      "the season simulation rates the clubs from " + ("this season's goals only" if not hist_n and not
+                                                                        (xg or mk) else "too few signals")
+                      + f"; missing: {', '.join(missing)}. A dozen matches of goals mostly measure finishing luck. Download "
+                      "football-data.co.uk/mmz4281/<YYZZ>/E0.csv for this season (it carries HxG, AxG and closing prices) "
+                      "and for the two seasons before (for example 2627, 2526, 2425), call simulate_season with results set "
+                      "to this season's file, history set to the earlier ones and fixtures set to a file of the remaining "
+                      "matches; read 'finishing' (clubs whose goal difference runs ahead of their xG) and the backtest "
+                      "against goals_only and the market before quoting any chance")
+    return None
+
+
+# Calls whose result can show a driver measured against the target, and the code words of a measurement in a cell.
+_TEST_TOOLS = ("control_lab", "backtest_series", "panel_backtest", "build_drivers", "timesfm_forecast", "forecast_report",
+               "simulate_season")
+_TEST_CODE = re.compile(r"grangercausality|\bcorr\(|corrcoef|\bccf\(|\bOLS\(|\bols\(|LinearRegression|\bRidge\(|"
+                        r"\bLasso|\bVAR\(|\bARDL|SARIMAX\(.*exog|statsmodels\.api|\.fit\(\).*params|elasticit|"
+                        r"lead_lag|lagged|shift\(-?\d+\).*corr|\bbeta\b", re.I | re.S)
+_SELF = ("driver_map", "scenario_forecast", "notes", "board", "read_observation")
+
+
+def _norm(text: str) -> str:
+    t = text.strip().lower()
+    t = re.sub(r"^https?://", "", t)
+    t = re.sub(r"^www\.", "", t)
+    return t.rstrip("/")
+
+
+def _call_text(h: dict) -> str:
+    body = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+    raw = json.dumps(h.get("args") or {}, default=str) + " " + json.dumps(body, default=str)
+    return raw.lower().replace("\\/", "/").replace("https://", "").replace("http://", "").replace("www.", "")
+
+
+def _is_test(h: dict) -> bool:
+    tool = h.get("tool")
+    args = h.get("args") if isinstance(h.get("args"), dict) else {}
+    if tool in ("build_drivers", "simulate_season", "panel_backtest"):
+        return True
+    if tool in _TEST_TOOLS:
+        return contracts._signal_searched([h])
+    return tool == "sandbox_python" and bool(_TEST_CODE.search(str(args.get("code") or "")))
+
+
+def _traced(evidence: str, texts: list[str]) -> bool:
+    """True when the evidence, or one of its parts of six characters or more, appears in one of the calls' texts."""
+    parts = [_norm(evidence)] + [_norm(p) for p in re.split(r"[\s,;|]+", evidence)]
+    parts = [p for p in dict.fromkeys(parts) if len(p) >= 6]
+    return any(p in t for p in parts for t in texts)
+
+
+def check_fundamentals(history: Any, goal: str = "") -> dict | None:
+    """The forecast accounts for the fundamentals that drive the target, each traced to a call in the mission.
+
+    Owner review (2026-11-27): "the predictions on most missions haven't accounted for other fundamental factors, such as
+    political and geopolitical, economical, and other factors that could drive the final decision". Logic: the goal's domain
+    (research.driver_families) sets the minimum: driver families researched, families tested against the target, an
+    official or market benchmark, and scenarios applied with scenario_forecast. Findings come from driver_map record calls
+    (their arguments, newest per family and signal). A finding counts only when its evidence (URL, file or run id) appears
+    in a successful call of this mission; a tested finding only when that call measured a driver against the target
+    (covariates scored, a driver file built, a regression or lead-lag cell, or a season fitted on its signals). Blocks with
+    what is missing and the uncovered families' queries. None when no prediction stands."""
+    from prophet_agent.research import driver_families as dfam
+    from prophet_agent.tools.fundamentals_tool import _benchmarks, _findings
+    flat = _flatten(history)
+    if not any(_ok_result(h, t) is not None for h in flat for t in PREDICTION_TOOLS):
+        return None
+    domain = dfam.detect(goal or "")
+    minimum = dfam.DOMAINS[domain]["minimum"]
+    calls = [h for h in flat if h.get("kind") == "tool" and h.get("tool") not in _SELF
+             and _ok_result(h, str(h.get("tool"))) is not None]
+    texts = [_call_text(h) for h in calls]
+    test_texts = [t for h, t in zip(calls, texts) if _is_test(h)]
+    findings: dict[tuple, dict] = {}
+    benches: dict[str, dict] = {}
+    for h in flat:
+        if _ok_result(h, "driver_map") is None or not isinstance(h.get("args"), dict):
+            continue
+        a = h["args"]
+        if a.get("action") != "record":
+            continue
+        dom = a.get("domain") if a.get("domain") in dfam.DOMAINS else dfam.detect(str(a.get("target") or goal))
+        try:
+            for f in _findings(a.get("findings"), dom):
+                findings[(f["family"], f["signal"].lower())] = f
+            for b in _benchmarks(a.get("benchmarks")):
+                benches[b["source"].lower()] = b
+        except ValueError:
+            continue
+    untraced = [f"{f['family']}: {f['evidence'][:60]}" for f in findings.values() if not _traced(f["evidence"], texts)]
+    good = [f for f in findings.values() if _traced(f["evidence"], texts)]
+    researched = sorted({f["family"] for f in good})
+    tested = sorted({f["family"] for f in good if f["kind"] == "tested" and _traced(f["evidence"], test_texts)})
+    n_bench = sum(1 for b in benches.values() if _traced(b["evidence"], texts)) + \
+        sum(1 for f in good if f["kind"] == "benchmark")
+    applied = 0
+    for h in flat:
+        if isinstance(_ok_result(h, "scenario_forecast"), dict) and isinstance(h.get("args"), dict):
+            applied = max(applied, len(h["args"].get("scenarios") or []))
+    missing = []
+    if not findings:
+        missing.append("no driver map: call driver_map action plan with the target, work through its families, then "
+                       "driver_map action record with each finding and its evidence")
+    if len(researched) < minimum["researched"]:
+        missing.append(f"driver families researched with traced evidence: {len(researched)} of {minimum['researched']}")
+    if len(tested) < minimum["tested"]:
+        missing.append(f"families tested against the target: {len(tested)} of {minimum['tested']} (score the driver "
+                       "series as covariates with control_lab with_covariates or backtest_series, or a lead-lag or "
+                       "regression cell, and give that call's run id as the evidence)")
+    if n_bench < minimum["benchmarks"]:
+        missing.append("an official or market benchmark forecast of the target, with its value and the URL it was read "
+                       "from (" + "; ".join(dfam.DOMAINS[domain]["benchmarks"][:2]) + ")")
+    if applied < minimum["scenarios"]:
+        missing.append(f"scenarios applied to the forecast: {applied} of {minimum['scenarios']} (state the political, "
+                       "policy and geopolitical risks with a probability and a shift, and run scenario_forecast on the "
+                       "pack)")
+    if not missing:
+        return _check("fundamentals_covered", True,
+                      f"{len(researched)} driver families researched, {len(tested)} tested, {n_bench} benchmarks, "
+                      f"{applied} scenarios applied ({domain})")
+    plan = dfam.plan(goal or "", domain)
+    todo = [f for f in plan["families"] if f["family"] not in researched][:5]
+    hint = "; ".join(f"{f['family']} ({f['data'][0]}; search '{f['queries'][0]}')" for f in todo if f["data"] and f["queries"])
+    detail = (f"the forecast does not yet account for the fundamentals that drive it ({domain}). Missing: "
+              + "; ".join(missing) + ". " + (f"Families not covered yet: {hint}. " if hint else "")
+              + (f"Evidence not found in any call of this mission (dropped): {', '.join(untraced[:4])}. " if untraced else "")
+              + "Search broadly (research lanes per family), then measure, then record.")
+    return _check("fundamentals_covered", False, detail)
+
+
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
     calls = (lambda: check_prediction_chart(history), lambda: check_flat_centre(history),
              lambda: check_grain(goal, history), lambda: check_answer_band(answer, history),
-             lambda: check_signals_gathered(history, goal))
+             lambda: check_signals_gathered(history, goal), lambda: check_league_signals(history),
+             lambda: check_fundamentals(history, goal))
     for fn in calls:
         try:
             c = fn()

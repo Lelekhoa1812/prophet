@@ -883,7 +883,8 @@ def _gate_tools():
             "backtest_series": _tool("backtest_series", lambda a, k: bt)}
 
 
-def test_a_forecast_never_compared_with_baselines_is_sent_back_before_it_counts_as_met(store):
+def test_a_forecast_never_compared_with_baselines_is_sent_back_before_it_counts_as_met(store, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.prediction_quality.check_fundamentals", lambda *a, **k: None)   # its own tests
     # Round 3, A5-04: the first two finishes are refused for the checklist (the backtest is still to do), so the third reaches
     # the evaluator, whose "met" the contract check sends back; the backtest then runs and the last finish is met.
     brain = ScriptedBrain(
@@ -906,7 +907,8 @@ def test_a_check_that_keeps_failing_leaves_the_answer_labelled_partial(store):
     assert out["result"]["answer"], "the answer is still delivered, labelled"
 
 
-def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_after_inspection(store):
+def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_after_inspection(store, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.prediction_quality.check_fundamentals", lambda *a, **k: None)   # its own tests
     # Round 3, A5-04: the data inspection is still to do, so the first two finishes are refused before the evaluator.
     brain = ScriptedBrain(
         plans=[call("timesfm_forecast"), call("backtest_series"), finish(), finish(), finish(), call("sandbox_python"),
@@ -919,6 +921,7 @@ def test_a_forecast_before_any_data_inspection_is_blocked_until_it_is_run_again_
 
 
 def test_a_forecast_without_the_analysis_ledger_is_sent_back_until_one_is_saved(store, tmp_path, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.prediction_quality.check_fundamentals", lambda *a, **k: None)   # its own tests
     monkeypatch.setattr("prophet_agent.runtime.goal.SANDBOX_ROOT", tmp_path / "nowhere")      # no ledger anywhere
     # Round 3, A5-04: two refusals for the open checklist items, then the contract check sends each finish back.
     brain = ScriptedBrain(plans=[call("sandbox_python"), call("backtest_series"), call("timesfm_forecast")] + [finish()] * 12,
@@ -998,7 +1001,8 @@ def test_a_sub_agent_gets_the_step_budget_its_type_declares(store, monkeypatch):
     assert agents.TYPES["general"].steps in budgets, budgets
 
 
-def test_a_blocked_answer_meeting_a_spent_tool_budget_gets_one_repair_allowance(store):
+def test_a_blocked_answer_meeting_a_spent_tool_budget_gets_one_repair_allowance(store, monkeypatch):
+    monkeypatch.setattr("prophet_agent.runtime.prediction_quality.check_fundamentals", lambda *a, **k: None)   # its own tests
     # Live (WTI rep2, retail rep1, 2026-11-22): the answer was blocked after the 20-call allowance was spent, so the fix
     # never ran and the answer left partial. One repair allowance lets the planner make the missing call and finish.
     # The spent budget forces a finish without asking the planner, so the scripted planner is first asked after the

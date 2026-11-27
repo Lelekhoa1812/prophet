@@ -85,7 +85,7 @@ def test_three_strategies_is_not_enough():
 
 def test_prediction_checks_collects_both_and_never_raises():
     out = pq.prediction_checks([pack(FLAT, files=())])
-    assert {c["name"] for c in out} == {"prediction_charted", "centre_not_flat", "signals_gathered"}
+    assert {c["name"] for c in out} == {"prediction_charted", "centre_not_flat", "signals_gathered", "fundamentals_covered"}
     assert pq.prediction_checks([None, "x", {"kind": "tool"}]) == []
 
 
@@ -139,3 +139,78 @@ def test_a_goal_that_asks_for_drivers_blocks_until_one_is_tested():
     assert not c["ok"] and c["severity"] == "block" and "control_lab" in c["detail"]
     tested = [call("control_lab", {"with_covariates": True, "past_covariates": ["dxy"]}), pack(MOVING)]
     assert pq.check_signals_gathered(tested, goal)["ok"]
+
+
+# ---------------------------------------------------------------- owner review 2026-11-27: league signals, fundamentals
+
+def sim(signals, sport="football"):
+    return {"kind": "tool", "tool": "simulate_season", "args": {},
+            "result": {"ok": True, "sport": sport, "settings": {"signals": signals}, "files": ["out/league_forecast.png"]}}
+
+
+def test_a_league_simulated_from_this_seasons_goals_only_is_blocked():
+    # EPL 6e19a3b6: Brighton 45% for the title from 11 matches of goals.
+    c = pq.check_league_signals([sim({"goals": 110, "xg": 0, "market": 0, "history_matches": 0})])
+    assert not c["ok"] and "football-data.co.uk" in c["detail"] and "history" in c["detail"]
+    c = pq.check_league_signals([sim({"goals": 622, "xg": 0, "market": 0, "history_matches": 512})])
+    assert not c["ok"] and "expected goals or bookmaker prices" in c["detail"]
+    ok = pq.check_league_signals([sim({"goals": 622, "xg": 110, "market": 622, "history_matches": 512})])
+    assert ok["ok"]
+    assert pq.check_league_signals([sim({}, sport="win_loss")]) is None
+    assert pq.check_league_signals([pack(MOVING)]) is None
+
+
+GOAL = "Find Australia's official interest rate (the RBA cash rate target) and forecast it over the next 5 years"
+
+
+def record(findings, benchmarks=(), target=GOAL):
+    return call("driver_map", {"action": "record", "target": target, "findings": list(findings),
+                               "benchmarks": list(benchmarks)}, coverage={})
+
+
+def F(family, kind, evidence, signal=None):
+    return {"family": family, "signal": signal or f"{family} signal", "kind": kind, "direction": "up",
+            "effect": "e", "evidence": evidence}
+
+
+def test_fundamentals_block_without_a_driver_map_and_name_the_families():
+    c = pq.check_fundamentals([pack(MOVING)], GOAL)
+    assert not c["ok"] and "no driver map" in c["detail"] and "monetary_policy" in c["detail"]
+    assert pq.check_fundamentals([call("web_search", {"query": "x"})], GOAL) is None
+
+
+def test_fundamentals_pass_when_every_finding_is_traced_and_scenarios_applied():
+    sources = [call("web_fetch", {"url": f"https://www.rba.gov.au/{k}"}, text="x") for k in
+               ("smp", "cpi", "labour", "gdp", "asx-tracker")]
+    test1 = call("control_lab", {"with_covariates": True, "past_covariates": [[1.0]]}, run_id="a" * 32)
+    test2 = call("sandbox_python", {"code": "import statsmodels.api as sm; m = sm.OLS(y, X).fit(); print(m.params)"},
+                 run_id="b" * 32)
+    findings = [F("monetary_policy", "researched", "https://www.rba.gov.au/smp"),
+                F("inflation", "tested", "a" * 32), F("labour_market", "tested", "b" * 32),
+                F("activity", "researched", "rba.gov.au/gdp"),
+                F("market_pricing", "researched", "https://www.rba.gov.au/asx-tracker")]
+    bench = [{"source": "RBA SMP", "value": "3.85", "what": "cash rate 2027", "evidence": "https://www.rba.gov.au/smp"}]
+    scen = call("scenario_forecast", {"pack": "c" * 32, "scenarios": [{"name": "a"}, {"name": "b"}]},
+                end={"q10": 3.1, "q90": 4.6}, files=["out/scenario_forecast.png"])
+    hist = sources + [test1, test2, pack(MOVING), record(findings, bench), scen]
+    c = pq.check_fundamentals(hist, GOAL)
+    assert c["ok"], c["detail"]
+
+
+def test_fundamentals_drop_evidence_no_call_produced_and_tests_that_measured_nothing():
+    src = call("web_fetch", {"url": "https://www.rba.gov.au/smp"})
+    plain = call("sandbox_python", {"code": "print(df.tail())"}, run_id="d" * 32)
+    findings = [F("monetary_policy", "researched", "https://www.rba.gov.au/smp"),
+                F("inflation", "tested", "d" * 32),                            # a print is not a test
+                F("geopolitics", "researched", "https://made-up.example.com/war")]
+    c = pq.check_fundamentals([src, plain, pack(MOVING), record(findings)], GOAL)
+    assert not c["ok"]
+    assert "made-up.example.com" in c["detail"] and "tested against the target: 0 of 2" in c["detail"]
+    assert "researched with traced evidence: 2 of 5" in c["detail"]
+
+
+def test_scenario_forecast_end_is_the_delivered_band():
+    scen = call("scenario_forecast", {"pack": "c" * 32}, end={"q10": 3.12, "q90": 4.61})
+    hist = [pack([4.0] * 12), scen]
+    assert not pq.check_answer_band("The range by 2030 is 3.5% to 4.2%.", hist)["ok"]
+    assert pq.check_answer_band("The 10-90 range by 2030 is 3.1% to 4.6%.", hist)["ok"]

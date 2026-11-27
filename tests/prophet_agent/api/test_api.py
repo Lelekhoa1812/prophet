@@ -126,6 +126,7 @@ def test_artifact_paths_are_confined(tmp_path):
 def test_forecast_report_produces_downloadable_files(tmp_path, stub_timesfm, monkeypatch):
     # This test is about the files, not the analysis: the finish gate has its own tests in test_goal_loop.py.
     monkeypatch.setattr("prophet_agent.runtime.goal.contracts.check_evidence", lambda *a, **k: [])
+    monkeypatch.setattr("prophet_agent.runtime.prediction_quality.check_fundamentals", lambda *a, **k: None)
     values = [float(10 + (i % 5)) for i in range(40)]
     brain = ScriptedBrain(
         plans=[{"action": "call_tool", "tool": "forecast_report", "rationale": "pack",

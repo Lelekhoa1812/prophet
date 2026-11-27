@@ -1819,3 +1819,44 @@ published level first" and "one set of numbers"; the panel picks the option that
 multiple-choice question. Replayed on the stored ledgers, the new checks block SPX (grain), AUUNEMP, AURATE and GOLD (range).
 Still open: a check that a level published after the series end is used (AURATE), and band width (AURATE's 1.9 to 8.7 for a
 cash rate). **M9-8 is not met.**
+
+### Round 23: fundamentals, drivers and the league's signals (owner review, 2026-11-27)
+
+The owner reviewed the EPL notebook (6e19a3b6, round 20261127-175102 on 6aca258) and the panel as a whole: Brighton were the
+title favourites at 45 per cent, which the owner called an abnormality the system should have caught, and most forecasts
+"haven't accounted for other fundamental factors, such as political and geopolitical, economical" ones.
+
+Diagnosis (measured on the stored ledger and on live files):
+- EPL: simulate_season was called seven times on this season's fixturedownload file alone: 110 matches, 11 per club, no
+  earlier season, no expected goals, no bookmaker prices. The mission's own answer said "No team-strength signals ... are
+  available". football-data.co.uk carries this season's xG and closing prices for all 110 matches and the earlier seasons.
+  Brighton's +17 goal difference is 10.9 goals ahead of its expected-goal difference (+6.1). With two earlier seasons (512
+  matches between this season's clubs), xG and closing prices in the same Dixon-Coles fit: Arsenal 74 per cent, Man City
+  14, Liverpool 8, Brighton 3 (top four 64). The blended fit scores level with the closing prices on the backtest
+  (dixon_coles vs market, RPS +0.0014, no clear difference). Figures are simulated from fitted ratings.
+- The agent then re-ran the simulation eight times looking for the points paths the goal asked for: no file held them.
+- Macro missions: drivers were at most one covariate, never a map of policy, inflation, labour, fiscal, trade, geopolitics,
+  commodities, financial conditions and market pricing; no official or market benchmark was compared; no event risk entered
+  a delivered range.
+
+Changes:
+- forecast/sports.py: matches carry xG and market probabilities (closing averages, else Pinnacle, Bet365 or pre-match
+  columns, with the over/under 2.5 price); prices become implied expected goals; both enter the likelihood as weighted
+  pseudo-matches (no low-score correction), with priced unplayed fixtures as the market's view of now. History and fixtures
+  from other sites are mapped to this season's club spellings; played rows in a fixtures file are not counted twice (the
+  first live run counted 220 played). `finishing` lists clubs whose goal difference runs ahead of their xG; a fit on this
+  season's goals only gets a "thin ratings" note. The backtest scores the blend against goals_only and the closing prices.
+- The league pack also writes league_paths (PNG, SVG, CSV): each contender's played and simulated points path.
+- `league_signals` blocks a football simulation that did not fit earlier seasons and at least one of xG or prices.
+- research/driver_families.py: driver families per domain (policy rate, labour market, precious metal, equity index,
+  currency, commodity, sports league, general) with the data and search queries for each, the benchmarks, and minimums
+  (macro: 5 families researched, 2 tested, 1 benchmark, 2 scenarios applied; league: 4 researched, 1 benchmark).
+- Tools `driver_map` (plan; record writes driver_map.csv, .json, .png, .svg) and `scenario_forecast` (mixes up to six
+  scenarios, each a probability and a shift from a start date with its own uncertainty, into a pack's distribution; writes
+  the scenario chart and table; its range becomes the delivered range for the answer-band check).
+- `fundamentals_covered` blocks the lead's finish until the domain minimum is met with findings whose evidence (URL, file
+  or run id) appears in a successful call of the mission; a "tested" finding must trace to a call that measured a driver
+  (covariates scored, drivers built, a regression or lead-lag cell, or a season fitted on its signals).
+- Planner v42: rule 24c, the analyst standard (map, search broadly then surgically with lanes, measure, triangulate,
+  scenarios, record, answer with drivers, benchmarks and scenarios); the league bullet names football-data files.
+Not yet measured on a live panel round. **M9-8 is not met.**

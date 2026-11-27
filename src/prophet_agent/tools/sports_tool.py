@@ -19,7 +19,8 @@ from prophet_agent.tools.series_io import source_path
 
 MAX_SIMS = 100_000
 ALLOWED = {"sport", "results", "history", "source", "fixtures", "teams", "simulations", "seed", "points", "half_life_days",
-           "prior_sd", "relegation_places", "top_places", "playoff_places", "games_per_team", "backtest"}
+           "prior_sd", "relegation_places", "top_places", "playoff_places", "games_per_team", "backtest", "xg_weight",
+           "market_weight"}
 
 
 def _named_text(name: Any, datasets: dict[str, Path], label: str) -> tuple[str, str]:
@@ -85,13 +86,19 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
     backtest = args.get("backtest", True)
     if not isinstance(backtest, bool):
         raise ValueError("backtest must be true or false")
+    weights = {}
+    for key in ("xg_weight", "market_weight"):
+        v = args.get(key)
+        if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= 5):
+            raise ValueError(f"{key} must be a number from 0 (leave the signal out) to 5")
+        weights[key] = None if v is None else float(v)
     result = simulate_season(
         matches, fixtures, sport=sport, n_sims=_int(args, "simulations", 10_000, 10, MAX_SIMS),
         seed=_int(args, "seed", 0, 0, 2**31 - 1), points=tuple(points),
         half_life_days=None if half_life is None else float(half_life), prior_sd=float(prior_sd),
         teams_of_interest=teams, relegation_places=_int(args, "relegation_places", 3, 0, 10),
         top_places=_int(args, "top_places", 4, 0, 10), playoff_places=_int(args, "playoff_places", 8, 1, 30),
-        games_per_team=games, backtest=backtest, history=history)
+        games_per_team=games, backtest=backtest, history=history, **weights)
     if (placeholders := placeholder_rows(text, name)):
         result.setdefault("notes", []).append(f"{placeholders} unplayed rows whose teams are not known yet (such as 'To be "
                                               "announced') were left out of the remaining schedule")
@@ -119,7 +126,7 @@ def _league_chart(result: dict) -> None:
         pack = build_league_pack(
             teams=flat, title=f"{lead} finish first on expected points: every club's range and chances",
             note="Simulated from fitted ratings, not observed results. Each club's range stands alone; ranges are not summed.",
-            unit=unit, chances=list(CHANCES))
+            unit=unit, chances=list(CHANCES), paths=result.get("points_paths") or None)
     except Exception as err:                       # noqa: BLE001 - a chart failure never drops the simulation
         result.setdefault("notes", []).append(f"the club comparison chart could not be built: {str(err)[:160]}")
         return
@@ -268,7 +275,8 @@ def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dic
     out = {k: v for k, v in result.items() if k not in ("standings", "ratings", "points_paths", "teams", "backtest")}
     if isinstance(result.get("settings"), dict):    # the fields an answer cites; the rest stay in the full result
         out["settings"] = {k: v for k, v in result["settings"].items()
-                           if k in ("model", "n_played", "n_remaining", "n_sims", "points_rule", "games_per_team")}
+                           if k in ("model", "n_played", "n_remaining", "n_sims", "points_rule", "games_per_team",
+                                    "signals", "xg_weight", "market_weight")}
     if "backtest" in result:
         out["backtest"] = _compact_backtest(result["backtest"])
     out["note"] = ("every figure the answer needs is in this view: the teams table (final total p10, median, p90 and "
@@ -335,13 +343,24 @@ SIMULATE_SEASON_SPEC = {
                    "top places, relegation (football) or the playoff line (win_loss, per group when a group column is given), "
                    "points or wins paths for teams of interest, and a backtest against equal odds and simple rules with "
                    "measured verdicts. Each team's range stands alone; never add ranges across teams. Figures are simulated "
-                   "from fitted ratings.",
+                   "from fitted ratings. Football ratings are only as good as their signals: this season's goals alone "
+                   "after a dozen matches mostly measure luck. Give earlier seasons as history and a results file with "
+                   "expected goals and bookmaker prices (football-data.co.uk/mmz4281/<YYZZ>/E0.csv, for example 2627 for "
+                   "2026/27, carries HxG, AxG and closing prices); the backtest then scores the blend against goals alone "
+                   "and against the closing prices, and 'finishing' lists clubs whose goal difference runs ahead of their "
+                   "xG. Every call writes league_forecast (club comparison) and league_paths (points paths) charts.",
     "args": {
         "sport": "football (default) or win_loss",
         "results": "name of a results file the mission holds (uploaded, or landed by download_web_data; CSV or football.json)",
         "source": "object {run_id, file} naming a results CSV or JSON in an analysis run's out/ folder, instead of results",
         "history": "optional name, or list of up to 4 names, of earlier seasons' results files; used to fit the ratings only "
-                   "(early in a season the current results are too few)",
+                   "(early in a season the current results are too few). Club names are matched across sites "
+                   "(Manchester City FC = Man City)",
+        "xg_weight": "weight of each match's expected goals (HxG, AxG columns) beside its score, 0 to 5 (default 1 when the "
+                     "files carry xG, else 0)",
+        "market_weight": "weight of the goals implied by each match's bookmaker prices (closing averages AvgCH/AvgCD/AvgCA, "
+                         "else Pinnacle, Bet365 or pre-match columns, and the over/under 2.5 price), including priced fixtures "
+                         "not yet played, 0 to 5 (default 1 when the files carry prices, else 0)",
         "fixtures": "name of a mission file of remaining matches (optional; not needed when the results file lists unplayed matches, as fixturedownload does)",
         "teams": "list of team names to show paths for (optional; default the top four by current standing)",
         "simulations": "number of simulated seasons, 10 to 100000 (default 10000)",

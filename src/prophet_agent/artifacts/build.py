@@ -216,20 +216,72 @@ with open("out/league_forecast.csv", "w", newline="", encoding="utf-8") as fh:
     w.writerow(["position_by_expected", "team", "today", "median", "p10", "p90"] + [lab for _, lab in cols])
     for i, r in enumerate(rows):
         w.writerow([i + 1, r["team"], r["current"], r["median"], r["p10"], r["p90"]] + [r.get(k) for k, _ in cols])
+
+paths = d.get("paths") or {}
+if paths:
+    # Owner review (EPL, 2026-11-27): the goal asked for the points path of the contenders, and the agent re-ran the
+    # simulation eight times looking for it. Every simulation now writes the path chart and its table.
+    palette = ["#D55E00", "#0072B2", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000", "#F0E442"]
+    fig, ax = plt.subplots(figsize=(11, 6.2), dpi=144)
+    for c, (team, entries) in enumerate(list(paths.items())[:8]):
+        col = palette[c % len(palette)]
+        g = [e["game"] for e in entries]
+        played = [e for e in entries if e.get("measured")]
+        ahead = [e for e in entries if not e.get("measured")]
+        if played:
+            ax.plot([e["game"] for e in played], [e["median"] for e in played], color=col, lw=2.2)
+        if ahead:
+            start = played[-1:] if played else []
+            xs = [e["game"] for e in start + ahead]
+            ax.fill_between([e["game"] for e in ahead], [e["p10"] for e in ahead], [e["p90"] for e in ahead],
+                            color=col, alpha=0.12, lw=0)
+            ax.plot(xs, [e["median"] for e in start + ahead], color=col, lw=1.8, ls="--")
+            last = ahead[-1]
+            ax.annotate(f"{team} {last['median']:.0f}", (last["game"], last["median"]), xytext=(4, 0),
+                        textcoords="offset points", fontsize=9, color=col, va="center")
+        else:
+            ax.plot([], [], color=col, label=team)
+    if any(e.get("measured") for es in paths.values() for e in es):
+        today = max(e["game"] for es in paths.values() for e in es if e.get("measured"))
+        ax.axvline(today, color="#999999", lw=0.8, ls=":")
+        ax.text(today, ax.get_ylim()[1], " today", fontsize=8.5, color="#555555", va="top")
+    ax.set_xlabel("game of the season")
+    ax.set_ylabel(unit)
+    ax.grid(color="#e5e5e5", lw=0.6)
+    ax.set_title(f"{unit.capitalize()} path: played (solid), simulated median (dashed), 10 to 90 range (shade)",
+                 fontsize=10.5, loc="left")
+    fig.suptitle(title.split(":")[0] + ": the contenders' " + unit + " path", fontsize=14, fontweight="bold", x=0.01,
+                 ha="left")
+    fig.text(0.01, -0.01, note, fontsize=8.5, color="#555555", ha="left", va="top", wrap=True)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig("out/league_paths.png", bbox_inches="tight")
+    fig.savefig("out/league_paths.svg", bbox_inches="tight")
+    with open("out/league_paths.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["team", "game", "median", "p10", "p90", "played"])
+        for team, entries in paths.items():
+            for e in entries:
+                w.writerow([team, e["game"], e["median"], e["p10"], e["p90"], bool(e.get("measured"))])
 """
 
 
 def build_league_pack(*, teams: list[dict], title: str, note: str = "", unit: str = "points",
-                      chances: list[tuple[str, str]] | None = None, timeout_s: int = 90) -> SandboxResult:
+                      chances: list[tuple[str, str]] | None = None, paths: dict | None = None,
+                      timeout_s: int = 90) -> SandboxResult:
     """A club-compared chart of a league simulation: every club's expected final total with its 10 to 90 range and today's
     total, sorted by expected total, with the chance of each outcome beside it (title, top places, relegation, playoff).
-    Each team row is {team, current, median, p10, p90} plus any chance fields named in ``chances`` (field, label)."""
+    Each team row is {team, current, median, p10, p90} plus any chance fields named in ``chances`` (field, label).
+    ``paths`` ({team: [{game, median, p10, p90, measured}]}) adds a second chart and table of each contender's path."""
     rows = [{"team": str(t["team"])[:40], "current": float(t["current"]), "median": float(t["median"]),
              "p10": float(t["p10"]), "p90": float(t["p90"]),
              **{k: t.get(k) for k, _ in (chances or [])}} for t in teams[:40]]
     if not rows:
         raise ValueError("no teams to chart")
-    payload = {"teams": rows, "title": title, "note": note, "unit": unit[:40], "chances": [list(c) for c in (chances or [])]}
+    clean_paths = {str(t)[:40]: [{"game": int(e["game"]), "median": float(e["median"]), "p10": float(e["p10"]),
+                                  "p90": float(e["p90"]), "measured": bool(e.get("measured"))} for e in es]
+                   for t, es in list((paths or {}).items())[:8] if isinstance(es, list) and es}
+    payload = {"teams": rows, "title": title, "note": note, "unit": unit[:40], "chances": [list(c) for c in (chances or [])],
+               "paths": clean_paths}
     return run_python(_LEAGUE_TEMPLATE, timeout_s=timeout_s, mem_mb=2048, file_mb=64,
                       files={"data/input.json": json.dumps(payload).encode("utf-8")})
 

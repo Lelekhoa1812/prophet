@@ -90,6 +90,12 @@ def sandbox_root(tmp_path, monkeypatch):
     return root
 
 
+@pytest.fixture(autouse=True)
+def _no_fundamentals_gate(monkeypatch):
+    # These tests are about the horizon; the fundamentals gate has its own tests (test_prediction_quality.py).
+    monkeypatch.setattr("prophet_agent.runtime.prediction_quality.check_fundamentals", lambda *a, **k: None)
+
+
 def _run(store, goal, brain, step=None):
     program = goal_program(goal, _tools(step), brain, GoalConfig())
     mid = store.create_mission("forecast", {})
