@@ -167,3 +167,17 @@ def test_the_signal_search_is_an_evidence_gate_the_planner_can_repair():
             "full": {"forecast": {"point": [1.0, 1.0], "quantiles": {"0.1": [0.0, 0.0], "0.9": [2.0, 2.0]}}}}
     names = [c["name"] for c in contracts.check_evidence([pack])]
     assert "answer_signal_search" in names
+
+
+def test_a_sentence_about_the_models_own_median_is_not_a_claim_about_the_drawn_line():
+    from prophet_agent.runtime import contracts
+    obs = _tilted_obs()
+    assert contracts._flat_claim_after_tilt("TimesFM produced a flat median line; a damped trend was drawn instead.", obs) is None
+    assert contracts._flat_claim_after_tilt("The median line is flat.", obs)
+
+
+def test_a_baseline_score_line_is_not_a_claim_about_the_cycle():
+    from prophet_agent.runtime import grounding
+    line = "Seasonal-naive (lag 365) MASE 1.18, far worse, confirming the 365-day season is wrong for this series."
+    assert grounding.claimed_periods(line) == []
+    assert grounding.claimed_periods("The data has a 7-day cycle.")

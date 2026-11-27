@@ -1705,3 +1705,27 @@ What was changed (a09db69, 7f62df0):
 - Cycle strength is null when no period was measured.
 Not yet changed: a total range that matches no measured range, a calibrated-versus-raw label against the calibration
 tool's recommendation, a single-reading last day, and relative dates or source meaning in outside-context lines.
+
+### Panel rounds 15 to 18 (measured, runs 20261127-101619, -103558, -105522, -111432, 2026-11-27): flat centre lines
+Owner review of charts from round 14 (NVDA, AUUNEMP, SPX, NEM): the centre line was flat. The cause was by design, not a
+bug: planner v32 said a flat level is acceptable when nothing beats a random walk, and the pack drew the backtest's best simple
+rule (a four-point mean, naive), and the additive band of a price series reached zero.
+What changed (5ffc5b7, c6a8ddb, the momentum, signal-search and false-positive commits after them):
+- `forecast/direction.py`: when the centre is flat, a damped trend, a recent drift and a momentum rule (window of four horizons)
+  are scored against the flat line on rolling origins of the same history. The best one that moves at least 4 percent of the
+  range, scores within 5 percent of the flat line's error, and agrees with the model's own direction is drawn. It is labelled a
+  tilt chosen on those windows, not a validated gain. Otherwise the line stays flat and `tilt_check` says what was tried.
+- A positive series whose additive lower band falls under a quarter of the centre is rebuilt symmetric in ratio.
+- A line that moves is never called flat or a level, whatever the health verdict says (round 16 AUUNEMP: the line rose from 4.89
+  to 5.04 and the answer called it a flat level, because the health verdict forced the level sentence).
+- A flat pack is sent back by the evidence gate until a driver beyond the series was tested (a covariate scored with
+  control_lab, or covariates passed); planner v34 says how.
+- A four-point mean is named as such, not as "the average of the last season".
+Measured: round 15 six of ten completed, round 16 seven, round 17 five, round 18 four (NVDA's horizon was 61 steps against
+a 40-step backtest; NEM, NBA and CO2 ended on unverified figures or a repeated step). Tilts were drawn on AUUNEMP (momentum,
+the line moves 0.42 of the half-range), GISTEMP (damped trend) and SPX (recent drift, round 17). NVDA stays flat: its
+history gives no direction, and no related-series driver has yet beaten the flat line in a backtest.
+Round 16 audit (independent, read-only): all seven completed answers not clean. Findings: NEM total range matching neither
+measured range and a total with the wrong unit; NBA conference leaders that include the second-lowest team; NVDA "no FOMC
+meeting in the window" against an event the evidence lists; CO2 band half-width 0.5 where it reaches 1.6; CPI release dates
+omitted. **M9-8 is not met.**

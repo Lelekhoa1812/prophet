@@ -466,11 +466,18 @@ def _is_lag(unit: str, m: re.Match) -> bool:
     return bool(_LAG_AFTER.match(unit, m.end())) or bool(_SAME_BEFORE.search(unit[max(0, m.start() - 12):m.start()]))
 
 
+# Round 18 CO2: "Seasonal-naive (lag 365) MASE 1.18 ... confirming the 365-day season is wrong" is a baseline's score, and was
+# read as a claim that the cycle is 365.
+_BASELINE_SCORE = re.compile(r"seasonal[ _-]naive|\bMASE\b|\blag\s+\d", re.I)
+
+
 def claimed_periods(answer: str) -> list[tuple[int, str]]:
     """The cycle lengths, in steps, that the answer states: "weekly (7-day) cycle" gives 7. Negated statements and lag
     comparisons ("the same period 260 days earlier") are left out."""
     out: list[tuple[int, str]] = []
     for unit in sentences(answer):
+        if _BASELINE_SCORE.search(unit):        # a baseline's score line names the lag it was given, not a cycle of the data
+            continue
         for pat in _CYCLE_CLAIMS:
             for m in pat.finditer(unit):
                 n = int(m.group(1))

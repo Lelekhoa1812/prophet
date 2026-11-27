@@ -3108,7 +3108,8 @@ def _flat_claim_after_tilt(text: str, obs: list) -> dict | None:
     if not tilted and not (moves and moves[0]):
         return None
     for unit in grounding.sentences(text):
-        if _FLAT_CLAIM.search(unit) and not re.search(r"\bnot\b|\bwould\b|\bwithout\b|\bif\b|\bwas\b|\bwere\b", unit, re.I):
+        if _FLAT_CLAIM.search(unit) and not re.search(
+                r"\bnot\b|\bwould\b|\bwithout\b|\bif\b|\bwas\b|\bwere\b|timesfm|\bmodel\b|\braw\b|\btilt|\btrend\b", unit, re.I):
             if tilted:
                 why = (f"the pack drew {str(drawn).replace('_', ' ')} after finding a direction in the history; describe that "
                        "line and say it is a tilt chosen on the backtest windows, not a validated gain")
