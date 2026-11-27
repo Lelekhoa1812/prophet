@@ -115,6 +115,7 @@ GLOBAL_NOTE = {"global_gbm": "Centre line from one gradient-boosted model traine
 GLOBAL_ITEM_NOTE = {"global_gbm": "centre: one model trained on all series together",
                     "global_blend": "centre: equal blend of TimesFM 3 and one model trained on all series together"}
 RULE_TEXT = {"momentum": "the recent change, over the last few horizons, extended", "damped_trend": "a damped trend fitted to the history", "recent_drift": "the recent average change extended",
+             "mean_reversion": "a pull toward the level of the last five cycles, with the seasonal pattern added back",
              "naive": "the last value repeated", "drift": "the average historical change extended",
              "seasonal_naive": "the value one season back repeated", "mean_last_season": "the average of the last season"}
 
@@ -139,11 +140,16 @@ def _blend_note(centre: dict) -> str:
             "an unbiased test of accuracy. The range is TimesFM 3's band, recentred on the blend.")
 
 
+def _tilt_rules() -> tuple[str, ...]:
+    from prophet_agent.forecast.direction import TILT_RULES
+    return TILT_RULES
+
+
 def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
     if centre and centre.get("rule") == "blend":
         return _blend_note(centre)
-    if centre and centre.get("rule") in ("damped_trend", "recent_drift", "momentum"):
+    if centre and centre.get("rule") in _tilt_rules():
         control = _method_note(config, None)
         return (f"Centre line: {RULE_TEXT[centre['rule']]}. The line from the model was flat, so a trend rule was tried and "
                 f"delivered: {centre['reason']}. The range is the model's band, recentred on it. {control}")
@@ -334,10 +340,20 @@ def _run(args: dict, key: str) -> dict[str, Any]:
         fc = _blend_centre(fc, values, args)
     elif centre != "timesfm":
         fc = _centre(fc, values, centre, _season_arg(args))
-    if (args.get("tilt", True) is not False and not fc.get("median_point")
-            and (fc.get("health") or {}).get("verdict") != "flat_unexpected"):     # a flat line over a repeating history is a cycle the forecast missed, not a missing trend
+    if args.get("tilt", True) is not False and not fc.get("median_point"):
+        # A flat line over a repeating history used to skip this step and was drawn flat with a warning (owner, VN quarterly
+        # unemployment, 2026-11-27: "look too flat"). The seasonal period now goes to the rules that carry the cycle.
         from prophet_agent.forecast.direction import tilt
-        fc = tilt(fc, values)          # a flat centre gets the best-supported direction, or says why it has none
+        health = fc.get("health") or {}
+        period = _season_arg(args)
+        if not period or period < 2:
+            period = health.get("period") if isinstance(health.get("period"), int) else None
+        fc = tilt(fc, values, period)          # a flat centre gets the best-supported direction, or says why it has none
+        if health.get("verdict") == "flat_unexpected" and (fc.get("tilt_check") or {}).get("adopt"):
+            rule = fc["tilt_check"]["rule"]
+            fc = {**fc, "health": {**fc["health"], "verdict": "check", "causes": [
+                f"the model's own median missed the {period}-step cycle; the line drawn is {rule.replace('_', ' ')}, which "
+                "carries the season and was chosen on backtest windows, not a validated gain"] + list(health.get("causes", []))[1:]}}
     fc = _positive_band(fc, values)
     fc = _floor_at_zero(fc, values)
     hist_dates = run_dates(args, named[0][0])

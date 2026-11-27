@@ -563,7 +563,9 @@ def claimed_best_baselines(answer: str) -> list[tuple[str, str]]:
 
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
 # Round 13 (SPX): "Two unexplained regime shifts detected" against five breaks: an adjective sat between count and noun.
-_SHIFT_COUNT = re.compile(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+# Round 20 (NVDA): "already reflected in the 2025-07-09 and 2026-04-14 level shifts" was read as 14 shifts. A number that
+# ends a date (after -, /, . or :) is a day, not a count.
+_SHIFT_COUNT = re.compile(r"(?<![-/.:\d])\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
                           r"(?:(?!of\b|the\b|these\b|those\b|which\b|or\b|and\b)[a-z-]+\s+){0,2}?"
                           r"(?:level[- ]shifts?|regime shifts?|regime changes?|structural breaks?|breaks?|changepoints?)\b", re.I)
 

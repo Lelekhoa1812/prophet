@@ -87,7 +87,9 @@ def test_a_trend_rule_that_contradicts_the_models_own_direction_is_not_drawn():
     fc["timesfm_point"] = [float(x[-1]) - 0.4 * (i + 1) for i in range(20)]       # the model's own median falls
     out = d.tilt(fc, x)
     assert out["tilt_check"]["adopt"] is False
-    assert all("no agreement" in t["result"] for t in out["tilt_check"]["tried"].values())
+    tried = out["tilt_check"]["tried"]
+    assert all("no agreement" in tried[r]["result"] for r in ("damped_trend", "recent_drift", "momentum"))
+    assert tried["mean_reversion"]["result"] != "passed"     # it agrees with the falling median, and loses on error instead
 
 
 def test_a_recent_climb_is_drawn_where_a_long_drift_averages_it_away():
@@ -181,3 +183,38 @@ def test_a_baseline_score_line_is_not_a_claim_about_the_cycle():
     line = "Seasonal-naive (lag 365) MASE 1.18, far worse, confirming the 365-day season is wrong for this series."
     assert grounding.claimed_periods(line) == []
     assert grounding.claimed_periods("The data has a 7-day cycle.")
+
+
+# ILOSTAT, Viet Nam, unemployment rate, 15+, total, quarterly, 2011-Q1 to 2024-Q4 (DF_UNE_DEAP_SEX_AGE_RT, read 2026-11-27).
+VN_QUARTERLY = [1.352, 0.992, 0.874, 0.787, 1.086, 0.966, 1.074, 0.961, 1.389, 1.287, 1.445, 1.144, 1.377, 1.125, 1.341, 1.182,
+                1.923, 1.923, 1.771, 1.404, 2.167, 1.987, 1.768, 1.464, 2.352, 1.724, 1.85, 1.562, 1.246, 1.211, 1.099, 1.037,
+                1.665, 1.697, 1.713, 1.649, 1.882, 2.243, 2.187, 2.105, 1.997, 1.755, 2.541, 2.651, 1.631, 1.619, 1.569, 1.461,
+                1.547, 1.579, 1.674, 1.627, 1.52, 1.559, 1.586, 1.452]
+
+
+def test_a_seasonal_rate_that_swings_around_a_level_is_not_drawn_flat():
+    """Owner, 2026-11-27 ("look too flat"): the VN quarterly chart drew the last value for six quarters over a history that
+    repeats every four quarters. Mean reversion with the seasonal profile scores under the flat line's error on both
+    vintages, and carries the cycle."""
+    for x in (np.array(VN_QUARTERLY), np.array(VN_QUARTERLY[:51])):       # ILOSTAT to 2024-Q4; the mirror's copy to 2023-Q3
+        fc = _flat_fc(float(x[-1]), 6, 0.2)
+        out = d.tilt(fc, x, period=4)
+        assert out["tilt_check"]["adopt"] is True, out["tilt_check"]
+        assert out["centre"]["rule"] == "mean_reversion"
+        assert out["centre"]["evidence"]["error_ratio"] < 1.0
+        path = np.array(out["point"])
+        assert path.max() - path.min() > 0.1          # the season shows: Q1 above Q4 by about a fifth of a point
+
+
+def test_mean_reversion_is_refused_on_a_trending_series():
+    rng = np.random.default_rng(3)
+    x = 100 + np.arange(200) * 0.5 + rng.normal(0, 1.0, 200)
+    ev = d.tilt_evidence(x, 6, "mean_reversion", 12)
+    assert ev["scored"] and ev["error_ratio"] > d.TOLERANCE
+
+
+def test_the_seasonal_profile_reads_each_phase_and_sums_to_zero():
+    x = np.tile([1.0, 0.0, -1.0, 0.0], 8) + 5.0
+    prof = d.seasonal_profile(x, 4)
+    assert np.allclose(prof, [1.0, 0.0, -1.0, 0.0]) and abs(prof.sum()) < 1e-9
+    assert d.seasonal_profile(x, None) is None and d.seasonal_profile(x[:8], 4) is None

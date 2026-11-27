@@ -484,6 +484,15 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     t = t.where(~european, t.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
     only_comma = t.str.contains(",") & ~t.str.contains(r"\.")
     dec = only_comma & t.str.match(r"^-?\d+,\d{1,2}$")
+    # A comma that cannot be a thousands mark is a decimal comma: after a lone 0 ("0,123"), or before a group that is not
+    # three digits ("12,3456"). Audit 2026-11-27: "0,123" was read as 123.
+    dec |= only_comma & t.str.match(r"^-?\d+,\d+$") & (t.str.match(r"^-?0,") | ~t.str.match(r"^-?\d{1,3}(?:,\d{3})+$"))
+    # "1,234" alone fits both readings. The column decides: one written with decimal commas elsewhere and never with a
+    # comma before a point reads it as 1.234; otherwise it stays 1234, and the count of such cells is reported.
+    ambiguous = only_comma & t.str.match(r"^-?\d{1,3},\d{3}$") & ~dec
+    comma_column = bool((dec.any() or european.any()) and not (both & ~european).any())
+    if comma_column:
+        dec |= ambiguous
     t = t.where(~dec, t.str.replace(",", ".", regex=False))
     t = t.str.replace(",", "", regex=False)
     num = pd.to_numeric(t.mask(is_na | looks_like_date_or_clock), errors="coerce")
@@ -494,6 +503,8 @@ def to_number(s: pd.Series, *, na: set[str] | None = None) -> tuple[pd.Series, d
     info = {"missing_tokens": int(is_na.sum()), "unparsed": int((num.isna() & ~is_na & ~looks_like_date_or_clock).sum()),
             "decimal_comma_values": int(dec.sum() + european.sum()), "percent_values": int(pct.sum()),
             "parenthesised_negatives": int(neg.sum()), "scaled_by_suffix": int(scaled.sum())}
+    if ambiguous.any() and not comma_column and not (both & ~european).any():
+        info["comma_could_be_decimal"] = int(ambiguous.sum())
     return num, info
 
 
@@ -530,12 +541,38 @@ def _utc_if_offsets_differ(t: pd.Series) -> pd.Series | None:
     return pd.to_datetime(t, errors="coerce", format="mixed", utc=True).dt.tz_convert(None)
 
 
+_QUARTER = (r"^(?P<y>\d{4})\s*[-/ ]?\s*Q(?P<q>[1-4])$", r"^Q(?P<q>[1-4])\s*[-/ ]?\s*(?P<y>\d{4})$")
+_MONTH_CODE = r"^(?P<y>\d{4})-?M(?P<m>0?[1-9]|1[0-2])$"
+
+
+def _two(v: Any) -> str:
+    return f"{int(v):02d}" if v == v else ""
+
+
+def _period_codes(t: pd.Series) -> pd.Series:
+    """Quarter labels (2026 Q3, Q3 2026, 2026-Q3, 2026Q3) and SDMX month codes (2024M03) as the period's first day.
+    Audit 2026-11-27: these parsed to NaT and the rows were dropped without a word."""
+    up = t.str.upper()
+    out = t.copy()
+    for pattern in _QUARTER:
+        m = up.str.extract(pattern)
+        hit = m["y"].notna()
+        if hit.any():
+            out = out.where(~hit, m["y"] + "-" + (3 * (m["q"].astype(float) - 1) + 1).map(_two) + "-01")
+    m = up.str.extract(_MONTH_CODE)
+    hit = m["y"].notna()
+    if hit.any():
+        out = out.where(~hit, m["y"] + "-" + m["m"].astype(float).map(_two) + "-01")
+    return out
+
+
 def _parse_dates(t: pd.Series, dayfirst: bool) -> pd.Series:
     """Each value is parsed on its own, by its shape:
     - year first (2024-01-07): always year-month-day, so it is never read day-first (7 January, not 1 July);
     - numeric day-month-year (05/01/2024): read in the order asked, and a value that is not valid in that order is NaT,
       so the two readings can be compared (pandas' lenient parser would quietly swap them);
     - anything else (5 Jan 2024): pandas' mixed-format parser, which keeps every format that fits."""
+    t = _period_codes(t)
     iso = t.str.match(_ISO_START).fillna(False).astype(bool)
     dmy = t.str.match(_DMY).fillna(False).astype(bool) & ~iso
     other_mask = ~(iso | dmy)

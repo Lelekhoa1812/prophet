@@ -6,7 +6,9 @@ The line was the last value (or a mean of it), chosen because a random walk is h
 forecast wants the best-supported direction drawn, with the range around it. A flat line is the answer only when the
 history gives no direction at all.
 Logic: when the centre is flat, fit a damped additive trend (Holt) to the history (to its logarithm when the series is
-positive, so the path cannot cross zero), and score it on rolling origins of the same history against the flat line (the last
+positive, so the path cannot cross zero), the recent drift and momentum, and a pull toward the recent level with the seasonal
+profile added back (mean reversion: a rate that swings around a level has a direction too, toward that level), and score each
+on rolling origins of the same history against the flat line (the last
 value repeated). Deliver the damped path as the centre when it is no more than TOLERANCE times the flat line's error and it
 moves visibly against the band; otherwise keep the flat line and say what was tried. The result is a tilt chosen on these windows:
 it is labelled as such and never presented as a validated gain.
@@ -92,8 +94,67 @@ def momentum_path(x: Any, h: int) -> np.ndarray | None:
     return np.exp(path) if positive else path
 
 
-CANDIDATES = {"damped_trend": damped_path, "recent_drift": recent_drift_path, "momentum": momentum_path}
+def seasonal_profile(x: Any, period: int | None) -> np.ndarray | None:
+    """Each phase's mean deviation from a centred moving average (a 2xp average for an even period), summing to zero; phase
+    i is position i modulo period. None without a period or with fewer than three cycles."""
+    y = np.asarray(x, dtype=float)
+    if not period or period < 2 or len(y) < 3 * period:
+        return None
+    k = np.ones(period) / period
+    trend = np.convolve(y, k, mode="valid")              # trend[j] centres on j + (period - 1) / 2
+    if period % 2 == 0:
+        trend = (trend[:-1] + trend[1:]) / 2              # now centred on j + period / 2
+        start = period // 2
+    else:
+        start = (period - 1) // 2
+    dev = y[start:start + len(trend)] - trend
+    phase = (np.arange(len(dev)) + start) % period
+    prof = np.array([dev[phase == i].mean() if (phase == i).any() else 0.0 for i in range(period)])
+    return prof - prof.mean()
+
+
+REVERT_CYCLES = 5       # the level a series reverts to is the mean of its last five cycles (at least REVERT_MIN points)
+REVERT_MIN = 20
+MAX_PHI = 0.98
+
+
+def mean_reversion_path(x: Any, h: int, period: int | None = None) -> np.ndarray | None:
+    """An AR(1) pull of the seasonally adjusted series toward the mean of its last five cycles, with the seasonal profile
+    added back.
+
+    Motivation: the VN quarterly unemployment chart (owner, 2026-11-27, "look too flat") drew the last value for six
+    quarters over a history that repeats every four quarters (Q1 about +0.11, Q4 about -0.12) and swings around a level.
+    The trend rules (damped trend, drift, momentum) can only extend a slope; none describes a rate that returns toward its
+    recent level, or its season. Measured on rolling origins against the flat line: 0.959 to 0.966 times its error on both
+    the mirror's copy (to 2023-Q3) and ILOSTAT's (to 2024-Q4), where the seasonal profile alone scored 1.21 to 1.35 and
+    Holt-Winters 1.30 to 1.43. On trending series it loses to the flat line (Australian unemployment 1.16 to 1.25, the
+    S&P 500 1.06 and above), so the gate in ``tilt`` refuses it there."""
+    y = np.asarray(x, dtype=float)
+    if len(y) < MIN_POINTS or not np.isfinite(y).all():
+        return None
+    n = len(y)
+    prof = seasonal_profile(y, period)
+    p = len(prof) if prof is not None else 1
+    adj = y - prof[np.arange(n) % p] if prof is not None else y
+    window = min(n, max(REVERT_CYCLES * p, REVERT_MIN))
+    mu = float(adj[-window:].mean())
+    a, b = adj[:-1] - adj[:-1].mean(), adj[1:] - adj[1:].mean()
+    phi = float(np.clip((a @ b) / (a @ a), 0.0, MAX_PHI)) if a @ a > 0 else 0.0
+    path = mu + (adj[-1] - mu) * phi ** np.arange(1, h + 1)
+    if prof is not None:
+        path = path + prof[(n + np.arange(h)) % p]
+    return path
+
+
+CANDIDATES = {"damped_trend": damped_path, "recent_drift": recent_drift_path, "momentum": momentum_path,
+              "mean_reversion": mean_reversion_path}
 TILT_RULES = tuple(CANDIDATES)
+PERIOD_RULES = frozenset({"mean_reversion"})      # rules that read the seasonal period
+
+
+def _path(rule: str, x: Any, h: int, period: int | None) -> np.ndarray | None:
+    fn = CANDIDATES[rule]
+    return fn(x, h, period) if rule in PERIOD_RULES else fn(x, h)
 
 
 def _origins(n: int, h: int) -> list[int]:
@@ -105,13 +166,13 @@ def _origins(n: int, h: int) -> list[int]:
     return sorted({int(round(v)) for v in np.linspace(lo, hi, k)})
 
 
-def tilt_evidence(values: Any, h: int, rule: str = "damped_trend") -> dict[str, Any]:
+def tilt_evidence(values: Any, h: int, rule: str = "damped_trend", period: int | None = None) -> dict[str, Any]:
     """Score one trend rule against the flat line (the last value repeated) on rolling origins of the history."""
     x = np.asarray(values, dtype=float)
     orig = _origins(len(x), h)
     errs_d, errs_n = [], []
     for o in orig:
-        path = CANDIDATES[rule](x[:o], h)
+        path = _path(rule, x[:o], h, period)
         if path is None:
             continue
         actual = x[o:o + h]
@@ -136,7 +197,7 @@ def _shifted(q: dict, old: np.ndarray, new: np.ndarray) -> dict:
     return {k: [round(float(v) + float(d), 4) for v, d in zip(vals, shift)] for k, vals in q.items()}
 
 
-def tilt(fc: dict, values: Any) -> dict:
+def tilt(fc: dict, values: Any, period: int | None = None) -> dict:
     """The forecast with a trend centre when its centre was flat and a trend rule passes; the forecast unchanged otherwise.
     Each rule in CANDIDATES is tried; the one with the lowest error ratio among those that move visibly and stay within
     TOLERANCE is delivered. ``tilt_check`` is recorded whenever the centre was flat, so the answer can say what was tried."""
@@ -152,22 +213,24 @@ def tilt(fc: dict, values: Any) -> dict:
     own_dir = 0 if abs(own_move) < AGREE_FLOOR * final_half else (1 if own_move > 0 else -1)
     tried: dict[str, Any] = {}
     passing: list[tuple[float, str, np.ndarray, dict]] = []
-    for rule, fn in CANDIDATES.items():
-        path = fn(x, h)
+    for rule in CANDIDATES:
+        path = _path(rule, x, h, period)
         if path is None:
             tried[rule] = {"result": "the history is too short or the trend did not fit"}
             continue
         move = float(path[-1] - x[-1])
-        share = abs(move) / final_half
+        # A path that rises and falls with the season can end near the last value and still be far from flat.
+        share = float(np.max(np.abs(path - x[-1]))) / final_half
         info: dict[str, Any] = {"move": round(move, 4), "move_share_of_final_half_range": round(share, 3)}
         if share < MIN_MOVE:
             tried[rule] = {**info, "result": f"moves under {MIN_MOVE:.0%} of the range: no visible direction"}
             continue
-        if own_dir and (move > 0) != (own_dir > 0):
-            tried[rule] = {**info, "result": f"points {'up' if move > 0 else 'down'} while the model's own median moves "
+        heading = float(np.mean(path) - x[-1]) if rule in PERIOD_RULES else move     # a seasonal path's level, not its last step
+        if own_dir and (heading > 0) != (own_dir > 0):
+            tried[rule] = {**info, "result": f"points {'up' if heading > 0 else 'down'} while the model's own median moves "
                                              f"{'up' if own_dir > 0 else 'down'}: no agreement, so no tilt"}
             continue
-        ev = tilt_evidence(x, h, rule)
+        ev = tilt_evidence(x, h, rule, period)
         if not ev["scored"]:
             tried[rule] = {**info, "result": ev["reason"]}
             continue

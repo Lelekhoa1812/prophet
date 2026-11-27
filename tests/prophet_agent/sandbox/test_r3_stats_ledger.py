@@ -82,3 +82,11 @@ def test_unreadable_existing_file_is_not_overwritten(tmp_path):
     with pytest.raises(ValueError, match="cannot read"):
         led.save(str(target))
     assert target.read_text(encoding="utf-8") == "{not a list"
+
+
+def test_opening_a_scan_as_a_ledger_says_what_the_file_is(tmp_path):
+    """Round 20 (NVDA): the same opaque error three times on in/carried/scan.json stalled the mission."""
+    target = tmp_path / "scan.json"
+    target.write_text(json.dumps({"level_shifts": [], "outliers": []}), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"not a ledger.*level_shifts.*json.load.*ps.Ledger\(\)"):
+        ps.Ledger.open(str(target))

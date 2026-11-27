@@ -573,3 +573,11 @@ def test_cycle_strength_is_none_without_a_period():
     out = health.assess(y, np.linspace(200, 210, 12))
     assert out["period"] is None
     assert out["cycle_strength"] is None
+
+
+def test_a_date_before_level_shifts_is_not_a_count():
+    """Round 20 (NVDA): 'the 2025-07-09 and 2026-04-14 level shifts' was read as 14 shifts and blocked a correct draft."""
+    assert grounding.claimed_shift_counts("Already reflected in the 2025-07-09 and 2026-04-14 level shifts.") == []
+    assert grounding.claimed_shift_counts("Since the 29/10/2026 level shift the range widened.") == []
+    assert grounding.claimed_shift_counts("Three level shifts (2025-07-09, 2026-04-14).")[0][0] == 3
+    assert grounding.claimed_shift_counts("The scan found 3 level shifts.")[0][0] == 3

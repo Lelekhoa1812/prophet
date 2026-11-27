@@ -76,3 +76,29 @@ def test_disaggregation_of_a_flow_keeps_the_sums_and_follows_an_indicator():
         pl.disaggregate([1.0, 2.0], 3, indicator=[1, 1, 1])
     with pytest.raises(ValueError, match="factor"):
         pl.disaggregate([1.0, 2.0], 1)
+
+
+@pytest.mark.parametrize("cells, expected, flag", [
+    (["0,123", "1,5"], [0.123, 1.5], None),            # a comma after a lone 0 is never a thousands mark
+    (["12,3456"], [12.3456], None),                    # nor one before a group that is not three digits
+    (["1,234", "12,5"], [1.234, 12.5], None),           # the column writes decimal commas, so 1,234 is 1.234
+    (["1,234", "2,000"], [1234.0, 2000.0], "comma_could_be_decimal"),   # no evidence: thousands, and said so
+    (["1,234.5", "2,000"], [1234.5, 2000.0], None),     # a comma before a point: thousands marks
+    (["1,234,567"], [1234567.0], None),
+])
+def test_decimal_commas_are_read_by_what_the_comma_can_be(cells, expected, flag):
+    """Code-generation audit (2026-11-27): '0,123' was read as 123."""
+    values, info = pl.to_number(pd.Series(cells))
+    assert list(values) == pytest.approx(expected)
+    assert (flag in info) if flag else "comma_could_be_decimal" not in info
+
+
+@pytest.mark.parametrize("cells, expected", [
+    (["2026 Q3", "Q4 2026", "2027-Q1", "2027Q2", "q3 2027"],
+     ["2026-07-01", "2026-10-01", "2027-01-01", "2027-04-01", "2027-07-01"]),
+    (["2024M03", "2024-M12"], ["2024-03-01", "2024-12-01"]),
+])
+def test_quarter_labels_and_sdmx_month_codes_parse_to_the_period_start(cells, expected):
+    """Code-generation audit (2026-11-27): 'Q3 2026' parsed to NaT and the row was dropped without a word."""
+    dates, _ = pl.to_datetime(pd.Series(cells))
+    assert [str(d.date()) for d in dates] == expected

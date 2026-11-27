@@ -3,13 +3,14 @@ science, economics and energy, run through the local HTTP API with web research 
 
 Run the whole panel, or chosen keys, a few at a time:
     PYTHONPATH=src .venv/bin/python scripts/workflows/research_panel.py               # every mission
-    PYTHONPATH=src .venv/bin/python scripts/workflows/research_panel.py NVDA EPL      # chosen keys
+    PYTHONPATH=src .venv/bin/python scripts/workflows/research_panel.py GOLD EPL      # chosen keys
     PYTHONPATH=src .venv/bin/python scripts/workflows/research_panel.py --parallel 2
 
 Motivation vs Logic
 Motivation: Mission 9 is judged on open research missions that must find their own data, not on uploaded files. The same
-goals must be re-run after each batch of fixes so rounds can be compared; NVDA and EPL keep the exact goals of the two
-missions that failed on 2026-11-26.
+goals must be re-run after each batch of fixes so rounds can be compared. The panel holds the owner's six topics
+(2026-11-27): Vietnam and Australia monthly unemployment, the Australian cash rate, the EPL 2026/27 season, gold and the
+S&P 500.
 Logic: each mission gets its own notebook with web research on and one turn. Checkpoints are continued up to a limit. A
 question for the person is answered as an unattended run must: the first option that neither waits for an upload nor
 swaps in invented data, or else a free-text reply to keep researching. The record keeps every answer given. Each record keeps the final status, the outcome reasons, tool-call counts, sandbox cells, blocked
@@ -36,38 +37,29 @@ MAX_REFUSALS = 5     # refused continues (lease still held) retried before the p
 MAX_MINUTES = 120
 
 PANEL: dict[str, dict] = {
-    "NVDA": {"domain": "finance", "goal": (
-        "Research on Nvidia stock today and forecast their stock and best buy in time over the next 2 months. \n\n"
-        "Ask me questions if you may need to. Search extensively for all possible insights and signals that can possibly "
-        "influence this.")},
+    # The owner's six topics (2026-11-27). Every other mission was dropped from the panel and its notebooks deleted.
+    "VNUNEMP": {"domain": "economics", "goal": (
+        "Find Vietnam's monthly unemployment rate from public sources and forecast it month by month over the next 2 years "
+        "with a range. Say which grain is published and how any monthly value was obtained. Cite the source of every "
+        "figure.")},
+    "AUUNEMP": {"domain": "economics", "goal": (
+        "Find Australia's monthly unemployment rate (seasonally adjusted) from official open data and forecast it month by "
+        "month over the next 2 years with a range. Cite the source of every figure.")},
+    "AURATE": {"domain": "economics", "goal": (
+        "Find Australia's official interest rate (the Reserve Bank of Australia cash rate target) and forecast it over the "
+        "next 5 years with a range. Search for the drivers that move it, and cite the source of every figure.")},
     "EPL": {"domain": "sport", "goal": (
         "Research who can win the English Premier League in the 2026/27 season and forecast the points path for the main "
-        "contenders.\nCollect public results or current standings as a table. If the file download returns a page or an "
-        "error, diagnose that failure and extract the table from the page. Do not invent a results address.\nState the "
-        "competition, the season, and the measure (points or position) as a claim. Bind the series name only when the "
-        "table is that competition. A table for another league or another season stays unbound.\nThen compare the "
-        "contenders and forecast the rest of the season. Separate observed results from any derived ranking. Ask me which "
-        "clubs to keep if the table has many rows.")},
+        "contenders until the end of the 2026/27 season.\nCollect public results or current standings as a table. If the "
+        "file download returns a page or an error, diagnose that failure and extract the table from the page. Do not "
+        "invent a results address.\nState the competition, the season, and the measure (points or position) as a claim. "
+        "Separate observed results from any derived ranking. Ask me which clubs to keep if the table has many rows.")},
+    "GOLD": {"domain": "finance", "goal": (
+        "Find the gold price (US dollars per troy ounce) from public sources and forecast it month by month over the next "
+        "year with a range. Search for the signals that move it, and say what is measured and what is a source claim.")},
     "SPX": {"domain": "finance", "goal": (
-        "Find daily closing values of the S&P 500 index from public sources, check them, and forecast the next 20 trading "
-        "days with a range. Compare against the simple rules and say what is measured and what is a source claim.")},
-    "AUUNEMP": {"domain": "economics", "goal": (
-        "Find Australia's monthly unemployment rate (seasonally adjusted) from official open data and forecast the next "
-        "6 months with a range. Cite the source of every figure.")},
-    # The owner's VN Unemployment notebook (2026-11-27): a monthly seasonally adjusted series is not published for Vietnam,
-    # so the mission has to find what is published and ask.
-    "VNUNEMP": {"domain": "economics", "goal": (
-        "Find Vietnam monthly unemployment rate (seasonally adjusted) from the internet, and forecast the next 6 months "
-        "with a range.")},
-    "NEM": {"domain": "energy", "goal": (
-        "Find recent electricity demand for New South Wales in Australia's National Electricity Market from public data "
-        "and forecast daily demand for the next 14 days with a range. Say which data are measured and which are derived.")},
-    "GISTEMP": {"domain": "science", "goal": (
-        "Find the monthly global surface temperature anomaly from an open scientific source (for example NASA GISTEMP or "
-        "NOAA) and forecast the next 12 months with a range. Name the baseline period of the anomaly.")},
-    "NGSTORAGE": {"domain": "energy", "goal": (
-        "Find the weekly US natural gas working storage (Lower 48) from the EIA or another official source and forecast "
-        "the next 8 weeks with a range, using the seasonal pattern. Cite each source.")},
+        "Find the S&P 500 index from public sources, check it, and forecast it month by month over the next 2 years with a "
+        "range. Compare against the simple rules and say what is measured and what is a source claim.")},
 }
 
 

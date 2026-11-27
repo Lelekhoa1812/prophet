@@ -460,3 +460,52 @@ def test_series_search_puts_the_total_at_the_asked_frequency_first_and_names_the
 def test_search_open_data_is_offered_without_a_mission_and_is_read_only():
     tool = default_tools()["search_open_data"]
     assert tool.idempotent is True and tool.doc
+
+
+def _mirror_doc(code, periods, values):
+    import json as _json
+    return _json.dumps({"series": {"docs": [{
+        "series_code": code, "series_name": "x", "@frequency": "quarterly", "indexed_at": "2024-02-20T03:34:29Z",
+        "period": periods, "period_start_day": [f"{p[:4]}-{3 * (int(p[-1]) - 1) + 1:02d}-01" for p in periods],
+        "value": values}]}}).encode()
+
+
+def test_a_stale_ilo_mirror_copy_is_fetched_from_ilostat_itself(monkeypatch, mission):
+    """Round 20 (AUUNEMP, 2026-11-27): the mirror's ILO copy ended in December 2023 and the answer called it the latest
+    figure; ILOSTAT itself had October 2026. A stale ILO copy is re-fetched from ILOSTAT, and the result says so."""
+    from datetime import date
+    from prophet_agent.tools import opendata_tools as ot
+    seen = []
+    ilostat_csv = (b"DATAFLOW,REF_AREA,FREQ,MEASURE,SEX,AGE,TIME_PERIOD,OBS_VALUE\n"
+                   b"ILO:DF_UNE_DEAP_SEX_AGE_RT(1.0),VNM,Q,UNE_DEAP_RT,SEX_T,AGE_YTHADULT_YGE15,2026-Q2,1.61\n")
+
+    def handler(request):
+        seen.append(str(request.url))
+        if "sdmx.ilo.org" in request.headers.get("host", "") + str(request.url):
+            return httpx.Response(200, headers={"content-type": "text/csv"}, content=ilostat_csv)
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              content=_mirror_doc("VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.Q", ["2023-Q2", "2023-Q3"], [1.58, 1.67]))
+
+    monkeypatch.setattr(fetch, "open_client", lambda timeout_s: httpx.Client(transport=httpx.MockTransport(handler),
+                                                                              follow_redirects=False))
+    monkeypatch.setattr(netguard, "_default_resolver", lambda host, port: [PUBLIC])
+    monkeypatch.setattr(ot, "_today", lambda: date(2026, 11, 27))
+    tool = default_tools(opendata=mission.context())["download_open_data"]
+    out = tool.fn({"source": "dbnomics", "params": {"provider": "ILO", "dataset": "UNE_DEAP_SEX_AGE_RT",
+                                                    "series": "VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.Q"}}, "k")
+    assert out["source"] == "ilostat_sdmx" and "ILOSTAT itself" in out["rerouted"]
+    assert any("VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15" in u for u in seen)
+    assert "2026-Q2" in mission.store.path(out["dataset_id"]).read_text()
+
+
+def test_a_stale_mirror_copy_that_cannot_be_rerouted_says_how_old_it_is(served, mission, monkeypatch):
+    from datetime import date
+    from prophet_agent.tools import opendata_tools as ot
+    monkeypatch.setattr(ot, "_today", lambda: date(2026, 11, 27))
+    served["content_type"] = "application/json"
+    served["body"] = _mirror_doc("AUS.Q", ["2023-Q3", "2023-Q4"], [3.7, 3.9])
+    tool = default_tools(opendata=mission.context())["download_open_data"]
+    out = tool.fn({"source": "dbnomics", "params": {"provider": "OECD", "dataset": "DF_X", "series": "AUS.Q"}}, "k")
+    assert "ends 2023-Q4" in out["stale"] and "latest" in out["stale"]
+    fresh = ot._stale_mirror({"last_period": "2026-Q2"})
+    assert fresh is None

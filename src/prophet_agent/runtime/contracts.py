@@ -1657,7 +1657,7 @@ CENTRE_WORDS = {"timesfm": "TimesFM", "global_gbm": "the pooled gradient-boosted
                 "seasonal_naive": "the same step a season earlier", "mean_last_season": "the average of the last season",
                 "drift": "the drift rule", "blend": "the blend",
                 "damped_trend": "a damped trend", "recent_drift": "the recent average change",
-                "momentum": "the recent change"}
+                "momentum": "the recent change", "mean_reversion": "a pull toward the recent level with the season"}
 
 
 def _panel_rules(h: dict, res: dict) -> list[str]:
@@ -3103,7 +3103,8 @@ def _flat_claim_after_tilt(text: str, obs: list) -> dict | None:
     """The answer calls the centre line flat or a level, but the newest pack drew a trend rule its own tilt chose (owner review
     of round 14 charts, 2026-11-27: flat lines are not accepted when the history gives a direction). Blocks."""
     drawn = _delivered_centre(obs)
-    tilted = drawn in ("damped_trend", "recent_drift", "momentum")
+    from prophet_agent.forecast.direction import TILT_RULES
+    tilted = drawn in TILT_RULES
     moves = _drawn_line_moves(obs)
     if not tilted and not (moves and moves[0]):
         return None
@@ -3125,7 +3126,7 @@ def _latest_health_verdict(obs: list) -> str | None:
     return delivered_verdict(obs)
 
 
-TRENDING_CENTRES = ("drift", "damped_trend", "recent_drift", "momentum")
+TRENDING_CENTRES = ("drift", "damped_trend", "recent_drift", "momentum", "mean_reversion")   # drawn lines that move
 
 
 def _delivered_centre(obs: list) -> str | None:

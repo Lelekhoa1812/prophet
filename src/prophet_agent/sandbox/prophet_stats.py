@@ -1390,6 +1390,13 @@ def _read_ledger(path: str) -> list[dict[str, Any]] | None:
         data = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"cannot read ledger at {path}: {exc}; not overwriting it") from exc
+    if isinstance(data, dict):
+        # Round 20 (NVDA): Ledger.open('in/carried/scan.json') was retried three times with the same error, and the mission
+        # stalled. Say what the file is and what to do instead.
+        keys = ", ".join(list(map(str, data))[:6])
+        raise ValueError(f"{path} is not a ledger: it holds a JSON object (keys: {keys}), such as a scan or a result. Read it "
+                         f"with json.load(open(path)); start a ledger with ps.Ledger(), or open a file written by "
+                         f"Ledger.save (out/ledger.json, carried as in/carried/ledger.json)")
     if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
         raise ValueError(f"cannot read ledger at {path}: expected a JSON list of entries; not overwriting it")
     return [{k: v for k, v in e.items() if k != "index"} for e in data]

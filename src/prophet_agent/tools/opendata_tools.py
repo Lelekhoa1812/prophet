@@ -165,18 +165,76 @@ def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
                 live.failed[url] = str(exc)[:160]
                 raise ValueError(f"{exc}. {_next_after_failure(source, params)}") from None
             raise
+        dbn = meta.get("provenance", {}).get("dbnomics")
+        stale = _stale_mirror(dbn) if source == "dbnomics" and dbn else None
+        rerouted = None
+        if stale and str(params.get("provider", "")).upper() == "ILO":
+            rerouted = _from_ilostat(store, live, params)
+            if rerouted:
+                stale_meta, meta, source = meta, rerouted, "ilostat_sdmx"
         mount = _mount(ctx, live, meta)
         extra = {"source": source}
         if resolved:
             extra["resolved"] = resolved
-        dbn = meta.get("provenance", {}).get("dbnomics")
         if dbn:
             extra["mirror"] = dbn
+        if stale and rerouted:
+            extra["rerouted"] = (f"the mirror's copy ends {stale['last_period']} ({stale['age_days']} days ago), so the series "
+                                 f"was fetched from ILOSTAT itself; the mirror's copy is dataset {stale_meta['id']}")
+        elif stale:
+            extra["stale"] = (f"the mirror's copy ends {stale['last_period']}, {stale['age_days']} days ago. Do not call it "
+                              "the latest figure. Fetch the series from the provider's own service (search_open_data names "
+                              "a direct_download for ILO series; oecd_sdmx, imf, eurostat_sdmx or a national statistics "
+                              "office for others), or say in the answer how old the data is")
         note = _month_file_note(source, params)
         if note:
             extra["note"] = note
         return _result(meta, mount, extra)
     return Tool("download_open_data", run, idempotent=True)
+
+
+STALE_AFTER_DAYS = {"M": 150, "Q": 270, "A": 640}
+
+
+def _today():
+    from datetime import date
+    return date.today()
+
+
+def _stale_mirror(dbn: dict) -> dict | None:
+    """The mirror's last period and its age when it is older than a fresh release would be, else None.
+
+    Motivation: round 20 (AUUNEMP, 2026-11-27) downloaded the DBnomics copy of an ILO monthly series that ended in December
+    2023 and called it "the latest official figure"; ILOSTAT itself had October 2026. A monthly figure is normally out
+    within a quarter, a quarterly one within two quarters and an annual one within about a year and a half."""
+    from datetime import date
+    from prophet_agent.research.text_figures import parse_period
+    last = str((dbn or {}).get("last_period") or "")
+    parsed = parse_period(last)
+    if not parsed:
+        return None
+    label, start = parsed
+    freq = "Q" if "-Q" in label else "M" if re.fullmatch(r"\d{4}-\d{2}", label) else "A" if re.fullmatch(r"\d{4}", label) else ""
+    if not freq:
+        return None
+    age = (_today() - date.fromisoformat(start)).days
+    return {"last_period": last, "age_days": age, "frequency": freq} if age > STALE_AFTER_DAYS[freq] else None
+
+
+def _from_ilostat(store, live: LiveMounts, params: dict) -> dict | None:
+    """The same ILO series from ILOSTAT's own SDMX service, or None when it cannot be fetched."""
+    call = catalogue.ilostat_call(str(params.get("dataset", "")), str(params.get("series", "")))
+    if not call:
+        return None
+    direct = call["args"]["params"]
+    try:
+        url = sources.build_url("ilostat_sdmx", direct)
+        if url in live.failed:
+            return None
+        return download_to_dataset("ilostat_sdmx", direct, store)
+    except (fetch.DownloadError, ValueError) as exc:
+        live.failed[sources.build_url("ilostat_sdmx", direct)] = str(exc)[:160]
+        return None
 
 
 def _next_after_failure(source: str, params: dict) -> str:
