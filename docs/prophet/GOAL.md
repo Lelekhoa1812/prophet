@@ -1860,3 +1860,31 @@ Changes:
 - Planner v42: rule 24c, the analyst standard (map, search broadly then surgically with lanes, measure, triangulate,
   scenarios, record, answer with drivers, benchmarks and scenarios); the league bullet names football-data files.
 Not yet measured on a live panel round. **M9-8 is not met.**
+
+### Round 24: owner choices, newest level, band width, league adjustments and lane briefs (2026-11-27)
+
+Owner choices: restart the panel now on the new code; the fundamentals check warns before it blocks; scenario
+probabilities come from market pricing first and the agent's judgement only where no market prices the event; then the
+newest-level check, band width, deeper league signals and parallel research lanes.
+
+Changes:
+- `fundamentals_covered` has severity warn unless PROPHET_FUNDAMENTALS_GATE=block, so the first live rounds measure what
+  missions reach on their own (the round started at 22:14 on 3967689 ran it as a block and was restarted).
+- Scenarios carry probability_source, market or judgement (the default); a market probability needs the URL of the
+  pricing. Both charts and tables show it; planner v42 rule 24c-e says market first.
+- `newest_level_used` (policy rate: block; unemployment rate: warn): sentences in research sources dated after the series'
+  last observation that report the target set or released at a level, not forecast, give the newest level; a forecast whose
+  first step is not near it is held. Replayed on the stored ledgers it blocks AURATE in rounds 21 and 22 (4.85% from
+  sources dated 24 to 26 November against a forecast starting at 4.60%) and leaves AUUNEMP, whose October figure is in its
+  series.
+- `band_width_sane` (warn): the delivered end-of-horizon 10 to 90 width against the 10 to 90 spread of the series' own
+  h-step changes over the last 25 years (log changes for a price), flagged outside 0.35 to 2.5 times. Replayed: SPX 0.79,
+  VNUNEMP 0.86, AUUNEMP 2.80 (flagged). AURATE's 1.9 to 8.7 for five years is in line with the cash rate's own five-year
+  moves since 2000, so it is not flagged on history alone.
+- simulate_season takes `adjustments` (a club's shift in log goals to a date, with reason and evidence: injuries, a
+  manager change, European congestion) and `outright` market prices for title, top places and relegation, with the margin
+  taken out when every club is priced; gaps of 10 points or more are named. ClubElo's API did not answer from this
+  machine, so Elo is not wired in.
+- driver_map plan returns ready lane briefs (two families per lane, plus one for benchmarks and market-priced scenario
+  odds) for the existing lanes runtime.
+Not yet measured on a live panel round. **M9-8 is not met.**
