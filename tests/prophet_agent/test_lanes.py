@@ -160,3 +160,41 @@ def test_a_lane_cannot_start_lanes():
     class Cfg:
         depth = 1
     assert "cannot start lanes" in lanes.run_lanes(None, None, _fan_out(2), {}, Cfg(), "", [], None, 100_000)[0]["error"]
+
+
+def test_a_nested_planner_is_not_offered_lanes_or_delegate():
+    """Round 20261128-063203: sub-agents planned "lanes" 924 times in VNUNEMP and 14 times in a row in SPX and EPL; each
+    was refused and planned again."""
+    from prophet_agent.runtime.goal import PLAN_SCHEMA_NESTED
+    assert PLAN_SCHEMA_NESTED["properties"]["action"]["enum"] == ["call_tool", "ask_user", "finish"]
+    assert validate(_fan_out(2), PLAN_SCHEMA_NESTED) is not None
+    assert validate({"action": "call_tool", "tool": "web_search", "args": {}, "rationale": "r"}, PLAN_SCHEMA_NESTED) is None
+    assert "lanes" in PLAN_SCHEMA["properties"]["action"]["enum"], "the lead keeps them"
+
+
+def test_the_same_briefs_are_not_started_again(store):
+    """Live AURATE re-sent the same six lane briefs fifteen times in a row."""
+    done = {f"angle {k}": [{"action": "finish", "rationale": "d"}] for k in range(3)}
+    brain = LaneBrain([_fan_out(2), _fan_out(3), _fan_out(2), {"action": "finish", "rationale": "d"}], done)
+    out = Runtime(store).run(store.create_mission("g", {}), goal_program("g", {"web_search": _tool("web_search")}, brain))
+    ev = out["result"]["evidence"]
+    subs = [h for h in ev if h.get("kind") == "subagent"]
+    assert sorted(s["task"] for s in subs) == ["angle 0", "angle 1", "angle 2"], "only the new brief ran the second time"
+    digests = [h for h in ev if h.get("kind") == "lanes"]
+    assert digests[1]["not_started_again"] and len(digests[1]["lanes"]) == 1
+    assert "already ran" in digests[2]["error"]
+
+
+def test_a_brief_can_name_mission_tools_outside_its_type(store):
+    """Live AURATE: analyst lanes sent to download drivers reported "download_open_data is not available"."""
+    plan = {"action": "lanes", "rationale": "drivers",
+            "lanes": [{"task": "download and test the yield", "agent_type": "analyst",
+                       "tools": ["download_open_data", "sandbox_python"]}]}
+    lane = {"download and test the yield": [{"action": "call_tool", "tool": "download_open_data", "args": {"s": 1},
+                                             "rationale": "x"}, {"action": "finish", "rationale": "d"}]}
+    brain = LaneBrain([plan, {"action": "finish", "rationale": "d"}], lane)
+    tools = {"download_open_data": _tool("download_open_data"), "sandbox_python": _tool("sandbox_python")}
+    out = Runtime(store).run(store.create_mission("g", {}), goal_program("g", tools, brain))
+    sub = next(h for h in out["result"]["evidence"] if h.get("kind") == "subagent")
+    assert "download_open_data" in sub["tools"]
+    assert any(e.get("tool") == "download_open_data" and "result" in e for e in sub.get("evidence") or [])

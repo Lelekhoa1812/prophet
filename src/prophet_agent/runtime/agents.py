@@ -42,7 +42,7 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
         "cited findings. Use before forecasting anything driven by events: FX, commodities, equities, demand tied to "
         "policy, weather or news.",
         tools=("web_research", "web_search", "web_fetch", "find_in_page", "extract_page_charts", "download_web_data",
-               "download_market_prices", "download_open_data", *_COMMON),
+               "download_market_prices", "search_open_data", "download_open_data", "market_benchmark", *_COMMON),
         skills=("web-research-playbook",), steps=14,
         role="You are a research sub-agent. Plan several different angles first, search them together, read the best "
              "passages, follow up on what is missing, and stop when new searches add nothing. Every claim you report has "
@@ -52,7 +52,8 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
         "analyst",
         "Takes one slice of the data (one column, entity, period or defect) and analyses it down to the atomic level with "
         "Python: profile, decompose, test, compare, and report what it means for the forecast.",
-        tools=("sandbox_python", "inspect_data", "detect_anomalies", "build_drivers", "save_table", *_COMMON),
+        tools=("sandbox_python", "inspect_data", "detect_anomalies", "build_drivers", "save_table", "search_open_data",
+               "download_open_data", "download_market_prices", "control_lab", *_COMMON),
         skills=("first-contact-profile",), steps=14,
         role="You are an analysis sub-agent. Work in small cells that print what they find. Read the data before you "
              "decide. Report findings with the numbers the cells printed, the decision you recommend and why, and the "

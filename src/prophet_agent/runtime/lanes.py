@@ -132,6 +132,35 @@ def specs(plan: dict) -> list[dict]:
     return [{k: t.get(k) for k in keys} for t in raw if isinstance(t, dict) and str(t.get("task") or "").strip()][:MAX_LANES]
 
 
+def _lane_keys(spec: dict) -> set[str]:
+    task = " ".join(str(spec.get("task") or "").lower().split())[:200]
+    name = " ".join(str(spec.get("name") or "").lower().split())
+    return {k for k in (f"task:{task}" if task else "", f"name:{name}" if name else "") if k}
+
+
+def _not_run_before(lane_specs: list[dict], history: list[dict]) -> tuple[list[dict], list[str]]:
+    """The briefs that did not run before in this mission, and a line for each one left out.
+
+    Motivation: live AURATE (round 20261128-063203) planned lanes fifteen times in a row and re-sent the same six briefs
+    ("RBA policy path" five times, "Risk scenarios" six times); VNUNEMP repeated briefs up to 140 times. Each re-run read the
+    same pages and reported the same gaps. Logic: a brief whose task or name matches an earlier lane is left out when that
+    lane wrote a report (met, partial or not met), or after two earlier attempts of any status. Read from the stored history,
+    so a replay leaves out the same briefs."""
+    earlier: dict[str, list[str]] = {}
+    for h in history:
+        if isinstance(h, dict) and h.get("kind") == "subagent" and h.get("lane"):
+            for key in _lane_keys({"task": h.get("task"), "name": h.get("name")}):
+                earlier.setdefault(key, []).append(str(h.get("status") or ""))
+    keep, skipped = [], []
+    for sp in lane_specs:
+        seen = [st for key in _lane_keys(sp) for st in earlier.get(key, [])]
+        if any(st in ("met", "partial", "not_met") for st in seen) or len(seen) >= 2:
+            skipped.append(f"{str(sp.get('name') or sp.get('task'))[:60]}: {seen[-1] or 'ran'}")
+            continue
+        keep.append(sp)
+    return keep, skipped
+
+
 def roster_text(ids: list[str], lane_specs: list[dict]) -> str:
     lines = [f"- {i} ({sp.get('agent_type') or 'researcher'}): {str(sp.get('name') or '').strip() + ': ' if sp.get('name') else ''}"
              f"{' '.join(str(sp['task']).split())[:160]}" for i, sp in zip(ids, lane_specs)]
@@ -179,6 +208,12 @@ def run_lanes(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: Any
     if started + len(lane_specs) > MAX_LANE_AGENTS:
         return [{"kind": "lanes", "error": f"this mission already started {started} sub-agents; at most {MAX_LANE_AGENTS}. "
                  "Start fewer lanes or do the step yourself."}]
+    lane_specs, skipped = _not_run_before(lane_specs, history)
+    if not lane_specs:
+        return [{"kind": "lanes", "error": "every lane in this plan already ran in this mission ("
+                 + "; ".join(skipped[:8]) + "). Do not start them again: read their reports (kind subagent) and take the "
+                 "next step yourself (download and test the drivers they found, forecast, record the driver map), or start "
+                 "lanes with new tasks for what is still missing"}]
     for sp in lane_specs:
         sp["agent_type"] = sp.get("agent_type") or "researcher"
     ids = [f"a{started + 1 + k}" for k in range(len(lane_specs))]
@@ -230,4 +265,7 @@ def run_lanes(ctx: Ctx, brain: Any, plan: dict, tools: dict[str, Tool], cfg: Any
                 raise exc
     to_lead = ctx.step("lanes:board", lambda c: c.store.board_read(c.mission_id, "lead", limit=200))
     reports = [r for r in results if isinstance(r, dict)]
-    return reports + [_digest(reports, to_lead if isinstance(to_lead, list) else [])]
+    digest = _digest(reports, to_lead if isinstance(to_lead, list) else [])
+    if skipped:
+        digest["not_started_again"] = skipped
+    return reports + [digest]

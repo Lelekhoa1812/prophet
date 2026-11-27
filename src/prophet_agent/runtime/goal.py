@@ -1200,8 +1200,20 @@ def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, 
     return [{"role": "system", "content": system}, {"role": "user", "content": user + "\n\nWrite the final answer in Markdown."}]
 
 
+# A sub-agent (depth 1) cannot start lanes or delegate: those plans were refused every time and planned again. Live round
+# 20261128-063203: 924 "lanes" decisions in VNUNEMP, 126 of 166 in AUUNEMP, 14 in a row in SPX and in EPL lane a5. The
+# nested planner is not offered them.
+PLAN_SCHEMA_NESTED: dict[str, Any] = {
+    **PLAN_SCHEMA,
+    "properties": {**PLAN_SCHEMA["properties"],
+                   "action": {"type": "string", "enum": ["call_tool", "ask_user", "finish"]}},
+    **({"allOf": [c for c in PLAN_SCHEMA["allOf"] if c.get("if", {}).get("properties", {}).get("action", {}).get("const")
+                  not in ("lanes", "delegate")]} if "allOf" in PLAN_SCHEMA else {}),
+}
+
+
 def _decide_plan(brain: Any, goal: str, tools: dict[str, Tool], history: list[dict], memo: Memo, context: str,
-                 note: str, *, finish_now: bool, out_of_calls: bool) -> dict:
+                 note: str, *, finish_now: bool, out_of_calls: bool, nested: bool = False) -> dict:
     """The planner's decision for one step, made inside a stored step. Forced finishes never reach a tool: when the
     person asked for the answer now, or the tool allowance is spent, the decision is a finish."""
     if finish_now:
@@ -1209,7 +1221,8 @@ def _decide_plan(brain: Any, goal: str, tools: dict[str, Tool], history: list[di
     if out_of_calls:
         # No tool call is left, so planning another would only end the run with nothing to show.
         return {"action": "finish", "rationale": "tool budget used"}
-    return brain.decide(_plan_messages(goal, tools, history, memo, context, note), PLAN_SCHEMA, "plan")
+    return brain.decide(_plan_messages(goal, tools, history, memo, context, note),
+                        PLAN_SCHEMA_NESTED if nested else PLAN_SCHEMA, "plan")
 
 
 def _compact_messages(goal: str, previous: str, chunk: list[dict]) -> list[dict]:
@@ -2100,9 +2113,12 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     agent = agents.get(spec.get("agent_type")) or agents.TYPES["general"]
     agent_id = f"a{number}"
     sub_tools = agents.allowed(agent, tools)
-    asked = [n for n in (spec.get("tools") or []) if n in sub_tools]
+    # The brief's tool list is the lead's decision and is read from the mission's tools, not only the type's: live AURATE
+    # (round 20261128-063203) sent twenty analyst lanes to download and test drivers, and each reported "download_open_data
+    # is not available" because the analyst type has no download tools.
+    asked = [n for n in (spec.get("tools") or []) if isinstance(n, str) and n in tools and n not in ("notes", "board")]
     if asked:
-        sub_tools = {n: sub_tools[n] for n in asked}
+        sub_tools = {n: tools[n] for n in asked}
     sub_tools.pop("notes", None)
     sub_tools["notes"] = _notes_for(ctx, agent_id)
     if lane:
@@ -2721,7 +2737,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # The allowance decision is stored with the plan (A5-07). A resumed run after a top-up recomputes out_of_calls as
             # False, but the stored plan was made when the allowance was spent, so the gates below read the stored value.
             plan = ctx.step(f"plan:{tag}:{i}", lambda c: {**_decide_plan(brain, goal, tools, history, memo, context, note,
-                                                                        finish_now=cfg.finish_now, out_of_calls=out_of_calls),
+                                                                        finish_now=cfg.finish_now, out_of_calls=out_of_calls,
+                                                                        nested=cfg.depth > 0),
                                                           "out_of_calls": out_of_calls})
         spent = bool(plan.get("out_of_calls", out_of_calls))
         plan = as_question_action(plan)
