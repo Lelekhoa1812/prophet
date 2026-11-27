@@ -1783,3 +1783,17 @@ the next year" is one year, and "total" as a category label is not a stated tota
 and contender coverage, SPX time-index failures, GOLD headline versus centre, step-shaped policy-rate paths.
 Research lanes (4de19e8): up to 50 sub-agent lanes per fan-out on a bounded pool with a shared board; not yet measured on the
 panel. **M9-8 is not met.**
+
+### Round 22: predictions are charted and never a flat line (owner review, 2026-11-27)
+The owner found a duplicated picture (a chart saved as PNG and SVG shown twice), flat horizontal centre lines, and predictions
+that arrived as a table with no chart (EPL). Repairs (commit 4bf4411 and after):
+- One picture per chart: the console shows the PNG and keeps the SVG in the file list; the activity panel lists the pair once.
+- `runtime/prediction_quality.py`, run for the lead with the horizon checks: `prediction_charted` blocks a finish while a
+  forecast, pack or season simulation has no PNG or SVG written at or after it; `centre_not_flat` blocks a delivered
+  single-series centre line that does not move against its band until four of seven strategies (trend rules, step or regime
+  path, cycle and calendar, outside drivers, a blend, cleaning, outside research) show in the calls; `signals_gathered` warns
+  when only the series' own history was used.
+- `simulate_season` draws a club-compared chart for every league run (expected final points with the 10 to 90 range, today's
+  total, and the chance of title, top places and relegation), built in the sandbox from the simulation's own figures.
+- Planner v40 rule 24b: shape, chart, clean data first (outliers, breaks, noise, bias, scored against raw), many signals combined.
+Not yet measured on a live panel round: whether the flat-line block moves AUUNEMP, AURATE and SPX to steps or trends.

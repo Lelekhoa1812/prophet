@@ -85,5 +85,13 @@ def test_three_strategies_is_not_enough():
 
 def test_prediction_checks_collects_both_and_never_raises():
     out = pq.prediction_checks([pack(FLAT, files=())])
-    assert {c["name"] for c in out} == {"prediction_charted", "centre_not_flat"}
+    assert {c["name"] for c in out} == {"prediction_charted", "centre_not_flat", "signals_gathered"}
     assert pq.prediction_checks([None, "x", {"kind": "tool"}]) == []
+
+
+def test_signals_gathered_warns_without_blocking_and_clears_with_a_driver_test():
+    warn = pq.check_signals_gathered([pack(MOVING)])
+    assert not warn["ok"] and warn["severity"] == "warn"
+    with_driver = [call("control_lab", {"with_covariates": True, "past_covariates": [[1.0]]}), pack(MOVING)]
+    assert pq.check_signals_gathered(with_driver) is None
+    assert pq.check_signals_gathered([call("sandbox_python")]) is None

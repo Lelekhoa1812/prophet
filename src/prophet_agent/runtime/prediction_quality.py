@@ -133,10 +133,26 @@ def check_flat_centre(history: Any) -> dict | None:
                   "best, and rebuild the pack with it as the centre")
 
 
+def check_signals_gathered(history: Any) -> dict | None:
+    """A warning (it does not block) when a single-series prediction was delivered with no outside signal gathered: no driver
+    tested as a covariate and no outside research. The planner sees it beside the blocking checks. None when there is no
+    prediction or a signal was gathered."""
+    flat = _flatten(history)
+    if not any(_ok_result(h, t) is not None for h in flat for t in ("forecast_report", "timesfm_forecast")):
+        return None
+    tried = set(strategies_tried(history))
+    if tried & {"drivers", "research"}:
+        return None
+    return _check("signals_gathered", False,
+                  "the prediction uses the series' own history only. Gather outside signals (related and leading series, "
+                  "calendar and weather, scheduled events, consensus), keep those that win on rolling origins, and combine them",
+                  "warn")
+
+
 def prediction_checks(history: Any) -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
-    for fn in (check_prediction_chart, check_flat_centre):
+    for fn in (check_prediction_chart, check_flat_centre, check_signals_gathered):
         try:
             c = fn(history)
         except Exception:                      # noqa: BLE001 - a quality gate must not break a finish
