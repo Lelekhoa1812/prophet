@@ -700,13 +700,13 @@ def _fixed_values(played: list[Match], team: str, sport: str, points) -> list[fl
     return values
 
 
-def _football_chunk(model: DixonColes, hi, ai, n, rng, points, interest):
+def _football_chunk(model: DixonColes, hi, ai, n, rng, points, interest, off_h=None, off_a=None):
     T = model.n_teams
     th = rng.multivariate_normal(model.theta, model.cov, size=n, method="eigh")
     att, dfn = th[:, :T], th[:, T:2 * T]
     home, rho = th[:, 2 * T], np.clip(th[:, 2 * T + 1], -0.5, 0.5)
-    lam = np.exp(att[:, hi] - dfn[:, ai] + home[:, None])
-    mu = np.exp(att[:, ai] - dfn[:, hi])
+    lam = np.exp(att[:, hi] - dfn[:, ai] + home[:, None] + (0.0 if off_h is None else off_h[None, :]))
+    mu = np.exp(att[:, ai] - dfn[:, hi] + (0.0 if off_a is None else off_a[None, :]))
     hg, ag = _sample_scores(lam, mu, np.broadcast_to(rho[:, None], lam.shape).copy(), rng)
     ph, pa = _pts(hg, ag, points), _pts(ag, hg, points)
     H, A = _incidence(hi, T), _incidence(ai, T)
@@ -941,9 +941,36 @@ def _team_index(teams: list[str]) -> dict[str, int]:
     return {t: i for i, t in enumerate(teams)}
 
 
+def adjustment_offsets(rem: list[Match], adjustments: list[dict]) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Per-fixture log-rate offsets (home goals, away goals) from club adjustments, with a line per adjustment.
+
+    Owner review (2026-11-27): the ratings cannot see an injury list, a manager change or a run of midweek European games.
+    An adjustment {team, shift, until, reason, evidence} moves that club's remaining matches up to ``until`` (all of them
+    when left out): shift is in log goals, so -0.1 means the club scores about 10% fewer and concedes about 10% more."""
+    off_h, off_a = np.zeros(len(rem)), np.zeros(len(rem))
+    lines = []
+    for a in adjustments:
+        hit = 0
+        for j, m in enumerate(rem):
+            if a.get("until") and m.date and str(m.date)[:10] > a["until"]:
+                continue
+            if m.home == a["team"]:
+                off_h[j] += a["shift"]
+                off_a[j] -= a["shift"]
+                hit += 1
+            elif m.away == a["team"]:
+                off_a[j] += a["shift"]
+                off_h[j] -= a["shift"]
+                hit += 1
+        lines.append(f"{a['team']} {a['shift']:+.2f} log goals over {hit} remaining matches"
+                     + (f" to {a['until']}" if a.get("until") else "") + f" ({a['reason'][:80]})")
+    return off_h, off_a, lines
+
+
 def _football_season(played: list[Match], rem: list[Match], teams: list[str], *, n_sims: int, seed: int,
                      points, half_life_days, prior_sd, interest: list[str], relegation_places: int, top_places: int,
-                     fit_extra: list[Match] = (), xg_weight: float = 0.0, market_weight: float = 0.0) -> dict:
+                     fit_extra: list[Match] = (), xg_weight: float = 0.0, market_weight: float = 0.0,
+                     adjustments: list[dict] = ()) -> dict:
     """Simulate the remaining football matches; ranking by points, goal difference, goals for, then name. ``fit_extra``
     (earlier seasons) is used to fit the ratings only; the table and the simulation start from ``played``."""
     model = fit_dixon_coles(_chronological(list(fit_extra) + list(played))[0], teams=teams, half_life_days=half_life_days,
@@ -955,7 +982,8 @@ def _football_season(played: list[Match], rem: list[Match], teams: list[str], *,
     keep = {idx[t] for t in interest}
     rng = np.random.default_rng(seed)
     chunk = max(1, 2_000_000 // max(1, len(rem)))
-    parts = [_football_chunk(model, hi, ai, min(chunk, n_sims - s), rng, points, keep)
+    off_h, off_a, adj_lines = adjustment_offsets(rem, list(adjustments))
+    parts = [_football_chunk(model, hi, ai, min(chunk, n_sims - s), rng, points, keep, off_h, off_a)
              for s in range(0, n_sims, chunk)]
     table = {r["team"]: r for r in standings(played, points)}
     base_pts = np.array([table.get(t, {}).get("points", 0) for t in teams], float)
@@ -980,7 +1008,7 @@ def _football_season(played: list[Match], rem: list[Match], teams: list[str], *,
                 "n_played": len(played), "n_remaining": len(rem), "top_places": top_places,
                 "relegation_places": relegation_places, "n_sims": n_sims, "seed": seed,
                 "xg_weight": xg_weight, "market_weight": market_weight,
-                "signals": {**model.signals, "history_matches": len(fit_extra)}}
+                "signals": {**model.signals, "history_matches": len(fit_extra)}, "adjustments": adj_lines}
     return {"totals": total, "prob": prob, "values": values, "ratings": ratings, "settings": settings,
             "standing": standings(played, points), "groups": None, "metric": "points",
             "finishing": finishing_gaps(played)}
@@ -1112,13 +1140,65 @@ def _same_names(history: list[Match], teams: list[str]) -> tuple[list[Match], di
     return out, renamed
 
 
+def _known_adjustments(adjustments: list[dict], teams: list[str], notes: list[str]) -> list[dict]:
+    """Adjustments renamed to this season's spelling; one naming no club in the table is left out with a note."""
+    keys = {club_key(t): t for t in teams}
+    out = []
+    for a in adjustments:
+        team = keys.get(club_key(a["team"]))
+        if team is None:
+            notes.append(f"adjustment for {a['team']!r} left out: no club of that name in the results")
+            continue
+        out.append({**a, "team": team})
+    return out
+
+
+def compare_outright(team_rows: list[dict], outright: dict, source: str = "") -> dict:
+    """The model's chances beside the market's outright prices, per club: {market: {chance: {team: p}}, gaps, note}.
+
+    Owner review (2026-11-27): Brighton were given a 45% title chance while bookmakers priced them as outsiders; nothing
+    put the two side by side. Logic: each chance (title, top_places, relegation) takes decimal odds (above 1) or
+    probabilities (0 to 1) per club; odds become 1/odds, and when every club is priced the set is scaled to the number of
+    places it pays (1 for the title, the top places, the relegation places) to take out the bookmaker's margin. Gaps of 10
+    percentage points or more are named."""
+    keys = {club_key(r["team"]): r for r in team_rows}
+    expected = {"title": 1.0, "top_places": None, "relegation": None}
+    market: dict[str, dict[str, float]] = {}
+    gaps = []
+    for chance, prices in outright.items():
+        if chance not in expected or not isinstance(prices, dict) or not prices:
+            raise ValueError("outright takes title, top_places and relegation, each {club: decimal odds or probability}")
+        raw = {}
+        for club, v in prices.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
+                raise ValueError(f"outright {chance} {club}: give decimal odds above 1 or a probability from 0 to 1")
+            row = keys.get(club_key(str(club)))
+            if row is None:
+                raise ValueError(f"outright {chance}: no club named {club!r} in the results")
+            raw[row["team"]] = 1.0 / v if v > 1 else float(v)
+        total = sum(raw.values())
+        places = expected[chance] or (round(sum(r.get(chance, 0.0) for r in team_rows)) or None)
+        if len(raw) == len(team_rows) and places and total > 0:
+            raw = {t: p * places / total for t, p in raw.items()}
+        market[chance] = raw
+        for t, p in raw.items():
+            model = float(next(r for r in team_rows if r["team"] == t).get(chance, 0.0))
+            if abs(model - p) >= 0.10:
+                gaps.append({"team": t, "chance": chance, "model": model, "market": p, "gap": model - p})
+    gaps.sort(key=lambda g: -abs(g["gap"]))
+    note = ("market outright prices" + (f" ({source[:90]})" if source else "") + ": "
+            + ("; ".join(f"{g['team']} {g['chance']} model {100 * g['model']:.0f}% vs market {100 * g['market']:.0f}%"
+                         for g in gaps[:5]) if gaps else "the model is within 10 points of the market for every priced club"))
+    return {"market": market, "gaps": gaps, "note": note}
+
+
 def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *, sport: str = FOOTBALL,
                     n_sims: int = 10_000, seed: int = 0, points: tuple[int, int, int] = DEFAULT_POINTS,
                     half_life_days: float | None = DEFAULT_HALF_LIFE_DAYS, prior_sd: float = DEFAULT_PRIOR_SD,
                     teams_of_interest: list[str] | None = None, relegation_places: int = 3, top_places: int = 4,
                     playoff_places: int = 8, games_per_team: int | None = None, backtest: bool = True,
                     history: list[Match] | None = None, xg_weight: float | None = None,
-                    market_weight: float | None = None) -> dict[str, Any]:
+                    market_weight: float | None = None, adjustments: list[dict] | None = None) -> dict[str, Any]:
     """Fit the model on the played matches and simulate the rest of the season n_sims times.
 
     Motivation vs Logic
@@ -1214,7 +1294,8 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     if sport == FOOTBALL:
         core = _football_season(played, rem, teams, n_sims=n_sims, seed=seed, points=points, half_life_days=half_life_days,
                                 prior_sd=prior_sd, interest=interest, relegation_places=relegation_places, top_places=top_places,
-                                fit_extra=fit_extra, xg_weight=xg_w, market_weight=mk_w)
+                                fit_extra=fit_extra, xg_weight=xg_w, market_weight=mk_w,
+                                adjustments=_known_adjustments(adjustments or [], teams, notes))
         per_team = len(played) * 2 / max(len(teams), 1)
         if not fit_extra and per_team < 19 and not (xg_w and has_xg) and not (mk_w and has_market):
             notes.append(f"thin ratings: each club's rating rests on about {per_team:.0f} of this season's results and nothing "

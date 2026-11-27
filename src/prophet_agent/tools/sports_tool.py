@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from prophet_agent.forecast.sports import (DEFAULT_HALF_LIFE_DAYS, DEFAULT_POINTS, DEFAULT_PRIOR_SD, FOOTBALL, WIN_LOSS,
-                                           parse_matches, placeholder_rows, simulate_season)
+                                           compare_outright, parse_matches, placeholder_rows, simulate_season)
 from prophet_agent.runtime.runner import Tool
 from prophet_agent.tools.series_io import source_path
 
 MAX_SIMS = 100_000
 ALLOWED = {"sport", "results", "history", "source", "fixtures", "teams", "simulations", "seed", "points", "half_life_days",
            "prior_sd", "relegation_places", "top_places", "playoff_places", "games_per_team", "backtest", "xg_weight",
+           "adjustments", "outright", "outright_source",
            "market_weight"}
 
 
@@ -35,6 +36,32 @@ def _int(args: dict, key: str, default: int, low: int, high: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
         raise ValueError(f"{key} must be a whole number from {low} to {high}")
     return value
+
+
+def _adjustments(raw: Any) -> list[dict]:
+    """Checked club adjustments: {team, shift (log goals, -0.5 to 0.5), until (optional date), reason, evidence}."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 20:
+        raise ValueError("adjustments must be a list of at most 20 {team, shift, until, reason, evidence}")
+    out = []
+    for i, a in enumerate(raw, start=1):
+        if not isinstance(a, dict) or not isinstance(a.get("team"), str) or not a["team"].strip():
+            raise ValueError(f"adjustment {i} needs a team")
+        v = a.get("shift")
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not -0.5 <= v <= 0.5:
+            raise ValueError(f"adjustment {i}: shift is in log goals from -0.5 to 0.5 (-0.1: about 10% fewer goals scored "
+                             "and 10% more conceded)")
+        reason, evidence = str(a.get("reason") or "").strip(), str(a.get("evidence") or "").strip()
+        if not reason or len(evidence) < 6:
+            raise ValueError(f"adjustment {i}: give the reason (injuries, a manager change, European fixtures) and the "
+                             "evidence (the URL or file it came from)")
+        until = a.get("until")
+        if until is not None and not (isinstance(until, str) and len(until) >= 10 and until[4] == "-"):
+            raise ValueError(f"adjustment {i}: until is a date (YYYY-MM-DD) or left out")
+        out.append({"team": a["team"].strip(), "shift": float(v), "until": until[:10] if until else None,
+                    "reason": reason[:200], "evidence": evidence[:300]})
+    return out
 
 
 def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any]:
@@ -92,13 +119,20 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
         if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= 5):
             raise ValueError(f"{key} must be a number from 0 (leave the signal out) to 5")
         weights[key] = None if v is None else float(v)
+    adjustments = _adjustments(args.get("adjustments"))
     result = simulate_season(
         matches, fixtures, sport=sport, n_sims=_int(args, "simulations", 10_000, 10, MAX_SIMS),
         seed=_int(args, "seed", 0, 0, 2**31 - 1), points=tuple(points),
         half_life_days=None if half_life is None else float(half_life), prior_sd=float(prior_sd),
         teams_of_interest=teams, relegation_places=_int(args, "relegation_places", 3, 0, 10),
         top_places=_int(args, "top_places", 4, 0, 10), playoff_places=_int(args, "playoff_places", 8, 1, 30),
-        games_per_team=games, backtest=backtest, history=history, **weights)
+        games_per_team=games, backtest=backtest, history=history, adjustments=adjustments, **weights)
+    if args.get("outright") is not None:
+        if not isinstance(args["outright"], dict):
+            raise ValueError("outright must be {title|top_places|relegation: {club: decimal odds or probability}}")
+        cmp = compare_outright(result.get("teams") or [], args["outright"], str(args.get("outright_source") or ""))
+        result["market_outright"] = cmp
+        result.setdefault("notes", []).append(cmp["note"])
     if (placeholders := placeholder_rows(text, name)):
         result.setdefault("notes", []).append(f"{placeholders} unplayed rows whose teams are not known yet (such as 'To be "
                                               "announced') were left out of the remaining schedule")
@@ -276,7 +310,7 @@ def observe_simulate(result: dict, teams_of_interest: list | None = None) -> dic
     if isinstance(result.get("settings"), dict):    # the fields an answer cites; the rest stay in the full result
         out["settings"] = {k: v for k, v in result["settings"].items()
                            if k in ("model", "n_played", "n_remaining", "n_sims", "points_rule", "games_per_team",
-                                    "signals", "xg_weight", "market_weight")}
+                                    "signals", "xg_weight", "market_weight", "adjustments")}
     if "backtest" in result:
         out["backtest"] = _compact_backtest(result["backtest"])
     out["note"] = ("every figure the answer needs is in this view: the teams table (final total p10, median, p90 and "
@@ -361,6 +395,14 @@ SIMULATE_SEASON_SPEC = {
         "market_weight": "weight of the goals implied by each match's bookmaker prices (closing averages AvgCH/AvgCD/AvgCA, "
                          "else Pinnacle, Bet365 or pre-match columns, and the over/under 2.5 price), including priced fixtures "
                          "not yet played, 0 to 5 (default 1 when the files carry prices, else 0)",
+        "adjustments": "football, optional: list of {team, shift (log goals, -0.5 to 0.5; -0.1 means about 10% fewer goals "
+                       "scored and 10% more conceded), until (optional date it lasts to), reason (injuries, suspensions, a "
+                       "manager change, European fixture congestion), evidence (the URL or file)} for what the ratings "
+                       "cannot see; size it from the evidence (a key striker out is about -0.05 to -0.1)",
+        "outright": "optional market benchmark: {title, top_places, relegation: {club: decimal odds or probability}} from "
+                    "bookmaker outright markets; the result names clubs where the model and the market differ by 10 "
+                    "points or more",
+        "outright_source": "the URL the outright prices were read from",
         "fixtures": "name of a mission file of remaining matches (optional; not needed when the results file lists unplayed matches, as fixturedownload does)",
         "teams": "list of team names to show paths for (optional; default the top four by current standing)",
         "simulations": "number of simulated seasons, 10 to 100000 (default 10000)",

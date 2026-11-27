@@ -134,3 +134,31 @@ def test_market_probabilities_need_their_pricing_url_and_are_labelled():
     assert sc.validate([base], 6, None)[0]["probability_source"] == "judgement"
     mixed = sc.mix({0.1: [3.0] * 6, 0.5: [3.5] * 6, 0.9: [4.0] * 6}, ok)
     assert mixed["scenarios"][0]["probability_source"] == "market"
+
+
+def test_club_adjustments_move_the_remaining_matches_and_outright_prices_are_compared():
+    from prophet_agent.forecast.sports import compare_outright
+    from prophet_agent.tools.sports_tool import _adjustments
+    rng = np.random.default_rng(5)
+    teams = [f"T{i}" for i in range(8)]
+    current = _league(rng, teams, np.linspace(0.5, -0.5, 8), 8, "2025-08-01", with_signals=False)
+    base = simulate_season(current, n_sims=3000, backtest=False)
+    hurt = simulate_season(current, n_sims=3000, backtest=False,
+                           adjustments=_adjustments([{"team": "T0", "shift": -0.4, "reason": "striker and keeper out",
+                                                      "evidence": "https://club.example/injuries"}]))
+    exp = lambda r, t: next(x["expected_final"] for x in r["teams"] if x["team"] == t)
+    assert exp(hurt, "T0") < exp(base, "T0") - 2
+    assert "T0 -0.40 log goals" in hurt["settings"]["adjustments"][0]
+    with pytest.raises(ValueError, match="evidence"):
+        _adjustments([{"team": "T0", "shift": -0.1, "reason": "injuries"}])
+    with pytest.raises(ValueError, match="-0.5 to 0.5"):
+        _adjustments([{"team": "T0", "shift": -2, "reason": "x", "evidence": "https://x.example"}])
+    rows = [{"team": "Brighton & Hove Albion", "title": 0.45}, {"team": "Arsenal", "title": 0.40},
+            {"team": "Everton", "title": 0.15}]
+    cmp = compare_outright(rows, {"title": {"Brighton": 21.0, "Arsenal": 1.5, "Everton": 101.0}}, "https://odds.example")
+    assert abs(sum(cmp["market"]["title"].values()) - 1) < 1e-9          # every club priced: the margin is taken out
+    gap = {g["team"]: g["gap"] for g in cmp["gaps"]}
+    assert gap["Brighton & Hove Albion"] > 0.3 and gap["Arsenal"] < -0.3 and 0.10 <= gap["Everton"] < 0.2
+    assert "Brighton & Hove Albion title model 45%" in cmp["note"]
+    with pytest.raises(ValueError, match="no club named"):
+        compare_outright(rows, {"title": {"Spurs": 5.0}})

@@ -155,8 +155,11 @@ Routing outside data (choose the tool by what the source is; a source that fails
   `fixtures` the fixturedownload file for the remaining matches (club spellings are matched across sites).
   `history` names earlier seasons' files only, never the current season's file. A dozen matches of goals mostly measure
   luck: a simulation fitted on this season's goals alone is sent back. Read `finishing` (clubs whose goal difference runs
-  ahead of their xG: regression candidates) and the backtest against goals_only and the closing prices, and compare the
-  title and top-four chances with the bookmakers' outright odds before stating them. It returns each team's final points or
+  ahead of their xG: regression candidates) and the backtest against goals_only and the closing prices. Research what the
+  ratings cannot see (injury and suspension lists, a manager change, European fixture congestion) and pass each as an
+  `adjustments` entry with its size, end date, reason and URL. Pass the bookmakers' outright title, top-four and
+  relegation prices as `outright` with `outright_source`, and explain every club the result names where the model and the
+  market differ by 10 points or more before stating chances. It returns each team's final points or
   wins range, title, top places and relegation or playoff probabilities, and paths, with a backtest. Do not forecast a
   league table with timesfm_forecast, and never add ranges across teams.
 - Standings, results and every other figure in the answer are copied from a tool result, not typed from memory.
