@@ -136,9 +136,12 @@ def test_rolling_backtest_reports_all_models_and_refuses_short_series(stub):
         rolling_backtest(x[:20], 12, engine=StubEngine())
 
 
-def test_tool_set_offers_data_tools_only_with_files():
-    assert "inspect_data" not in default_tools()
+def test_tool_set_always_offers_inspect_data_on_the_live_files():
+    # Live GOLD a00e870d (2026-11-28): offering it only with files at the start changed the tool set between parts.
+    assert "inspect_data" in default_tools()
     assert "inspect_data" in default_tools({"a.csv": __import__("pathlib").Path("a.csv")})
+    with __import__("pytest").raises(ValueError, match="no data file yet"):
+        default_tools()["inspect_data"].fn({}, "k")
     assert {"timesfm_forecast", "backtest_series", "forecast_report", "sandbox_python", "inspect_data"} <= set(tool_catalogue())
     assert all(t.title and t.activity and t.doc for t in tool_catalogue().values())
 

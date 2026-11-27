@@ -2,7 +2,7 @@
 from dataclasses import replace
 from pathlib import Path
 
-from .data_tools import BACKTEST_SPEC, INSPECT_DATA_SPEC, backtest_tool, inspect_data_tool
+from .data_tools import BACKTEST_SPEC, INSPECT_DATA_SPEC, backtest_tool, inspect_data_tool, make_inspect
 from .calibrate_tool import CALIBRATE_SPEC, calibrate_tool
 from .chart_tools import chart_tool_pair
 from .panel_tool import PANEL_BACKTEST_SPEC, panel_backtest_tool
@@ -57,13 +57,16 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
     }
     for tool, spec in research_tool_pairs():
         specs[tool.name] = (tool, spec)
-    if datasets:
-        specs["inspect_data"] = (inspect_data_tool(datasets), INSPECT_DATA_SPEC)
     if binding is not None:
         specs["save_table"] = (save_table_tool(binding), SAVE_TABLE_SPEC)
     # One LiveMounts for the whole mission: the download tools, the source tables, the chart tool and the sandbox all
     # mount into it, so a chart series landed in this run is read by the next sandbox_python call.
     live = LiveMounts(datasets)
+    # inspect_data is always offered and reads the live files. Live GOLD a00e870d (2026-11-28): it was offered only when the
+    # mission started with files, so in part 1 the call was an unknown tool (no ledger step); part 2 was built with the files
+    # downloaded since, offered the tool, and the replay asked for a step the ledger never held. The mission failed.
+    specs["inspect_data"] = (replace(inspect_data_tool(datasets), fn=lambda args, key: make_inspect(live.mounts())(args, key)),
+                             INSPECT_DATA_SPEC)
     if "web_fetch" in specs:
         tool, spec = specs["web_fetch"]
         specs["web_fetch"] = (replace(tool, fn=refuse_walled_hosts(tool.fn)), spec)

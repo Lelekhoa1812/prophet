@@ -38,7 +38,7 @@ def make_inspect(datasets: dict[str, Path]):
             raise ValueError(f"unknown arguments {extra}; allowed: file, sheet")
         names = sorted(datasets)
         if not names:
-            raise ValueError("no files were uploaded for this request")
+            raise ValueError("no data file yet: download one (download_open_data, download_web_data) or ask for an upload first")
         raw = args.get("file")
         if raw is not None and not isinstance(raw, str):
             # A list or dict is unhashable, so the lookup below raised a bare TypeError (round 6m).

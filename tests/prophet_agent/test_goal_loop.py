@@ -1014,3 +1014,37 @@ def test_a_blocked_answer_meeting_a_spent_tool_budget_gets_one_repair_allowance(
     assert out["result"]["status"] == "met", out["result"].get("contract_failures")
     assert brain.calls["plan"] == 4, "the blocked finish got a repair call, not a partial stop"
     assert any("repair allowance" in str(h.get("missing", "")) for h in out["result"]["evidence"])
+
+
+def test_resume_with_a_tool_set_that_grew_follows_the_ledger(store):
+    """Live GOLD a00e870d (2026-11-28): part 1 called a tool it was not offered (an unknown-tool observation, no ledger step);
+    part 2 was built with that tool, and the replay asked for an act step the ledger never held. The ledger now wins."""
+    crash_after = {"armed": True}
+
+    class CrashingBrain(ScriptedBrain):
+        plan_requests = 0
+
+        def decide(self, messages, schema, name):
+            if name == "plan":
+                self.plan_requests += 1
+                if self.plan_requests == 3 and crash_after["armed"]:
+                    crash_after["armed"] = False
+                    raise Crash()
+            return super().decide(messages, schema, name)
+
+    plans = [call("late", {"f": 1}), call("a", {"i": 0}), finish()]
+    brain = CrashingBrain(plans=plans, evals=[met("done")])
+    mid = store.create_mission("g", {})
+    with pytest.raises(Crash):
+        Runtime(store, owner="r1").run(mid, goal_program("g", {"a": _tool("a")}, brain))
+    store.conn.execute("UPDATE missions SET lease_until=0 WHERE id=?", (mid,))
+    ran = {"late": 0}
+
+    def late(args, key):
+        ran["late"] += 1
+        return {"ok": True}
+
+    out = Runtime(store, owner="r2").run(mid, goal_program("g", {"a": _tool("a"), "late": _tool("late", late)}, brain))
+    assert out["status"] == "completed", out
+    assert out["result"]["status"] == "met"
+    assert ran["late"] == 0, "the stored run did not call it, so the replay does not either"

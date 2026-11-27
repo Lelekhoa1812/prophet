@@ -719,6 +719,14 @@ def _stored_step_name(ctx: Ctx) -> str | None:
     return rec["name"] if rec is not None and rec.get("status") == "done" else None
 
 
+def _ledger_skipped_act(ctx: Ctx, act_name: str) -> bool:
+    """True when the ledger already holds a different step where this act step would go: the stored run did not call the
+    tool at this point. Live GOLD a00e870d (2026-11-28): "replay diverged at step 18: the ledger has 'plan:d0:9', the program
+    asked for 'act:d0:8'" after the tool set grew between parts."""
+    stored = _stored_step_name(ctx)
+    return stored is not None and stored != act_name
+
+
 MODEL_WORK = re.compile(r"backtest|forecast|timesfm|control_lab|baseline", re.I)
 
 
@@ -2734,7 +2742,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 _typed_table_refusal(name, args, history, goal)
             if stand_in:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": stand_in}     # derived from args and goal: replays alike
-            elif name not in tools:
+            elif name not in tools or _ledger_skipped_act(ctx, f"act:{tag}:{i}"):
+                # The second test follows the ledger: a stored run that did not call the tool here (the tool was not offered
+                # then) is replayed the same way, so a tool set that grew between parts cannot shift the step indices.
                 obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
             else:
                 if (pos := _repeat_of(name, args, history)) is not None:
