@@ -629,6 +629,31 @@ def _last_failure(history: list[dict]) -> tuple[str, str]:
     return "", ""
 
 
+OPTION_FIGURE = re.compile(r"[-+]?\d[\d,]*\.\d+|[-+]?\d[\d,]*\s*(?:%|percent|pts?\b|points?\b|wins?\b|losses\b|"
+                           r"goals?\b|games?\b)", re.IGNORECASE)
+
+
+def _option_figure_problems(questions: list, history: list[dict], goal: str) -> list[str]:
+    """A figure in a question option must come from the evidence. Round 20 (EPL, 2026-11-27): the options named
+    "Liverpool (28 points)" while the downloaded table said 21, the person chose on that figure, and the run ended partial."""
+    problems = []
+    for i, q in enumerate(questions):
+        if not isinstance(q, dict):
+            continue
+        for j, o in enumerate(q.get("options") or []):
+            if not isinstance(o, dict):
+                continue
+            text = f"{o.get('label') or ''} {o.get('description') or ''}"
+            stated = [m.group(0) for m in OPTION_FIGURE.finditer(text)]
+            if not stated:
+                continue
+            bad = unverified(" ".join(stated), history, goal)
+            if bad:
+                problems.append(f"questions[{i}].options[{j}] states {', '.join(bad[:3])}, which no tool printed: take "
+                                "the figure from the fetched data or leave it out of the option")
+    return problems
+
+
 def _last_failed_tool(history: list[dict]) -> str | None:
     """The tool of the newest failed call, or None."""
     for h in reversed(history):
@@ -1283,7 +1308,8 @@ def _error_recurrence(history: list[dict], window: int = RECUR_WINDOW) -> int:
 def _runs_with_outputs(history: list[dict]) -> list[tuple[str, set[str]]]:
     """(run id, output paths) of every analysis or report step in this mission, oldest first."""
     runs: list[tuple[str, set[str]]] = []
-    for h in history:
+    seen: set[str] = set()
+    for h in _with_subagent_steps(history):
         res = h.get("result") if h.get("kind") == "tool" else None
         if not isinstance(res, dict) or not isinstance(res.get("run_id"), str):
             continue
@@ -1293,8 +1319,22 @@ def _runs_with_outputs(history: list[dict]) -> list[tuple[str, set[str]]]:
                 paths.add(o.split(" (")[0])
             elif isinstance(o, dict) and isinstance(o.get("path"), str):
                 paths.add(o["path"])
+        if res["run_id"] in seen:
+            continue
+        seen.add(res["run_id"])
         runs.append((res["run_id"], paths))
     return runs
+
+
+def _with_subagent_steps(history: list[dict]) -> list[dict]:
+    """The history with each sub-agent's own steps in place of its report. VN Unemployment (2026-11-27): a file an analyst
+    wrote was not auto-mounted for the lead, which then opened in/carried/<that file> and failed."""
+    out: list[dict] = []
+    for h in history:
+        if h.get("kind") == "subagent" and isinstance(h.get("evidence"), list):
+            out.extend(e for e in h["evidence"] if isinstance(e, dict))
+        out.append(h)
+    return out
 
 
 AUTO_CARRY_KINDS = (".json", ".csv", ".parquet", ".txt")
@@ -2423,8 +2463,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             open_qs = open_dicts + [q for q in items if not isinstance(q, dict)]    # a non-object is left for the validator
             payload = {"questions": open_qs}
             # Mission 9 (task 2): an option that offers invented data in place of the real series is refused here, with the reason.
-            problems = (validate_for_goal(payload, goal) if open_qs or not repeated
-                        else ["every question was already asked and answered"])
+            problems = (validate_for_goal(payload, goal) + _option_figure_problems(open_qs, history, goal)
+                        if open_qs or not repeated else ["every question was already asked and answered"])
             if problems and repeated:
                 obs = {"kind": "ask_user", "error": "not asked again, the person already answered: " + "; ".join(repeated)
                        + ". The decision is in the decisions list; act on it."}

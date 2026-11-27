@@ -202,6 +202,13 @@ def extract(text: str, measure: str, *, entity: str | None = None, client: Any =
             client = shared_client()
         proposal, model_name = ask_model(client, numbered, measure, entity)
     kept, rejected = verify(proposal, numbered)
+    if entity and entity.strip():
+        # A figure for another country or group on the same page is not this entity's (deep research, 2026-11-27: agents
+        # misattribute figures to the wrong subject far more often than they misread them).
+        want = entity.strip().lower()
+        wrong = [r for r in kept if r["entity"] and want not in r["entity"].lower() and r["entity"].lower() not in want]
+        kept = [r for r in kept if r not in wrong]
+        rejected += [{**r, "reason": f"the figure is for {r['entity']}, not {entity}"} for r in wrong]
     return {"rows": kept, "rejected": rejected, "sentences_read": len(numbered), "proposal": proposal,
             "model": model_name}
 

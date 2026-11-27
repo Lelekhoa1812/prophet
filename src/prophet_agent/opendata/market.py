@@ -95,7 +95,44 @@ def endpoints(symbol: str, first: date, last: date) -> list[tuple[str, str | Non
                  f"&fromdate={first.isoformat()}&todate={last.isoformat()}&limit=9999", parse_nasdaq))
     stooq_url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d" if PLAIN_SYMBOL.fullmatch(symbol) else None
     plan.append(("stooq_csv", stooq_url, parse_stooq))
+    # Round 20 (2026-11-27): Yahoo answered ^GSPC with HTTP 429, and Stooq now answers every request with a browser
+    # challenge, so an index had no second source. FRED publishes the daily close of the main US indices without a key.
+    fred = FRED_INDEX.get(symbol.upper())
+    if fred:
+        plan.append(("fred_close", f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred}&cosd={first.isoformat()}"
+                                   f"&coed={last.isoformat()}", parse_fred_close))
     return plan
+
+
+FRED_INDEX = {"^GSPC": "SP500", "^SPX": "SP500", "^DJI": "DJIA", "^IXIC": "NASDAQCOM", "^NDX": "NASDAQ100",
+              "^VIX": "VIXCLS"}
+
+
+def parse_fred_close(body: bytes, media: str, symbol: str) -> dict:
+    """FRED graph CSV of one index's daily close (observation_date, <code>). Open, high, low and volume are not published
+    there, so they stay empty; a '.' is a market holiday."""
+    _page(body, media)
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise MarketError("the answer is not UTF-8 text") from None
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader, None)
+    code = FRED_INDEX.get(symbol.upper())
+    if not header or len(header) != 2 or header[0].strip().lower() not in ("observation_date", "date") \
+            or header[1].strip() != code:
+        raise MarketError(f"the answer is not FRED's daily table for {code}")
+    rows = []
+    for record in reader:
+        if len(record) != 2 or record[1].strip() in ("", "."):
+            continue
+        try:
+            day = date.fromisoformat(record[0].strip()).isoformat()
+        except ValueError:
+            raise MarketError("a row date is not YYYY-MM-DD") from None
+        rows.append({"date": day, "open": None, "high": None, "low": None, "close": record[1], "adj_close": None,
+                     "volume": None})
+    return _parsed(rows, has_adj=False, returned=code, entity=f"matched: FRED series {code} is {symbol.upper()}'s close")
 
 
 def _media(value: str) -> str:

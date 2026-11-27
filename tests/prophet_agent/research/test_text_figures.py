@@ -92,3 +92,12 @@ def test_the_tool_stores_verified_rows_with_the_page_as_source(tmp_path):
     meta = json.loads((store.path(out["dataset_id"]).parent / "meta.json").read_text())
     assert meta["provenance"]["url"] == "https://example.org/lfs"
     assert meta["provenance"]["extraction"]["method"] == "text_figures"
+
+
+def test_a_figure_for_another_entity_is_not_kept():
+    s = ["Viet Nam's unemployment rate in 2025 was 2.2% while Thailand's was 1.0%."]
+    proposal = {"rows": [{**_row(0, "Viet Nam's unemployment rate in 2025 was 2.2%", "2025", 2.2), "entity": "Viet Nam"},
+                         {**_row(0, "Thailand's was 1.0%", "2025", 1.0), "entity": "Thailand"}]}
+    out = tf.extract(" ".join(s), "unemployment rate", entity="Viet Nam", proposal=proposal, model_name="m")
+    assert [r["entity"] for r in out["rows"]] == ["Viet Nam"]
+    assert any("not Viet Nam" in r["reason"] for r in out["rejected"])

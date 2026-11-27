@@ -56,3 +56,23 @@ def test_sandbox_errors_name_the_next_correct_step():
 def test_a_cell_that_caught_the_network_refusal_is_not_read_as_a_success():
     out = st.observe(_result(stdout="Error: <urlopen error network access is blocked in the sandbox>", ok=True))
     assert out["blocked"] is True and "download_web_data" in out["hint"]
+
+
+def test_disaggregation_keeps_every_published_average_and_says_it_is_derived():
+    import numpy as np
+    q = [2.2, 2.3, 2.25, 2.1]
+    x, rep = pl.disaggregate(q, 3)
+    assert x.size == 12 and np.allclose(x.reshape(4, 3).mean(axis=1), q)
+    assert rep["label"].startswith("derived") and rep["max_constraint_error"] < 1e-9
+    flat, _ = pl.disaggregate([5.0, 5.0, 5.0], 3)
+    assert np.allclose(flat, 5.0), "a flat published series stays flat"
+
+
+def test_disaggregation_of_a_flow_keeps_the_sums_and_follows_an_indicator():
+    import numpy as np
+    x, rep = pl.disaggregate([90.0, 120.0], 3, kind="sum", indicator=[1, 1, 1, 1, 1, 1])
+    assert np.allclose(x.reshape(2, 3).sum(axis=1), [90.0, 120.0]) and "proportional" in rep["method"]
+    with pytest.raises(ValueError, match="positive values"):
+        pl.disaggregate([1.0, 2.0], 3, indicator=[1, 1, 1])
+    with pytest.raises(ValueError, match="factor"):
+        pl.disaggregate([1.0, 2.0], 1)

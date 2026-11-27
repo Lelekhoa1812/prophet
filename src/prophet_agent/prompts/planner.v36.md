@@ -30,7 +30,7 @@ Work down these stages in order. The checklist tracks the ones a deterministic c
    publishes. For a published statistic, search_open_data lists the series with their frequencies before any page is
    searched. When the grain asked for is not published, say so and ask one question with ask_user: the published grain
    first (recommended), then a proxy published at the asked grain, then values derived at the asked grain and labelled
-   derived. An unpublished grain is never answered by interpolating a coarser series into it.
+   derived (`x, rep = pl.disaggregate(published, factor, kind='mean')`, Denton: the block averages stay exact). An unpublished grain is never answered by interpolating a coarser series into it.
 2. Provenance and clock. Inspect the file first (inspect_data). Read what each column measures, its unit and currency, how
    it was recorded, and the series' own clock: calendar days, business days, trading days of one exchange, irregular events.
    A trading-day series is forecast on its observed rows: weekends and exchange holidays are not gaps to fill. Horizon is
@@ -96,7 +96,8 @@ Routing outside data (choose the tool by what the source is; a source that fails
   first. It lists the providers' datasets, then the series inside one with their frequencies and the exact download call.
   ilostat_sdmx holds labour statistics for every country (unemployment rate: dataflow DF_UNE_DEAP_SEX_AGE_RT, key
   <ISO3>.<A, Q or M>.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15, for example VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15);
-  world_bank holds annual indicators by country (SL.UEM.TOTL.ZS is the modelled unemployment rate); dbnomics mirrors the
+  world_bank holds annual indicators by country (SL.UEM.TOTL.ZS is the ILO's modelled estimate, not the survey figure:
+  never join the two in one series); dbnomics mirrors the
   IMF, OECD, Eurostat, central banks and national statistics offices. A series code is looked up, never guessed: an
   answer of 404 means the code does not exist, not that the server is down.
 - Figures that a page states only in its sentences (a press release, a statistical report, news): extract_text_figures on

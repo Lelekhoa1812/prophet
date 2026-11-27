@@ -96,3 +96,11 @@ def test_planner_v36_checks_the_published_grain_and_looks_codes_up():
     assert "never guessed" in text
     assert "An unpublished grain is never answered by interpolating" in text
     assert "a long gap is interpolated" not in text
+
+
+def test_composer_v8_gives_hypotheses_and_the_published_grain_a_place_in_the_answer():
+    from prophet_agent.prompts import current
+    text = current("composer").text
+    assert current("composer").version == "composer.v8"
+    assert 'stage "hypothesis"' in text and "confirmed, refuted or not tested" in text
+    assert "published at another grain" in text and "snapshot date" in text

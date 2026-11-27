@@ -358,3 +358,19 @@ def test_live_nvda_returns_a_checked_table_from_some_keyless_endpoint():
     assert got["ok"] is True, got["failed"]
     assert got["returned_symbol"] in ("NVDA", None)
     assert got["row_count"] >= 400
+
+
+def test_an_index_falls_back_to_the_fred_close_and_reads_it():
+    # Round 20 (2026-11-27): Yahoo answered ^GSPC with 429 and Stooq now challenges every request.
+    from datetime import date as _date
+    from prophet_agent.opendata import market as mk
+    plan = mk.endpoints("^GSPC", _date(2026, 11, 1), _date(2026, 11, 27))
+    assert plan[-1][0] == "fred_close" and "id=SP500&cosd=2026-11-01&coed=2026-11-27" in plan[-1][1]
+    assert all(name != "fred_close" for name, _, _ in mk.endpoints("NVDA", _date(2026, 11, 1), _date(2026, 11, 27)))
+    body = b"observation_date,SP500\n2026-11-02,7541.40\n2026-11-03,.\n2026-11-04,7688.62\n"
+    out = mk.parse_fred_close(body, "text/csv", "^GSPC")
+    assert [r["date"] for r in out["rows"]] == ["2026-11-02", "2026-11-04"]
+    assert out["rows"][0]["open"] is None and out["rows"][0]["close"] == "7541.40"
+    import pytest as _pytest
+    with _pytest.raises(mk.MarketError):
+        mk.parse_fred_close(b"observation_date,DJIA\n2026-11-02,1\n", "text/csv", "^GSPC")

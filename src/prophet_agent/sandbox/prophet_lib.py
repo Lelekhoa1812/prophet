@@ -2323,3 +2323,43 @@ def __getattr__(name: str):
 
 _AGENT_TOOLS = {"backtest_series", "timesfm_forecast", "forecast_report", "calibrate_intervals", "control_lab", "panel_backtest",
                 "build_drivers", "detect_anomalies", "inspect_data", "web_research", "web_fetch"}
+
+
+def disaggregate(values: Any, factor: int, *, kind: str = "mean", indicator: Any = None) -> tuple[np.ndarray, dict]:
+    """Values at a finer grain (monthly from quarterly: factor=3; quarterly from annual: factor=4) whose block averages
+    (kind="mean", for rates and levels) or block sums (kind="sum", for flows) equal the published figures exactly.
+
+    Denton method. Without an indicator the path is the smoothest one (least squared first differences) that meets the
+    published figures; with an indicator at the finer grain (for example a monthly series that moves with the target), the
+    path follows the indicator's movements in proportion (proportional Denton). The result is derived, never observed:
+    save it with a provenance that says so and say in the answer which grain was published (VN Unemployment, 2026-11-27:
+    monthly was asked, only quarterly is published). Returns (values, report)."""
+    y = np.asarray(values, dtype=float).reshape(-1)
+    if y.size < 2 or not np.isfinite(y).all():
+        raise ValueError("give at least two published values, with no gaps")
+    if isinstance(factor, bool) or not isinstance(factor, int) or not 2 <= factor <= 31:
+        raise ValueError("factor is the number of fine periods per published period: 3 (quarter to month), 4, 12 ...")
+    if kind not in ("mean", "sum"):
+        raise ValueError("kind is 'mean' (a rate or a level: the block average is published) or 'sum' (a flow)")
+    n, m = y.size, y.size * factor
+    C = np.kron(np.eye(n), np.ones((1, factor)) / (factor if kind == "mean" else 1.0))
+    D = np.diff(np.eye(m), axis=0)
+    if indicator is None:
+        W = D.T @ D
+        method = "denton additive (smoothest path)"
+    else:
+        ind = np.asarray(indicator, dtype=float).reshape(-1)
+        if ind.size < m or not np.isfinite(ind[:m]).all() or (ind[:m] <= 0).any():
+            raise ValueError(f"the indicator needs {m} positive values at the finer grain, one per fine period")
+        P = np.diag(1.0 / ind[:m])
+        W = P @ D.T @ D @ P
+        method = "denton proportional to the indicator"
+    kkt = np.block([[2 * W, C.T], [C, np.zeros((n, n))]])
+    rhs = np.concatenate([np.zeros(m), y])
+    sol, *_ = np.linalg.lstsq(kkt, rhs, rcond=None)
+    x = sol[:m]
+    err = float(np.max(np.abs(C @ x - y)))
+    report = {"method": method, "factor": factor, "kind": kind, "published_points": int(n), "derived_points": int(m),
+              "max_constraint_error": round(err, 10),
+              "label": "derived: values at the finer grain made from the published figures, not observed"}
+    return x, report

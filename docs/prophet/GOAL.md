@@ -1729,3 +1729,30 @@ Round 16 audit (independent, read-only): all seven completed answers not clean. 
 measured range and a total with the wrong unit; NBA conference leaders that include the second-lowest team; NVDA "no FOMC
 meeting in the window" against an event the evidence lists; CO2 band half-width 0.5 where it reaches 1.6; CPI release dates
 omitted. **M9-8 is not met.**
+
+### Round 19 and the M10 audit (measured, run 20261127-114606, then commits 69b2ed1 and cdfdbe7, 2026-11-27)
+Round 19 (planner v35): four of ten completed (EPL, GISTEMP, NEM, NGSTORAGE); AUUNEMP, CPI and NVDA stopped at a checkpoint;
+CO2, NBA and SPX ended partial. The three checkpoints were one harness defect, not data limits: a single `ConnectError` on every
+model was classed as a key failure, not a wait, so the call raised and the mission stopped as "budget spent".
+The owner's VN Unemployment notebook (three turns, all partial) was traced step by step. Root causes: guessed FRED and OECD
+codes (404), registry near misses ('oecd', 'flow', 'country'), a CAPTCHA at the statistics office, identical searches repeated,
+no ILOSTAT source, a World Bank API answer read as passages and five of its 66 values retyped, pandas 3 rejecting legacy
+frequency codes, a weekday-closure check firing on annual data, five annual points interpolated into 24 and forecast, and
+inline `values` passing the provenance check a file had failed. A monthly seasonally adjusted series is not published for
+Vietnam; ILOSTAT publishes quarterly from 2011-Q1 (56 quarters to 2024-Q4, measured).
+Five read-only audits (code generation, maths, research planning, analyst ideology, LLM and TimesFM orchestration; notes in
+`data/audits_m10/`) and three research notes (`research_notes/Captcha free unstructured data curation/`) informed the repairs:
+- Acquisition: `search_open_data` (DBnomics catalogue of 80+ providers), `ilostat_sdmx` and `dbnomics` sources, alias
+  resolution with the change named, 404 refusals that name the next call, no second request to a failed address.
+- A CAPTCHA or bot check is never worked around; `web_fetch` returns the Internet Archive's copy, labelled with its date.
+- `extract_text_figures`: a model proposes dated figures from a page's sentences; code keeps only rows whose quote is in the
+  page word for word, whose number is in the quote and whose period parses; contradicting rows are left out and listed.
+- NIM: a failed connection on every model is waited out for up to 300 seconds, then reported as `nim-unreachable`.
+- Sandbox: pandas 3 aliases mapped, closure check only on daily or finer grids, a series under half observed is not
+  interpolated, errors name the next step; JSON API answers land as files.
+- `control_lab` defaults to 12 folds: at 8, the smallest signed-rank p (0.0078) times a Holm family of seven or more was above
+  0.05, so no driver could ever be adopted. This is why every covariate test in rounds 15 to 19 ended "no evidence".
+- A stalled answer meets the claim and figure checks; identical web calls in one mission are answered from the first.
+- Planner v36: feasibility of the requested grain, catalogue first, ask when the grain is not published.
+Panel: NBA, CO2 and CPI were retired at the owner's request (2026-11-27); VNUNEMP joined. Gate for 69b2ed1: 3526 passed,
+6 skipped. **M9-8 is not met.**

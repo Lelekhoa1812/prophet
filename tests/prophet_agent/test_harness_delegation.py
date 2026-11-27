@@ -151,3 +151,22 @@ def test_repeated_download_failures_are_not_handed_to_an_analyst_who_cannot_down
            "error": "HTTP 404; only a 200 response is used"}
     plan = _harness_plan("Forecast daily sales", [FLAT] + [bad] * 5, TOOLS)
     assert plan is None or not str(plan.get("auto", "")).startswith("repeat:")
+
+
+def test_files_a_sub_agent_wrote_are_auto_carried_for_the_lead():
+    from prophet_agent.runtime.goal import _runs_with_outputs
+    sub_step = {"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"ok": True, "run_id": "f" * 32,
+                                                                                    "outputs": ["out/vn_annual.csv (120 bytes)"]}}
+    history = [FLAT, {"kind": "subagent", "agent_type": "analyst", "evidence": [sub_step]}]
+    assert ("f" * 32, {"out/vn_annual.csv"}) in _runs_with_outputs(history)
+
+
+def test_a_question_option_with_a_figure_no_tool_printed_is_refused():
+    # Round 20 (EPL): "Liverpool (28 points)" against a downloaded table that said 21.
+    from prophet_agent.runtime.goal import _option_figure_problems
+    h = [{"kind": "tool", "tool": "download_web_data", "args": {}, "result": {"first_rows": [["Liverpool", "12", "21"]]}}]
+    qs = [{"question": "Which clubs?", "header": "Clubs", "multiSelect": True, "options": [
+        {"label": "Liverpool (28 points)", "description": "leader"}, {"label": "Top 6 clubs", "description": "keep six"},
+        {"label": "Liverpool (21 pts)", "description": "from the table"}]}]
+    problems = _option_figure_problems(qs, h, "Research the EPL 2026/27")
+    assert len(problems) == 1 and "options[0] states 28" in problems[0]
