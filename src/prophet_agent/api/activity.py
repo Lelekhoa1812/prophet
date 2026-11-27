@@ -286,7 +286,11 @@ def mission_activity(service, mission_ids: list[str], sandbox_root: Path, merge)
         except KeyError:
             continue
         files = []
-        for f in reversed(_files(_calls(store, mid), sandbox_root, merge)):
+        listed = _files(_calls(store, mid), sandbox_root, merge)
+        raster = {(f["run_id"], f["name"].rsplit(".", 1)[0].lower()) for f in listed if f["name"].lower().endswith(".png")}
+        for f in reversed(listed):
+            if f["name"].lower().endswith(".svg") and (f["run_id"], f["name"].rsplit(".", 1)[0].lower()) in raster:
+                continue                     # one chart saved as PNG and SVG is one picture; the PNG stands for both
             key = f["sha256"] or f["name"]
             if key in seen:
                 continue

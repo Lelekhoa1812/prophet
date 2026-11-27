@@ -874,7 +874,7 @@ def _ledger_on_disk(tmp_path, monkeypatch):
 
 def _gate_tools():
     fc = {"config": {"horizon": 3}, "health": {"verdict": "ok"}, "point": [1.0, 2.0, 3.0], "q10": [0.5, 1.5, 2.5],
-          "q90": [1.5, 2.5, 3.5]}
+          "q90": [1.5, 2.5, 3.5], "outputs": ["out/forecast.png (4 KB)"]}      # a prediction comes with its chart
     bt = {"horizon": 3, "best_baseline": "seasonal_naive",
           "models": {"naive": {"mase": 1.0}, "seasonal_naive": {"mase": 0.9}, "timesfm": {"mase": 0.8}}}
     return {"sandbox_python": _tool("sandbox_python", lambda a, k: {"ok": True, "stdout": "n=40", "run_id": "runledger",

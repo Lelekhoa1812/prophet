@@ -254,3 +254,14 @@ def test_an_empty_history_list_means_no_earlier_seasons(tmp_path):
     a = tool.fn({"results": "now.json", "history": [], "simulations": 100, "backtest": False, "seed": 1}, "k1")
     b = tool.fn({"results": "now.json", "simulations": 100, "backtest": False, "seed": 1}, "k2")
     assert a["teams"] == b["teams"]
+
+
+def test_a_simulation_comes_with_its_club_compared_chart(tmp_path):
+    # Owner, 2026-11-27: a league prediction that arrives as a table and no chart is not delivered.
+    files, names = _write_league(tmp_path)
+    out = _call(simulate_season_tool(files), {"results": "results.csv", "fixtures": "fixtures.csv", "simulations": 300,
+                                              "seed": 3, "backtest": False})
+    got = {Path(f["path"]).name for f in out["files"]}
+    assert {"league_forecast.png", "league_forecast.svg", "league_forecast.csv"} <= got and out["run_id"]
+    view = observe_simulate(out)
+    assert view["files"] and view["run_id"] == out["run_id"]

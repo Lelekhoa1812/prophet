@@ -159,9 +159,21 @@ export function isImagePath(path: string): boolean {
   return IMAGE_EXT.has(path.slice(dot + 1).toLowerCase());
 }
 
-// Every image a run made is shown, including a picture and its vector file side by side.
+// One picture per chart. A chart saved as both .png and .svg (same folder, same name) is one image: the PNG is shown and the
+// vector file stays in the file list to download. Different names are different charts and all show.
+const IMAGE_RANK: Record<string, number> = { png: 0, webp: 1, jpg: 2, jpeg: 2, gif: 3, svg: 4 };
+const imageStem = (path: string) => path.replace(/\.[^./]+$/, "").toLowerCase();
+const imageRank = (path: string) => IMAGE_RANK[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? 9;
+
 export function imagesToShow(files: ArtifactFile[]): ArtifactFile[] {
-  return files.filter((f) => isImagePath(f.path));
+  const best = new Map<string, ArtifactFile>();
+  for (const f of files) {
+    if (!isImagePath(f.path)) continue;
+    const key = imageStem(f.path);
+    const have = best.get(key);
+    if (!have || imageRank(f.path) < imageRank(have.path)) best.set(key, f);
+  }
+  return files.filter((f) => best.get(imageStem(f.path)) === f);
 }
 
 // An image is shown on a white page. A click opens the full-size file.

@@ -110,3 +110,21 @@ def test_files_are_listed_once_under_the_newest_question(tmp_path, monkeypatch):
     groups = [(g["topic"], sorted(f["name"] for f in g["files"])) for g in got["files"]]
     assert groups == [("second question", ["chart.png", "notes.md"]), ("first question", ["table.csv"])]
     assert got["code"][0]["title"] == "Plot it"
+
+
+def test_a_chart_saved_as_png_and_svg_is_listed_once(tmp_path, monkeypatch):
+    client, service = _client(tmp_path)
+    nb = client.post("/api/notebooks", json={"title": "twins"}).json()["id"]
+    turn = client.post(f"/api/notebooks/{nb}/turns", json={"goal": "a chart"}).json()["id"]
+    service.wait(turn, timeout=20)
+    rows = [{"path": "out/fc.png", "sha256": "aa"}, {"path": "out/fc.svg", "sha256": "bb"},
+            {"path": "out/other.svg", "sha256": "cc"}, {"path": "out/fc.csv", "sha256": "dd"}]
+    monkeypatch.setattr(activity, "_calls", lambda store, mid: [{"step": 1, "tool": "sandbox_python", "args": {}, "status": "done",
+                                                                  "result": {"ok": True, "run_id": "f" * 32}, "error": None,
+                                                                  "updated": 0}])
+    monkeypatch.setattr(activity, "_files", lambda calls, root, merge: [
+        {"name": f["path"][4:], "path": f["path"], "run_id": "f" * 32, "sha256": f["sha256"], "bytes": 1,
+         "kind": activity._file_kind(f["path"]), "url": "", "step": 1} for f in rows])
+    got = client.get(f"/api/notebooks/{nb}/activity").json()
+    names = sorted(f["name"] for g in got["files"] for f in g["files"])
+    assert names == ["fc.csv", "fc.png", "other.svg"]       # the PNG stands for its SVG twin; a different chart still shows

@@ -155,6 +155,85 @@ def build_forecast_pack(*, history: list[float], point: list[float], q10: list[f
     return run_python(_TEMPLATE, timeout_s=timeout_s, mem_mb=2048, file_mb=64, files={"data/input.json": data})
 
 
+_LEAGUE_TEMPLATE = r"""
+import csv, json, os
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+plt.rcParams["font.family"] = "serif"
+plt.rcParams["font.serif"] = ["Times New Roman", "Times", "STIXGeneral", "DejaVu Serif"]
+plt.rcParams["axes.spines.top"] = False
+plt.rcParams["axes.spines.right"] = False
+plt.rcParams["svg.fonttype"] = "none"
+
+d = json.load(open("data/input.json", encoding="utf-8"))
+rows, title, note, unit = d["teams"], d["title"], d["note"], d["unit"]
+INK, ORANGE = "#2b2b2b", "#D55E00"
+cols = [(k, lab) for k, lab in d["chances"] if any(r.get(k) is not None for r in rows)]
+n = len(rows)
+height = max(5.0, 0.36 * n + 2.4)
+two = bool(cols)
+fig, axes = plt.subplots(1, 2 if two else 1, figsize=(13.5 if two else 9, height), dpi=144,
+                         gridspec_kw={"width_ratios": [3, 2]} if two else None)
+ax = axes[0] if two else axes
+y = np.arange(n)[::-1]
+for yi, r in zip(y, rows):
+    ax.plot([r["p10"], r["p90"]], [yi, yi], color=ORANGE, lw=6, alpha=0.35, solid_capstyle="round")
+    ax.plot(r["median"], yi, "o", color=ORANGE, ms=6)
+    ax.plot(r["current"], yi, marker="|", color=INK, ms=11, mew=2, ls="none")
+ax.set_yticks(y)
+ax.set_yticklabels([f"{i + 1}. {r['team']}" for i, r in enumerate(rows)], fontsize=9.5)
+ax.set_xlabel(unit)
+ax.set_title("Expected final " + unit + ": median (dot), 10 to 90 range (bar), today (tick)", fontsize=10.5, loc="left")
+ax.grid(axis="x", color="#dddddd", lw=0.6)
+ax.set_axisbelow(True)
+if two:
+    ax2 = axes[1]
+    m = np.array([[float(r.get(k) or 0.0) * 100 for k, _ in cols] for r in rows])
+    ax2.imshow(m, aspect="auto", cmap="Oranges", vmin=0, vmax=max(60.0, float(m.max())))
+    ax2.set_xticks(range(len(cols)))
+    ax2.set_xticklabels([lab for _, lab in cols], fontsize=9.5)
+    ax2.set_yticks([])
+    ax2.xaxis.tick_top()
+    for i in range(n):
+        for j in range(len(cols)):
+            v = m[i, j]
+            ax2.text(j, i, f"{v:.0f}%" if v >= 0.5 else "", ha="center", va="center", fontsize=8.5,
+                     color="white" if v > 35 else INK)
+    ax2.set_title("Chance of each outcome", fontsize=10.5, loc="left", pad=24)
+    for sp in ax2.spines.values():
+        sp.set_visible(False)
+fig.suptitle(title, fontsize=14, fontweight="bold", x=0.01, ha="left")
+fig.text(0.01, -0.01, note, fontsize=8.5, color="#555555", ha="left", va="top", wrap=True)
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+os.makedirs("out", exist_ok=True)
+fig.savefig("out/league_forecast.png", bbox_inches="tight")
+fig.savefig("out/league_forecast.svg", bbox_inches="tight")
+with open("out/league_forecast.csv", "w", newline="", encoding="utf-8") as fh:
+    w = csv.writer(fh)
+    w.writerow(["position_by_expected", "team", "today", "median", "p10", "p90"] + [lab for _, lab in cols])
+    for i, r in enumerate(rows):
+        w.writerow([i + 1, r["team"], r["current"], r["median"], r["p10"], r["p90"]] + [r.get(k) for k, _ in cols])
+"""
+
+
+def build_league_pack(*, teams: list[dict], title: str, note: str = "", unit: str = "points",
+                      chances: list[tuple[str, str]] | None = None, timeout_s: int = 90) -> SandboxResult:
+    """A club-compared chart of a league simulation: every club's expected final total with its 10 to 90 range and today's
+    total, sorted by expected total, with the chance of each outcome beside it (title, top places, relegation, playoff).
+    Each team row is {team, current, median, p10, p90} plus any chance fields named in ``chances`` (field, label)."""
+    rows = [{"team": str(t["team"])[:40], "current": float(t["current"]), "median": float(t["median"]),
+             "p10": float(t["p10"]), "p90": float(t["p90"]),
+             **{k: t.get(k) for k, _ in (chances or [])}} for t in teams[:40]]
+    if not rows:
+        raise ValueError("no teams to chart")
+    payload = {"teams": rows, "title": title, "note": note, "unit": unit[:40], "chances": [list(c) for c in (chances or [])]}
+    return run_python(_LEAGUE_TEMPLATE, timeout_s=timeout_s, mem_mb=2048, file_mb=64,
+                      files={"data/input.json": json.dumps(payload).encode("utf-8")})
+
+
 _PANEL_TEMPLATE = r'''
 import json, math, os
 from datetime import datetime

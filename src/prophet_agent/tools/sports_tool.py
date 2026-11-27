@@ -95,7 +95,40 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
     if (placeholders := placeholder_rows(text, name)):
         result.setdefault("notes", []).append(f"{placeholders} unplayed rows whose teams are not known yet (such as 'To be "
                                               "announced') were left out of the remaining schedule")
+    _league_chart(result)
     return result
+
+
+CHANCES = (("title", "Title"), ("top_places", "Top places"), ("relegation", "Relegation"), ("playoff", "Playoffs"))
+
+
+def _league_chart(result: dict) -> None:
+    """Every simulation comes with its club-compared chart (owner, 2026-11-27: a prediction that arrives as a table is not
+    delivered). The chart is built from the result's own figures in the sandbox; when it cannot be built the simulation still
+    stands, with a note saying so."""
+    from prophet_agent.artifacts import build_league_pack
+    rows = [r for r in result.get("teams") or [] if isinstance(r, dict) and isinstance(r.get("final"), dict)]
+    if not rows:
+        return
+    rows = sorted(rows, key=lambda r: -float(r.get("expected_final", 0.0)))
+    flat = [{"team": r["team"], "current": r.get("current", 0.0), "median": r["final"].get("median", r.get("expected_final")),
+             "p10": r["final"].get("p10"), "p90": r["final"].get("p90"), **{k: r.get(k) for k, _ in CHANCES}} for r in rows]
+    unit = str(result.get("metric") or "points")
+    lead = flat[0]["team"]
+    try:
+        pack = build_league_pack(
+            teams=flat, title=f"{lead} finish first on expected points: every club's range and chances",
+            note="Simulated from fitted ratings, not observed results. Each club's range stands alone; ranges are not summed.",
+            unit=unit, chances=list(CHANCES))
+    except Exception as err:                       # noqa: BLE001 - a chart failure never drops the simulation
+        result.setdefault("notes", []).append(f"the club comparison chart could not be built: {str(err)[:160]}")
+        return
+    if not pack.ok:
+        result.setdefault("notes", []).append("the club comparison chart could not be built: " + str(pack.stderr)[-160:])
+        return
+    result["run_id"] = pack.run_id
+    result["manifest"] = f"{pack.workdir}/manifest.json"
+    result["files"] = [{"path": o.path, "sha256": o.sha256, "bytes": o.bytes} for o in pack.outputs]
 
 
 VIEW_TEAMS = 6           # team rows in the planner's view when no teams were named

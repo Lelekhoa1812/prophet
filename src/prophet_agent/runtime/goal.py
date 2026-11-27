@@ -42,6 +42,7 @@ from prophet_agent.nim.errors import Exhausted, NimError, NotConfigured, redact
 from prophet_agent.nim.transport import BUDGET_S, DEFAULT_CHAIN, preview_text
 
 from . import contracts
+from . import prediction_quality
 from . import grounding
 from .grounding import snap, snap_note, unverified
 from . import agents
@@ -2882,6 +2883,8 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # The horizon check is the goal's own (the request is in the goal text), so it runs for the goal and not for a
             # delegated sub-agent, whose brief may name a span of its own.
             horizon = horizon_checks(goal, history, run_today) if cfg.depth == 0 else []
+            if cfg.depth == 0:                       # the lead's prediction is drawn, and its centre line is not flat
+                horizon = horizon + prediction_quality.prediction_checks(history)
             blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT) + horizon)
             if (blocked and out_of_calls and not repair_granted and cfg.depth == 0 and cfg.tool_budget is not None
                     and _may_block_again(history, blocked) and not last and not cfg.finish_now):

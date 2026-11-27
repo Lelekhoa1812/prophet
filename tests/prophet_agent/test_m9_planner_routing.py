@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v39"
+    assert planner.version == "planner.v40"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
