@@ -244,3 +244,13 @@ def test_the_current_file_given_as_history_is_not_counted_twice(tmp_path):
 def test_an_unknown_results_name_points_to_source():
     with pytest.raises(ValueError, match="source"):
         simulate_season_tool({}).fn({"results": "out_file.csv"}, "k")
+
+
+def test_an_empty_history_list_means_no_earlier_seasons(tmp_path):
+    """Round 20 (EPL): history=[] was refused with "history must name 1 to 4 results files" and the simulation was lost."""
+    names = [f"Club {i}" for i in range(6)]
+    (tmp_path / "now.json").write_text(json.dumps(_football_json(names, played=30)), encoding="utf-8")
+    tool = simulate_season_tool({"now.json": tmp_path / "now.json"})
+    a = tool.fn({"results": "now.json", "history": [], "simulations": 100, "backtest": False, "seed": 1}, "k1")
+    b = tool.fn({"results": "now.json", "simulations": 100, "backtest": False, "seed": 1}, "k2")
+    assert a["teams"] == b["teams"]

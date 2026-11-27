@@ -53,7 +53,8 @@ def _simulate(args: dict, _key: str, datasets: dict[str, Path]) -> dict[str, Any
         text, name = path.read_text(encoding="utf-8"), path.name
     matches = parse_matches(text, name)
     history = None
-    if args.get("history") is not None:
+    # Round 20 (EPL): history=[] was refused, and the simulation was lost for a call that meant "no earlier seasons".
+    if args.get("history") is not None and args.get("history") != []:
         names = args["history"] if isinstance(args["history"], list) else [args["history"]]
         if not 1 <= len(names) <= 4:
             raise ValueError("history must name 1 to 4 results files of earlier seasons")

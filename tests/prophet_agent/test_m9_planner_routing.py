@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v36"
+    assert planner.version == "planner.v37"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
@@ -104,3 +104,9 @@ def test_composer_v8_gives_hypotheses_and_the_published_grain_a_place_in_the_ans
     assert current("composer").version == "composer.v8"
     assert 'stage "hypothesis"' in text and "confirmed, refuted or not tested" in text
     assert "published at another grain" in text and "snapshot date" in text
+
+
+def test_planner_v37_names_mean_reversion_and_asks_for_the_season():
+    """Owner, 2026-11-27 ("look too flat"): the VN quarterly chart was drawn flat over a seasonal history."""
+    text = prompts.current("planner").text
+    assert "mean reversion" in text and "Pass `season`" in text
