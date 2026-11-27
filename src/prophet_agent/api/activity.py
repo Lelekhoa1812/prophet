@@ -239,7 +239,8 @@ def _tools_and_skills(mission: dict, calls: list[dict], started: dict[str, dict]
         kind = agent_types.get(info.get("agent_type"))
         for name in (kind.skills if kind else ()):
             skills.setdefault(name, f"playbook of the {kind.name} sub-agents")
-    tools = [{"name": n, "title": titles.get(n, n), "calls": k} for n, k in sorted(counts.items(), key=lambda kv: -kv[1])]
+    tools = [{"name": n, "title": titles.get(n) or mentions.humanise(n), "calls": k}
+             for n, k in sorted(counts.items(), key=lambda kv: -kv[1])]
     return tools, [{"name": n, "title": mentions.humanise(n), "source": why} for n, why in skills.items()]
 
 

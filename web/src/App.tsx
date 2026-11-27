@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Menu, PanelLeft, PanelLeftClose, Plus, ScanSearch, Settings as SettingsIcon, Undo2, Upload, X } from "lucide-react";
+import { BarChart3, BookOpen, Menu, PanelLeft, PanelLeftClose, PanelRight, Plus, ScanSearch, Settings as SettingsIcon, Undo2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import logo from "./public/logo.png";
 import { Composer, type Attachment } from "./components/Composer";
@@ -16,6 +16,9 @@ import { SKILLS } from "./lib/skills";
 import { useMission } from "./lib/useMission";
 import { useModelCatalog, useSelectedModel } from "./lib/useModels";
 import { cn, isWorking } from "./lib/utils";
+import { ActivityPanel } from "./components/ActivityPanel";
+import { ResizeHandle } from "./components/ResizeHandle";
+import { useResizable } from "./lib/useResizable";
 
 // One notice slot above the main column. Errors are never swallowed: they land here until dismissed.
 type Notice = { id: number; message: string; tone: "error" | "info"; action?: { label: string; run: () => void }; ttlMs?: number };
@@ -50,6 +53,24 @@ export default function App() {
       /* storage unavailable: the sidebar simply starts open next time */
     }
   }, [sidebarHidden]);
+  // Both side panels are resized by dragging their inner edge (owner, 2026-11-27). The right panel shows what the current
+  // round is doing: background tasks, sub-agents, output files, and the tools and skills it used.
+  const left = useResizable("prophet.leftWidth", { initial: 288, min: 220, max: 480, side: "left" });
+  const right = useResizable("prophet.rightWidth", { initial: 340, min: 260, max: 640, side: "right" });
+  const [activityHidden, setActivityHidden] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("prophet.activityHidden") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("prophet.activityHidden", activityHidden ? "1" : "0");
+    } catch {
+      /* storage unavailable: the panel simply starts open next time */
+    }
+  }, [activityHidden]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
   const [draft, setDraft] = useState<string | undefined>(undefined);
@@ -435,7 +456,7 @@ export default function App() {
 
   return (
     <div className="flex h-dvh bg-night-0 text-sand-0">
-      <aside className={cn("w-72 shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4", sidebarHidden ? "hidden" : "hidden lg:flex")} inert={navOpen}>
+      <aside style={{ width: left.width }} className={cn("relative shrink-0 flex-col gap-5 border-r border-sand-2/20 bg-night-1/50 p-4", sidebarHidden ? "hidden" : "hidden lg:flex", left.dragging && "select-none")} inert={navOpen}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5 px-2">
             <img src={logo} alt="" aria-hidden="true" className="size-8 shrink-0 rounded-md object-cover" />
@@ -447,6 +468,7 @@ export default function App() {
           </div>
         </div>
         <div className="min-h-0 flex-1">{sidebar}</div>
+        <ResizeHandle label="Resize the sidebar" side="left" width={left.width} min={left.min} max={left.max} dragging={left.dragging} handle={left.handle} />
       </aside>
 
       {navOpen && (
@@ -669,6 +691,25 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {activityHidden ? (
+        <div className="hidden w-12 shrink-0 flex-col items-center border-l border-sand-2/20 py-2 lg:flex" inert={navOpen}>
+          <IconButton label="Show activity" icon={<PanelRight aria-hidden="true" className="size-5" />} onClick={() => setActivityHidden(false)} />
+        </div>
+      ) : (
+        <aside
+          aria-label="Activity"
+          style={{ width: right.width }}
+          className={cn("relative hidden shrink-0 flex-col border-l border-sand-2/20 bg-night-1/50 lg:flex", right.dragging && "select-none")}
+          inert={navOpen}
+        >
+          <ResizeHandle label="Resize the activity panel" side="right" width={right.width} min={right.min} max={right.max} dragging={right.dragging} handle={right.handle} />
+          <ActivityPanel
+            target={inNotebook && selectedNotebookId ? { kind: "notebook", id: selectedNotebookId } : selectedId ? { kind: "mission", id: selectedId } : null}
+            onClose={() => setActivityHidden(true)}
+          />
+        </aside>
+      )}
 
       {/* Hidden pickers behind the composer's + menu and the start-screen cards. Folders use the browser's folder picker. */}
       <input
