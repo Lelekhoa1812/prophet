@@ -45,6 +45,7 @@ from . import contracts
 from . import grounding
 from .grounding import snap, snap_note, unverified
 from . import agents
+from . import lanes
 from . import claims as claim_checks
 from .questions import QUESTIONS_SCHEMA, expected_shape, repair_questions, validate_for_goal
 from .runner import READ_ONLY, UNCHARGED, ArgumentRejected, BudgetExceeded, Cancelled, Ctx, Paused, Tool
@@ -58,7 +59,7 @@ PLAN_SCHEMA: dict[str, Any] = {
     "required": ["action", "rationale"],
     "additionalProperties": False,
     "properties": {
-        "action": {"type": "string", "enum": ["call_tool", "ask_user", "delegate", "finish"]},
+        "action": {"type": "string", "enum": ["call_tool", "ask_user", "delegate", "lanes", "finish"]},
         "tool": {"type": "string", "minLength": 1},
         "args": {"type": "object"},
         "questions": QUESTIONS_SCHEMA["properties"]["questions"],
@@ -76,12 +77,22 @@ PLAN_SCHEMA: dict[str, Any] = {
                            "constraints": {"type": "string", "maxLength": 600},
                            "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
                            "resume": {"type": "string", "maxLength": 12}}}},
+        "lanes": {"type": "array", "minItems": 1, "maxItems": lanes.MAX_LANES, "items": {
+            "type": "object", "required": ["task"], "additionalProperties": False,
+            "properties": {"name": {"type": "string", "maxLength": 60},
+                           "task": {"type": "string", "maxLength": 1200},
+                           "agent_type": {"type": "string", "enum": sorted(agents.TYPES)},
+                           "deliverable": {"type": "string", "maxLength": 600},
+                           "constraints": {"type": "string", "maxLength": 600},
+                           "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 12}}}},
         "rationale": {"type": "string", "maxLength": 400},
     },
     # A call_tool plan names the tool and its arguments. Without this a plan with no tool passed the check, ran nothing and
     # stalled the mission (seen live: Matilda sent three such plans in a row on the electricity scenario).
     "allOf": [{"if": {"properties": {"action": {"const": "call_tool"}}, "required": ["action"]},
-               "then": {"required": ["tool", "args"]}}],
+               "then": {"required": ["tool", "args"]}},
+              {"if": {"properties": {"action": {"const": "lanes"}}, "required": ["action"]},
+               "then": {"required": ["lanes"]}}],
 }
 
 EVAL_SCHEMA: dict[str, Any] = {
@@ -206,6 +217,8 @@ class GoalConfig:
     memory_chars: int = MEMORY_CHARS  # cap on the folded memory
     tag: str = ""                     # names this loop's steps: "d0" for the goal, "d1.a2" for sub-agent a2
     auto_delegate: bool = True        # the harness starts a researcher, panel analysts or a repair analyst itself (see _harness_plan)
+    lane: str = ""                    # this loop's lane id when it runs as a research lane: it reads the board before each plan
+    lane_workers: int = lanes.DEFAULT_WORKERS   # lanes that run at once in a fan-out
 
     @property
     def end(self) -> int:
@@ -236,11 +249,19 @@ def _view(obs: dict) -> dict:
     """What the planner sees of an observation. A sub-agent shows its report, not its own working. A tool's full result
     ("full") is never shown: read_observation pages it and grounding reads it."""
     if obs.get("kind") == "subagent":
-        return {k: obs[k] for k in ("kind", "agent_id", "agent_type", "task", "tools", "status", "answer", "reason",
+        view = {k: obs[k] for k in ("kind", "agent_id", "agent_type", "task", "tools", "status", "answer", "reason",
                                     "steps", "files", "unverified") if k in obs}
+        if obs.get("lane") and len(str(view.get("answer", ""))) > LANE_VIEW_CHARS:
+            # A fan-out of many lanes would fill the view with reports; the digest carries the findings, and
+            # read_observation pages the rest.
+            view["answer"] = str(view["answer"])[:LANE_VIEW_CHARS] + "...[read_observation pages the full report]"
+        return view
     if "full" in obs:
         return {k: v for k, v in obs.items() if k != "full"}
     return obs
+
+
+LANE_VIEW_CHARS = 1_500   # a lane report's answer as the lead's planner sees it
 
 
 def _clip(obj: Any, step: int | None = None) -> str:
@@ -1933,8 +1954,10 @@ def seed_history(history: list[dict]) -> list[dict]:
 
 
 def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, Tool], cfg: GoalConfig, context: str,
-               history: list[dict]) -> dict:
-    """Runs one sub-agent with its own history, memo, notes and a tool list scoped by its type."""
+               history: list[dict], lane: dict | None = None) -> dict:
+    """Runs one sub-agent with its own history, memo, notes and a tool list scoped by its type. ``lane`` (from
+    runtime/lanes.py) makes it a research lane: it gets the board, shares identical web calls with the other lanes, reads its
+    board messages before each step and cannot ask the person."""
     agent = agents.get(spec.get("agent_type")) or agents.TYPES["general"]
     agent_id = f"a{number}"
     sub_tools = agents.allowed(agent, tools)
@@ -1943,6 +1966,9 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
         sub_tools = {n: sub_tools[n] for n in asked}
     sub_tools.pop("notes", None)
     sub_tools["notes"] = _notes_for(ctx, agent_id)
+    if lane:
+        sub_tools = lanes.shared_tools(ctx, sub_tools)
+        sub_tools["board"] = lanes.board_tool(ctx, agent_id, lane["roster"])
     prior = None
     if spec.get("resume"):
         prior = next((h for h in reversed(history) if h.get("kind") == "subagent" and h.get("agent_id") == spec["resume"]), None)
@@ -1952,13 +1978,15 @@ def _one_agent(ctx: Ctx, brain: Any, spec: dict, number: int, tools: dict[str, T
     # The step budget is the type's own (AgentType.steps). It was declared but never read (audit item 24), so every sub-agent
     # got cfg.sub_steps whatever its type said.
     sub_cfg = GoalConfig(max_iterations=agent.steps, stall_window=cfg.stall_window, depth=1, sub_steps=cfg.sub_steps,
-                         tag=f"d1.{agent_id}")
+                         tag=f"d1.{agent_id}", lane=agent_id if lane else "")
     # Live (Beijing 3c379255, 2026-11-23): four analysts started with an empty history and each ran the lead's inspect_data
     # again, then read the same pages, and the step stalled. They start with the lead's tool results so far, so an identical
     # call is answered with the earlier result, as it is for the lead.
     sub_history: list[dict] = list(prior["evidence"]) if prior else seed_history(history)
     sub_tools = _sub_observation_tools(sub_tools, sub_history)
     goal = _brief(spec, agent, agent_id, prior is not None)
+    if lane:
+        goal += "\n\n" + lane["brief"]
     play = agents.playbooks(agent)
     sub_context = (context + "\n\n" if context else "") + (play[:7000] if play else "")
     # Sub-agent steps are top-level steps of the same ledger, numbered in call order like any others, so a resumed run
@@ -2434,6 +2462,16 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             _status(ctx, i, history, items, started)
         if (stall_note := _stall_notice(history, stuck[0] if stuck else None)):
             note += "\n\n" + stall_note          # round 7: one repeat of the same result, so the planner is told it already exists
+        if cfg.lane:
+            # A research lane reads the board before it plans. The read is a ledger step, so what the lane saw is stored and a
+            # replay sees the same messages whatever the other lanes have posted since (runtime/lanes.py).
+            seen = max((int(m.get("seq", 0)) for h in history if h.get("kind") == "board"
+                        for m in h.get("messages") or []), default=0)
+            got = ctx.step(f"inbox:{tag}:{i}", lambda c, _seen=seen: c.store.board_read(
+                c.mission_id, cfg.lane, after=_seen, limit=lanes.INBOX_LIMIT))
+            if got:
+                history.append({"kind": "board", "messages": got,
+                                "note": "new messages for you on the research board; answer a question sent to you"})
         stored = _stored_step_name(ctx)
         # A resumed run follows the decision the ledger holds at this position: the harness's choice depends on the call
         # allowance, which grows when a run continues, so recomputing it could take the other path (live retail: "replay
@@ -2455,6 +2493,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         plan = as_question_action(plan)
         if plan["action"] == "finish":
             obs = {"kind": "finish", "rationale": plan["rationale"]}
+        elif plan["action"] == "ask_user" and cfg.lane:
+            obs = {"kind": "ask_user", "error": "a research lane cannot ask the person. Post the question to the lead on the "
+                   "board (board action=post to=lead kind=question) and carry on with what you can establish."}
         elif plan["action"] == "ask_user":
             # Mission 9 (M9-7): one question object, or more than four, is repaired in place; the notes ride on the observation.
             raw_qs, repair_notes = repair_questions(plan.get("questions", []))
@@ -2486,6 +2527,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                     obs["not_asked_again"] = repeated
                 if repair_notes:
                     obs["repair"] = repair_notes
+        elif plan["action"] == "lanes":
+            ran = lanes.run_lanes(ctx, brain, plan, tools, cfg, context, history, _one_agent, BRANCH_BLOCK,
+                                  workers=cfg.lane_workers)
+            history.extend(ran[:-1])
+            obs = ran[-1]
         elif plan["action"] == "delegate":
             delegated = _delegate(ctx, brain, plan, tools, cfg, context, history)
             if plan.get("auto"):

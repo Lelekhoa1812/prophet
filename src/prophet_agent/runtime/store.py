@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS agent_notes (
   updated REAL NOT NULL,
   PRIMARY KEY (mission_id, scope, name)
 );
+CREATE TABLE IF NOT EXISTS lane_board (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  mission_id TEXT NOT NULL REFERENCES missions(id),
+  sender TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  topic TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL,
+  idem_key TEXT UNIQUE,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS lane_board_by_mission ON lane_board(mission_id, seq);
 """
 
 
@@ -191,6 +203,7 @@ def purge_missions(c: sqlite3.Connection, mission_ids: list[str]) -> None:
         c.execute("DELETE FROM steps WHERE mission_id=?", (mid,))
         c.execute("DELETE FROM events WHERE mission_id=?", (mid,))
         c.execute("DELETE FROM agent_notes WHERE mission_id=?", (mid,))
+        c.execute("DELETE FROM lane_board WHERE mission_id=?", (mid,))
         c.execute("DELETE FROM missions WHERE id=?", (mid,))
 
 
@@ -563,7 +576,7 @@ class Store:
     def wipe_ledger(self) -> dict[str, int]:
         """Delete every row of the ledger, children before parents, in one transaction. Returns the rows removed per table.
         The caller must have checked that no mission is running; the schema itself is kept."""
-        order = ("events", "steps", "tool_calls", "questions", "agent_notes", "sources", "derived_versions", "derived_tables",
+        order = ("events", "steps", "tool_calls", "questions", "agent_notes", "lane_board", "sources", "derived_versions", "derived_tables",
                  "rewinds", "missions", "notebooks")
         with self._tx() as c:
             # Checked again here, inside the wipe's transaction: a mission that took a lease after the caller's check must
@@ -610,6 +623,50 @@ class Store:
         with self.lock:
             rows = self.conn.execute(q + " ORDER BY updated DESC", args).fetchall()
         return [{"scope": r["scope"], "name": r["name"], "chars": r["chars"]} for r in rows]
+
+    # -- lane board: messages between research lanes and the lead (runtime/lanes.py) ----------------------------------
+
+    def board_post(self, mission_id: str, sender: str, recipient: str, kind: str, text: str, topic: str = "",
+                   key: str | None = None) -> int:
+        """Post a message; returns its sequence number. A post with a key already used returns the first post's number, so a
+        retried tool call never posts twice."""
+        with self._tx() as c:
+            self._fence(c, mission_id)
+            if key is not None:
+                row = c.execute("SELECT seq FROM lane_board WHERE idem_key=?", (key,)).fetchone()
+                if row is not None:
+                    return int(row["seq"])
+            cur = c.execute("INSERT INTO lane_board (mission_id, sender, recipient, kind, topic, text, idem_key, created) "
+                            "VALUES (?,?,?,?,?,?,?,?)", (mission_id, sender, recipient, kind, topic, text, key, time.time()))
+            return int(cur.lastrowid)
+
+    def board_read(self, mission_id: str, reader: str | None = None, after: int = 0, limit: int = 50,
+                   kinds: tuple[str, ...] | None = None) -> list[dict]:
+        """Messages after ``after``, oldest first. With a reader: those sent to it or to all, not its own. Without: all."""
+        q = "SELECT seq, sender, recipient, kind, topic, text FROM lane_board WHERE mission_id=? AND seq>?"
+        args: list = [mission_id, int(after)]
+        if reader is not None:
+            q += " AND sender<>? AND recipient IN ('all', ?)"
+            args += [reader, reader]
+        if kinds:
+            q += f" AND kind IN ({','.join('?' * len(kinds))})"
+            args += list(kinds)
+        with self.lock:
+            rows = self.conn.execute(q + " ORDER BY seq LIMIT ?", [*args, int(limit)]).fetchall()
+        return [dict(r) for r in rows]
+
+    def tool_done_elsewhere(self, mission_id: str, tool: str, args: Any) -> tuple[int, Any] | None:
+        """(step index, result) of a finished call of ``tool`` with exactly these arguments anywhere in the mission, or None."""
+        with self.lock:
+            row = self.conn.execute("SELECT step_idx, result_json FROM tool_calls WHERE mission_id=? AND tool=? AND "
+                                    "args_json=? AND status='done' ORDER BY step_idx LIMIT 1",
+                                    (mission_id, tool, canonical(args))).fetchone()
+        if row is None:
+            return None
+        try:
+            return int(row["step_idx"]), json.loads(row["result_json"] or "null")
+        except (TypeError, ValueError):
+            return None
 
     def tool_args(self, mission_id: str, tool: str) -> list[dict]:
         """The arguments of every call of ``tool`` in this mission, in step order (the ledger is the complete record)."""

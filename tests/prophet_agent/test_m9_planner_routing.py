@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v37"
+    assert planner.version == "planner.v38"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
@@ -110,3 +110,10 @@ def test_planner_v37_names_mean_reversion_and_asks_for_the_season():
     """Owner, 2026-11-27 ("look too flat"): the VN quarterly chart was drawn flat over a seasonal history."""
     text = prompts.current("planner").text
     assert "mean reversion" in text and "Pass `season`" in text
+
+
+def test_planner_v38_offers_research_lanes_scaled_to_the_question():
+    """Owner, 2026-11-27: up to 50 research lanes, each with its own loop and context, talking on a board."""
+    text = _text()
+    assert "lanes (a fan-out of 2 to 50 research lanes)" in text
+    assert "a single fact needs no lanes" in text and "research board" in text
