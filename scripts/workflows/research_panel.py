@@ -69,7 +69,10 @@ AVOID = ("upload", "synthetic", "approximat", "provide your own", "i'll provide"
 
 
 SHORTCUT = ("deliver now", "deliver as is", "finish now", "stop here", "stop now", "skip", "no further", "without testing",
-            "end here", "keep it as is", "accept as is")
+            "end here", "keep it as is", "accept as is",
+            # Round 20261128-063203, AURATE: "Univariate forecast only (current path)" was picked and dropped the drivers.
+            "univariate", "current path", "own history", "series only", "without driver", "no driver", "no covariate",
+            "without covariate", "drop the driver", "skip the driver")
 
 
 def _usable(options: list[dict]) -> list[dict]:
@@ -84,10 +87,10 @@ def _pick(options: list[dict]) -> str:
     usable = _usable(options)
     if not usable:
         return UNATTENDED_REPLY
-    marked = [o for o in usable if "recommended" in str(o.get("label", "")).lower()]
+    working = [o for o in usable if not any(w in f"{o.get('label', '')} {o.get('description', '')}".lower() for w in SHORTCUT)]
+    marked = [o for o in (working or usable) if "recommended" in str(o.get("label", "")).lower()]
     if marked:
         return marked[0].get("label")
-    working = [o for o in usable if not any(w in f"{o.get('label', '')} {o.get('description', '')}".lower() for w in SHORTCUT)]
     return (working or usable)[0].get("label")
 
 

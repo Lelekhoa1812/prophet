@@ -99,7 +99,7 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "families": [_MONETARY, _INFLATION, _LABOUR, _ACTIVITY, _MARKET_PATH, _GLOBAL, _FINANCIAL, _FISCAL, _EXTERNAL,
                      _GEOPOLITICS, _COMMODITIES, _SENTIMENT],
         "benchmarks": ["the central bank's own forecasts (Statement on Monetary Policy, dot plot)",
-                       "market-implied path from rate futures or OIS", "economists' consensus (major banks' rate calls)"],
+                       "market-implied path from rate futures or OIS (market_benchmark kind au_cash_rate for the RBA: the bank bill curve's implied path, keyless)", "economists' consensus (major banks' rate calls)"],
         "minimum": {"researched": 5, "tested": 2, "benchmarks": 1, "scenarios": 2},
     },
     "labour_market": {
@@ -132,6 +132,7 @@ DOMAINS: dict[str, dict[str, Any]] = {
             _f("supply", "mine output, recycling and costs", ["mine production"], ["gold mine supply outlook"]),
         ],
         "benchmarks": ["bank forecasts (Goldman Sachs, JPMorgan, UBS price targets)", "futures curve",
+                       "options-implied range (market_benchmark kind gvz with the last price; the finish check compares the band with it)",
                        "World Gold Council outlook"],
         "minimum": {"researched": 5, "tested": 2, "benchmarks": 1, "scenarios": 2},
     },
@@ -155,7 +156,7 @@ DOMAINS: dict[str, dict[str, Any]] = {
             _f("flows_positioning", "buybacks, fund flows, positioning and sentiment surveys", ["AAII, fund flows"],
                ["equity fund flows positioning latest", "stock buybacks {year}"]),
         ],
-        "benchmarks": ["strategists' year-end targets (Goldman, Morgan Stanley, JPMorgan)", "futures and options-implied range"],
+        "benchmarks": ["strategists' year-end targets (Goldman, Morgan Stanley, JPMorgan)", "futures and options-implied range (market_benchmark kind vix with the last close; the finish check compares the band with it)"],
         "minimum": {"researched": 5, "tested": 2, "benchmarks": 1, "scenarios": 2},
     },
     "currency": {

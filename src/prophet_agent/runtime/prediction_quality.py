@@ -28,7 +28,9 @@ FLAT_STRATEGIES = 4
 CHART_SUFFIXES = (".png", ".svg")
 # Owner choice (2026-11-27): the fundamentals check warns on the first live rounds, so what missions reach on their own is
 # measured before it blocks. PROPHET_FUNDAMENTALS_GATE=block makes it a hard block.
-FUNDAMENTALS_SEVERITY = "block" if os.environ.get("PROPHET_FUNDAMENTALS_GATE", "warn").strip().lower() == "block" else "warn"
+# Measured (round 20261128-063203, warn mode): SPX, EPL and GOLD never called driver_map, and SPX delivered a drift line that
+# the evaluator judged met. The check blocks by default now; PROPHET_FUNDAMENTALS_GATE=warn turns it back into a warning.
+FUNDAMENTALS_SEVERITY = "warn" if os.environ.get("PROPHET_FUNDAMENTALS_GATE", "block").strip().lower() == "warn" else "block"
 
 PREDICTION_TOOLS = ("forecast_report", "timesfm_forecast", "simulate_season", "scenario_forecast")
 
@@ -160,6 +162,9 @@ def check_flat_centre(history: Any) -> dict | None:
 DRIVER_GOAL = re.compile(r"\bdrivers?\b|\bsignals?\b|what moves|\bfactors?\b|\bleading indicators?\b", re.I)
 
 
+DRIVEN_DOMAINS = ("policy_rate", "labour_market", "precious_metal", "equity_index", "currency", "commodity")
+
+
 def check_signals_gathered(history: Any, goal: str = "") -> dict | None:
     """Outside signals were gathered for a single-series prediction. A goal that asks for the drivers or signals ("Search for
     the signals that move it") needs a driver tested as a covariate (a successful control_lab with_covariates or a call that
@@ -170,11 +175,14 @@ def check_signals_gathered(history: Any, goal: str = "") -> dict | None:
     if not any(_ok_result(h, t) is not None for h in flat for t in ("forecast_report", "timesfm_forecast")):
         return None
     tried = set(strategies_tried(history))
-    if DRIVER_GOAL.search(goal or ""):
+    from prophet_agent.research import driver_families as dfam
+    # A macro or market target is driven by outside forces whatever the request's wording: live SPX (round 20261128-063203)
+    # asked only to "compare against the simple rules" and delivered a drift line with no driver tested.
+    if DRIVER_GOAL.search(goal or "") or dfam.detect(goal or "") in DRIVEN_DOMAINS:
         if "drivers" in tried:
-            return _check("signals_gathered", True, "a driver was tested as a covariate, as the request asks")
+            return _check("signals_gathered", True, "a driver was tested as a covariate")
         return _check("signals_gathered", False,
-                      "the request asks for the drivers or signals that move the series, and none was tested. Download the "
+                      "the target is moved by outside drivers (or the request asks for them), and none was tested. Download the "
                       "candidates (related and leading series, rates, the dollar, prices, survey or consensus data), align "
                       "them to the target's dates, save them as covariates with the series, and score them with control_lab "
                       "(with_covariates); keep those that win, and say which were tested and dropped")
@@ -642,6 +650,61 @@ def check_band_width(history: Any, goal: str = "") -> dict | None:
     return _check("band_width_sane", True, facts, BAND_SEVERITY)
 
 
+MARKET_NARROW = 0.6      # delivered 10-90 log width as a share of the options-implied width at the same horizon
+
+
+def _horizon_months(history: Any) -> float | None:
+    """Months from the last observation to the last forecast date of the newest single-series pack, or None."""
+    import datetime as dt
+    for h in reversed(_flatten(history)):
+        if isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else {}
+            fc = full.get("forecast") if isinstance(full.get("forecast"), dict) else {}
+            last = (fc.get("last_observed") or {}).get("date") if isinstance(fc.get("last_observed"), dict) else None
+            fut = fc.get("future_dates") or []
+            try:
+                days = (dt.date.fromisoformat(str(fut[-1])[:10]) - dt.date.fromisoformat(str(last)[:10])).days
+            except (IndexError, TypeError, ValueError):
+                return None
+            return days / 30.4375 if days > 0 else None
+    return None
+
+
+def check_market_band(history: Any, goal: str = "") -> dict | None:
+    """The delivered range is not far narrower than the options market prices at the same horizon.
+
+    Motivation: round 20261128-063203, SPX delivered a 24-month 10-90 range of about -12.6% to +11.4% (its backtest coverage
+    was 56% against 80%) while its own sources quoted a VIX of 26.6. Logic: when the mission read an options-implied range
+    (market_benchmark vix or gvz), the delivered log width at the last step is compared with the implied width at the same
+    number of months (implied volatility reverting to its long-run median, opendata/market_benchmark.py). Below MARKET_NARROW
+    times it blocks: implied volatility usually runs a few points above realised, which the margin allows, but a range half
+    as wide as the market's claims a certainty the market does not have. None without both."""
+    import math
+    from prophet_agent.opendata import market_benchmark as mb
+    bench = None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "market_benchmark")
+        if isinstance(r, dict) and r.get("kind") in ("vix", "gvz") and isinstance(r.get("implied_vol_pct"), (int, float)):
+            bench = r
+            break
+    band, months = _delivered_band(history), _horizon_months(history)
+    if bench is None or band is None or months is None or band[0] <= 0 or band[1] <= band[0]:
+        return None
+    vol = mb.term_vol(float(bench["implied_vol_pct"]), float(bench.get("long_run_median_pct") or bench["implied_vol_pct"]),
+                      months)
+    implied = 2 * mb.Z90 * vol / 100.0 * math.sqrt(months / 12.0)
+    width = math.log(band[1] / band[0])
+    ratio = width / implied
+    facts = (f"the delivered 10 to 90 range at {months:.0f} months is {band[0]:.5g} to {band[1]:.5g} ({width:.3f} log points); "
+             f"{bench['kind'].upper()} {bench['implied_vol_pct']} on {bench.get('as_of')} implies {implied:.3f} log points at that "
+             f"horizon (average volatility {vol:.1f}%; ratio {ratio:.2f}; source {bench.get('source_url')})")
+    if ratio < MARKET_NARROW:
+        return _check("band_vs_market", False, facts + ". The range is far narrower than the options market prices: widen it "
+                      "(interval calibration on rolling origins, a volatility-scaled band, or scenarios with their own "
+                      "uncertainty), or give the evidence that this horizon is calmer than the market expects")
+    return _check("band_vs_market", True, facts)
+
+
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
@@ -649,7 +712,7 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_grain(goal, history), lambda: check_answer_band(answer, history),
              lambda: check_signals_gathered(history, goal), lambda: check_league_signals(history),
              lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
-             lambda: check_band_width(history, goal))
+             lambda: check_band_width(history, goal), lambda: check_market_band(history, goal))
     for fn in calls:
         try:
             c = fn()

@@ -282,3 +282,13 @@ def test_band_width_is_judged_against_the_series_own_moves(monkeypatch):
     assert not wide["ok"] and "far wider" in wide["detail"]
     monkeypatch.setattr(pq, "_pack_input", lambda run_id: None)
     assert pq.check_band_width([band_pack(4.9, 5.1)], "x") is None
+
+
+def test_a_market_target_needs_a_tested_driver_whatever_the_wording():
+    # Round 20261128-063203 (SPX): "compare against the simple rules" delivered a drift line with no driver tested.
+    goal = "Find the S&P 500 index from public sources and forecast it month by month over the next 2 years with a range."
+    c = pq.check_signals_gathered([pack(MOVING)], goal)
+    assert not c["ok"] and c["severity"] == "block"
+    with_driver = [call("control_lab", {"with_covariates": True, "past_covariates": [[1.0]]}), pack(MOVING)]
+    assert pq.check_signals_gathered(with_driver, goal)["ok"]
+    assert pq.check_signals_gathered([pack(MOVING)], "forecast weekly units for store 4")["severity"] == "warn"
