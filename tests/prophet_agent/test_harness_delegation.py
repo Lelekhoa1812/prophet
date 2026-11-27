@@ -164,7 +164,8 @@ def test_files_a_sub_agent_wrote_are_auto_carried_for_the_lead():
 def test_a_question_option_with_a_figure_no_tool_printed_is_refused():
     # Round 20 (EPL): "Liverpool (28 points)" against a downloaded table that said 21.
     from prophet_agent.runtime.goal import _option_figure_problems
-    h = [{"kind": "tool", "tool": "download_web_data", "args": {}, "result": {"first_rows": [["Liverpool", "12", "21"]]}}]
+    h = [{"kind": "tool", "tool": "download_web_data", "args": {}, "result": {"columns": ["team", "played", "pts"],
+                                                                                   "first_rows": [["Liverpool", "12", "21"]]}}]
     qs = [{"question": "Which clubs?", "header": "Clubs", "multiSelect": True, "options": [
         {"label": "Liverpool (28 points)", "description": "leader"}, {"label": "Top 6 clubs", "description": "keep six"},
         {"label": "Liverpool (21 pts)", "description": "from the table"}]}]

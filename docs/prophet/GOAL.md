@@ -1756,3 +1756,30 @@ Five read-only audits (code generation, maths, research planning, analyst ideolo
 - Planner v36: feasibility of the requested grain, catalogue first, ask when the grain is not published.
 Panel: NBA, CO2 and CPI were retired at the owner's request (2026-11-27); VNUNEMP joined. Gate for 69b2ed1: 3526 passed,
 6 skipped. **M9-8 is not met.**
+
+### Six-topic panel, lanes, stop gate and the round 21 audit (measured, run 20261127-151450, API on d028d7a, 2026-11-27)
+The owner narrowed the panel to six topics (VNUNEMP, AUUNEMP, AURATE, EPL, GOLD, SPX) run in parallel, round after round
+(`scripts/workflows/panel_loop.py`), the round before the newest cleaned once the next one finishes. Run 20261127-151450:
+EPL, GOLD and VNUNEMP done and verified; AURATE, AUUNEMP and SPX partial. Three read-only audits (Haiku, one per pair of
+missions) found that two of the three verified missions were wrong in ways no check saw:
+- Horizon from the data, not from today: GOLD forecast 2017-10 to 2018-09 from a stopped series; VNUNEMP 2025-Q1 to 2026-Q4
+  from data ending 2024-Q4; AURATE February 2024 to January 2029. "The next N units" was counted from the last data point.
+  "Over the next year" (no digit) was not read as a horizon at all.
+- Stale mirror not flagged: the DBnomics RBA copy's last period is a day (2024-01-31) and the age rule only read YYYY-MM; the
+  RBA's own table F1.1 (to October 2026) was listed as a source but never downloadable (a one-cell title line failed the CSV
+  sniff). F13's Australian cash rate was itself stopped in May 2024.
+- A monthly step of 31 days was taken as a fixed length, so "5 years" was 58.9 periods against the 60 the forecast ran; the
+  finish was blocked repeatedly and AURATE stalled on it.
+- AUUNEMP's only blocking check was a false positive: "ages 15+, total" read as a stated total.
+- EPL's question options carried ranks the fetched table did not support, and the model's own title favourite (Brighton)
+  was left out; SPX failed six time-index cells and produced no forecast; GOLD's headline was the last observed value.
+Repairs: commits 0055ae3 (progress-aware stop gate: a block repeats while its failing checks change, a stall or third
+rejected finish first pivots, 30-minute parts, up to five auto-continues, a larger view, a cut memory names what it folded;
+activity API), 11752d2 (console activity panel and resizable side panels), 43b56a1 (RBA tables read from the RBA, mirror age
+by its frequency, stale RBA copies rerouted to F1.1), and the horizon change: the run's stored date anchors "the next N
+units" (the gap between the data end and today is added), a forecast from data older than a fresh release would be
+(150 days monthly, 270 quarterly, 640 yearly) is blocked as `data_is_current`, a 28 to 31 day step is a calendar month, "over
+the next year" is one year, and "total" as a category label is not a stated total. Still open from this audit: EPL options
+and contender coverage, SPX time-index failures, GOLD headline versus centre, step-shaped policy-rate paths.
+Research lanes (4de19e8): up to 50 sub-agent lanes per fan-out on a bounded pool with a shared board; not yet measured on the
+panel. **M9-8 is not met.**

@@ -897,9 +897,18 @@ _WITHHELD_WORD = re.compile(r"\bwithheld\b|\bwithhold|\bnot (?:a |the )?headline
                             r"\bhealth (?:check|verdict)\b|\bverdict\b", re.I)
 
 
+# "Total" as a category label is not a sum: "ages 15+, total", "both sexes, total", "total (both sexes)", "the total
+# unemployment rate". Round 21 (AUUNEMP, 2026-11-27): "ages 15+, total" was read as a headline total and was the only check
+# that kept the answer partial.
+_TOTAL_LABEL = re.compile(r"\b(?:ages?\s*\d+\s*\+?(?:\s*(?:and over|years))?|both sexes|sexes|sex|persons|all ages)\s*[,:/-]?\s*total\b"
+                          r"|\btotal\s*\((?:both sexes|all ages|persons|sexes)[^)]*\)"
+                          r"|\btotal\s+(?:unemployment|employment|participation|inflation|labou?r force)?\s*rates?\b", re.I)
+
+
 def claimed_totals(answer: str) -> list[str]:
     """Sentences that state a total with a figure and do not explain why a total is withheld."""
-    return [u for u in sentences(answer) if _TOTAL_WORD.search(u) and figures(u) and not _WITHHELD_WORD.search(u)]
+    return [u for u in sentences(answer)
+            if _TOTAL_WORD.search(_TOTAL_LABEL.sub(" ", u)) and figures(u) and not _WITHHELD_WORD.search(u)]
 
 
 def explains_withheld(answer: str) -> bool:

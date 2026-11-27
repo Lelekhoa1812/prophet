@@ -200,6 +200,9 @@ HORIZON_REQUEST = re.compile(
     r"|periods?|steps?)\b"
     r"|\b(\d{1,4})[\s-]+(trading\s+days?|business\s+days?|days?|weeks?|months?|quarters?|years?|periods?|steps?)\s+"
     r"(?:ahead|horizon)\b", re.I)
+ONE_UNIT_REQUEST = re.compile(r"\b(?:over|for|during|within)\s+the\s+(?:next|coming)\s+(year|quarter|week)\b", re.I)
+# How old the data may be before a forecast "from now" needs a newer source: a release is normally out within these many days.
+CURRENT_DATA_DAYS = {"monthly": 150, "quarterly": 270, "yearly": 640, "short": 30}
 HORIZON_LABELS = {"period": "periods", "trading_day": "trading days", "day": "days", "week": "weeks", "month": "months",
                   "quarter": "quarters", "year": "years"}
 UNIT_DAYS = {"day": 1.0, "trading_day": 7.0 / 5, "week": 7.0, "month": 365.25 / 12, "quarter": 365.25 / 4, "year": 365.25}
@@ -660,6 +663,12 @@ OPTION_FIGURE = re.compile(r"[-+]?\d[\d,]*\.\d+|[-+]?\d[\d,]*\s*(?:%|percent|pts
                            r"goals?\b|games?\b)", re.IGNORECASE)
 
 
+RANK_CLAIM = re.compile(r"\b\d{1,2}(?:st|nd|rd|th)\s+(?:place|after|in the (?:table|league|standings)|position)\b"
+                        r"|\b(?:current |league )?leaders?\b|\bcurrent(?:ly)? (?:standing|position)s?\b|\bby current standing\b",
+                        re.I)
+STANDINGS_EVIDENCE = re.compile(r"\bstandings?\b|\bleague table\b|\bposition\b|\bpts\b", re.I)
+
+
 def _option_figure_problems(questions: list, history: list[dict], goal: str) -> list[str]:
     """A figure in a question option must come from the evidence. Round 20 (EPL, 2026-11-27): the options named
     "Liverpool (28 points)" while the downloaded table said 21, the person chose on that figure, and the run ended partial."""
@@ -678,6 +687,15 @@ def _option_figure_problems(questions: list, history: list[dict], goal: str) -> 
             if bad:
                 problems.append(f"questions[{i}].options[{j}] states {', '.join(bad[:3])}, which no tool printed: take "
                                 "the figure from the fetched data or leave it out of the option")
+    # Round 21 (EPL, 2026-11-27): the options said "Current leader", "2nd after 12 rounds", "4th after 12 rounds" before any
+    # table was computed; the fetched results had Brighton 2nd and Chelsea 8th, and 110 matches were 11 rounds.
+    ranked = [f"questions[{i}].options[{j}]" for i, q in enumerate(questions) if isinstance(q, dict)
+              for j, o in enumerate(q.get("options") or []) if isinstance(o, dict)
+              and RANK_CLAIM.search(f"{o.get('label') or ''} {o.get('description') or ''}")]
+    if ranked and not any(STANDINGS_EVIDENCE.search(str(h.get("result"))) for h in history
+                          if h.get("kind") == "tool" and "error" not in h):
+        problems.append(f"{', '.join(ranked[:3])} name a league position, but no tool has computed the standings yet: compute "
+                        "the table from the fetched results first (points, played, position), then build the options from it")
     return problems
 
 
@@ -2159,6 +2177,11 @@ def requested_horizon(goal: str) -> tuple[int, str] | None:
     found = set()
     for m in HORIZON_REQUEST.finditer(goal or ""):
         found.add((int(m.group(1) or m.group(3)), _horizon_unit(m.group(2) or m.group(4))))
+    if not found:
+        # Round 21 (GOLD): "over the next year" has no digit, so no horizon was read and a forecast that ended in 2018 passed.
+        # One unit is read only after over, for, during or within, so "rates next year" (a calendar year) is not taken.
+        for m in ONE_UNIT_REQUEST.finditer(goal or ""):
+            found.add((1, _horizon_unit(m.group(1))))
     if len(found) != 1:
         return None
     count, unit = next(iter(found))
@@ -2208,7 +2231,7 @@ def _series_step(rec: dict) -> tuple[float, bool] | None:
     if isinstance(step, bool):
         return None
     if isinstance(step, (int, float)):
-        return (float(step), False) if 0 < step < 1e6 else None
+        return _calendar_step(float(step)) if 0 < step < 1e6 else None
     if not isinstance(step, str):
         return None
     text = step.strip().lower()
@@ -2216,8 +2239,18 @@ def _series_step(rec: dict) -> tuple[float, bool] | None:
         return SERIES_STEPS[text], text in CALENDAR_STEPS
     m = STEP_TEXT.fullmatch(text)
     if m and 0 < float(m.group(1)) < 1e6:
-        return float(m.group(1)), False
+        return _calendar_step(float(m.group(1)))
     return None
+
+
+def _calendar_step(days: float) -> tuple[float, bool]:
+    """A typical step in days, read as a calendar month, quarter or year when it is one. Round 21 (AURATE, 2026-11-27): month-end
+    dates gave a typical step of 31 days, so five years read as 58.9 periods against the 60 the forecast ran, the finish was
+    blocked again and again, and the run stalled."""
+    for low, high, name in ((28, 31, "monthly"), (89, 92, "quarterly"), (365, 366, "yearly")):
+        if low <= days <= high:
+            return SERIES_STEPS[name], True
+    return days, False
 
 
 MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
@@ -2377,7 +2410,7 @@ def _dated_span_check(asked: str, count: int, unit: str, rec: dict, history: lis
     return contracts._check("horizon_matches_request", ok, detail, "block")
 
 
-def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
+def horizon_checks(goal: str, history: list[dict], today: str | None = None) -> list[dict]:
     """The check that the forecast that stands runs over the horizon the goal asks for. Empty when the goal states no horizon
     or no forecast has run: the check is left out, not reported as passing.
 
@@ -2388,6 +2421,10 @@ def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
     daily series reads one period per trading day. A mismatch is a block: the finish is refused and the planner must forecast
     the requested span. A calendar request with no recorded step cannot be converted; that is a warning the answer carries,
     not a block, so every calendar forecast is not refused for a field the record does not yet hold.
+    "The next N units" runs from today (the run's stored date), not from the data's last date. Round 21 (VNUNEMP and AURATE,
+    2026-11-27): series ending in 2024 were forecast for 2 and 5 years from their last point, so most of each forecast lay in
+    the past and the check passed. When the data ends more than one step before today, the periods between them are added to
+    the request.
     """
     window = window_checks(goal, history)
     request = requested_horizon(goal)
@@ -2398,6 +2435,7 @@ def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
         return []
     count, unit = request
     horizon, rec = plan
+    checks_before: list[dict] = []
     label = HORIZON_LABELS[unit] if count != 1 else HORIZON_LABELS[unit].rstrip("s")
     asked = f"the request asks for {count} {label}"
     if (dated := _dated_span_check(asked, count, unit, rec, history)) is not None:
@@ -2417,16 +2455,86 @@ def horizon_checks(goal: str, history: list[dict]) -> list[dict]:
             expected = count * UNIT_DAYS[unit] / step_days
         # A calendar step lines up with the calendar; a fixed-length step cannot, since month lengths vary by a day or two.
         slack = 0.5 if calendar or unit not in ("month", "quarter", "year") else 1.0
+        if (stale := _stale_data_check(history, today, step_days, rec)) is not None:
+            checks_before.append(stale)
+        if (gap := _periods_before_today(history, today, step_days, rec)) is not None:
+            expected += gap[0]
+            asked += (f" from today ({today}); the data ends {gap[1]}, {gap[0]} periods earlier, so the forecast must also "
+                      "cover those periods")
     ok = abs(expected - horizon) <= slack
     detail = f"{asked}, which is {expected:.1f} periods at the series step; the forecast runs {horizon} periods"
     if not ok:
         detail += ", so the plan must forecast the requested span"
-    return [contracts._check("horizon_matches_request", ok, detail, "block")]
+    return checks_before + [contracts._check("horizon_matches_request", ok, detail, "block")]
 
 
-def horizon_note(goal: str, history: list[dict]) -> str | None:
+def _series_end(history: list[dict], rec: dict | None, step_days: float) -> str | None:
+    """The last observed date of the series the standing forecast was made from: the record's own last_observed date, else
+    one step before its first forecast date, else the newest time column the files were inspected with."""
+    import datetime as dt
+    rec = rec if isinstance(rec, dict) else {}
+    last = rec.get("last_observed")
+    if isinstance(last, dict) and re.match(r"\d{4}-\d{2}-\d{2}", str(last.get("date") or "")):
+        return str(last["date"])[:10]
+    first = (rec.get("window") or {}).get("first") if isinstance(rec.get("window"), dict) else None
+    first = first or (rec.get("future_dates") or [None])[0]
+    if first and re.match(r"\d{4}-\d{2}-\d{2}", str(first)):
+        try:
+            return (dt.date.fromisoformat(str(first)[:10]) - dt.timedelta(days=round(step_days))).isoformat()
+        except ValueError:
+            pass
+    return _data_facts(history).get("data_end")
+
+
+def _stale_data_check(history: list[dict], today: str | None, step_days: float, rec: dict | None = None) -> dict | None:
+    """A block when the series the forecast stands on ends long before today, None when it is current or a date is missing.
+
+    Motivation: round 21 (2026-11-27), GOLD forecast October 2017 to September 2018 from a stopped series and was judged
+    met; VNUNEMP and AURATE forecast from 2024 data while their own research had 2025 and 2026 figures. A forecast "from
+    now" needs data that reaches close to now.
+    Logic: the allowed age is how long a fresh release normally takes at the series step (150 days for monthly, 270 for
+    quarterly, 640 for yearly, 30 for shorter steps). Older data blocks the finish with what to do instead."""
+    import datetime as dt
+    end = _series_end(history, rec, step_days)
+    if not today or not end:
+        return None
+    try:
+        days = (dt.date.fromisoformat(str(today)[:10]) - dt.date.fromisoformat(str(end)[:10])).days
+    except ValueError:
+        return None
+    kind = "yearly" if step_days >= 360 else "quarterly" if step_days >= 85 else "monthly" if step_days >= 27 else "short"
+    if days <= CURRENT_DATA_DAYS[kind]:
+        return None
+    return contracts._check(
+        "data_is_current", False,
+        f"the data ends {str(end)[:10]}, {days} days before today ({str(today)[:10]}); a {kind} series is normally published "
+        f"within {CURRENT_DATA_DAYS[kind]} days. Fetch the series from a source that has the recent figures (the provider's "
+        "own service, FRED, or the figures research found, added to the series with their sources), forecast from there, "
+        "and if no newer figure exists, say in the answer how old the data is", "block")
+
+
+def _periods_before_today(history: list[dict], today: str | None, step_days: float,
+                          rec: dict | None = None) -> tuple[int, str] | None:
+    """Whole periods between the data's last date and today, with that date, when the data ends more than one and a half
+    steps before today (a monthly figure for last month is on time). None otherwise, or when a date is missing."""
+    import datetime as dt
+    end = _series_end(history, rec, step_days)
+    if not today or not end or step_days < 1:
+        return None
+    try:
+        last = dt.date.fromisoformat(str(end)[:10])
+        now = dt.date.fromisoformat(str(today)[:10])
+    except ValueError:
+        return None
+    days = (now - last).days
+    if days <= 1.5 * step_days:
+        return None
+    return int(days // step_days), last.isoformat()
+
+
+def horizon_note(goal: str, history: list[dict], today: str | None = None) -> str | None:
     """The failing horizon checks as one sentence for the person, or None when every check holds or none applies."""
-    failing = [c for c in horizon_checks(goal, history) if not c["ok"]]
+    failing = [c for c in horizon_checks(goal, history, today) if not c["ok"]]
     return ("Horizon check (computed): " + contracts.summarise(failing)) if failing else None
 
 
@@ -2465,6 +2573,9 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             return recorded
         stored = ctx.step("contracts", record)
         context = _dated(context, stored.get("today") if isinstance(stored, dict) else None)
+        run_today = stored.get("today") if isinstance(stored, dict) else None
+    else:
+        run_today = None
     tag = cfg.tag or f"d{cfg.depth}"
     seg_len = cfg.max_iterations
     started = time.time()
@@ -2498,7 +2609,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             note += "\n\n" + contracts.render_progress(items)
             if (asked := _asked_block(goal, "planner")):
                 note += "\n\n" + asked
-            if (horizon_line := horizon_note(goal, history)):
+            if (horizon_line := horizon_note(goal, history, run_today)):
                 note += "\n\n" + horizon_line       # the planner sees a mismatch while it can still forecast the right span
             if (short := _short_calls_note(cfg, history, items)):
                 note += "\n\n" + short
@@ -2765,7 +2876,7 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
             # planner as work to do, at most MAX_CONTRACT_BLOCKS times, then the answer leaves labelled partial.
             # The horizon check is the goal's own (the request is in the goal text), so it runs for the goal and not for a
             # delegated sub-agent, whose brief may name a span of its own.
-            horizon = horizon_checks(goal, history) if cfg.depth == 0 else []
+            horizon = horizon_checks(goal, history, run_today) if cfg.depth == 0 else []
             blocked = contracts.blocking(contracts.check_evidence(history, run_root=SANDBOX_ROOT) + horizon)
             if (blocked and out_of_calls and not repair_granted and cfg.depth == 0 and cfg.tool_budget is not None
                     and _may_block_again(history, blocked) and not last and not cfg.finish_now):
@@ -3019,7 +3130,9 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
                 result = {**result, "answer": checked, "outside_removed": removed}
         result = _ground_result(result, history + _web_evidence(ctx), goal)
         # A horizon the plan did not use is a note the answer carries, whatever the status: a partial answer names it too.
-        hz_note = horizon_note(goal, history)
+        stored = ctx.store.step_output(ctx.mission_id, 0)         # the contracts step ({"v": ...}): the run's stored date
+        brief = stored.get("v") if isinstance(stored, dict) else None
+        hz_note = horizon_note(goal, history, brief.get("today") if isinstance(brief, dict) else None)
         if hz_note and isinstance(result.get("answer"), str) and result["answer"].strip() and hz_note not in result["answer"]:
             result = {**result, "answer": result["answer"].rstrip() + "\n\n" + hz_note}
         trust = contracts.trust_statement(history)
