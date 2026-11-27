@@ -959,6 +959,40 @@ _CLOSED_SHARE = 0.9  # share of one weekday's periods with no value that makes i
 _CLOSED_MIN_PERIODS = 4  # periods a weekday needs before its absence is judged (proposal)
 
 
+# pandas 3 removed the old offset aliases, and its error for "A" suggests "Y", which is removed too (VN Unemployment notebook,
+# 2026-11-27: four cells failed on "A", "Y", "A-DEC" and "Y-DEC"). Each old alias maps to the one pandas accepts now.
+LEGACY_FREQ = {"A": "YE", "Y": "YE", "AS": "YS", "BA": "BYE", "BY": "BYE", "Q": "QE", "BQ": "BQE", "M": "ME", "BM": "BME",
+               "SM": "SME", "H": "h", "BH": "bh", "T": "min", "S": "s", "L": "ms", "U": "us", "N": "ns"}
+SMALL_STEPS = ("D", "B", "C", "h", "bh", "min", "s", "ms", "us", "ns")
+
+
+def freq_alias(freq: Any) -> Any:
+    """The offset alias pandas accepts for ``freq``: 'A' and 'Y' become 'YE', 'A-DEC' 'YE-DEC', 'Q' 'QE', 'M' 'ME', 'H' 'h',
+    'T' 'min', and so on. Anything else (a current alias, an offset object, None) is returned unchanged."""
+    if not isinstance(freq, str):
+        return freq
+    text = freq.strip()
+    m = re.fullmatch(r"(\d*)([A-Za-z]+)(-[A-Za-z]{3})?", text)
+    if not m:
+        return text
+    n, base, anchor = m.group(1), m.group(2), m.group(3) or ""
+    return f"{n}{LEGACY_FREQ.get(base, base)}{anchor}"
+
+
+def _daily_or_finer(freq: Any) -> bool:
+    """True when one step is a day or less: only then can a weekday be a closed day."""
+    try:
+        off = pd.tseries.frequencies.to_offset(freq)
+    except (ValueError, TypeError):
+        return False
+    if off.name in SMALL_STEPS:
+        return True
+    try:
+        return int(off.nanos) <= 86_400 * 10**9
+    except ValueError:          # a calendar offset (week anchor, month, quarter, year) has no fixed length
+        return False
+
+
 def _is_business(freq: str) -> bool:
     try:
         off = pd.tseries.frequencies.to_offset(freq)
@@ -976,6 +1010,7 @@ def _grid_freq(index: pd.DatetimeIndex, freq: str | None) -> str | None:
     gave 130) and then re-dated 504 values by position, so the forecast ended 2011-11-04 against data to 2011-12-08
     (A1-01, A4-01).
     """
+    freq = freq_alias(freq)
     if not freq or not _is_business(freq):
         return freq
     n_sat, n_sun = int((index.day_of_week == 5).sum()), int((index.day_of_week == 6).sum())
@@ -1103,8 +1138,23 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
         if fill == "zero":
             s = s.fillna(0.0)
         elif fill == "interpolate":
+            _refuse_sparse_fill(s, freq)
             s = s.interpolate(limit_direction="both")
     return s
+
+
+MIN_OBSERVED_SHARE = 0.5   # below this, interpolation would write most of the series rather than fill its gaps
+
+
+def _refuse_sparse_fill(s: pd.Series, freq: Any) -> None:
+    """Interpolation fills gaps in a series; it does not make one. VN Unemployment (2026-11-27): five annual values
+    (1997, 1998, 2009, 2019, 2020) became 24 by interpolation and were forecast, so 19 of 24 points were a straight line."""
+    total = int(s.size)
+    seen = int(s.notna().sum())
+    if total and seen / total < MIN_OBSERVED_SHARE:
+        raise ValueError(f"only {seen} of {total} periods at freq={freq!r} have a value ({seen / total:.0%}). Interpolating "
+                         "would write most of the series, not fill its gaps. Use the grain the source publishes, find a "
+                         "source with more observations (search_open_data), or report that the data are too sparse.")
 
 
 TIME_DST_POLICIES = ("keep_as_is", "sum_repeated_hour", "drop_repeated")
@@ -1202,6 +1252,7 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
         # origin "retrieved" (numbers from a page web research read, with its source id and URL), "user" or "synthetic". The
         # forecast tools check it when they read the file: a synthetic series cannot name a source.
         out["provenance"] = dict(provenance)
+    freq = freq_alias(freq)
     if freq:
         out["freq"] = freq
     step_val = freq
@@ -1463,7 +1514,9 @@ def prepare_series(data: Any, value: str | None = None, time: str | None = None,
             notes.append(f"{tail} empty periods at the end were kept")
     end = last + 1 if trim_tail else len(s)
     s = s.iloc[first:end]
-    if closed is None:
+    if s.size and s.notna().mean() < MIN_OBSERVED_SHARE:
+        _refuse_sparse_fill(s, freq)
+    if closed is None and _daily_or_finer(freq):
         cands = _closed_candidates(s.index, s.isna().values)
         if cands:
             names = ", ".join(cands)
@@ -1573,6 +1626,7 @@ def panel(df: pd.DataFrame, entity: str, time: str, value: str, freq: str | None
 
 def _starts(index: Any, horizon: int, freq: str | None) -> pd.DatetimeIndex:
     """Period start dates for the history plus ``horizon`` further periods."""
+    freq = freq_alias(freq)
     idx = pd.DatetimeIndex(pd.to_datetime(index))
     if len(idx) < 3:
         raise ValueError("need at least 3 dates to know the period length")

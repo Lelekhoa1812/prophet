@@ -306,12 +306,54 @@ def input_source_urls(run_id: str, datasets_root: Path | None = None) -> dict[st
     return out
 
 
+# Numbers of series whose provenance was refused, so the same numbers cannot come back typed into values. VN Unemployment
+# (2026-11-27): backtest_series refused an interpolated file four times as "synthetic, cannot be labelled World Bank", then
+# received the same 24 numbers as values and forecast them.
+REFUSED_SERIES: dict[tuple, str] = {}
+MIN_REFUSED_RUN = 8
+
+
+def _fingerprint(arr: Any) -> tuple:
+    return tuple(round(float(v), 3) for v in np.asarray(arr, dtype=float).ravel() if np.isfinite(v))
+
+
+def _remember_refused(doc: Any, reason: str) -> None:
+    body = doc.get("series") if isinstance(doc, dict) else doc
+    arrays = body.values() if isinstance(body, dict) else [body]
+    for arr in arrays:
+        try:
+            fp = _fingerprint(arr)
+        except (TypeError, ValueError):
+            continue
+        if len(fp) >= MIN_REFUSED_RUN:
+            REFUSED_SERIES[fp] = reason
+
+
+def _refused_copy(values: np.ndarray) -> str | None:
+    fp = _fingerprint(values)
+    if len(fp) < MIN_REFUSED_RUN:
+        return None
+    for known, reason in REFUSED_SERIES.items():
+        if len(known) < len(fp):
+            continue
+        for i in range(len(known) - len(fp) + 1):
+            if known[i:i + len(fp)] == fp:
+                return reason
+    return None
+
+
 def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     values, source = args.get("values"), args.get("source")
     if (values is None) == (source is None):
         raise ValueError("give exactly one of values or source")
     if values is not None:
-        return [("series", _clean("series", values))]
+        clean = _clean("series", values)
+        reason = _refused_copy(clean)
+        if reason:
+            raise ValueError(f"these values are the numbers of a series already refused in this run ({reason}); passing "
+                             "them as values does not change where they came from. Fix the series' provenance, or label it "
+                             "synthetic and say so in the answer")
+        return [("series", clean)]
     if not isinstance(source, dict) or not RUN_ID.match(str(source.get("run_id", ""))):
         raise ValueError("source needs run_id (the 32-character id of the analysis run that wrote the file)")
     rel = str(source.get("file", f"{OUT_DIR}/series.json"))
@@ -323,7 +365,11 @@ def resolve_series(args: dict) -> list[tuple[str, np.ndarray]]:
     except ValueError:
         raise ValueError(f"{rel} is not valid JSON; write it with prophet_lib.save_series")
     if isinstance(doc, dict):
-        traced_provenance(doc.get("provenance"), rel, source["run_id"])   # refuses an unsupported claim, with the fix
+        try:
+            traced_provenance(doc.get("provenance"), rel, source["run_id"])   # refuses an unsupported claim, with the fix
+        except ValueError as exc:
+            _remember_refused(doc, str(exc)[:200])
+            raise
     body = doc.get("series") if isinstance(doc, dict) else doc
     if isinstance(body, list):
         named = {"series": body}

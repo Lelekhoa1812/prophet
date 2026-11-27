@@ -82,7 +82,9 @@ def test_an_identical_call_is_not_run_again_and_points_to_the_earlier_result(sto
     assert first["result"] == {"ok": True, "value": 1}
 
 
-def test_web_calls_are_run_again_because_the_web_changes(store):
+def test_an_identical_web_call_in_one_mission_is_answered_with_the_earlier_result(store):
+    # VN Unemployment (2026-11-27): identical searches ran back to back and the stall rule stopped the mission. Within one
+    # mission the web does not change enough to be worth a second identical call, even after a sandbox cell.
     counter = {"n": 0}
 
     def search(args, key):
@@ -92,7 +94,7 @@ def test_web_calls_are_run_again_because_the_web_changes(store):
     tool = Tool("web_search", search, idempotent=True)
     brain = Scripted([call("web_search", {"q": "wti"}), call("web_search", {"q": "wti"}), finish()], [met()])
     run(store, goal_program("analyse", {"web_search": tool}, brain))
-    assert counter["n"] == 2
+    assert counter["n"] == 1
 
 
 def test_an_identical_failing_call_is_not_repeated_and_the_repeat_says_the_same_error(store):

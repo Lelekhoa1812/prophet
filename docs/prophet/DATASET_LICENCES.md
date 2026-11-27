@@ -34,6 +34,8 @@ this table stops the script with an error rather than writing a blank licence.
 | `hadcrut` | Crown copyright under the Open Government Licence. The acknowledgement must name the analysis version, the download address, the download date, and British Crown Copyright, Met Office. |
 | `snb` | Swiss National Bank data may be saved and transmitted for non-commercial purposes with a source reference. |
 | `world_bank` | CC BY 4.0 for World Bank datasets unless the indicator metadata says otherwise. Some indicators are supplied by another publisher and may not be redistributed. Attribute the World Bank. |
+| `ilo` | ILOSTAT data are free to use with attribution to the ILO (ILOSTAT database); check the ILO copyright and permissions page before reuse. |
+| `dbnomics` | DBnomics redistributes each provider's data under that provider's own terms; attribute the original provider and DBnomics. |
 | `eia` | US Energy Information Administration publications on its site are in the public domain and may be used and distributed. Acknowledge the EIA. |
 
 Research-use labelling (owner decision, Liam, 2026-11-23): this project is research use. Outputs built from a dataset whose

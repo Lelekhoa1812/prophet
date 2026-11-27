@@ -392,9 +392,12 @@ def _already_asked(questions: list[dict], history: list[dict]) -> tuple[list[dic
 
 # Round 3 (A5-09, A3-10): live electricity mission, 2026-11-22, identical (tool, arguments) calls recurred 21 times (panel_backtest
 # 6, sandbox_python 9). Web calls are re-run because the web changes; notes and the read-only tools change with the ledger.
-REPEAT_EXEMPT = frozenset({"web_research", "web_search", "web_fetch", *READ_ONLY})
+# VN Unemployment (2026-11-27): the same web_search ran twice in a row, twice, and the stall rule stopped the mission. The web
+# does not change within one mission, so an identical web call is answered with the earlier result like any other call.
+REPEAT_EXEMPT = frozenset(READ_ONLY)
 # A call whose result depends only on its arguments, so an identical call after an unrelated cell is still the same result.
 PURE_TOOLS = frozenset({"sandbox_python"})
+WEB_TOOLS = frozenset({"web_research", "web_search", "web_fetch", "search_open_data"})
 
 
 # Round 6m, goal audit item 1. A sandbox cell is the same call when its code, read as Python (comments and layout dropped), is the
@@ -471,7 +474,8 @@ def _repeat_of(name: str, args: Any, history: list[dict]) -> int | None:
             # sandbox_python is not one of them: its result depends only on its code and on the carried bytes it reads, so an
             # identical cell is answered with a pointer. Live Beijing e14af4bd (2026-11-23): 12 sandbox cells in a row re-ran the
             # same code after another cell had run, and the stall rule stopped the mission at 56 calls.
-            if not pure and any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:]):
+            if (not pure and name not in WEB_TOOLS
+                    and any(x.get("kind") == "tool" and x.get("tool") == "sandbox_python" for x in history[pos:])):
                 return None
             return pos
     return None

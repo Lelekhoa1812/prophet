@@ -12,6 +12,7 @@ from .lab_tool import lab_tool as make_lab_tool
 from .drivers_tool import (BUILD_DRIVERS_SPEC, DETECT_ANOMALIES_SPEC, build_drivers_tool, detect_anomalies_tool)
 from .notebook_tools import SAVE_TABLE_SPEC, NotebookBinding, save_table_tool
 from .opendata_tools import (DOWNLOAD_OPEN_DATA_SPEC, DOWNLOAD_WEB_DATA_SPEC, LIST_SOURCES_SPEC, MARKET_PRICES_SPEC,
+                             SEARCH_OPEN_DATA_SPEC, search_open_data_tool,
                              LiveMounts, OpenDataContext, download_market_prices_tool, download_open_data_tool,
                              download_web_data_tool, list_sources_tool, live_sandbox_tool)
 from .research_tools import tools as research_tool_pairs
@@ -84,19 +85,43 @@ def refuse_walled_hosts(fn):
     """
     import re
     from urllib.parse import urlsplit
+
+    from prophet_agent.research import archive
     wall = re.compile(r"^interstitial (bot_check|captcha)\b")
     gone = re.compile(r"^HTTP (401|403|404|410)\b")      # round 6 (GISTEMP): one 404 page fetched five times
     walled: dict[str, str] = {}
     failed: dict[str, str] = {}
+
+    def archived(args, key, address, why):
+        """The Internet Archive's copy of a walled page, labelled as one, or None (VN Unemployment, 2026-11-27)."""
+        if address.startswith("https://web.archive.org/"):
+            return None
+        snap = archive.snapshot(address)
+        if not snap:
+            return None
+        try:
+            out = fn({**args, "url": snap["url"]}, f"{key}:archive")
+        except ValueError:
+            return None
+        note = str(out.get("note") or "") if isinstance(out, dict) else ""
+        if not isinstance(out, dict) or wall.match(note) or gone.match(note):
+            return None
+        out["archived"] = {"original": address, "snapshot": snap["url"], "snapshot_date": snap["date"]}
+        out["archive_note"] = (f"the live page answered with a {why}; this is the Internet Archive's copy from "
+                               f"{snap['date']}. Figures on it are as of that date; cite the original address and the date")
+        return out
 
     def run(args, key):
         url = args.get("url") if isinstance(args, dict) else None
         address = url.strip() if isinstance(url, str) else ""
         host = (urlsplit(address).hostname or "").lower() if address else ""
         if host and host in walled:
-            raise ValueError(f"{host} answered with a {walled[host]} earlier in this mission, so its pages are not read "
-                             "here; do not fetch it again. Choose another source, such as an open-data download of the "
-                             "same figures")
+            copy = archived(args, key, address, walled[host])
+            if copy is not None:
+                return copy
+            raise ValueError(f"{host} answered with a {walled[host]} earlier in this mission, and the Internet Archive has "
+                             "no readable copy of this page; do not fetch it again. Choose another source, such as "
+                             "search_open_data for the same figures")
         if address in failed:
             raise ValueError(f"this address already answered {failed[address]} in this mission; do not fetch it again. "
                              "Choose another page or source")
@@ -104,6 +129,9 @@ def refuse_walled_hosts(fn):
         note = str(out.get("note") or "") if isinstance(out, dict) else ""
         if host and (m := wall.match(note)):
             walled[host] = m.group(1).replace("_", " ")
+            copy = archived(args, key, address, walled[host])
+            if copy is not None:
+                return copy
         elif address and (m := gone.match(note)):
             failed[address] = f"HTTP {m.group(1)}"
         return out
@@ -113,7 +141,8 @@ def refuse_walled_hosts(fn):
 def _open_data_tools(context: OpenDataContext | None, live: LiveMounts) -> dict[str, tuple]:
     """The open-data tools around one shared LiveMounts. Same pairs as opendata_tools.open_data_tools, which makes its own
     LiveMounts and so cannot share the mission's mounts with the chart tool; the parts are the same public functions."""
-    pairs = {"list_open_data_sources": (list_sources_tool(), LIST_SOURCES_SPEC)}
+    pairs = {"list_open_data_sources": (list_sources_tool(), LIST_SOURCES_SPEC),
+             "search_open_data": (search_open_data_tool(), SEARCH_OPEN_DATA_SPEC)}
     if context is None:
         return pairs
     pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)

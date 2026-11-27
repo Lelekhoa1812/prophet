@@ -25,7 +25,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from prophet_agent.datasets import DatasetStore, clean_name
-from prophet_agent.opendata import containers, fetch, html_landing, market, pdf_landing, sources
+from prophet_agent.opendata import catalogue, containers, fetch, html_landing, market, pdf_landing, sources
 from prophet_agent.opendata.csvlines import table_lines
 from prophet_agent.opendata.store import download_to_dataset, preview
 from prophet_agent.runtime.runner import ArgumentRejected, Tool
@@ -134,24 +134,65 @@ def list_sources_tool() -> Tool:
     return Tool("list_open_data_sources", run, idempotent=True)
 
 
+def search_open_data_tool() -> Tool:
+    def run(args: dict, _key: str) -> dict:
+        args = _arguments(args, {"query", "dataset", "limit"}, {"query"})
+        try:
+            return catalogue.search(args["query"], args.get("dataset"), args.get("limit", 10))
+        except fetch.DownloadError as exc:
+            raise ValueError(f"the catalogue search failed ({exc}); use list_open_data_sources or web_search") from None
+    return Tool("search_open_data", run, idempotent=True)
+
+
 def download_open_data_tool(ctx: OpenDataContext, live: LiveMounts) -> Tool:
     def run(args: dict, _key: str) -> dict:
         args = _arguments(args, {"source", "params"}, {"source"})
-        source = args["source"]
         params = args.get("params", {})
         if not isinstance(params, dict):
             raise ArgumentRejected("params must be an object of parameter names to values")
+        source, params, resolved = sources.resolve(args["source"], params)
         store = _store(ctx)
         sources.get(source)         # an unknown key is refused before anything else is checked
+        url = sources.build_url(source, params)       # validates every parameter
+        if url in live.failed:
+            raise ValueError(f"this request already failed in this mission ({live.failed[url]}), so it is not sent again. "
+                             + _next_after_failure(source, params))
         _room(live)
-        meta = download_to_dataset(source, params, store)
+        try:
+            meta = download_to_dataset(source, params, store)
+        except fetch.DownloadError as exc:
+            if PERMANENT_FAILURE.search(str(exc)) or str(exc).startswith("HTTP 5"):
+                live.failed[url] = str(exc)[:160]
+                raise ValueError(f"{exc}. {_next_after_failure(source, params)}") from None
+            raise
         mount = _mount(ctx, live, meta)
         extra = {"source": source}
+        if resolved:
+            extra["resolved"] = resolved
+        dbn = meta.get("provenance", {}).get("dbnomics")
+        if dbn:
+            extra["mirror"] = dbn
         note = _month_file_note(source, params)
         if note:
             extra["note"] = note
         return _result(meta, mount, extra)
     return Tool("download_open_data", run, idempotent=True)
+
+
+def _next_after_failure(source: str, params: dict) -> str:
+    """What to call after a source answered that the requested series does not exist. Codes are looked up, not guessed."""
+    if source == "fred":
+        return (f"FRED has no series {params.get('id')!r}. FRED codes cannot be guessed: find the code with search_open_data "
+                "or web_search (site:fred.stlouisfed.org and the topic). FRED holds few series for countries outside the "
+                "US; for national statistics use ilostat_sdmx (labour), world_bank (annual indicators) or dbnomics.")
+    if source.endswith("_sdmx"):
+        return (f"{source} has no data for that dataflow and key. An SDMX key lists one code per dimension in the "
+                "dataflow's order; OECD covers its members and a few partners only. Find the series with "
+                "search_open_data, or use ilostat_sdmx, world_bank or dbnomics for other countries.")
+    if source == "world_bank":
+        return ("the World Bank has no such country and indicator pair. Find the indicator code with search_open_data "
+                "(provider WB), for example SL.UEM.TOTL.ZS for the modelled unemployment rate.")
+    return "Find the series with search_open_data, or choose another source from list_open_data_sources."
 
 
 MONTH_FILE_SOURCES = ("aemo_price_demand",)
@@ -400,6 +441,20 @@ LIST_SOURCES_SPEC = {
     "args": {"none": "takes no arguments; send an empty object"},
 }
 
+SEARCH_OPEN_DATA_SPEC = {
+    "name": "search_open_data",
+    "title": "Open data catalogue search",
+    "activity": "Searching open data catalogues",
+    "description": "Find an official series when its source or codes are not known: searches the catalogues of 80+ "
+                   "providers (IMF, ILO, OECD, Eurostat, World Bank, central banks, national statistics offices). With a "
+                   "query alone it lists matching datasets; with dataset (PROVIDER/DATASET from that list) it lists the "
+                   "series inside, each with its frequency and the exact download_open_data call. Use it before guessing "
+                   "any series code, and to learn which frequencies are published. Read-only.",
+    "args": {"query": "the measure and the place, for example 'Viet Nam unemployment rate' (use the country's UN name)",
+             "dataset": "optional PROVIDER/DATASET from a previous search, for example ILO/UNE_DEAP_SEX_AGE_RT",
+             "limit": "optional number of results, 1 to 25; default 10"},
+}
+
 DOWNLOAD_OPEN_DATA_SPEC = {
     "name": "download_open_data",
     "title": "Open data download",
@@ -533,7 +588,8 @@ def open_data_tools(datasets: dict[str, Path] | None, context: OpenDataContext |
     """The open-data tools as (tool, spec) pairs for default_tools. list_open_data_sources is always offered. The downloads
     and the live-mount sandbox are offered only with a mission context; the sandbox then reads the downloads of this run."""
     live = LiveMounts(datasets)
-    pairs: dict[str, tuple[Tool, dict]] = {"list_open_data_sources": (list_sources_tool(), LIST_SOURCES_SPEC)}
+    pairs: dict[str, tuple[Tool, dict]] = {"list_open_data_sources": (list_sources_tool(), LIST_SOURCES_SPEC),
+                                           "search_open_data": (search_open_data_tool(), SEARCH_OPEN_DATA_SPEC)}
     if context is not None:
         pairs["sandbox_python"] = (live_sandbox_tool(live), SANDBOX_PYTHON_SPEC)
         pairs["download_open_data"] = (download_open_data_tool(context, live), DOWNLOAD_OPEN_DATA_SPEC)

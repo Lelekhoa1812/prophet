@@ -16,7 +16,7 @@ def _text() -> str:
 
 def test_planner_v27_is_the_current_planner_and_keeps_its_rules():
     planner = prompts.current("planner")
-    assert planner.version == "planner.v35"
+    assert planner.version == "planner.v36"
     assert "never generate, simulate" in planner.text.lower() and "A. The operating procedure" in planner.text
 
 
@@ -87,3 +87,12 @@ def test_v30_gives_sdmx_keys_without_guessing():
     assert "flow ABS,LF,1.0.0, key M13.3.1599.20.AUS.M" in text
     url = sources.build_url("abs_sdmx", {"flow": "ABS,LF,1.0.0", "key": "M13.3.1599.20.AUS.M"})
     assert url.endswith("/ABS,LF,1.0.0/M13.3.1599.20.AUS.M?format=csv")
+
+
+def test_planner_v36_checks_the_published_grain_and_looks_codes_up():
+    from prophet_agent.prompts import current
+    text = current("planner").text
+    assert "search_open_data" in text and "ilostat_sdmx" in text
+    assert "never guessed" in text
+    assert "An unpublished grain is never answered by interpolating" in text
+    assert "a long gap is interpolated" not in text

@@ -256,9 +256,49 @@ def observe(result: dict) -> dict:
             out["hint"] = ("the file has lines above its table (a title or notes), so pd.read_csv sees too few fields. Read "
                            "it with df = pl.load(path), which finds the table block, or print its first 10 lines "
                            "and pass skiprows")
+    hint = _error_hint(result)
+    if hint and "hint" not in out:
+        out["hint"] = hint
+    if result["ok"] and NETWORK_BLOCKED in result["stdout"]:
+        # VN Unemployment (2026-11-27): a cell caught the refusal, printed it and reported ok, so the planner read a success.
+        out["blocked"] = True
+        out["hint"] = NETWORK_HINT
     if result["timed_out"]:
         out["timed_out"] = True
     return out
+
+
+NETWORK_BLOCKED = "network access is blocked in the sandbox"
+NETWORK_HINT = ("the sandbox has no network. Fetch data in a planner step instead: download_open_data (a source key; "
+                "search_open_data finds the codes) or download_web_data (an https address of a CSV, JSON, page or PDF), then "
+                "read the file from in/ in the next cell")
+FREQ_HINT = ("pandas 3 removed the old frequency codes: use 'YE' (year end) or 'YS' (year start), 'QE' or 'QS', 'ME' or "
+             "'MS', 'W', 'D', 'h', 'min'. pl.freq_alias('A') gives the current code; pl.prepare_series accepts either")
+
+
+def _inputs(run_id: str) -> list[str]:
+    root = SANDBOX_ROOT / run_id / "in"
+    if not root.is_dir():
+        return []
+    return sorted(str(p.relative_to(root.parent)) for p in root.rglob("*") if p.is_file())[:30]
+
+
+def _error_hint(result: dict) -> str | None:
+    """The next correct action for an error the analyst keeps repeating (VN Unemployment, 2026-11-27: 23 failed cells)."""
+    err = result.get("stderr") or ""
+    if not err:
+        return None
+    if NETWORK_BLOCKED in err or "No module named 'requests'" in err or "No module named 'httpx'" in err:
+        return NETWORK_HINT
+    if "Invalid frequency" in err or ("is no longer supported" in err and "freq" in err.lower()):
+        return FREQ_HINT
+    if "FileNotFoundError" in err and ("in/" in err or "carried" in err):
+        files = _inputs(str(result.get("run_id", "")))
+        listing = ", ".join(files) if files else "no input files"
+        return (f"that file is not mounted. This run can read: {listing}. A file another run wrote reaches this one only "
+                "through carry=[{run_id, file}]. A tool's result (web_fetch, web_research) is not a file: download the "
+                "address with download_web_data, or save the figures from a cell that read a mounted file")
+    return None
 
 
 def sandbox_python_tool(datasets: dict[str, Path] | None = None) -> Tool:

@@ -111,12 +111,20 @@ def _kind(args: dict) -> str:
     return kind
 
 
-def _recency(args: dict) -> tuple[str | None, float | None]:
+# A query for a dataset or a history: its pages (a statistics portal, an indicator page) carry old publication dates, so a
+# recency filter drops exactly the pages wanted. VN Unemployment (2026-11-27): every series search was sent with recency 'year'.
+HISTORY_QUERY = re.compile(r"\b(data(?:set)?|time ?series|historical|history|download|csv|xlsx|statistics|indicator|"
+                           r"monthly|quarterly|annual|weekly|daily)\b", re.IGNORECASE)
+
+
+def _recency(args: dict, texts: list[str] | None = None) -> tuple[str | None, float | None]:
     value = args.get("recency")
     if value is None:
         return None, None
     if value not in RECENCY:
         raise ValueError(f"recency must be one of {list(RECENCY)} or left out")
+    if texts and all(HISTORY_QUERY.search(t) for t in texts):
+        return None, None
     return RECENCY[value]
 
 
@@ -257,7 +265,7 @@ def web_search_tool(args: Any, _key: str) -> dict:
     query = _query(args.get("query"))
     kind = _kind(args)
     max_results = _int(args, "max_results", 8, 1, 10)
-    timelimit, days = _recency(args)
+    timelimit, days = _recency(args, [query])
     # A data-seeking query runs several wordings (discover); registry entries never count as search hits and follow them.
     # On 2026-11-26 "NVDA historical stock price CSV download" showed SEC and Federal Reserve registry pages first.
     if kind == "text" and is_data_seeking(query):
@@ -448,7 +456,7 @@ def web_research_tool(args: Any, _key: str) -> dict:
     args = _allow(args, RESEARCH_ARGS)
     queries, repeated = _dedupe_queries(_queries(args.get("queries"), low=1, high=MAX_QUERIES))
     kind = _kind(args)
-    timelimit, days = _recency(args)
+    timelimit, days = _recency(args, list(queries))
     fetch_top = _int(args, "fetch_top", 4, 1, MAX_FETCH)
     per_page = _int(args, "passages_per_page", 3, 1, MAX_PASSAGES_PER_PAGE)
     exclude = _exclude(args.get("exclude_urls"))
@@ -616,7 +624,8 @@ WEB_SEARCH_SPEC = {
     "args": {"query": "the search, at most 300 characters",
              "kind": "'text' (default) for web pages or 'news' for recent news",
              "max_results": "whole number 1 to 10 (default 8)",
-             "recency": "optional 'day', 'week', 'month' or 'year'; older dated hits are dropped"},
+             "recency": "optional 'day', 'week', 'month' or 'year'; older dated hits are dropped. Leave it out when looking for a "
+                        "dataset or a history: it is ignored for queries that ask for data, statistics or a series"},
 }
 
 WEB_FETCH_SPEC = {

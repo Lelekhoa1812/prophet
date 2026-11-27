@@ -356,3 +356,81 @@ def test_a_rate_limit_is_not_remembered_as_a_permanent_failure(served, mission):
         tool.fn({"url": WEB_URL}, "k1")
     served["status"] = 200
     assert tool.fn({"url": WEB_URL}, "k2")["row_count"] > 0
+
+
+# --- VN Unemployment notebook (2026-11-27): codes are looked up, near misses resolve, failures say what to call next -----
+
+def test_a_source_alias_and_parameter_aliases_resolve_and_the_result_says_so(served, mission):
+    served["body"] = b"DATAFLOW,REF_AREA,FREQ,TIME_PERIOD,OBS_VALUE\nX,AUS,M,2024-01,4.1\nX,AUS,M,2024-02,4.0\n"
+    tool = default_tools(opendata=mission.context())["download_open_data"]
+    out = tool.fn({"source": "oecd", "params": {"flow": "OECD.SDD.TPS,DSD_LFS@DF_IALFS_UNE_M", "key": "AUS.M"}}, "k")
+    assert out["source"] == "oecd_sdmx"
+    assert any("'oecd' is 'oecd_sdmx'" in n for n in out["resolved"])
+    assert any("'flow' is 'dataflow'" in n for n in out["resolved"])
+
+
+def test_an_unknown_key_names_the_closest_and_points_at_the_catalogue_search():
+    with pytest.raises(ValueError) as err:
+        sources.get("ilostatt")
+    assert "ilostat_sdmx" in str(err.value) and "search_open_data" in str(err.value)
+
+
+def test_a_missing_fred_series_is_not_requested_twice_and_the_refusal_names_the_next_call(served, mission):
+    served["status"], served["body"] = 404, b"not found"
+    tool = default_tools(opendata=mission.context())["download_open_data"]
+    with pytest.raises(ValueError) as first:
+        tool.fn({"source": "fred", "params": {"id": "LMUNRRTTVNM156S"}}, "k1")
+    assert "cannot be guessed" in str(first.value) and "search_open_data" in str(first.value)
+    with pytest.raises(ValueError, match="already failed"):
+        tool.fn({"source": "fred", "params": {"series_id": "LMUNRRTTVNM156S"}}, "k2")
+    assert served["calls"] == 1
+
+
+def test_ilostat_builds_its_sdmx_address_with_the_period_filters():
+    url = sources.build_url("ilostat_sdmx", {"dataflow": "DF_UNE_DEAP_SEX_AGE_RT",
+                                             "key": "VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15", "start_period": "2011-Q1"})
+    assert url == ("https://sdmx.ilo.org/rest/data/ILO,DF_UNE_DEAP_SEX_AGE_RT,1.0/VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15"
+                   "?format=csv&startPeriod=2011-Q1")
+    with pytest.raises(ValueError, match="dataflow"):
+        sources.build_url("ilostat_sdmx", {"dataflow": "UNE", "key": "VNM.Q"})
+
+
+def test_a_dbnomics_series_lands_as_a_period_value_csv_with_the_mirror_date(served, mission):
+    import json as _json
+    served["content_type"] = "application/json"
+    served["body"] = _json.dumps({"series": {"docs": [{
+        "series_code": "VNM.Q", "series_name": "Viet Nam - Quarterly", "@frequency": "quarterly",
+        "indexed_at": "2024-02-20T03:34:29Z", "period": ["2011-Q1", "2011-Q2"], "period_start_day": ["2011-01-01", "2011-04-01"],
+        "value": [1.352, "NA"]}]}}).encode()
+    tool = default_tools(opendata=mission.context())["download_open_data"]
+    out = tool.fn({"source": "dbnomics", "params": {"provider": "ILO", "dataset": "UNE_DEAP_SEX_AGE_RT", "series": "VNM.Q"}}, "k")
+    assert out["columns"] == ["period", "period_start_day", "value"]
+    assert out["row_count"] == 2
+    assert out["mirror"]["mirror_indexed_at"].startswith("2024-02-20")
+    body = mission.store.path(out["dataset_id"]).read_text()
+    assert "2011-Q2,2011-04-01,\n" in body, "a missing value stays empty, never zero"
+
+
+def test_catalogue_search_lists_datasets_then_series_with_the_exact_download_call(monkeypatch):
+    from prophet_agent.opendata import catalogue
+    pages = {
+        "search": {"results": {"docs": [{"provider_code": "ILO", "code": "UNE_DEAP_SEX_AGE_RT", "name": "Unemployment rate",
+                                         "nb_series": 9}]}},
+        "series": {"series": {"docs": [{"series_code": "VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.Q", "@frequency": "quarterly",
+                                        "series_name": "Viet Nam - 15+ - Total - Quarterly"}]}},
+    }
+    monkeypatch.setattr(catalogue, "_get", lambda url: pages["series" if "/series/" in url else "search"])
+    first = catalogue.search("Viet Nam unemployment rate")
+    assert first["datasets"][0]["direct"]["dataflow"] == "DF_UNE_DEAP_SEX_AGE_RT"
+    assert first["datasets"][0]["next"]["args"]["dataset"] == "ILO/UNE_DEAP_SEX_AGE_RT"
+    second = catalogue.search("Viet Nam", "ILO/UNE_DEAP_SEX_AGE_RT")
+    call = second["series"][0]["download"]
+    assert call == {"tool": "download_open_data", "args": {"source": "dbnomics", "params": {
+        "provider": "ILO", "dataset": "UNE_DEAP_SEX_AGE_RT", "series": "VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.Q"}}}
+    with pytest.raises(ValueError, match="PROVIDER/DATASET"):
+        catalogue.search("x", "not a dataset ref")
+
+
+def test_search_open_data_is_offered_without_a_mission_and_is_read_only():
+    tool = default_tools()["search_open_data"]
+    assert tool.idempotent is True and tool.doc

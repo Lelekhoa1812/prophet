@@ -10,6 +10,7 @@ wording lives in docs/prophet/DATASET_LICENCES.md.
 """
 from __future__ import annotations
 
+import difflib
 import math
 import re
 from collections.abc import Callable
@@ -37,6 +38,9 @@ SDMX_FLOW = re.compile(r"[A-Za-z0-9._,@-]{1,80}")
 VERSION = re.compile(r"[0-9]+\.[0-9]+")
 LOWER_CODE = re.compile(r"[A-Za-z0-9_]{1,40}")
 DIM_SEL = re.compile(r"[A-Z0-9(),]{1,80}")
+ILO_FLOW = re.compile(r"DF_[A-Z0-9_]{3,60}")
+DBN_PROVIDER = re.compile(r"[A-Za-z0-9_-]{1,40}")
+DBN_CODE = re.compile(r"[A-Za-z0-9_.:@+-]{1,160}")
 CUBE = re.compile(r"[a-z0-9]{1,20}")
 SERIES_ID = re.compile(r"[A-Za-z0-9._-]{1,80}")
 FRED_ID = re.compile(r"[A-Z0-9_]{1,40}")
@@ -583,12 +587,100 @@ SOURCES: dict[str, Source] = {
         licence_key="fred",
         cross_check=_check_fred,
     ),
+    # VN Unemployment notebook (2026-11-27): the national office answered with a challenge page and OECD has no Vietnam
+    # series, so the mission found nothing in 28 steps. ILOSTAT publishes labour statistics for every country, keyless, as
+    # SDMX; Vietnam's unemployment rate is quarterly from 2011-Q1 there (measured 2026-11-27: 56 quarters to 2024-Q4).
+    "ilostat_sdmx": Source(
+        key="ilostat_sdmx",
+        title=("ILOSTAT (International Labour Organization) labour statistics for any country, as CSV: unemployment, "
+               "employment, labour force, wages, hours. Unemployment rate: dataflow DF_UNE_DEAP_SEX_AGE_RT with key "
+               "<ISO3>.<A, Q or M>.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15, for example VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15"),
+        url_template="https://sdmx.ilo.org/rest/data/ILO,{dataflow},1.0/{key}",
+        fixed_query=(("format", "csv"),),
+        params={
+            "dataflow": Param("code", True, "ILOSTAT dataflow id, for example DF_UNE_DEAP_SEX_AGE_RT.",
+                              _code(ILO_FLOW, "ILOSTAT dataflow id")),
+            "key": Param("code", True, "Dimension key: country (ISO3), frequency (A, Q or M), measure, sex, age, "
+                                       "for example VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15.",
+                         _code(DATA_KEY, "series key")),
+            "start_period": Param("code", False, "First period: YYYY, YYYY-MM or YYYY-Q1.", _period),
+            "end_period": Param("code", False, "Last period, same form as start_period.", _period),
+        },
+        licence_key="ilo",
+        cross_check=_check_periods,
+        query_names=SDMX_PERIODS,
+    ),
+    "dbnomics": Source(
+        key="dbnomics",
+        title=("DBnomics mirror of 80+ providers (IMF, ILO, OECD, Eurostat, World Bank, central banks, national statistics "
+               "offices): one series by provider, dataset and series code, as CSV of period and value. Find the codes with "
+               "search_open_data. The mirror can lag its provider; the result says when it was indexed"),
+        url_template="https://api.db.nomics.world/v22/series/{provider}/{dataset}/{series}",
+        fixed_query=(("observations", "1"),),
+        params={
+            "provider": Param("code", True, "Provider code, for example IMF, ILO, OECD, Eurostat, WB.",
+                              _code(DBN_PROVIDER, "provider code")),
+            "dataset": Param("code", True, "Dataset code, for example WEO:latest or UNE_DEAP_SEX_AGE_RT.",
+                             _code(DBN_CODE, "dataset code")),
+            "series": Param("code", True, "Series code, for example VNM.LUR.pcent_total_labor_force.",
+                            _code(DBN_CODE, "series code")),
+        },
+        licence_key="dbnomics",
+        body_kind="dbnomics",
+    ),
 }
+
+# Names a planner reaches for that are not the registry's keys (VN Unemployment: 'oecd', then 'flow' and 'country'). Each
+# resolves to the registry's own name, and the result says it did, so a near miss costs no step.
+SOURCE_ALIASES = {
+    "oecd": "oecd_sdmx", "ecb": "ecb_sdmx", "bis": "bis_sdmx", "eurostat": "eurostat_sdmx", "abs": "abs_sdmx",
+    "ilo": "ilostat_sdmx", "ilostat": "ilostat_sdmx", "ilo_sdmx": "ilostat_sdmx", "worldbank": "world_bank",
+    "wb": "world_bank", "wdi": "world_bank", "world_bank_api": "world_bank", "fred_csv": "fred", "db_nomics": "dbnomics",
+}
+_SDMX_PARAM_ALIASES = {"flow": "dataflow", "dataflow_id": "dataflow", "flow_ref": "dataflow", "series_key": "key",
+                       "startPeriod": "start_period", "endPeriod": "end_period", "start": "start_period",
+                       "end": "end_period"}
+PARAM_ALIASES = {
+    **{key: _SDMX_PARAM_ALIASES for key in ("oecd_sdmx", "ecb_sdmx", "bis_sdmx", "eurostat_sdmx", "abs_sdmx",
+                                            "ilostat_sdmx")},
+    "fred": {"series_id": "id", "series": "id", "code": "id", "start": "cosd", "end": "coed", "observation_start": "cosd",
+             "observation_end": "coed"},
+    "world_bank": {"country_code": "country", "iso3": "country", "indicator_id": "indicator", "code": "indicator"},
+    "dbnomics": {"provider_code": "provider", "dataset_code": "dataset", "series_code": "series"},
+}
+
+
+def resolve(source_key: Any, params: Any) -> tuple[str, Any, list[str]]:
+    """The registry's own source key and parameter names for a request that used a known alias, with a note per change.
+    Anything not an alias is returned as given, so get() and normalise() still refuse it with their own message."""
+    notes: list[str] = []
+    key = source_key
+    if isinstance(key, str) and key not in SOURCES:
+        alias = SOURCE_ALIASES.get(key.strip().lower())
+        if alias:
+            notes.append(f"source {key!r} is {alias!r} in this registry")
+            key = alias
+    if isinstance(params, dict) and isinstance(key, str) and key in SOURCES:
+        names = PARAM_ALIASES.get(key, {})
+        allowed = SOURCES[key].params
+        fixed = {}
+        for name, value in params.items():
+            target = names.get(name) if name not in allowed else None
+            if target and target not in params:
+                notes.append(f"parameter {name!r} is {target!r} for {key}")
+                fixed[target] = value
+            else:
+                fixed[name] = value
+        params = fixed
+    return key, params, notes
 
 
 def get(source_key: str) -> Source:
     if not isinstance(source_key, str) or source_key not in SOURCES:
-        raise ValueError(f"unknown source key {source_key!r}; known keys: {', '.join(SOURCES)}")
+        close = difflib.get_close_matches(str(source_key).lower(), list(SOURCES), n=2, cutoff=0.5)
+        hint = f" Did you mean {' or '.join(repr(c) for c in close)}?" if close else ""
+        raise ValueError(f"unknown source key {source_key!r}.{hint} Known keys: {', '.join(SOURCES)}. To find a series "
+                         "whose source you do not know, call search_open_data")
     return SOURCES[source_key]
 
 
@@ -615,7 +707,7 @@ def normalise(source_key: str, params: dict) -> dict:
     unknown = sorted(str(name) for name in params if name not in source.params)
     if unknown:
         raise ValueError(f"unknown parameter {unknown[0]!r} for source {source_key!r}; "
-                         f"allowed: {', '.join(source.params)}")
+                         f"allowed: {', '.join(source.params)} ({source.title})")
     given = {name: value for name, value in params.items() if value is not None}
     canonical: dict = {}
     for name, param in source.params.items():

@@ -70,6 +70,9 @@ MAX_REPAIRS = 2                   # an answer that fails the local schema is re-
 REPAIR_QUOTE_CHARS = 4000         # how much of the refused reply the repair turn shows the model
 REPAIR_PROMPT = ("Your reply was not usable: {reason}. Reply again with only the JSON object the schema asks for. "
                  "No prose, no code fence.")
+NETWORK_WAIT_LIMIT_S = 300.0      # a failed connection on every model is waited out this long before the call reports it
+NETWORK_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError, httpx.ReadError,
+                  httpx.WriteError, httpx.PoolTimeout)
 OVERLOAD_BASE_S = 30.0            # first 503 on a model: it goes last this long; doubles per repeat inside the window
 OVERLOAD_MAX_S = 300.0
 OVERLOAD_WINDOW_S = 600.0         # repeats further apart than this start again at the base
@@ -139,6 +142,7 @@ class _Outcome:
     status: int | None = None          # the HTTP status of the attempt, when one was received
     detail: str = ""                   # redacted, shortened response body for a failed attempt (model checks show it)
     hung: bool = False                 # the provider sent nothing within its silence limit (not a refusal)
+    network: bool = False              # the connection itself failed (no route, reset, refused): a wait, not a refusal
     text: str = ""                     # "model" with invalid=True: the reply that failed the schema, for the repair turn
 
 
@@ -599,11 +603,12 @@ class NimClient:
         base = list(messages)
         carried, cuts = "", 0             # text already released from streams that were cut, and how often that happened
         waited = 0.0                      # seconds spent waiting out rate limits and overloads, across passes
+        network_wait = False              # the last wait was for the network, not for a rate limit
 
         while True:
             if self.clock() >= hard_end:
                 break
-            dispatched, waitable, dead = 0, False, set()
+            dispatched, waitable, dead, rate_seen = 0, False, set(), False
             for model in chain:
                 shape = _Shape("strict")
                 reshapes, tried, key, reuse, repairs, truncations, loops = 0, 0, None, False, 0, 0, 0
@@ -644,6 +649,8 @@ class NimClient:
                         return
                     last, last_invalid = out.reason, out.invalid
                     if out.status in RATE_STATUSES:
+                        waitable, rate_seen = True, True
+                    if out.network:
                         waitable = True
                     if out.hung:
                         waited += self.clock() - attempt_started    # time lost to a silent model counts toward the ceiling
@@ -715,6 +722,9 @@ class NimClient:
             # The pass is over. Models that refused for good are dropped; rate limits and overloads wait, then go round again.
             chain = [m for m in chain if m not in dead]
             ceiling = RATE_WAIT_LIMIT_S if checkpoint is None else float("inf")
+            network_wait = waitable and not rate_seen
+            if network_wait:
+                ceiling = min(ceiling, NETWORK_WAIT_LIMIT_S)   # an outage is waited out for a while, not forever
             if not waitable or not chain or waited >= ceiling:
                 break
             wait = self._rate_wait(chain)
@@ -733,7 +743,9 @@ class NimClient:
             self._wait(wait, checkpoint)
             deadline = max(deadline, min(self.clock() + budget_s, hard_end))   # waiting does not spend the work budget
 
-        if checkpoint is None and (waited >= RATE_WAIT_LIMIT_S or self.clock() >= hard_end):
+        if network_wait:
+            message = f"nim-unreachable: no connection to the provider after {waited:.0f}s of waiting; last: {last}"
+        elif checkpoint is None and (waited >= RATE_WAIT_LIMIT_S or self.clock() >= hard_end):
             message = f"nim-rate-limited: still refused after {self.clock() - call_started:.0f}s; last: {last}"
         else:
             message = f"nim-exhausted: {last}"
@@ -1024,7 +1036,9 @@ class NimClient:
                 return _Outcome("cut", f"{model}: stream interrupted ({type(exc).__name__})",
                                 partial="".join(parts))
             self._cool(key, model, COOL_KEY_S)
-            return _Outcome("key", f"{model}: {type(exc).__name__}")
+            # Round 19 (2026-11-27): one ConnectError on every model ended NVDA, CPI and AUUNEMP as "budget spent". A
+            # connection that could not be made is the network, not the key: the call waits for it like a rate limit.
+            return _Outcome("key", f"{model}: {type(exc).__name__}", network=isinstance(exc, NETWORK_ERRORS))
 
         elapsed = self.clock() - started
         if elapsed >= SLOW_CALL_S:

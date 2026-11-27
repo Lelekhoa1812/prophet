@@ -220,8 +220,10 @@ def test_a_carried_ledger_is_the_newest_of_its_name():
 
 
 # NEM (round 5): a sub-agent fetched aemo.com.au five times after its first page answered with a bot check.
-def test_a_walled_host_is_not_fetched_again():
+def test_a_walled_host_is_not_fetched_again(monkeypatch):
+    from prophet_agent.research import archive
     from prophet_agent.tools import refuse_walled_hosts
+    monkeypatch.setattr(archive, "snapshot", lambda url: None)      # no archived copy: the refusal stands
     calls = []
 
     def fetch(args, key):
@@ -233,6 +235,29 @@ def test_a_walled_host_is_not_fetched_again():
         guarded({"url": "https://aemo.com.au/b"}, "k2")
     guarded({"url": "https://www.aemo.com.au/data.csv"}, "k3")     # another host name is still fetched
     assert calls == ["https://aemo.com.au/a", "https://www.aemo.com.au/data.csv"]
+
+
+# VN Unemployment (2026-11-27): the statistics office answered with a CAPTCHA. The challenge is never worked around; the
+# Internet Archive's copy of the same page is read instead, labelled with its date.
+def test_a_walled_page_is_read_from_its_archived_copy_with_the_snapshot_date(monkeypatch):
+    from prophet_agent.research import archive
+    from prophet_agent.tools import refuse_walled_hosts
+    snap = "https://web.archive.org/web/20260924120917id_/https://www.nso.gov.vn/en/monthly-report"
+    monkeypatch.setattr(archive, "snapshot", lambda url: {"url": snap, "timestamp": "20260924120917",
+                                                          "date": "2026-09-24", "original": url})
+    calls = []
+
+    def fetch(args, key):
+        calls.append(args["url"])
+        if "web.archive.org" in args["url"]:
+            return {"ok": True, "text": "unemployment rate 2.2%", "note": ""}
+        return {"ok": False, "note": "interstitial captcha (captcha), not read: form: g-recaptcha"}
+    guarded = refuse_walled_hosts(fetch)
+    out = guarded({"url": "https://www.nso.gov.vn/en/monthly-report"}, "k1")
+    assert out["archived"]["snapshot_date"] == "2026-09-24" and "2026-09-24" in out["archive_note"]
+    again = guarded({"url": "https://www.nso.gov.vn/en/monthly-report"}, "k2")
+    assert again["archived"]["original"] == "https://www.nso.gov.vn/en/monthly-report"
+    assert calls.count("https://www.nso.gov.vn/en/monthly-report") == 1, "the live host is not asked again"
 
 
 # CO2 (round 6): a request in days counts daily values; the dated check left it alone.

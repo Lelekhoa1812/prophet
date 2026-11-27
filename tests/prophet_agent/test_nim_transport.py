@@ -911,3 +911,34 @@ def test_repeating_tail_finds_short_loops_only():
     assert repeating_tail(LOOPING) in ("1.", ".1")
     assert repeating_tail('{"rationale": "' + "x" * 10 + "a fair amount of ordinary text that does not repeat " * 3) == ""
     assert repeating_tail("short") == ""
+
+
+# -- round 19 (2026-11-27): a connection failure on every model is the network, waited out, not "budget spent" --------
+
+def _down_for(seconds: float, clock: FakeClock):
+    end = clock.t + seconds
+
+    def respond(request, payload):
+        if clock.t < end:
+            raise httpx.ConnectError("no route to host")
+        return sse(["back"])
+    return respond
+
+
+def test_a_short_outage_on_every_key_and_model_is_waited_out_and_the_call_answers():
+    clock = FakeClock()
+    script = Script().on(_down_for(90.0, clock))
+    client, _ = make(script, clock)
+    reply = client.complete([M1, M2], MSGS)
+    assert reply.text == "back"
+    assert clock.t - 1000.0 >= 90.0
+
+
+def test_a_long_outage_reports_the_provider_unreachable_after_the_network_wait():
+    from prophet_agent.nim.transport import NETWORK_WAIT_LIMIT_S
+    clock = FakeClock()
+    script = Script().on(raise_(httpx.ConnectError("no route to host")))
+    client, _ = make(script, clock)
+    with pytest.raises(Exhausted, match="nim-unreachable"):
+        client.complete([M1, M2], MSGS)
+    assert NETWORK_WAIT_LIMIT_S <= clock.t - 1000.0 <= NETWORK_WAIT_LIMIT_S + 120.0

@@ -247,6 +247,29 @@ def _find_existing(datasets: DatasetStore, source_key: str, digest: str) -> dict
     return max(matches, key=lambda meta: meta["created"]) if matches else None
 
 
+def dbnomics_csv(raw: bytes) -> tuple[bytes, dict]:
+    """A DBnomics series document as a CSV of period, period_start_day and value, with what the mirror says about itself
+    (series name, frequency, when it indexed the provider). Raises ValueError when the document holds no series."""
+    data = json.loads(raw.decode("utf-8"))
+    docs = ((data.get("series") or {}).get("docs") or []) if isinstance(data, dict) else []
+    if not docs or not isinstance(docs[0], dict):
+        message = data.get("message") if isinstance(data, dict) else None
+        raise ValueError(f"DBnomics returned no series{': ' + str(message)[:200] if message else ''}; find the exact "
+                         "provider, dataset and series codes with search_open_data")
+    doc = docs[0]
+    periods, values = doc.get("period") or [], doc.get("value") or []
+    starts = doc.get("period_start_day") or [""] * len(periods)
+    if not periods or len(periods) != len(values):
+        raise ValueError("DBnomics returned a series without matching periods and values")
+    lines = ["period,period_start_day,value"]
+    for period, start, value in zip(periods, starts, values):
+        cell = "" if value in (None, "NA") else str(value)
+        lines.append(f"{period},{start},{cell}")
+    info = {"series_name": str(doc.get("series_name", ""))[:300], "frequency": doc.get("@frequency"),
+            "mirror_indexed_at": doc.get("indexed_at"), "last_period": periods[-1]}
+    return ("\n".join(lines) + "\n").encode("utf-8"), {"dbnomics": info}
+
+
 def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *, name: str | None = None) -> dict:
     """Download one source and store it with its provenance. Returns the stored meta plus a 'preview' of columns, the
     first five rows and row_count. If the same source and parameters are already stored, returns that dataset without
@@ -263,8 +286,12 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
     fetched = fetch.download(url)
     downloaded = fetched["bytes"]
     table_bytes = downloaded
+    extra_provenance: dict = {}
     if source.body_kind in ("zip", "xlsx"):
         table_bytes = containers.to_csv(downloaded, source.body_kind, canonical.get("series_id"))
+        fmt = "csv"
+    elif source.body_kind == "dbnomics":
+        table_bytes, extra_provenance = dbnomics_csv(downloaded)
         fmt = "csv"
     table = preview(table_bytes, fmt)     # nothing is stored unless the body parses as the table it claims to be
     # The stored file is the table alone, so a reader of the file sees the header first. The location block that came
@@ -287,6 +314,7 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
         "raw_bytes": len(downloaded),
         "preamble": preamble,
         "licence_key": sources.get(source_key).licence_key,
+        **extra_provenance,
     }
     suffix = {"json": "json", "csv": "csv", "text": "txt"}[fmt]
     meta = datasets.add(name or f"{source_key}.{suffix}", body, provenance=provenance)

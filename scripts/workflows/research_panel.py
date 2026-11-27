@@ -51,22 +51,17 @@ PANEL: dict[str, dict] = {
     "SPX": {"domain": "finance", "goal": (
         "Find daily closing values of the S&P 500 index from public sources, check them, and forecast the next 20 trading "
         "days with a range. Compare against the simple rules and say what is measured and what is a source claim.")},
-    "CO2": {"domain": "science", "goal": (
-        "Find the daily CO2 measurements from Mauna Loa in open scientific sources, download what can be verified, and "
-        "forecast the next 30 days with a range. Name the season used and compare with the simple rules.")},
-    "CPI": {"domain": "economics", "goal": (
-        "Find the monthly US consumer price index (all items, CPI-U) from official open data and forecast the next 6 "
-        "months with a range. Note any scheduled release dates or events that could move it, with sources.")},
     "AUUNEMP": {"domain": "economics", "goal": (
         "Find Australia's monthly unemployment rate (seasonally adjusted) from official open data and forecast the next "
         "6 months with a range. Cite the source of every figure.")},
+    # The owner's VN Unemployment notebook (2026-11-27): a monthly seasonally adjusted series is not published for Vietnam,
+    # so the mission has to find what is published and ask.
+    "VNUNEMP": {"domain": "economics", "goal": (
+        "Find Vietnam monthly unemployment rate (seasonally adjusted) from the internet, and forecast the next 6 months "
+        "with a range.")},
     "NEM": {"domain": "energy", "goal": (
         "Find recent electricity demand for New South Wales in Australia's National Electricity Market from public data "
         "and forecast daily demand for the next 14 days with a range. Say which data are measured and which are derived.")},
-    "NBA": {"domain": "sport", "goal": (
-        "Find the current NBA 2026-27 regular season standings and results from public sources, extract them as a table, "
-        "and forecast final win totals for the top teams in each conference with ranges. Separate observed results from "
-        "the forecast.")},
     "GISTEMP": {"domain": "science", "goal": (
         "Find the monthly global surface temperature anomaly from an open scientific source (for example NASA GISTEMP or "
         "NOAA) and forecast the next 12 months with a range. Name the baseline period of the anomaly.")},

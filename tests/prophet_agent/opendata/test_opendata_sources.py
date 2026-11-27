@@ -175,6 +175,8 @@ def test_every_source_names_a_licence_key():
         "fred": "fred",
         "gistemp_monthly": "nasa_giss",
         "aemo_price_demand": "aemo",
+        "ilostat_sdmx": "ilo",
+        "dbnomics": "dbnomics",
     }
 
 
