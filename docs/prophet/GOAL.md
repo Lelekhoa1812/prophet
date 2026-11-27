@@ -1797,3 +1797,25 @@ that arrived as a table with no chart (EPL). Repairs (commit 4bf4411 and after):
   total, and the chance of title, top places and relegation), built in the sandbox from the simulation's own figures.
 - Planner v40 rule 24b: shape, chart, clean data first (outliers, breaks, noise, bias, scored against raw), many signals combined.
 Not yet measured on a live panel round: whether the flat-line block moves AUUNEMP, AURATE and SPX to steps or trends.
+Round 22 audit (run 20261127-165655 on 48d0c74, the first round under the chart and flat-line gates): EPL, SPX and AUUNEMP
+done and verified, AURATE and GOLD partial, VNUNEMP still running at the time of writing. The EPL notebook was deleted in the
+console a minute after it finished, so EPL was not audited. Two read-only audits (Haiku, SPX with AUUNEMP and AURATE with
+GOLD), each claim checked against the ledger, found every audited mission defective, the two "verified" ones included:
+- SPX: "month by month over the next 2 years" delivered as 504 business-day points; the horizon check converted the span and
+  passed. The centre called a log-return drift is linear; the answer said no gaps or level shifts where the scan found 95 gap
+  runs and three shifts.
+- AUUNEMP, AURATE, GOLD: the answer's range was not the delivered pack's. AUUNEMP said 4.3% to 5.5% where the pack and chart
+  end at 2.63 to 8.23; AURATE copied a sub-agent's 4.04% to 5.96% (pack 1.88 to 8.68); GOLD quoted a mid-horizon 10th
+  percentile as the end-of-year range.
+- AURATE held 4.60% for five years while its own research held the RBA statement raising the target to 4.85% in November
+  2026; no step path. GOLD tested no driver; AURATE downloaded the 10-year yield and never tested it.
+- The unattended panel picked the first option: "Deliver now" (AURATE, dropping the driver test) and one club (EPL).
+- The first flat-line gate counted words ("trend" in a scan cell, the backtest's default combine, open-data searches) as
+  strategies, so it passed every flat line.
+Repairs (904b270): `grain_matches_request` blocks a step finer than the grain asked; `answer_band_matches_pack` blocks an
+answer whose range is not the pack's last-step 10th and 90th percentile; strategies count only from successful forecasting
+calls; a goal that asks for drivers or signals blocks until one is tested with control_lab; planner v41 adds "newest
+published level first" and "one set of numbers"; the panel picks the option that keeps working and every option of a
+multiple-choice question. Replayed on the stored ledgers, the new checks block SPX (grain), AUUNEMP, AURATE and GOLD (range).
+Still open: a check that a level published after the series end is used (AURATE), and band width (AURATE's 1.9 to 8.7 for a
+cash rate). **M9-8 is not met.**
