@@ -622,12 +622,12 @@ MARKET_PRICES_SPEC = {
     "name": "download_market_prices",
     "title": "Daily market prices",
     "activity": "Downloading daily prices",
-    "description": "Download daily open, high, low, close and volume for one stock, ETF or index between two dates. The "
-                   "endpoints are tried in order (Yahoo, Nasdaq, Stooq). The first table whose symbol matches the request "
+    "description": "Download daily open, high, low, close and volume for one stock, ETF, index, futures contract or currency "
+                   "pair between two dates. The endpoints are tried in order (Yahoo, Nasdaq, Stooq, FRED for US indices). The first table whose symbol matches the request "
                    "is stored in the mission's files. The result names the endpoint that answered and each endpoint that "
                    "failed, with its reason. The file is mounted at sandbox_file (in/<name>) for sandbox_python. Pages and "
                    "bot checks are not passed. A name for another ticker is refused.",
-    "args": {"symbol": "ticker such as NVDA, SPY or ^GSPC",
+    "args": {"symbol": "ticker such as NVDA, SPY, ^GSPC, GC=F (gold futures) or AUDUSD=X (a currency pair)",
              "start": "first day, YYYY-MM-DD",
              "end": "last day, YYYY-MM-DD",
              "name": "optional file name; refused when it names another ticker. Left out, the file is SYMBOL_daily.csv"},

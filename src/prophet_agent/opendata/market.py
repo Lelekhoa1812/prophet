@@ -34,7 +34,8 @@ MAX_BYTES = 5 * 1024 * 1024
 BROWSER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
                  "Chrome/124.0 Safari/537.36")
 REQUEST_HEADERS = {"User-Agent": BROWSER_AGENT, "Accept": "application/json, text/csv;q=0.9, */*;q=0.5"}
-SYMBOL = re.compile(r"\^?[A-Z0-9][A-Z0-9.\-]{0,11}")
+# A futures or currency symbol ends in =F or =X (GC=F gold, AUDUSD=X): the owner's gold topic (2026-11-27) had no symbol.
+SYMBOL = re.compile(r"\^?[A-Z0-9][A-Z0-9.\-]{0,11}(?:=[FX])?")
 PLAIN_SYMBOL = re.compile(r"[A-Z]{1,6}")
 ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 NULLS = frozenset({"", "n/a", "na", "n/d", "-", "null", "none", "nan"})
@@ -60,7 +61,7 @@ def normalise_symbol(symbol) -> str:
         raise ValueError("symbol must be a ticker such as NVDA, SPY or ^GSPC")
     text = symbol.strip().upper()
     if not SYMBOL.fullmatch(text):
-        raise ValueError("symbol must be a ticker such as NVDA, SPY or ^GSPC")
+        raise ValueError("symbol must be a ticker such as NVDA, SPY, ^GSPC, GC=F (gold futures) or AUDUSD=X")
     return text
 
 

@@ -374,3 +374,15 @@ def test_an_index_falls_back_to_the_fred_close_and_reads_it():
     import pytest as _pytest
     with _pytest.raises(mk.MarketError):
         mk.parse_fred_close(b"observation_date,DJIA\n2026-11-02,1\n", "text/csv", "^GSPC")
+
+
+def test_futures_and_currency_symbols_are_accepted_and_quoted():
+    """The owner's gold topic (2026-11-27): GC=F was refused as a symbol, so the gold price had no market source."""
+    from datetime import date
+    assert market.normalise_symbol("gc=f") == "GC=F" and market.normalise_symbol("AUDUSD=X") == "AUDUSD=X"
+    for bad in ("GC=", "GC=Z", "A B", "GC=F=F"):
+        with pytest.raises(ValueError):
+            market.normalise_symbol(bad)
+    plan = market.endpoints("GC=F", date(2025, 1, 1), date(2025, 2, 1))
+    assert "/chart/GC%3DF?" in plan[0][1]
+    assert dict((s, u) for s, u, _ in plan)["stooq_csv"] is None
