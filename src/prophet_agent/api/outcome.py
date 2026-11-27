@@ -16,6 +16,7 @@ from typing import Any
 CHECK_PLAIN = {
     "analysis_ledger": "the analysis notes were not saved",
     "answer_file_exists": "the answer names an image that was not made",
+    "answer_signal_search": "the forecast line is flat and no outside driver was tested for a direction",
     "baseline_compared": "the forecast was not compared with a simple baseline",
     "beats_or_reports": "the answer does not say whether the forecast beats a simple baseline",
     "controls_tested": "the controls were not tested",

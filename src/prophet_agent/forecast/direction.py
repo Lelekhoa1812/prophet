@@ -188,5 +188,14 @@ def tilt(fc: dict, values: Any) -> dict:
               f"the flat line's error on {ev['windows']} windows (it won {ev['windows_won']}); chosen on those same windows, so "
               "it is a tilt, not a validated gain")
     centre = {"rule": rule, "reason": reason, "evidence": ev}
-    return {**fc, "point": [round(float(v), 4) for v in new], "quantiles": _shifted(q, old, new), "timesfm_point": fc["point"],
+    health = fc.get("health")
+    if isinstance(health, dict):
+        # The verdict judged the model's own median, which was flat. The line drawn is the tilt, and the answer must say so
+        # (round 17 SPX: "a flat median is the honest forecast" was copied beside a chart that rises).
+        note = (f"the model's own median was flat; the line drawn is {rule.replace('_', ' ')}, a tilt chosen on the backtest "
+                "windows, not a validated gain")
+        causes = [c.replace("so a flat median is the honest forecast", "so the model's own median is flat")
+                  for c in health.get("causes", [])]
+        health = {**health, "causes": causes, "drawn_line": note}
+    return {**fc, **({"health": health} if isinstance(health, dict) else {}), "point": [round(float(v), 4) for v in new], "quantiles": _shifted(q, old, new), "timesfm_point": fc["point"],
             "centre": centre, "tilt_check": {"flat_centre": True, "adopt": True, "rule": rule, "tried": tried, "reason": reason}}

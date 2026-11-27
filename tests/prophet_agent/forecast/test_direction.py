@@ -148,3 +148,22 @@ def test_a_four_point_mean_is_not_called_a_season_mean():
         "mean_last_season_window": {"points": 4, "season": 1, "note": "mean of the last 4 points"}}}
     text = contracts.trust_statement([bt])
     assert "average of the last 4 points" in text and "average of the last season" not in text
+
+
+def test_an_adopted_tilt_tells_the_health_note_the_line_is_not_the_models_flat_median():
+    rng = np.random.default_rng(1)
+    x = 100 + np.arange(300) * 0.4 + rng.normal(0, 1.0, 300)
+    fc = _flat_fc(float(x[-1]), 20, 3.0)
+    fc["health"] = {"verdict": "flat_expected", "causes": ["no repeating pattern stands out in the history, so a flat median is the honest forecast"]}
+    out = d.tilt(fc, x)
+    assert out["tilt_check"]["adopt"] is True
+    assert "tilt" in out["health"]["drawn_line"] and "honest forecast" not in " ".join(out["health"]["causes"])
+    assert out["health"]["verdict"] == "flat_expected"
+
+
+def test_the_signal_search_is_an_evidence_gate_the_planner_can_repair():
+    from prophet_agent.runtime import contracts
+    pack = {"kind": "tool", "tool": "forecast_report", "args": {}, "result": {"forecast": {"point": [1.0, 1.0]}, "tilt_check": {"adopt": False}},
+            "full": {"forecast": {"point": [1.0, 1.0], "quantiles": {"0.1": [0.0, 0.0], "0.9": [2.0, 2.0]}}}}
+    names = [c["name"] for c in contracts.check_evidence([pack])]
+    assert "answer_signal_search" in names

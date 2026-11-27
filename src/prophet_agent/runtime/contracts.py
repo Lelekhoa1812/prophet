@@ -1484,6 +1484,9 @@ def check_evidence(history, *, run_root=None) -> list[dict]:
             checks.extend(check_forecast(point, _quantile(rec, "0.1", "q10"), _quantile(rec, "0.9", "q90"),
                                          horizon=horizon, history=hist_vals if _numbers(hist_vals) is not None else None))
 
+    if forecasts and (searched := _signal_search_missing(obs)) is not None:
+        checks.append(searched)         # a gate, not an answer check: only a tool call can repair it
+
     if forecasts:
         controls = check_controls(obs, forecasts[-1][2], forecasts[-1][1])
         if controls is not None:
@@ -3046,8 +3049,6 @@ def check_answer(answer, history, *, run_root=None, goal: str = "") -> list[dict
         checks.append(level)
     if (tilted := _flat_claim_after_tilt(text, obs)) is not None:
         checks.append(tilted)
-    if (searched := _signal_search_missing(obs)) is not None:
-        checks.append(searched)
     if (named := check_answer_files(text, obs)) is not None:
         checks.append(named)
     if (real := check_answer_real_series(text, goal)) is not None:
