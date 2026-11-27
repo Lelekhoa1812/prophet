@@ -225,3 +225,60 @@ def test_fundamentals_warn_by_default_and_block_when_switched(monkeypatch):
     assert contracts.blocking([pq.check_fundamentals([pack(MOVING)], GOAL)]) == []
     monkeypatch.setattr(pq, "FUNDAMENTALS_SEVERITY", "block")
     assert contracts.blocking([pq.check_fundamentals([pack(MOVING)], GOAL)])
+
+
+def rate_pack(first, last=4.6, end="2026-10-31"):
+    p = pack([first] * 6)
+    p["full"]["forecast"]["last_observed"] = {"date": end, "value": last}
+    return p
+
+
+def news(date, text, url="https://www.example-news.com.au/rba"):
+    return {"kind": "tool", "tool": "web_research", "args": {"queries": ["RBA cash rate"]}, "result": {"ok": True},
+            "full": {"sources": [{"date": date, "url": url, "passages": [{"text": text}]}]}}
+
+
+HIKE = "At its November meeting the RBA lifted the cash rate to an 18-year high of 4.85 per cent. Markets reacted."
+
+
+def test_a_level_published_after_the_data_ends_must_start_the_forecast():
+    # Round 22 (AURATE): the series ended at 4.60% on 2026-10-31 and sources dated in November said 4.85%.
+    c = pq.check_newest_level([news("2026-11-24", HIKE), rate_pack(4.6)], GOAL)
+    assert not c["ok"] and c["severity"] == "block" and "4.85" in c["detail"] and "2026-11-24" in c["detail"]
+    assert pq.check_newest_level([news("2026-11-24", HIKE), rate_pack(4.85)], GOAL)["ok"]
+
+
+def test_forecasts_old_sources_and_other_targets_do_not_count():
+    later = "Westpac expects the RBA will cut the cash rate to 4.35 per cent by August."
+    assert pq.check_newest_level([news("2026-11-24", later), rate_pack(4.6)], GOAL) is None
+    assert pq.check_newest_level([news("2026-10-02", HIKE), rate_pack(4.6)], GOAL) is None     # before the data ends
+    assert pq.check_newest_level([news("2026-11-24", HIKE), rate_pack(4.6)], "Forecast the S&P 500 monthly") is None
+    youth = "The youth unemployment rate rose to 10.2 per cent in October."
+    goal = "Forecast Australia's unemployment rate for the next 2 years"
+    assert pq.check_newest_level([news("2026-11-19", youth), rate_pack(4.3, 4.3)], goal) is None
+    adult = "The seasonally adjusted unemployment rate rose to 4.9 per cent in October."
+    c = pq.check_newest_level([news("2026-11-19", adult), rate_pack(4.3, 4.3)], goal)
+    assert not c["ok"] and c["severity"] == "warn"
+
+
+def band_pack(lo, hi, h=12):
+    p = pack([5.0] * h)
+    p["full"]["forecast"]["quantiles"] = {"0.1": [lo] * h, "0.9": [hi] * h}
+    p["full"]["run_id"] = "e" * 32
+    return p
+
+
+def test_band_width_is_judged_against_the_series_own_moves(monkeypatch):
+    import math
+    hist = [5.0 + math.sin(i / 6.0) for i in range(240)]        # 12-step changes span about 3.2 between 10th and 90th
+    monkeypatch.setattr(pq, "_pack_input", lambda run_id: {"history": hist, "point": [5.0] * 12})
+    spread = pq.change_spread(hist, None, 12, False)
+    assert 2.5 < spread < 4.0
+    ok = pq.check_band_width([band_pack(5 - spread / 2, 5 + spread / 2)], "Forecast the unemployment rate")
+    assert ok["ok"] and "ratio 1.00" in ok["detail"]
+    narrow = pq.check_band_width([band_pack(4.9, 5.1)], "Forecast the unemployment rate")
+    assert not narrow["ok"] and "far narrower" in narrow["detail"] and narrow["severity"] == pq.BAND_SEVERITY
+    wide = pq.check_band_width([band_pack(0.5, 15.0)], "Forecast the unemployment rate")
+    assert not wide["ok"] and "far wider" in wide["detail"]
+    monkeypatch.setattr(pq, "_pack_input", lambda run_id: None)
+    assert pq.check_band_width([band_pack(4.9, 5.1)], "x") is None

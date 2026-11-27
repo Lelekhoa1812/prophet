@@ -443,13 +443,213 @@ def check_fundamentals(history: Any, goal: str = "") -> dict | None:
     return _check("fundamentals_covered", False, detail, FUNDAMENTALS_SEVERITY)
 
 
+# ---------------------------------------------------------------------------------------------- newest published level
+# The target's words per domain, the verbs of a level that has been set or released, and words of a forecast (skipped).
+_LEVEL_TARGET = {
+    "policy_rate": re.compile(r"\b(?:cash|policy|official cash|bank|refinancing|federal funds|fed funds|repo|base|"
+                              r"benchmark|interest) rate\b|\bOCR\b", re.I),
+    "labour_market": re.compile(r"\b(?:unemployment|jobless) rate\b", re.I),
+}
+_LEVEL_SET = re.compile(r"\b(?:rais\w*|lift\w*|hik\w*|increas\w*|push\w*|cut|cuts|cutting|lower\w*|reduc\w*|rose|fell|"
+                        r"climb\w*|jump\w*|eas\w*|dropp?\w*|ticked (?:up|down)|edged (?:up|down))\b[^.%\n]{0,90}?"
+                        r"\bto (?:an? )?(?:[\w-]+[ -])?(?:high|low)?\s?(?:of )?(?P<v>\d{1,2}(?:\.\d{1,2})?)\s*(?:per ?cent|%)"
+                        r"|\b(?:held|kept|steady|unchanged|remain\w*)\b[^.%\n]{0,60}?\bat (?P<w>\d{1,2}(?:\.\d{1,2})?)\s*"
+                        r"(?:per ?cent|%)", re.I)
+_LEVEL_FUTURE = re.compile(r"\b(?:expect\w*|forecast\w*|predict\w*|project\w*|will|would|could|may|might|likely|"
+                           r"should|tip\w*|bet\w*|price[sd]? in|anticipat\w*|see[sn]?|if)\b", re.I)
+_LEVEL_SUBGROUP = re.compile(r"\byouth|urban|rural|women|men\b|female|male|underemployment|participation", re.I)
+LEVEL_SEVERITY = {"policy_rate": "block", "labour_market": "warn"}
+
+
+def _dated_texts(x: Any, out: list[tuple[str, str, str]], depth: int = 0) -> None:
+    """(date, url, text) for every dated source in a research result: a dict with a date and passages or a text."""
+    if depth > 6:
+        return
+    if isinstance(x, dict):
+        date = x.get("date") or x.get("published")
+        texts = [p.get("text") for p in x.get("passages") or [] if isinstance(p, dict)] + [x.get("text")]
+        if isinstance(date, str) and re.match(r"\d{4}-\d{2}-\d{2}", date):
+            for t in texts:
+                if isinstance(t, str) and t:
+                    out.append((date[:10], str(x.get("final_url") or x.get("url") or ""), t))
+        for v in x.values():
+            if isinstance(v, (dict, list)):
+                _dated_texts(v, out, depth + 1)
+    elif isinstance(x, list):
+        for v in x[:200]:
+            _dated_texts(v, out, depth + 1)
+
+
+def newest_levels(history: Any, domain: str, after: str) -> list[dict]:
+    """Levels of the target that sources dated after ``after`` report as set or released (not forecast), newest first:
+    {value, date, url, quote}."""
+    target = _LEVEL_TARGET.get(domain)
+    if target is None:
+        return []
+    found: list[dict] = []
+    for h in _flatten(history):
+        if h.get("kind") != "tool" or h.get("tool") not in contracts.RESEARCH_TOOLS:
+            continue
+        rows: list[tuple[str, str, str]] = []
+        _dated_texts(h.get("full") if isinstance(h.get("full"), dict) else h.get("result"), rows)
+        for date, url, text in rows:
+            if date <= after:
+                continue
+            for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+                if not target.search(sentence) or _LEVEL_FUTURE.search(sentence) or _LEVEL_SUBGROUP.search(sentence):
+                    continue
+                m = _LEVEL_SET.search(sentence)
+                if m:
+                    found.append({"value": float(m.group("v") or m.group("w")), "date": date, "url": url,
+                                  "quote": sentence.strip()[:200]})
+    uniq = {(f["value"], f["url"]): f for f in found}
+    return sorted(uniq.values(), key=lambda f: f["date"], reverse=True)
+
+
+def check_newest_level(history: Any, goal: str = "") -> dict | None:
+    """The forecast starts from a level published after its data ends.
+
+    Panel round 22 (AURATE, 2026-11-27): the series ended at 4.60% on 2026-10-31 and the forecast held 4.60% for five years,
+    while sources the mission itself fetched, dated 24 and 26 November, said the RBA "lifted the cash rate to an 18-year
+    high of 4.85 per cent" earlier in the month. Logic: for a policy rate or an unemployment rate, sentences in research
+    sources dated after the series' last observation that report the target set or released at a level (a decision or a
+    release verb with "to X per cent", or "held at X per cent"; sentences of expectation or forecast are skipped) give the
+    newest level, the one most sources agree on and then the newest. When it differs from the last observation and the
+    forecast's first step is not near it, the finish is held (a policy rate) or warned (an unemployment rate, where a
+    subgroup or a different adjustment can read differently). None when no single-series forecast or no newer level."""
+    from prophet_agent.research import driver_families as dfam
+    domain = dfam.detect(goal or "")
+    if domain not in _LEVEL_TARGET:
+        return None
+    fc = None
+    for h in reversed(_flatten(history)):
+        if isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+            fc = full.get("forecast") if isinstance(full, dict) else None
+            break
+    if not isinstance(fc, dict) or not isinstance(fc.get("last_observed"), dict) or not fc.get("point"):
+        return None
+    last = fc["last_observed"]
+    try:
+        end, last_v, first = str(last["date"])[:10], float(last["value"]), float(fc["point"][0])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    levels = newest_levels(history, domain, end)
+    if not levels:
+        return None
+    counts: dict[float, int] = {}
+    for f in levels:
+        counts[f["value"]] = counts.get(f["value"], 0) + 1
+    best = max(counts, key=lambda v: (counts[v], max(f["date"] for f in levels if f["value"] == v)))
+    src = next(f for f in levels if f["value"] == best)
+    tol = 0.05 if domain == "policy_rate" else 0.15
+    if abs(best - last_v) <= tol:
+        return None
+    if abs(first - best) <= max(tol, 0.5 * abs(best - last_v)):
+        return _check("newest_level_used", True, f"the forecast starts near {best:g}, the level published on {src['date']}",
+                      LEVEL_SEVERITY[domain])
+    return _check("newest_level_used", False,
+                  f"a source dated {src['date']} ({src['url'][:90]}) reports the level at {best:g}: \"{src['quote'][:160]}\". "
+                  f"The series ends at {last_v:g} on {end} and the forecast's first step is {first:g}. Add the new level to "
+                  "the series as an observation at its date (the month it took effect), forecast again from it, and say in "
+                  "the answer where the level came from. If the source is wrong or about another measure, say why in the "
+                  "answer", LEVEL_SEVERITY[domain])
+
+
+# -------------------------------------------------------------------------------------------------------- band width
+BAND_NARROW, BAND_WIDE = 0.35, 2.5     # delivered 10-90 width as a share of the series' own h-step change spread
+BAND_SEVERITY = "warn"                 # measured on the first live rounds before it blocks (owner choice, 2026-11-27)
+_PRICE_DOMAINS = ("precious_metal", "equity_index", "commodity", "currency")
+
+
+def _pack_input(run_id: Any) -> dict | None:
+    from prophet_agent.sandbox.runner import SANDBOX_ROOT
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        return None
+    try:
+        return json.loads((SANDBOX_ROOT / run_id / "data" / "input.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def change_spread(history: list[float], dates: list[str] | None, h: int, log: bool, years: float = 25.0) -> float | None:
+    """The 10-90 spread of the series' own h-step changes (log changes for a price) over origins in the last ``years``,
+    or None with fewer than 12 origins."""
+    import math
+    y = [float(v) for v in history]
+    if log and any(v <= 0 for v in y):
+        return None
+    start = 0
+    if dates and len(dates) == len(y):
+        try:
+            import datetime as dt
+            last = dt.date.fromisoformat(str(dates[-1])[:10])
+            cut = last.replace(year=last.year - int(years))
+            start = next((i for i, d in enumerate(dates) if dt.date.fromisoformat(str(d)[:10]) >= cut), 0)
+        except ValueError:
+            start = 0
+    ch = [(math.log(y[t + h] / y[t]) if log else y[t + h] - y[t]) for t in range(start, len(y) - h)]
+    if len(ch) < 12:
+        return None
+    ch.sort()
+    q = lambda p: ch[min(len(ch) - 1, max(0, int(round(p * (len(ch) - 1)))))]
+    return q(0.9) - q(0.1)
+
+
+def check_band_width(history: Any, goal: str = "") -> dict | None:
+    """The delivered end-of-horizon range is neither far narrower nor far wider than the series has moved over the horizon.
+
+    Round 22 audit (2026-11-27): ranges were taken on trust. A band far narrower than the series' own h-step moves claims a
+    certainty its history never showed; one far wider says little. Logic: the 10-90 width at the last step of the delivered
+    forecast (a scenario_forecast's if one was built) against the 10-90 spread of the series' own changes over the same
+    number of steps, from origins in the last 25 years (log changes for a price). Outside BAND_NARROW to BAND_WIDE times
+    that spread it is flagged with both figures. None without a single-series pack and its stored history."""
+    from prophet_agent.research import driver_families as dfam
+    band = _delivered_band(history)
+    if band is None:
+        return None
+    run_id = None
+    for h in reversed(_flatten(history)):
+        if isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+            run_id = full.get("run_id") if isinstance(full, dict) else None
+            break
+    d = _pack_input(run_id)
+    if not d or not isinstance(d.get("history"), list) or not isinstance(d.get("point"), list) or not d["point"]:
+        return None
+    h_steps = len(d["point"])
+    log = dfam.detect(goal or "") in _PRICE_DOMAINS
+    spread = change_spread(d["history"], d.get("dates"), h_steps, log)
+    lo, hi = band
+    if spread is None or spread <= 0 or (log and lo <= 0):
+        return None
+    import math
+    width = math.log(hi / lo) if log else hi - lo
+    ratio = width / spread
+    unit = "log points" if log else "units"
+    facts = (f"the delivered 10 to 90 range at the last step is {lo:.4g} to {hi:.4g} (width {width:.3g} {unit}); the "
+             f"series' own {h_steps}-step changes over the last 25 years span {spread:.3g} {unit} between their 10th and "
+             f"90th percentiles (ratio {ratio:.2f})")
+    if ratio < BAND_NARROW:
+        return _check("band_width_sane", False, facts + ". The range is far narrower than the series has moved over this "
+                      "horizon: check the interval calibration on rolling origins, widen the band (forecast_report "
+                      "interval calibration, or scenarios with their own uncertainty), or say why this period is calmer",
+                      BAND_SEVERITY)
+    if ratio > BAND_WIDE:
+        return _check("band_width_sane", False, facts + ". The range is far wider than the series has moved over this "
+                      "horizon: check the band was not stretched by an outlier period or a wrong scale, and narrow it with "
+                      "calibration on rolling origins or tested drivers", BAND_SEVERITY)
+    return _check("band_width_sane", True, facts, BAND_SEVERITY)
+
+
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
     calls = (lambda: check_prediction_chart(history), lambda: check_flat_centre(history),
              lambda: check_grain(goal, history), lambda: check_answer_band(answer, history),
              lambda: check_signals_gathered(history, goal), lambda: check_league_signals(history),
-             lambda: check_fundamentals(history, goal))
+             lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
+             lambda: check_band_width(history, goal))
     for fn in calls:
         try:
             c = fn()
