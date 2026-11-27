@@ -44,6 +44,7 @@ GAP_STEP = 0.05             # a raw band this far from target is worth fixing; t
 MAX_LEVEL = 0.99            # the highest level the second pass may fit at
 BUCKETS = 3                 # horizon thirds get their own scale: error grows with the horizon
 MIN_ORIGINS = 6
+MIN_HELD_WINDOWS = 3     # fewer held-out windows than this never recommend a change of band
 MAX_SCALE = 5.0             # a band more than five times wider is a model that has failed, not a band to publish
 Q_LO, Q_MID, Q_HI = 0, 4, 8
 ACI_GAMMAS = (0.005, 0.01, 0.05)  # learning rates run in parallel (expert selection, after DtACI 2022): slow, medium, fast
@@ -367,6 +368,10 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
     use = (use_calibrated(raw_gap, cal_gap, max(scales), width_ratio) if method == "quantile_scaling"
            else bool(raw_gap > GAP_STEP and cal_gap < raw_gap))
     n_held, n_win = int(held_actual.size), k - split
+    if n_win < MIN_HELD_WINDOWS:
+        # Audit M10 (2026-11-27, simulated): with two held-out windows the check recommended recalibrating a band that was
+        # right by construction in 22 to 30 percent of runs. Two windows cannot tell a miscalibrated band from chance.
+        use = False
     caveats = ["Past windows share one series, so they are not independent; the coverage figures carry that uncertainty.",
                "Conformal coverage assumes future errors resemble the past ones. A regime change breaks it.",
                f"Check windows: {n_win} windows of {horizon} periods ({n_held} points). The Wilson intervals use the windows as "
@@ -376,8 +381,9 @@ def calibrate(values: Any, horizon: int, *, engine: Any, control: Any = None, n_
     if method == "ewma_volatility" and width_ratio > MAX_SCALE:
         caveats.append(f"TimesFM's own band was far too narrow here (held-out coverage {raw_cov:.0%}); the range shown follows the "
                        f"series' recent volatility and is {width_ratio:.1f} times wider.")
-    if k - split < 3:
-        caveats.append("Fewer than three held-out windows: the held-out coverage is a rough check only.")
+    if k - split < MIN_HELD_WINDOWS:
+        caveats.append("Fewer than three held-out windows: the held-out coverage is a rough check only, so the raw band is "
+                       "kept whatever it shows.")
     return {
         "horizon": horizon, "target_coverage": target, "origins": k, "fitted_on": split, "tested_on": k - split,
         "scales_by_horizon_third": [round(s, 3) for s in scales],

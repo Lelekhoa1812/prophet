@@ -228,3 +228,11 @@ def test_the_wilson_interval_counts_windows_not_points_and_the_selection_is_flag
     assert (hi - lo) > (hi_pts - lo_pts), "fewer windows than points means a wider interval, not a narrower one"
     assert out["selection"] == {"held_out_used_for_choice": True, "optimistic": True}
     assert any("optimistic" in c for c in out["caveats"])
+
+
+def test_two_held_out_windows_never_recommend_a_new_band():
+    # Audit M10 (2026-11-27): two windows cannot tell a miscalibrated band from chance.
+    out = cal.calibrate(_series(2.0), 8, engine=Engine(sd=1.0), n_origins=6)
+    assert out["tested_on"] < cal.MIN_HELD_WINDOWS
+    assert out["recommend"] == "keep_raw"
+    assert any("raw band is kept" in c for c in out["caveats"])

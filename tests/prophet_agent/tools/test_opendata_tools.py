@@ -431,6 +431,32 @@ def test_catalogue_search_lists_datasets_then_series_with_the_exact_download_cal
         catalogue.search("x", "not a dataset ref")
 
 
+def test_series_search_puts_the_total_at_the_asked_frequency_first_and_names_the_ilostat_call(monkeypatch):
+    """Round 20 (VNUNEMP): ten searches before the 15+ total turned up, and the stale mirror copy was downloaded."""
+    from prophet_agent.opendata import catalogue
+    codes = ["VNM.BA_1788.AGE_10YRBANDS_Y15-24.SEX_F.A", "VNM.BA_1788.AGE_10YRBANDS_TOTAL.SEX_F.Q",
+             "VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.A", "VNM.BA_1788.AGE_10YRBANDS_TOTAL.SEX_T.Q",
+             "VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.Q"]
+    seen = []
+
+    def get(url):
+        seen.append(url)
+        return {"series": {"docs": [{"series_code": c} for c in codes]}}
+
+    monkeypatch.setattr(catalogue, "_get", get)
+    found = catalogue.search("Viet Nam quarterly unemployment rate seasonally adjusted", "ILO/UNE_DEAP_SEX_AGE_RT")
+    assert "q=Viet%20Nam&" in seen[0]          # the measure's words do not narrow the series match away
+    order = [s["series"] for s in found["series"]]
+    assert order[:2] == ["VNM.BA_1788.AGE_YTHADULT_YGE15.SEX_T.Q", "VNM.BA_1788.AGE_10YRBANDS_TOTAL.SEX_T.Q"]
+    assert order[-1].endswith(".A")
+    first = found["series"][0]["direct_download"]["args"]
+    assert first == {"source": "ilostat_sdmx", "params": {"dataflow": "DF_UNE_DEAP_SEX_AGE_RT",
+                                                          "key": "VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15"}}
+    # a band total is asked of ILOSTAT as the 15+ total, the only all-ages code its SDMX service answers
+    assert found["series"][1]["direct_download"]["args"]["params"]["key"] == "VNM.Q.UNE_DEAP_RT.SEX_T.AGE_YTHADULT_YGE15"
+    assert catalogue.ilostat_call("UNE_DEAP_SEX_AGE_RT", "VNM.Q") is None
+
+
 def test_search_open_data_is_offered_without_a_mission_and_is_read_only():
     tool = default_tools()["search_open_data"]
     assert tool.idempotent is True and tool.doc

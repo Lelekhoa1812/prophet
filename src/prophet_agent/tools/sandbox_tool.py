@@ -308,12 +308,11 @@ def sandbox_python_tool(datasets: dict[str, Path] | None = None) -> Tool:
 _SPEC_TEXT = (
     "Run Python (pandas, numpy, scipy, statsmodels, matplotlib) in a guarded sandbox: no network, no secrets, one "
     "minute. pandas only: `pl` is prophet_lib, not polars (null_count, is_null, sort work). The person's uploaded files are in in/ (read-only). Import: `import prophet_lib as pl`, `import prophet_stats "
-    "as ps`, `import prophet_scan as sc`. Unpack (value, report) helpers: `value, report = ...`. "
-    "Entities that share dates are never summed silently: pass entity= and key=, or use pl.panel for all of them. "
+    "as ps`, `import prophet_scan as sc`. "
+    "Entities sharing dates are never summed silently: pass entity= and key=, or use pl.panel. "
     "pl.chart(kind, data, x=, y=, title=<the finding>, subtitle=<measure, unit, period>, unit=, source=, path='out/name.png') "
     "returns the problems it finds. pl.size_report(path) and pl.query(sql, t=path) read files too big to load. "
-    "Also: pl.disaggregate(values, factor, kind='mean'|'sum', indicator=None) gives derived finer-grain values whose "
-    "published block averages or sums stay exact (Denton), pl.freq_alias('A') gives pandas 3's code, "
+    "Also: pl.disaggregate(values, factor, kind='mean'|'sum') (Denton; published blocks kept), "
     "pl.profile(path), pl.as_number(s), pl.as_dates(s), pl.holiday_covariate(index, country, subdiv, horizon) "
     "and pl.event_covariate(index, "
     "[(first, last), ...], horizon) for known-ahead drivers, pl.detect_anomalies(values, season) (candidates "
@@ -322,7 +321,7 @@ _SPEC_TEXT = (
     "carry=[{run_id, file: 'out/scan.json'}] and open it at in/carried/<file name>. "
     "Output you do not print, you do not see. A series written with pl.save_series or "
     "pl.save_panel can be forecast by passing source {run_id, file}. "
-    "Signatures (generated from the code; other keywords are refused):\n"
+    "Signatures (other keywords are refused):\n"
 )
 
 SANDBOX_PYTHON_SPEC = {
