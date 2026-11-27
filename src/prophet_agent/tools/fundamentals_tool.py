@@ -89,6 +89,18 @@ def _benchmarks(raw: Any) -> list[dict]:
     return out
 
 
+def _probability_source(s: dict, label: str) -> str:
+    """'market' or 'judgement' (the default). Owner rule (2026-11-27): a scenario's probability comes from market pricing
+    where a market prices the event, and from the agent's researched judgement only where none does; a market probability
+    needs the URL it was read from."""
+    src = str(s.get("probability_source") or "judgement").strip().lower()
+    if src not in ("market", "judgement"):
+        raise ValueError(f"{label}: probability_source must be 'market' or 'judgement'")
+    if src == "market" and len(str(s.get("evidence") or "").strip()) < 6:
+        raise ValueError(f"{label}: a market probability needs the URL of the pricing it was read from as evidence")
+    return src
+
+
 def _scenario_notes(raw: Any) -> list[dict]:
     if raw is None:
         return []
@@ -104,7 +116,9 @@ def _scenario_notes(raw: Any) -> list[dict]:
         name, impact = _text(s.get("name"), 60), _text(s.get("impact"), 200)
         if not name or not impact:
             raise ValueError(f"scenario {i}: give a name and the impact on the target (for example '+0.25 pp from May')")
-        out.append({"name": name, "probability": float(p), "impact": impact, "evidence": _text(s.get("evidence"), 300)})
+        src = _probability_source(s, f"scenario {i}")
+        out.append({"name": name, "probability": float(p), "impact": impact, "evidence": _text(s.get("evidence"), 300),
+                    "probability_source": src})
     if sum(s["probability"] for s in out) > 1 + 1e-9:
         raise ValueError("scenario probabilities must add to at most 1")
     return out
@@ -216,7 +230,7 @@ def _scenario_forecast(args: dict, _key: str) -> dict[str, Any]:
     title = _text(args.get("title"), 110) or (_text(d.get("title"), 80) + ": with scenarios")
     note = ("Scenario-weighted forecast: the base pack's distribution with each scenario's shift applied from its start, "
             "weighted by its probability (base case " + f"{100 * mixed['base_case_probability']:.0f}%). "
-            + "; ".join(f"{s['name']} {100 * s['probability']:.0f}%: {s['last_shift']:+.3g} by the end"
+            + "; ".join(f"{s['name']} {100 * s['probability']:.0f}% ({s['probability_source']}): {s['last_shift']:+.3g} by the end"
                         for s in mixed["scenarios"]))[:600]
     payload = {"history": d["history"], "dates": d.get("dates"), "future_dates": dates, "point": mixed["point"],
                "q10": mixed["quantiles"]["0.1"], "q90": mixed["quantiles"]["0.9"], "quantiles": mixed["quantiles"],
@@ -228,8 +242,8 @@ def _scenario_forecast(args: dict, _key: str) -> dict[str, Any]:
     fc = {"point": mixed["point"], "quantiles": mixed["quantiles"], **({"future_dates": dates} if dates else {})}
     rows = [{"step": i + 1, **({"date": dates[i]} if dates else {}), "median": mixed["point"][i],
              "q10": mixed["quantiles"]["0.1"][i], "q90": mixed["quantiles"]["0.9"][i]} for i in range(h)]
-    return {"forecast": fc, "pack": args["pack"], "scenarios": [{k: s[k] for k in ("name", "probability", "start",
-                                                                                   "last_shift", "why")}
+    return {"forecast": fc, "pack": args["pack"], "scenarios": [{k: s[k] for k in ("name", "probability", "probability_source",
+                                                                                   "start", "last_shift", "why")}
                                                                 for s in mixed["scenarios"]],
             "base_case_probability": mixed["base_case_probability"], "weighted_last_shift": mixed["weighted_last_shift"],
             "end": {"q10": rows[-1]["q10"], "median": rows[-1]["median"], "q90": rows[-1]["q90"],
@@ -281,7 +295,8 @@ DRIVER_MAP_SPEC = {
                     "on the target), effect (size and timing in words or numbers), evidence (URL, file name or run id)}",
         "benchmarks": "record: list of {source (for example 'RBA SMP November 2026'), value (its forecast of the target), "
                       "what (measure and date), evidence (URL or file)}",
-        "scenarios": "record: list of {name, probability (0 to 1), impact (on the target, in words and numbers), evidence}",
+        "scenarios": "record: list of {name, probability (0 to 1), impact (on the target, in words and numbers), evidence, "
+                     "probability_source ('market' when the probability is read from market pricing such as a rate tracker, futures or outright odds, with that URL as evidence; 'judgement' when no market prices it)}",
         "title": "optional chart title",
     },
 }
@@ -303,7 +318,7 @@ SCENARIO_FORECAST_SPEC = {
                      "for example 0.25) or shift_pct (per cent of the base median, for example -8), start (step or date, "
                      "default 1), ramp (steps to reach the full shift, default 1), end (optional step after which it "
                      "fades), shift_sd (uncertainty of the shift as a share of it, default 0.3), band_scale (0.5 to 3, "
-                     "default 1), why (one line), evidence (URL or run id behind it)}",
+                     "default 1), why (one line), evidence (URL or run id behind it), probability_source ('market' when the probability is read from market pricing such as a rate tracker, futures or outright odds, with that URL as evidence; 'judgement' when no market prices it)}",
         "floor": "optional lower bound for the values (0 for a rate or a price)",
         "title": "optional chart title",
         "unit": "optional unit label",

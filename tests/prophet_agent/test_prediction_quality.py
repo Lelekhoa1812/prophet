@@ -214,3 +214,14 @@ def test_scenario_forecast_end_is_the_delivered_band():
     hist = [pack([4.0] * 12), scen]
     assert not pq.check_answer_band("The range by 2030 is 3.5% to 4.2%.", hist)["ok"]
     assert pq.check_answer_band("The 10-90 range by 2030 is 3.1% to 4.6%.", hist)["ok"]
+
+
+def test_fundamentals_warn_by_default_and_block_when_switched(monkeypatch):
+    # Owner choice (2026-11-27): warn on the first live rounds, block once PROPHET_FUNDAMENTALS_GATE=block.
+    from prophet_agent.runtime import contracts
+    c = pq.check_fundamentals([pack(MOVING)], GOAL)
+    assert not c["ok"] and c["severity"] == pq.FUNDAMENTALS_SEVERITY
+    monkeypatch.setattr(pq, "FUNDAMENTALS_SEVERITY", "warn")
+    assert contracts.blocking([pq.check_fundamentals([pack(MOVING)], GOAL)]) == []
+    monkeypatch.setattr(pq, "FUNDAMENTALS_SEVERITY", "block")
+    assert contracts.blocking([pq.check_fundamentals([pack(MOVING)], GOAL)])

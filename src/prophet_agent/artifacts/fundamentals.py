@@ -35,7 +35,8 @@ with open("out/driver_map.csv", "w", newline="", encoding="utf-8") as fh:
     for b in bench:
         w.writerow(["benchmark", b["source"], "benchmark", "", f"{b['value']} ({b.get('what', '')})", b["evidence"]])
     for s in scen:
-        w.writerow(["scenario", s["name"], "scenario", f"p={s['probability']}", s["impact"], s.get("evidence", "")])
+        w.writerow(["scenario", s["name"], "scenario", f"p={s['probability']} ({s.get('probability_source', 'judgement')})",
+                    s["impact"], s.get("evidence", "")])
 json.dump(d, open("out/driver_map.json", "w", encoding="utf-8"), indent=1)
 
 KIND_COL = {"tested": "#D55E00", "researched": "#E69F00", "benchmark": "#0072B2"}
@@ -67,7 +68,7 @@ if scen:
     ax2.barh(range(len(scen))[::-1], probs, color="#0072B2", alpha=0.8, height=0.55)
     ax2.set_ylim(-0.8, max(len(scen), 4) - 0.2)
     for j, s in enumerate(scen):
-        ax2.text(probs[j] + 1, len(scen) - 1 - j, f"{probs[j]:.0f}%  {s['impact'][:48]}", va="center", fontsize=8.3)
+        ax2.text(probs[j] + 1, len(scen) - 1 - j, f"{probs[j]:.0f}% ({s.get('probability_source', 'judgement')})  {s['impact'][:40]}", va="center", fontsize=8.3)
     ax2.set_yticks(range(len(scen))[::-1])
     ax2.set_yticklabels(names, fontsize=9)
     ax2.set_xlim(0, max(probs + [10]) * 2.6)
@@ -124,7 +125,7 @@ ax.fill_between(fx, d["q10"], d["q90"], color=ORANGE, alpha=0.18, lw=0, label="S
 ax.plot([hx[-1]] + fx, [hist_k[-1]] + d["point"], color=ORANGE, lw=2.3, label="Scenario-weighted median")
 for j, s in enumerate(d["scenarios"]):
     ax.plot(fx, s["median"], color=pal[j % len(pal)], lw=1.1, ls=":",
-            label=f"{s['name'][:38]} ({100 * s['probability']:.0f}%)")
+            label=f"{s['name'][:38]} ({100 * s['probability']:.0f}%, {s.get('probability_source', 'judgement')})")
 ax.grid(color="#e6e6e6", lw=0.6)
 ax.set_ylabel(d.get("unit") or "")
 ax.legend(fontsize=8.5, frameon=False, loc="upper left", ncol=2)

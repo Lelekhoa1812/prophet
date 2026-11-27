@@ -99,7 +99,14 @@ def validate(scenarios: Any, h: int, dates: list[str] | None) -> list[dict]:
             raise ValueError(f"scenario {name!r}: shift_sd is the impact's uncertainty as a share of the shift, 0 to 2")
         if not isinstance(scale, (int, float)) or isinstance(scale, bool) or not 0.5 <= scale <= 3:
             raise ValueError(f"scenario {name!r}: band_scale must be from 0.5 to 3")
-        out.append({"name": name, "probability": float(p), "kind": "level" if has_abs else "pct", "shift": float(val),
+        src = str(s.get("probability_source") or "judgement").strip().lower()
+        if src not in ("market", "judgement"):
+            raise ValueError(f"scenario {name!r}: probability_source must be 'market' (read from market pricing, with its "
+                             "URL as evidence) or 'judgement'")
+        if src == "market" and len(str(s.get("evidence") or "").strip()) < 6:
+            raise ValueError(f"scenario {name!r}: a market probability needs the URL of the pricing as evidence")
+        out.append({"name": name, "probability": float(p), "probability_source": src,
+                    "kind": "level" if has_abs else "pct", "shift": float(val),
                     "start": int(start), "ramp": int(ramp), "end": end, "shift_sd": float(sd), "band_scale": float(scale),
                     "why": str(s.get("why") or "")[:300], "evidence": str(s.get("evidence") or "")[:300]})
     total = sum(s["probability"] for s in out)
@@ -138,7 +145,8 @@ def mix(quantiles: dict[float, list[float]], scenarios: list[dict], *, n: int = 
         spread = (base[rows] - median[None, :]) * s["band_scale"]
         out[rows] = median[None, :] + spread + shift
         cond = median + prof * full
-        per.append({"name": s["name"], "probability": s["probability"], "median": cond.tolist(),
+        per.append({"name": s["name"], "probability": s["probability"],
+                    "probability_source": s.get("probability_source", "judgement"), "median": cond.tolist(),
                     "last_shift": float((prof * full)[-1]), "start": s["start"], "why": s["why"]})
     if floor is not None:
         out = np.maximum(out, floor)

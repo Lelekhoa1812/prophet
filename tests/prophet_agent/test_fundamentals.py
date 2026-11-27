@@ -119,3 +119,18 @@ def test_a_lucky_start_is_not_read_as_strength_once_history_and_signals_enter():
     assert top(full) != "T5"                          # history, xG and prices say otherwise
     assert full["settings"]["signals"]["history_matches"] > 0 and full["settings"]["signals"]["xg"] > 0
     assert any(r["team"] == "T5" and r["gap"] > 4 for r in finishing_gaps([m for m in current if m.played]))
+
+
+def test_market_probabilities_need_their_pricing_url_and_are_labelled():
+    base = {"name": "RBA hikes in February", "probability": 0.3, "shift": 0.25}
+    with pytest.raises(ValueError, match="URL of the pricing"):
+        sc.validate([{**base, "probability_source": "market"}], 6, None)
+    with pytest.raises(ValueError, match="market"):
+        sc.validate([{**base, "probability_source": "guess"}], 6, None)
+    ok = sc.validate([{**base, "probability_source": "market",
+                       "evidence": "https://www.asx.com.au/markets/trade-our-derivatives-market/futures-market/rba-rate-tracker"}],
+                     6, None)
+    assert ok[0]["probability_source"] == "market"
+    assert sc.validate([base], 6, None)[0]["probability_source"] == "judgement"
+    mixed = sc.mix({0.1: [3.0] * 6, 0.5: [3.5] * 6, 0.9: [4.0] * 6}, ok)
+    assert mixed["scenarios"][0]["probability_source"] == "market"

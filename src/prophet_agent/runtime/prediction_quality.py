@@ -16,6 +16,7 @@ Both run for the lead only (goal.py passes them with the horizon checks). They a
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,10 @@ from prophet_agent.runtime.contracts import _check, _ok_result
 
 FLAT_STRATEGIES = 4
 CHART_SUFFIXES = (".png", ".svg")
+# Owner choice (2026-11-27): the fundamentals check warns on the first live rounds, so what missions reach on their own is
+# measured before it blocks. PROPHET_FUNDAMENTALS_GATE=block makes it a hard block.
+FUNDAMENTALS_SEVERITY = "block" if os.environ.get("PROPHET_FUNDAMENTALS_GATE", "warn").strip().lower() == "block" else "warn"
+
 PREDICTION_TOOLS = ("forecast_report", "timesfm_forecast", "simulate_season", "scenario_forecast")
 
 # Each strategy: (key, what to do). Whether it was tried is read from successful calls only (``_tried``): a forecasting
@@ -427,7 +432,7 @@ def check_fundamentals(history: Any, goal: str = "") -> dict | None:
     if not missing:
         return _check("fundamentals_covered", True,
                       f"{len(researched)} driver families researched, {len(tested)} tested, {n_bench} benchmarks, "
-                      f"{applied} scenarios applied ({domain})")
+                      f"{applied} scenarios applied ({domain})", FUNDAMENTALS_SEVERITY)
     plan = dfam.plan(goal or "", domain)
     todo = [f for f in plan["families"] if f["family"] not in researched][:5]
     hint = "; ".join(f"{f['family']} ({f['data'][0]}; search '{f['queries'][0]}')" for f in todo if f["data"] and f["queries"])
@@ -435,7 +440,7 @@ def check_fundamentals(history: Any, goal: str = "") -> dict | None:
               + "; ".join(missing) + ". " + (f"Families not covered yet: {hint}. " if hint else "")
               + (f"Evidence not found in any call of this mission (dropped): {', '.join(untraced[:4])}. " if untraced else "")
               + "Search broadly (research lanes per family), then measure, then record.")
-    return _check("fundamentals_covered", False, detail)
+    return _check("fundamentals_covered", False, detail, FUNDAMENTALS_SEVERITY)
 
 
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:

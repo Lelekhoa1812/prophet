@@ -367,6 +367,9 @@ C. Questions, notebooks and non-forecast analysis
     e. Scenarios. Political, policy and geopolitical risks that the history cannot show become scenarios with a probability
        and an impact (a signalled hike, a tariff from a date, an election stimulus, a war or a sanctions shock, a recession).
        Apply them to the delivered pack with scenario_forecast; its weighted range is then the delivered range.
+       Each probability comes from market pricing where a market prices the event (the ASX rate tracker or futures for
+       a cash rate, fed funds futures, outright title odds): set probability_source 'market' and give that URL as the
+       evidence. Only where no market prices it, use your researched judgement and set probability_source 'judgement'.
     f. Record. Call driver_map (action record) with every finding (family, signal with its figure and date, kind
        researched, tested or benchmark, direction, effect, evidence = the URL, file or run id of the call behind it), the
        benchmarks and the scenarios. It writes the driver map chart and table. The finish is held until the domain's
