@@ -110,3 +110,11 @@ def test_harness_runs_the_league_backtest_once_for_a_football_goal():
     assert goal._league_backtest_step(g, done, tools) is None
     assert goal._league_backtest_step("Forecast the NBA standings", [], tools) is None
     assert goal._league_backtest_step(g, [], {}) is None
+
+
+def test_pi_ratings_move_towards_the_winner_and_feed_the_season_backtest():
+    """Mission 10 batch 2: pi-ratings (Constantinou and Fenton 2013) as a rating candidate in the season backtest."""
+    from prophet_agent.forecast import sports as S
+    ms = [S.Match(f"2025-08-{d:02d}", "A", "B", 3, 0) for d in range(1, 11)]
+    R, seen = S.pi_ratings(ms)
+    assert R["A"][0] > 0 > R["B"][1] and seen[0] == (0.0, 1) and seen[-1][0] > 0

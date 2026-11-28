@@ -2275,3 +2275,10 @@ be measured on each target's own history, and the build is judged on that.
   0.14 to 0.26; the cash-rate reaction function costs the combination 0.5 per cent of WIS there. Candidates are now also
   scored against no change on exactly their own windows, because a model that fails before its drivers exist (gold's
   real-yield model before 2011) looked best on raw WIS from a calmer stretch.
+- **EPL rating candidate (M10-12).** The Club Elo API refused connections from this machine on 2026-11-28, so the rating
+  candidate is pi-ratings (Constantinou and Fenton 2013: home and away ratings in goal-difference units, learning rates 0.035
+  and 0.7), computed from the same football-data.co.uk results, with promoted clubs starting at the relegated clubs' mean and
+  a multinomial logit from the rating gap to win, draw and loss. Nine seasons 2017/18 to 2025/26, final-points MAE after
+  matchdays 8, 12 and 19: pi-ratings 7.87, 6.90, 5.04; goals only 8.45, 7.38, 5.30; goals with earlier seasons and closing
+  prices (the simulate_season default) 7.09, 6.27, 4.64, better than pi-ratings in 8, 9 and 7 of 9 seasons (10.0, 9.2 and
+  7.8 per cent lower MAE). The default stays; pi-ratings are reported beside it in league_backtest.

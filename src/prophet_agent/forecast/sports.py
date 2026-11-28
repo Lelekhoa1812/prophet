@@ -1396,7 +1396,70 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
 # goals of this season only, 10.56 for last season's points and 12.34, 8.98 and 6.11 for the points pace. A live mission runs
 # the same check on the seasons it can fetch, so the numbers it quotes are its own.
 
-SEASON_MODELS = ("pace", "last_season", "goals_only", "goals_history", "history_market")
+SEASON_MODELS = ("pace", "last_season", "goals_only", "goals_history", "history_market", "pi_rating")
+
+PI_LAMBDA, PI_GAMMA, PI_C = 0.035, 0.7, 3.0     # Constantinou and Fenton (2013) learning rates and scale for the EPL
+
+
+def _pi_expected(r: float) -> float:
+    return float(np.sign(r) * (10 ** (abs(r) / PI_C) - 1))
+
+
+def pi_ratings(matches: list[Match], start: dict[str, tuple[float, float]] | None = None,
+               prior: tuple[float, float] = (0.0, 0.0)) -> tuple[dict[str, list[float]], list[tuple[float, int]]]:
+    """Pi-ratings (Constantinou and Fenton, Journal of Quantitative Analysis in Sports 2013): each club has a home and an away
+    rating in goal-difference units on a log scale; after each match the error between the observed and expected goal
+    difference, damped as 3 log10(1 + |e|), moves the home club's home rating and the away club's away rating by PI_LAMBDA of
+    it, and each club's other rating by PI_GAMMA of that move. A club first seen starts at ``prior``. Returns the ratings and,
+    for every match, (expected goal difference before it, outcome 1 home win / 0 draw / -1 away win)."""
+    R: dict[str, list[float]] = {k: list(v) for k, v in (start or {}).items()}
+    seen: list[tuple[float, int]] = []
+    for m in sorted((m for m in matches if m.played), key=lambda m: m.date or ""):
+        rh, ra = R.setdefault(m.home, list(prior)), R.setdefault(m.away, list(prior))
+        exp_gd = _pi_expected(rh[0]) - _pi_expected(ra[1])
+        gd = m.home_goals - m.away_goals
+        seen.append((exp_gd, int(np.sign(gd))))
+        e = abs(gd - exp_gd)
+        psi = PI_C * np.log10(1 + e) * (1 if gd > exp_gd else -1)
+        dh, da = psi * PI_LAMBDA, -psi * PI_LAMBDA
+        rh[0] += dh
+        rh[1] += dh * PI_GAMMA
+        ra[1] += da
+        ra[0] += da * PI_GAMMA
+    return R, seen
+
+
+def pi_expected_points(known: list[Match], later: list[Match], history: list[Match], teams: list[str],
+                       relegated: list[str], points=DEFAULT_POINTS) -> dict[str, float]:
+    """Expected final points from pi-ratings: ratings run over the earlier seasons and the known matches; a club new to the
+    league starts at the mean rating of the clubs relegated the season before; a multinomial logit fitted on every rated
+    match maps the expected goal difference to win, draw and loss chances for each remaining match."""
+    from sklearn.linear_model import LogisticRegression
+    R0, seen0 = pi_ratings(history)
+    rel = [R0[t] for t in relegated if t in R0]
+    prior = tuple(float(np.mean([r[i] for r in rel])) for i in (0, 1)) if rel else (0.0, 0.0)
+    start = {t: R0[t] for t in R0}
+    for t in teams:
+        start.setdefault(t, list(prior))
+    R, seen1 = pi_ratings(known, start, prior)
+    seen = seen0 + seen1
+    if len(seen) < 100 or len({o for _, o in seen}) < 3:
+        raise ValueError("too few rated matches to map ratings to results")
+    clf = LogisticRegression(max_iter=1000).fit(np.array([[g] for g, _ in seen]), np.array([o for _, o in seen]))
+    cls = list(clf.classes_)
+    pts = {t: 0.0 for t in teams}
+    for row in standings(known, points):
+        pts[row["team"]] = float(row["points"])
+    w, d, _l = points
+    for m in later:
+        rh, ra = R.get(m.home, list(prior)), R.get(m.away, list(prior))
+        p = clf.predict_proba([[_pi_expected(rh[0]) - _pi_expected(ra[1])]])[0]
+        ph, pd_, pa = p[cls.index(1)], p[cls.index(0)], p[cls.index(-1)]
+        if m.home in pts:
+            pts[m.home] += w * ph + d * pd_
+        if m.away in pts:
+            pts[m.away] += w * pa + d * pd_
+    return pts
 
 
 def _final_points(matches: list[Match], points=DEFAULT_POINTS) -> dict[str, float]:
@@ -1448,6 +1511,11 @@ def season_backtest(seasons: list[tuple[str, list[Match]]], cuts: tuple[int, ...
                 gp[m.away] += 1
             preds = {"pace": {t: pts.get(t, 0.0) / max(gp[t], 1) * games for t in teams},
                      "last_season": {t: prev_fin.get(t, rel_mean) for t in teams}}
+            relegated = sorted(prev_fin, key=lambda t: prev_fin[t])[:3]
+            try:
+                preds["pi_rating"] = pi_expected_points(known, later, prev, teams, relegated, points)
+            except ValueError:
+                pass
             probs: dict[str, dict] = {}
             for name, kw in (("goals_only", {"history": None, "market_weight": 0.0, "xg_weight": 0.0}),
                              ("goals_history", {"history": prev, "market_weight": 0.0, "xg_weight": 0.0}),
@@ -1487,7 +1555,7 @@ def season_backtest(seasons: list[tuple[str, list[Match]]], cuts: tuple[int, ...
     paired = []
     for k in cuts:
         base = {r["season"]: r["mae"] for r in rows if r["cut"] == k and r["model"] == "history_market"}
-        for other in ("goals_only", "last_season", "pace"):
+        for other in ("goals_only", "last_season", "pace", "pi_rating"):
             alt = {r["season"]: r["mae"] for r in rows if r["cut"] == k and r["model"] == other}
             both = sorted(set(base) & set(alt))
             if both:
@@ -1498,6 +1566,6 @@ def season_backtest(seasons: list[tuple[str, list[Match]]], cuts: tuple[int, ...
     return {"summary": summary, "paired": paired, "rows": rows, "cuts": list(cuts),
             "seasons_scored": sorted({r["season"] for r in rows}), "figure_label": "measured on past seasons",
             "method": ("each past season cut after the given matchdays; later matches' scores, prices and xG removed; final "
-                       "points forecast by pace, last season, and the rating model on goals, with earlier seasons, and with "
-                       "closing prices too; scored by final-points MAE and RMSE and by Brier scores of title, top four and "
+                       "points forecast by pace, last season, the rating model on goals, with earlier seasons, and with "
+                       "closing prices too, and pi-ratings (Constantinou and Fenton 2013) with a logit from rating gap to result; scored by final-points MAE and RMSE and by Brier scores of title, top four and "
                        "relegation")}
