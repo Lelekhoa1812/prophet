@@ -114,3 +114,27 @@ def test_a_daily_grid_over_a_trading_series_names_the_fix(tmp_path):
     with pytest.raises(ValueError, match="without freq"):
         pl.save_series(s, str(tmp_path / "s.json"))
     pl.save_series(pl.build_series(df, value="v", time="d"), str(tmp_path / "s.json"))
+
+
+def test_save_series_dates_an_array_with_dates(tmp_path):
+    """Round 20261128-201606 (GOLD): an array saved without dates stopped the driver scan."""
+    import json
+    import pytest
+    from prophet_agent.sandbox import prophet_lib as pl
+    path = str(tmp_path / "g.json")
+    pl.save_series([4105.0, 4200.0, 4150.0], path, name="gold", dates=["2026-08-01", "2026-09-01", "2026-10-01"])
+    doc = json.load(open(path))
+    assert doc["dates"] and "2026-10-01" in json.dumps(doc["dates"])
+    with pytest.raises(ValueError, match="one date per value"):
+        pl.save_series([1.0, 2.0], path, dates=["2026-01-01"])
+
+
+def test_build_series_reads_a_series_file_dict():
+    """Round 20261128-201606 (VNUNEMP): build_series(json.load(f), value='series', time='dates') stalled the mission."""
+    import pytest
+    from prophet_agent.sandbox import prophet_lib as pl
+    doc = {"series": [2.34, 2.85, 2.73], "dates": ["2020-01-01", "2020-04-01", "2020-07-01"], "name": "u"}
+    s = pl.build_series(doc, value="series", time="dates")
+    assert list(s.round(2)) == [2.34, 2.85, 2.73] and str(s.index[-1].date()) == "2020-07-01"
+    with pytest.raises(ValueError, match="lists of the same length"):
+        pl.build_series({"series": [1, 2], "dates": ["2020-01-01"]}, value="series", time="dates")

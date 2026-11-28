@@ -1154,6 +1154,17 @@ def build_series(df: pd.DataFrame, value: str, time: str | None = None, *, freq:
     observed day. Sub-daily rows that share a timestamp are refused unless ``agg`` is named.
     """
     agg_given = agg is not None
+    if isinstance(df, dict):
+        # Round 20261128-201606 (VNUNEMP): build_series(json.load(f), value='series', time='dates') failed deep inside with
+        # "'list' object has no attribute 'astype'" and the mission stalled on it. A mapping of equal-length columns (a
+        # series file's series and dates lists) is read as a frame.
+        cols = {k: v for k, v in df.items() if k in (value, time, entity) and k is not None}
+        lens = {k: len(v) for k, v in cols.items() if isinstance(v, (list, tuple, np.ndarray, pd.Series))}
+        if value not in lens or (time is not None and time not in lens) or len(set(lens.values())) != 1:
+            raise ValueError(f"build_series takes a DataFrame, or a dict whose {value!r}"
+                             + (f" and {time!r}" if time else "") + " entries are lists of the same length; for a saved "
+                             "series file use pl.load_series(path)")
+        df = pd.DataFrame({k: list(v) for k, v in cols.items()})
     df, agg = _panel_guard(df, time, value, agg, entity, key)
     num, _ = to_number(df[value])
     if sentinel:
@@ -1277,7 +1288,7 @@ def _dated_index(s: pd.Series) -> pd.Series:
 
 def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None,
                 covariates: dict[str, Any] | None = None, name: str | None = None,
-                provenance: dict[str, Any] | None = None) -> str:
+                provenance: dict[str, Any] | None = None, dates: Any = None) -> str:
     """Write series for the forecast tools: a list, a Series (its dates are kept for charts) or a dict of named ones.
 
     ``name`` labels one series (a list or a Series); load_series returns it with that name. It cannot be combined with a
@@ -1295,6 +1306,16 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     """
     if name is not None and isinstance(series, dict):
         raise ValueError("name= labels one series; for a dict of series, the dict keys are the names")
+    if dates is not None:
+        # Round 20261128-201606 (GOLD): the planner saved df["gold_price"].values (802 numbers, no dates); the driver scan
+        # was refused and no forecast followed. ``dates`` dates a list or an array, one date per value.
+        if isinstance(series, dict):
+            raise ValueError("dates= dates one list or array; for a dict, save pandas Series indexed by their dates")
+        vals = list(series.values) if isinstance(series, pd.Series) else list(np.asarray(series, dtype=float).reshape(-1))
+        idx = pd.to_datetime(list(dates))
+        if len(idx) != len(vals):
+            raise ValueError(f"dates= has {len(idx)} dates for {len(vals)} values; give one date per value")
+        series = pd.Series(vals, index=idx, dtype=float)
     items = series if isinstance(series, dict) else {(str(name) if name is not None else "series"): series}
     # Round 20261128-151151 (AUUNEMP): a Series indexed by date strings ("2026-10", "2026M10") and an array of values were
     # both saved with an empty dates list, so driver_scan could not align drivers; the cell said nothing. A string index
@@ -1304,7 +1325,8 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     if undated:
         print(f"note: {', '.join(map(str, undated[:5]))} saved without dates. driver_scan, the horizon and freshness checks "
               "and the charts need them: save a pandas Series indexed by its dates, "
-              "pl.save_series(pd.Series(values, index=pd.to_datetime(dates)), ...)")
+              "pl.save_series(pd.Series(values, index=pd.to_datetime(dates)), ...) or pl.save_series(values, dates=dates, ...); "
+              "driver_scan and risk_regime refuse an undated series")
     out: dict[str, Any] = {"series": {}, "dates": {}}
     if covariates:
         clean: dict[str, list[float]] = {}

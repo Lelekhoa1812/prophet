@@ -327,7 +327,8 @@ def _tool_lines(tools: dict[str, Tool]) -> str:
     return "\n".join(f"- {name}: {tools[name].doc}" if tools[name].doc else f"- {name}" for name in sorted(tools))
 
 
-# Tools whose later successful call replaces an earlier one with the same key (the tool, and for forecast_report its centre).
+# Tools whose later successful call replaces an earlier one with the same key (the tool, the horizon, and for
+# forecast_report its centre).
 # Audit of round 20261128-173823: the finish evaluator judged AUUNEMP five times on a 24-step forecast_report the lead had
 # already re-run at 25 steps (eval:d0:22-26), AURATE on a superseded scenario run, and SPX read one run's figures as
 # another's. Each older result now says which step replaced it, and only its head is shown.
@@ -339,7 +340,10 @@ def _supersede_key(obs: dict) -> tuple | None:
     if obs.get("kind") != "tool" or obs.get("tool") not in SUPERSEDED_TOOLS or "error" in obs or "result" not in obs:
         return None
     args = obs.get("args") if isinstance(obs.get("args"), dict) else {}
-    return (obs["tool"], str(args.get("centre") or "") if obs["tool"] == "forecast_report" else "")
+    # The horizon is part of the key: round 20261128-201606 (AUUNEMP) re-ran a 24-step combination after the 25-step one
+    # the answer quoted, and hiding the 25-step run left its figures unverified. A re-run on the same horizon (a longer
+    # series, new settings) replaces the earlier one.
+    return (obs["tool"], str(args.get("centre") or "") if obs["tool"] == "forecast_report" else "", str(args.get("horizon")))
 
 
 def superseded_by(history: list[dict], start: int = 1) -> dict[int, int]:
@@ -1096,9 +1100,15 @@ def _horizon_backtest_step(history: list[dict], tools: dict[str, Tool]) -> dict 
     if "backtest_series" not in tools:
         return None
     flat = [h for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"]
-    fc = next((h for h in reversed(flat) if h.get("tool") in FORECAST_TOOLS and not h.get("error")
-               and isinstance(h.get("args"), dict) and isinstance((h["args"].get("source") or None), dict)
-               and isinstance(h["args"].get("horizon"), int) and not isinstance(h["args"].get("horizon"), bool)), None)
+    def usable(h: dict, tools_: tuple) -> bool:
+        return (h.get("tool") in tools_ and not h.get("error") and isinstance(h.get("args"), dict)
+                and isinstance((h["args"].get("source") or None), dict)
+                and isinstance(h["args"].get("horizon"), int) and not isinstance(h["args"].get("horizon"), bool))
+    fc = next((h for h in reversed(flat) if usable(h, FORECAST_TOOLS)), None)
+    # Round 20261128-201606 (GOLD): the lead backtested the saved series (backtest_series, horizon 12), its driver scan was
+    # refused, and it stalled on sandbox errors before any forecast; the mission ended with no forecast at all. A finished
+    # backtest of a saved series names the source and horizon as well as a forecast does.
+    fc = fc or next((h for h in reversed(flat) if usable(h, ("backtest_series",))), None)
     if fc is None:
         return None
     a = fc["args"]
@@ -1129,9 +1139,15 @@ def _combination_step(goal: str, history: list[dict], tools: dict[str, Tool]) ->
     if dfam.detect(goal or "") not in prediction_quality.DRIVEN_DOMAINS:
         return None
     flat = [h for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"]
-    fc = next((h for h in reversed(flat) if h.get("tool") in FORECAST_TOOLS and not h.get("error")
-               and isinstance(h.get("args"), dict) and isinstance((h["args"].get("source") or None), dict)
-               and isinstance(h["args"].get("horizon"), int) and not isinstance(h["args"].get("horizon"), bool)), None)
+    def usable(h: dict, tools_: tuple) -> bool:
+        return (h.get("tool") in tools_ and not h.get("error") and isinstance(h.get("args"), dict)
+                and isinstance((h["args"].get("source") or None), dict)
+                and isinstance(h["args"].get("horizon"), int) and not isinstance(h["args"].get("horizon"), bool))
+    fc = next((h for h in reversed(flat) if usable(h, FORECAST_TOOLS)), None)
+    # Round 20261128-201606 (GOLD): the lead backtested the saved series (backtest_series, horizon 12), its driver scan was
+    # refused, and it stalled on sandbox errors before any forecast; the mission ended with no forecast at all. A finished
+    # backtest of a saved series names the source and horizon as well as a forecast does.
+    fc = fc or next((h for h in reversed(flat) if usable(h, ("backtest_series",))), None)
     if fc is None:
         return None
     a = fc["args"]

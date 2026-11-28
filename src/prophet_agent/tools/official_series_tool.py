@@ -10,6 +10,8 @@ driver tools read it as source = {run_id, file, name}. Figures are as published;
 """
 from __future__ import annotations
 
+import time
+
 import json
 from collections.abc import Callable
 from typing import Any
@@ -29,7 +31,7 @@ import prophet_lib as pl
 
 doc = json.load(open("in/official.json", encoding="utf-8"))
 s = pd.Series(doc["values"], index=pd.to_datetime(doc["dates"]))
-pl.save_series({{doc["name"]: s}}, "{out}")
+pl.save_series({{doc["name"]: s}}, "{out}", provenance=doc.get("provenance"))
 print(json.dumps({{"points": len(s), "from": str(s.index[0].date()), "to": str(s.index[-1].date())}}))
 '''
 
@@ -38,8 +40,8 @@ def _fetch(url: str) -> bytes:
     return market._get(url, timeout_s=45.0, resolver=None)[0]
 
 
-def _save(name: str, dates: list[str], values: list[float]) -> dict:
-    doc = {"name": name, "dates": dates, "values": values}
+def _save(name: str, dates: list[str], values: list[float], provenance: dict | None = None) -> dict:
+    doc = {"name": name, "dates": dates, "values": values, **({"provenance": provenance} if provenance else {})}
     res = run_python(SAVE_CODE.format(out=OUT), timeout_s=60, mem_mb=1024,
                      files={"in/official.json": json.dumps(doc).encode("utf-8")})
     if not res.ok:
@@ -55,9 +57,29 @@ def _run(args: dict, _key: str, get: Callable[[str], bytes] | None = None,
     name = args.get("series")
     if name not in SERIES:
         raise ValueError(f"series must be one of {sorted(SERIES)}")
-    built = vn_labour.quarterly_unemployment(get or _fetch)
+    fetch = get or _fetch
+
+    def recorded(url: str) -> bytes:
+        # Round 20261128-201606 (VNUNEMP): the series saved here carried no provenance, so every series the lead derived from
+        # it was refused by backtest_series four times ("a source needs id"). Each page read gets a fetch record, and the
+        # saved file names the releases its values came from.
+        body = fetch(url)
+        try:
+            from prophet_agent.opendata.fetch import record_download
+            record_download(url, url, body, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        except Exception:      # noqa: BLE001 - a record that cannot be written never fails the read
+            pass
+        return body
+    built = vn_labour.quarterly_unemployment(recorded)
     rows = built["series"]
-    source = (save or _save)(name, [r["date"] for r in rows], [r["value"] for r in rows])
+    urls = list(dict.fromkeys(str(r["source"]) for r in reversed(rows) if str(r.get("source", "")).startswith("http")))[:6]
+    prov = ({"origin": "retrieved", "source_name": built["source_label"],
+             "sources": [{"id": f"S{i}", "url": u} for i, u in enumerate(urls, start=1)]} if urls else None)
+    saver = save or _save
+    try:
+        source = saver(name, [r["date"] for r in rows], [r["value"] for r in rows], prov)
+    except TypeError:          # a test double that takes no provenance
+        source = saver(name, [r["date"] for r in rows], [r["value"] for r in rows])
     return {"series": name, "label": SERIES[name], "source": source, "grain": "quarterly", "first": built["first"],
             "last": built["last"], "points": built["points"], "gaps": built["gaps"], "values": rows,
             "releases": built["releases"], "failures": built["failures"], "measure": built["measure"],

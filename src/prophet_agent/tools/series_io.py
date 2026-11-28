@@ -202,6 +202,9 @@ def traced_provenance(raw: Any, rel: str, run_id: str) -> dict | None:
     try:
         return check_provenance(raw, rel)
     except ValueError as exc:
+        inherited = carried_provenance(run_id)
+        if inherited is not None:
+            return inherited
         urls = input_source_urls(run_id)
         origin = raw.get("origin") if isinstance(raw, dict) else None
         claimed = isinstance(origin, str) and (origin == "retrieved" or origin.strip().lower() in RETRIEVED_SYNONYMS)
@@ -215,6 +218,34 @@ def traced_provenance(raw: Any, rel: str, run_id: str) -> dict | None:
         sources = [{"id": f"S{i}", "url": url} for i, url in enumerate(sorted(set(urls.values()))[:6], start=1)]
         return {"origin": "retrieved", "source_name": (name or urlsplit(sources[0]["url"]).hostname or "download").strip(),
                 "sources": sources, "traced": True}
+
+
+def carried_provenance(run_id: str) -> dict | None:
+    """The provenance of a series file this run read from its carried inputs, when that provenance passes the check.
+
+    Round 20261128-201606 (VNUNEMP): the lead loaded the official series (saved with its releases as sources), re-saved it
+    with a dated index and a made-up source id, and backtest_series refused the new file four times. A series built from a
+    carried series file with a checked source keeps that source."""
+    if not RUN_ID.match(run_id or ""):
+        return None
+    carried = SANDBOX_ROOT / run_id / "in" / "carried"
+    if not carried.is_dir():
+        return None
+    for f in sorted(carried.rglob("*.json"))[:40]:
+        try:
+            doc = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        prov = doc.get("provenance") if isinstance(doc, dict) and "series" in doc else None
+        if not isinstance(prov, dict) or prov.get("origin") != "retrieved":
+            continue
+        try:
+            ok = check_provenance(prov, f.name)
+        except ValueError:
+            continue
+        if ok:
+            return {**ok, "inherited_from": f.name}
+    return None
 
 
 def series_provenance(args: dict) -> dict | None:

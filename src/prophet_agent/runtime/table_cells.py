@@ -33,6 +33,7 @@ GROUPS: dict[str, set[str]] = {
     "goal_diff": {"gd", "goal difference", "goal_difference", "goal diff", "diff", "+/-", "gd."},
     "position": {"pos", "position", "rank", "#", "place", "pos."},
 }
+_PROJECTED = re.compile(r"expected|median|projected|predicted|forecast|final|p10|p90|10-90|probab|title|relegation", re.I)
 _BY_LABEL = {label: group for group, labels in GROUPS.items() for label in labels}
 _NAME_FIELDS = {"team", "club", "name", "entity", "country", "region", "series", "squad", "home", "player"}
 
@@ -99,8 +100,13 @@ def answer_cells(answer: str) -> list[dict]:
         at = next((j for j, c in enumerate(cells) if _value(c) is None and re.search(r"[A-Za-z]{2}", c)), None)
         if at is None:
             continue
+        # A rank in a table of projections ranks the projection (round 20261128-201606, EPL: "Pos" by expected points was
+        # compared with today's standings and every row but the leader's failed). It is not a printed figure to check.
+        projected = any(_PROJECTED.search(h) for h in header)
         for j, c in enumerate(cells):
             if j == at or (v := _value(c)) is None:
+                continue
+            if projected and group_of(header[j]) == "position":
                 continue
             out.append({"entity": cells[at].strip("* "), "key": _key(cells[at]), "label": header[j], "group": group_of(header[j]),
                         "stated": c.strip().strip("*"), "value": v[0], "decimals": v[1]})
@@ -197,6 +203,13 @@ def evidence_cells(history: list, keys: set[str]) -> dict[tuple[str, str], list[
                     for k, v in x.items():
                         if isinstance(v, (int, float)) and not isinstance(v, bool):
                             found.setdefault((ent, group_of(k)), []).append(float(v))
+                # {"drift": {"mase": 0.8141, ...}}: the entity is the key (backtest_series "models"). Round 20261128-201606
+                # (AUUNEMP): the answer quoted those MASE figures and was judged against another backtest's only.
+                for k, v in x.items():
+                    if isinstance(v, dict) and isinstance(k, str) and _key(k) in plain:
+                        for f, n in v.items():
+                            if isinstance(n, (int, float)) and not isinstance(n, bool):
+                                found.setdefault((_key(k), group_of(f)), []).append(float(n))
                 cols = x.get("columns")
                 rows = x.get("rows") or x.get("preview") or x.get("sample")
                 if isinstance(cols, list) and isinstance(rows, list):
@@ -233,6 +246,9 @@ def mismatches(answer: str, history: list) -> list[dict]:
             continue
         tol = 0.5 * 10 ** (-c["decimals"]) + 1e-9
         if any(abs(p - c["value"]) <= tol for p in printed):
+            continue
+        # "74.2%" for a printed share 0.7415 (round 20261128-201606, EPL: every probability cell of a correct table failed).
+        if str(c["stated"]).rstrip().endswith("%") and any(abs(100 * p - c["value"]) <= tol for p in printed):
             continue
         shown = sorted({round(p, 4) for p in printed})[:4]
         out.append({**c, "printed": shown})

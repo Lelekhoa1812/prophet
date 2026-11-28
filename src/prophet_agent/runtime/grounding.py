@@ -949,10 +949,19 @@ _TOTAL_LABEL = re.compile(r"\b(?:ages?\s*\d+\s*\+?(?:\s*(?:and over|years))?|bot
                           r"|\btotal\s+(?:unemployment|employment|participation|inflation|labou?r force)?\s*rates?\b", re.I)
 
 
+# A source quoted in quotation marks is not the answer's claim. Round 20261128-201606 (AURATE): the quoted ABS headline
+# "Total dwelling approvals rise 5.1% in September" was read as a total of the cash rate and blocked the answer.
+_QUOTED = re.compile(r'"[^"\n]{3,400}"|\u201c[^\u201d\n]{3,400}\u201d')
+
+
 def claimed_totals(answer: str) -> list[str]:
-    """Sentences that state a total with a figure and do not explain why a total is withheld."""
-    return [u for u in sentences(answer)
-            if _TOTAL_WORD.search(_TOTAL_LABEL.sub(" ", u)) and figures(u) and not _WITHHELD_WORD.search(u)]
+    """Sentences that state a total with a figure and do not explain why a total is withheld (quoted sources aside)."""
+    out = []
+    for u in sentences(answer):
+        own = _QUOTED.sub(" ", u)
+        if _TOTAL_WORD.search(_TOTAL_LABEL.sub(" ", own)) and figures(own) and not _WITHHELD_WORD.search(u):
+            out.append(u)
+    return out
 
 
 def explains_withheld(answer: str) -> bool:
@@ -1074,7 +1083,7 @@ def _scalars_in(obj, out: list[float]) -> None:
 # bag-of-numbers check. Printed lines and keyed lists add to an entity's records but never make one on their own.
 _NAME_FIELDS = frozenset({"team", "name", "entity", "club", "country", "region", "ticker", "symbol", "player", "series",
                           "home", "away", "company", "state", "city", "station", "site"})
-_PATH_HEADER = re.compile(r"\b(?:after|game|games|round|rounds|week|weeks|matchday|gw|path|step|month)\b", re.I)
+_PATH_HEADER = re.compile(r"\b(?:after|game|games|round|rounds|week|weeks|matchday|md|gw|path|step|month)\b", re.I)
 
 
 def _norm_name(text: str) -> str:

@@ -13,15 +13,16 @@ def _fr(h, centre, values, gains=None):
 
 
 def test_a_rerun_supersedes_the_earlier_call_with_the_same_centre_only():
-    hist = [_fr(24, "combination", [4.31, 4.4]), _fr(12, "drift", [7143.0]), _fr(25, "combination", [4.52, 4.6])]
-    assert goal.superseded_by(hist, start=1) == {1: 3}
+    hist = [_fr(25, "combination", [4.31, 4.4]), _fr(12, "drift", [7143.0]), _fr(25, "combination", [4.52, 4.6]),
+            _fr(24, "combination", [4.1])]
+    assert goal.superseded_by(hist, start=1) == {1: 3}           # another horizon is another forecast (round 201606)
     text = goal._evidence_lines(hist)
     assert "1. [SUPERSEDED by step 3" in text and "2. [SUPERSEDED" not in text
     assert "4.52" in text
 
 
 def test_a_figure_only_in_a_superseded_run_is_unverified():
-    hist = [_fr(24, "combination", [4.31]), _fr(25, "combination", [4.52])]
+    hist = [_fr(25, "combination", [4.31]), _fr(25, "combination", [4.52])]
     assert grounding.unverified("The rate ends at 4.52%.", hist, "g") == []
     assert grounding.unverified("The rate ends at 4.31%.", hist, "g") == ["4.31%"]
 
@@ -71,3 +72,58 @@ def test_every_team_of_the_simulation_is_appended_in_order():
     assert league_table.table_markdown([{"kind": "tool", "tool": "simulate_season", "full": {"teams": teams[:2]}}]) == ""
     msgs = goal._compose_messages("g", hist, goal.Memo(), "", "draft")
     assert "appended after your answer by code" in msgs[1]["content"]
+
+
+def test_a_table_cell_matches_a_backtest_keyed_by_model_name():
+    """Round 20261128-201606 (AUUNEMP): TimesFM 0.879 and drift 0.814 came from backtest_series, keyed by model name."""
+    from prophet_agent.runtime import table_cells
+    hist = [{"kind": "tool", "tool": "backtest_series", "result": {"models": {"timesfm": {"mase": 0.8792},
+                                                                           "drift": {"mase": 0.8141}}}},
+            {"kind": "tool", "tool": "forecast_report", "result": {"combination": {"candidates": [
+                {"name": "timesfm", "mase": 4.4171}, {"name": "drift", "mase": 5.3959}]}}}]
+    answer = "| Model | MASE |\n|---|---|\n| TimesFM | 0.879 |\n| Drift | 0.814 |\n"
+    assert table_cells.mismatches(answer, hist) == []
+    assert table_cells.mismatches(answer.replace("0.814", "0.700"), hist)[0]["stated"] == "0.700"
+
+
+
+def test_a_backtest_of_a_saved_series_starts_the_combination_when_no_forecast_exists():
+    """Round 20261128-201606 (GOLD): a backtest, a refused driver scan, a stall, and no forecast at all."""
+    tools = {"forecast_report": object()}
+    g = "Find the gold price (US dollars per troy ounce) and forecast it month by month over the next year with a range"
+    src = {"run_id": "b36c", "file": "out/series.json"}
+    hist = [{"kind": "tool", "tool": "backtest_series", "args": {"source": src, "horizon": 12, "price": True},
+             "result": {"best_baseline": "drift"}}]
+    step = goal._combination_step(g, hist, tools)
+    assert step["args"]["source"] == src and step["args"]["horizon"] == 12 and step["args"]["centre"] == "combination"
+    failed = [{**hist[0], "error": "boom"}]
+    failed[0].pop("result")
+    assert goal._combination_step(g, failed, tools) is None
+
+
+def test_a_series_built_from_a_carried_official_series_keeps_its_source(tmp_path, monkeypatch):
+    """Round 20261128-201606 (VNUNEMP): backtest_series refused the derived series four times ("a source needs id")."""
+    import json
+    from prophet_agent.tools import series_io
+    monkeypatch.setattr(series_io, "SANDBOX_ROOT", tmp_path)
+    monkeypatch.setattr(series_io, "_fetch_record_exists", lambda url: url.startswith("https://www.nso.gov.vn/"))
+    rid = "a" * 32
+    carried = tmp_path / rid / "in" / "carried"
+    carried.mkdir(parents=True)
+    good = {"origin": "retrieved", "source_name": "Vietnam statistics office",
+            "sources": [{"id": "S1", "url": "https://www.nso.gov.vn/release-q3-2026/"}]}
+    (carried / "series_official.json").write_text(json.dumps({"series": {"u": [2.2]}, "provenance": good}))
+    made_up = {"origin": "retrieved", "source_name": "GSO", "sources": [{"id": "official_series", "url": "https://gso.gov.vn"}]}
+    got = series_io.traced_provenance(made_up, "out/series.json", rid)
+    assert got["sources"][0]["url"].startswith("https://www.nso.gov.vn/") and got["inherited_from"] == "series_official.json"
+    (carried / "series_official.json").write_text(json.dumps({"series": {"u": [2.2]}, "provenance": made_up}))
+    import pytest
+    with pytest.raises(ValueError, match="needs id"):
+        series_io.traced_provenance(made_up, "out/series.json", rid)
+
+
+def test_a_quoted_source_headline_is_not_a_claimed_total():
+    """Round 20261128-201606 (AURATE): a quoted ABS headline blocked a cash-rate answer as a stated total."""
+    quoted = '- **ABS (abs.gov.au, 3 Nov 2026):** "Total dwelling approvals rise 5.1% in September" - housing is picking up.'
+    assert grounding.claimed_totals(quoted) == []
+    assert grounding.claimed_totals("The total over the horizon is 52.3 percentage points.")
