@@ -1094,12 +1094,21 @@ def _combination_step(goal: str, history: list[dict], tools: dict[str, Tool]) ->
     if fc is None:
         return None
     a = fc["args"]
+    source = a["source"]
+    # An adopted driver reaches the forecast (M10-5): the driver scan saved the target with its adopted drivers, and the
+    # combination on that file adds TimesFM with them as a candidate.
+    for h in reversed(flat):
+        res = contracts._ok_result(h, "driver_scan")
+        use = res.get("use") if isinstance(res, dict) else None
+        if isinstance(use, dict) and isinstance(use.get("source"), dict) and use.get("points", 0) >= 60:
+            source = {k: use["source"][k] for k in ("run_id", "file", "name") if k in use["source"]}
+            break
     for h in flat:
         b = h.get("args") if isinstance(h.get("args"), dict) else {}
-        if (h.get("tool") == "forecast_report" and b.get("centre") == "combination" and b.get("source") == a["source"]
+        if (h.get("tool") == "forecast_report" and b.get("centre") == "combination" and b.get("source") in (source, a["source"])
                 and b.get("horizon") == a["horizon"]):
             return None
-    args = {"source": a["source"], "horizon": a["horizon"], "centre": "combination", "goal": goal,
+    args = {"source": source, "horizon": a["horizon"], "centre": "combination", "goal": goal,
             "title": str(a.get("title") or "Forecast")[:80]}
     return {"action": "call_tool", "tool": "forecast_report", "auto": "combination", "args": args,
             "rationale": "the harness scores every candidate (TimesFM, the rules, the market and structural models) on the "

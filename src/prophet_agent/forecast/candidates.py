@@ -226,6 +226,20 @@ def timesfm_candidate(y: np.ndarray, engine: Any) -> Candidate:
     return Candidate("timesfm", "model", predict, "TimesFM 3 on the target's own history", prepare=prepare)
 
 
+def driver_candidate(y: np.ndarray, drivers: dict[str, np.ndarray], engine: Any) -> Candidate:
+    """TimesFM with the adopted outside drivers as past covariates (known only up to each origin), so an adopted driver
+    reaches the forecast and competes in the combination (Mission 10, M10-5)."""
+    from prophet_agent.forecast.control import Control
+
+    def predict(t: int, h: int) -> np.ndarray:
+        if t < 24:
+            raise ValueError("too short for covariates")
+        c = Control(past={k: np.asarray(v[:t], dtype=float) for k, v in drivers.items()})
+        return np.asarray(engine.forecast_controlled(y[:t], h, c).q, dtype=float)
+    return Candidate("timesfm_drivers", "driver", predict,
+                     "TimesFM 3 with the adopted drivers as past covariates: " + ", ".join(sorted(drivers)))
+
+
 # ---------------------------------------------------------------- domain candidates
 
 def carry_candidate(y: np.ndarray, cut: list[dt.date], years: float, iv: Dated, rate: Dated, label: str) -> Candidate:
@@ -379,14 +393,24 @@ MEAN_REVERTING = ("labour_market", "policy_rate")
 
 
 def build(values: Any, dates: list[str], *, domain: str, place: str | None, target: str = "", engine: Any = None,
-          fetch: Fetch | None = None, season: int | None = None) -> tuple[list[Candidate], list[str], bool]:
+          fetch: Fetch | None = None, season: int | None = None,
+          drivers: dict[str, Any] | None = None) -> tuple[list[Candidate], list[str], bool]:
     """The candidates for one target, the notes on any that could not be built, and whether scoring is relative."""
     y = np.asarray(values, dtype=float)
     log = domain in LEVEL_LOG_DOMAINS and bool((y > 0).all())
-    cands = rule_candidates(y, log=log, season=season, mean_reverting=domain in MEAN_REVERTING)
     notes: list[str] = []
+    cands = rule_candidates(y, log=log, season=season, mean_reverting=domain in MEAN_REVERTING)
     if engine is not None:
         cands.append(timesfm_candidate(y, engine))
+        usable = {}
+        for k, v in (drivers or {}).items():
+            arr = np.asarray(v, dtype=float) if isinstance(v, (list, tuple, np.ndarray)) else None
+            if arr is not None and arr.shape == y.shape and np.isfinite(arr).all():
+                usable[str(k)] = arr
+            else:
+                notes.append(f"driver {k} does not cover every value of the series, so it was left out")
+        if usable:
+            cands.append(driver_candidate(y, usable, engine))
     if fetch is None or not dates or len(dates) != len(y):
         if fetch is not None:
             notes.append("the series has no dates, so no outside candidate could be aligned to it")

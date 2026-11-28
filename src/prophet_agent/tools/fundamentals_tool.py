@@ -209,6 +209,33 @@ def _pack_input(run_id: Any) -> dict:
     return d
 
 
+def _member_paths(scenarios: Any, run_id: Any, d: dict) -> Any:
+    """Scenarios that name a candidate of the combination (path_of) get that candidate's median path as their shift from
+    the delivered median (Mission 10, M10-6: shifts traced to a model output, not set by hand)."""
+    if not isinstance(scenarios, list) or not any(isinstance(s, dict) and s.get("path_of") for s in scenarios):
+        return scenarios
+    path = SANDBOX_ROOT / str(run_id) / "data" / "members.json"
+    members = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    out = []
+    for s in scenarios:
+        if not (isinstance(s, dict) and s.get("path_of")):
+            out.append(s)
+            continue
+        name = str(s["path_of"])
+        if name not in members:
+            raise ValueError(f"path_of {name!r} is not a candidate of this pack's combination; candidates: "
+                             f"{sorted(members) or 'none (the pack is not a combination)'}")
+        m = members[name]
+        if len(m) != len(d["point"]):
+            raise ValueError(f"candidate {name!r} has {len(m)} steps and the pack {len(d['point'])}")
+        t = {k: v for k, v in s.items() if k != "path_of"}
+        t["shift_path"] = [float(a) - float(b) for a, b in zip(m, d["point"])]
+        t.setdefault("why", f"the path of the {name} candidate in the combination")
+        t.setdefault("evidence", f"forecast_report pack {run_id}, candidate {name}")
+        out.append(t)
+    return out
+
+
 def _scenario_forecast(args: dict, _key: str) -> dict[str, Any]:
     from prophet_agent.artifacts.fundamentals import build_scenario_chart
     from prophet_agent.forecast import scenarios as sc
@@ -218,7 +245,7 @@ def _scenario_forecast(args: dict, _key: str) -> dict[str, Any]:
     d = _pack_input(args.get("pack"))
     h = len(d["point"])
     dates = d.get("future_dates") if isinstance(d.get("future_dates"), list) and len(d["future_dates"]) == h else None
-    scen = sc.validate(args.get("scenarios"), h, dates)
+    scen = sc.validate(_member_paths(args.get("scenarios"), args.get("pack"), d), h, dates)
     knots = {0.1: d["q10"], 0.5: d["point"], 0.9: d["q90"]}
     if isinstance(d.get("q30"), list) and len(d["q30"]) == h and isinstance(d.get("q70"), list) and len(d["q70"]) == h:
         knots.update({0.3: d["q30"], 0.7: d["q70"]})
@@ -317,7 +344,9 @@ SCENARIO_FORECAST_SPEC = {
     "args": {
         "pack": "run_id of the forecast_report pack to build on (one series)",
         "scenarios": "list of 1 to 6 {name, probability (0 to 1; together at most 1), shift (in the series' units, "
-                     "for example 0.25) or shift_pct (per cent of the base median, for example -8), start (step or date, "
+                     "for example 0.25) or shift_pct (per cent of the base median, for example -8) or path_of (the name of "
+                     "a candidate of the pack's combination, for example 'market_path' or 'vacancy_model': the scenario "
+                     "follows that candidate's median path), start (step or date, "
                      "default 1), ramp (steps to reach the full shift, default 1), end (optional step after which it "
                      "fades), shift_sd (uncertainty of the shift as a share of it, default 0.3), band_scale (0.5 to 3, "
                      "default 1), why (one line), evidence (URL or run id behind it), probability_source ('market' when the probability is read from market pricing such as a rate tracker, futures or outright odds, with that URL as evidence; 'judgement' when no market prices it)}",

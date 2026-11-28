@@ -144,3 +144,35 @@ def test_harness_draws_the_combination_once_per_source_and_horizon():
     done = hist + [{"kind": "tool", "tool": "forecast_report", "args": step["args"]}]
     assert goal._combination_step(g, done, tools) is None
     assert goal._combination_step("Predict the final Premier League table", hist, tools) is None
+
+
+def test_adopted_drivers_become_a_candidate_and_never_see_the_future():
+    seen = []
+
+    class Controlled(_Engine):
+        def forecast_controlled(self, series, h, control):
+            seen.append({k: len(v) for k, v in control.past.items()} | {"n": len(series)})
+            f = self.forecast_batch([series], h)
+            return Forecast(f.point[0], f.q[0])
+
+    y = np.linspace(1, 2, 120)
+    cands, notes, _ = cd.build(y, [], domain="equity_index", place=None, engine=Controlled(),
+                               drivers={"T10Y2Y": list(np.linspace(0, 1, 120)), "short": [1.0, 2.0]})
+    drv = next(c for c in cands if c.name == "timesfm_drivers")
+    assert drv.kind == "driver" and "T10Y2Y" in drv.note
+    assert any("short" in n for n in notes)
+    assert drv.predict(80, 6).shape == (6, 9)
+    assert seen[-1] == {"T10Y2Y": 80, "n": 80}
+
+
+def test_harness_runs_the_combination_on_the_driver_scan_file():
+    tools = {"forecast_report": object()}
+    g = "Find the S&P 500 index and forecast it month by month over the next 2 years"
+    src = {"run_id": "r1", "file": "out/series.json"}
+    adopted = {"run_id": "r9", "file": "out/series_drivers.json", "name": "spx"}
+    hist = [{"kind": "tool", "tool": "driver_scan", "result": {"use": {"source": adopted, "points": 300}}},
+            {"kind": "tool", "tool": "forecast_report", "args": {"source": src, "horizon": 24}}]
+    step = goal._combination_step(g, hist, tools)
+    assert step["args"]["source"] == adopted
+    done = hist + [{"kind": "tool", "tool": "forecast_report", "args": step["args"]}]
+    assert goal._combination_step(g, done, tools) is None

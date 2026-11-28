@@ -967,6 +967,70 @@ def check_data_fresh(answer: str, history: Any, today: str | None = None) -> dic
                   "periods already past (not a forecast), and use the forecast record's own dates for every row")
 
 
+def _alias(name: str) -> re.Pattern:
+    words = [w for w in re.split(r"[_\s]+", name.lower()) if w]
+    return re.compile(r"\b" + r"[\s_-]*".join(re.escape(w) for w in words) + r"\b", re.I)
+
+
+def check_combination_stated(answer: str, history: Any) -> dict | None:
+    """When the pack draws the backtest-weighted combination, the answer says so and gives the leading weights.
+
+    Motivation (Mission 10, owner decision 2026-11-28, "earn it on backtest"): a combined centre whose weights stay inside
+    the tool reads like any other line; the reader must see which models carry it. Logic: with a successful forecast_report
+    whose centre is the combination, the answer must name the candidate with the largest weight and state its weight (as a
+    share or a percentage). None without such a pack or without an answer."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "forecast_report")
+        if not isinstance(r, dict):
+            continue
+        comb = r.get("combination")
+        if not isinstance(comb, dict) or not isinstance(comb.get("weights"), dict) or not comb["weights"]:
+            return None
+        top, w = max(comb["weights"].items(), key=lambda kv: kv[1])
+        named = bool(_alias(str(top)).search(answer)) or (str(top).startswith("timesfm") and "timesfm" in answer.lower())
+        if named and (_stated(answer, float(w)) or _stated(answer, 100 * float(w))):
+            return _check("combination_stated", True, f"the answer names the leading candidate ({top}) and its weight")
+        return _check("combination_stated", False,
+                      f"the forecast drawn is the backtest-weighted combination, led by {top} at weight {float(w):.2f} "
+                      f"({', '.join(f'{k} {float(v):.2f}' for k, v in sorted(comb['weights'].items(), key=lambda kv: -kv[1])[:4])}"
+                      "). Say that the line is a combination, give these weights and the backtest scores beside them, and "
+                      "say what the low-weight candidates imply for the range")
+    return None
+
+
+def check_league_backtest_stated(answer: str, history: Any) -> dict | None:
+    """When the season model was scored on past seasons, the answer quotes how far its final table was out.
+
+    Motivation (Mission 10, M10-3): a final-table forecast needs its measured error beside it. Logic: with a successful
+    league_backtest, the answer must state one final-points MAE of the rating model with earlier seasons and prices
+    (history_market) at some cut. None without one."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "league_backtest")
+        if not isinstance(r, dict):
+            continue
+        full = h.get("full") if isinstance(h.get("full"), dict) else {}
+        rows = [s for s in (full.get("summary") or []) if isinstance(s, dict) and s.get("model") == "history_market"]
+        maes = [float(s["mae"]) for s in rows if isinstance(s.get("mae"), (int, float))]
+        if not maes:
+            lines = [x for x in (r.get("summary") or []) if isinstance(x, str) and "history_market" in x]
+            maes = [float(m.group(1)) for x in lines if (m := re.search(r"MAE ([0-9.]+)", x))]
+        if not maes:
+            return None
+        if any(_stated(answer, v) for v in maes):
+            return _check("league_backtest_stated", True, "the answer quotes the season model's final-points error on past "
+                                                          "seasons")
+        return _check("league_backtest_stated", False,
+                      "the season model was scored on past seasons (final-points MAE "
+                      + ", ".join(f"{v:.2f}" for v in maes) + " at the cuts scored) and the answer does not say how far its "
+                      "final table is usually out. Quote the MAE at the cut nearest this season's matchday and the paired "
+                      "wins against last season's points and goals only")
+    return None
+
+
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
@@ -977,7 +1041,8 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_band_width(history, goal), lambda: check_market_band(history, goal),
              lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history),
              lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history),
-             lambda: check_market_probability(history), lambda: check_price_anchor(history, goal))
+             lambda: check_market_probability(history), lambda: check_price_anchor(history, goal),
+             lambda: check_combination_stated(answer, history), lambda: check_league_backtest_stated(answer, history))
     for fn in calls:
         try:
             c = fn()

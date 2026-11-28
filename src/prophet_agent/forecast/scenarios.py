@@ -71,10 +71,18 @@ def validate(scenarios: Any, h: int, dates: list[str] | None) -> list[dict]:
         if not isinstance(p, (int, float)) or isinstance(p, bool) or not 0 < p < 1:
             raise ValueError(f"scenario {name!r}: probability must be a number between 0 and 1 (0.25 for one in four)")
         has_abs, has_pct = s.get("shift") is not None, s.get("shift_pct") is not None
-        if has_abs == has_pct:
+        path = s.get("shift_path")
+        if (has_abs + has_pct + (path is not None)) != 1:
             raise ValueError(f"scenario {name!r}: give exactly one of shift (in the series' units, for example 0.25 for "
-                             "a quarter-point rate rise) or shift_pct (per cent of the base median, for example -8)")
-        val = s.get("shift") if has_abs else s.get("shift_pct")
+                             "a quarter-point rate rise), shift_pct (per cent of the base median, for example -8) or "
+                             "path_of (a candidate of the combination)")
+        if path is not None:
+            if (not isinstance(path, list) or len(path) != h
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v) for v in path)):
+                raise ValueError(f"scenario {name!r}: shift_path must hold {h} numbers, one per step")
+            val = 0.0
+        else:
+            val = s.get("shift") if has_abs else s.get("shift_pct")
         if not isinstance(val, (int, float)) or isinstance(val, bool) or not np.isfinite(val):
             raise ValueError(f"scenario {name!r}: the shift must be a number")
         start = s.get("start", 1)
@@ -106,7 +114,8 @@ def validate(scenarios: Any, h: int, dates: list[str] | None) -> list[dict]:
         if src == "market" and len(str(s.get("evidence") or "").strip()) < 6:
             raise ValueError(f"scenario {name!r}: a market probability needs the URL of the pricing as evidence")
         out.append({"name": name, "probability": float(p), "probability_source": src,
-                    "kind": "level" if has_abs else "pct", "shift": float(val),
+                    "kind": "path" if path is not None else ("level" if has_abs else "pct"), "shift": float(val),
+                    **({"shift_path": [float(v) for v in path]} if path is not None else {}),
                     "start": int(start), "ramp": int(ramp), "end": end, "shift_sd": float(sd), "band_scale": float(scale),
                     "why": str(s.get("why") or "")[:300], "evidence": str(s.get("evidence") or "")[:300]})
     total = sum(s["probability"] for s in out)
@@ -139,7 +148,10 @@ def mix(quantiles: dict[float, list[float]], scenarios: list[dict], *, n: int = 
     for j, s in enumerate(scenarios):
         rows = pick == j
         prof = _profile(h, s["start"], s["ramp"], s["end"])
-        full = s["shift"] if s["kind"] == "level" else s["shift"] / 100.0 * median
+        if s["kind"] == "path":
+            full = np.asarray(s["shift_path"], dtype=float)
+        else:
+            full = s["shift"] if s["kind"] == "level" else s["shift"] / 100.0 * median
         noise = 1.0 + s["shift_sd"] * rng.standard_normal(int(rows.sum()))
         shift = np.outer(noise, prof * full)
         spread = (base[rows] - median[None, :]) * s["band_scale"]

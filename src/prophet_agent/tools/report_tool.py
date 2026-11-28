@@ -364,7 +364,7 @@ def _combination_centre(fc: dict, values: list[float], args: dict, name: str) ->
     if dates is not None and len(dates) != len(values):
         dates = None
     cands, notes, rel = cd.build(values, dates or [], domain=domain, place=place, target=target, engine=_engine(),
-                                 fetch=_fetch, season=_season_arg(args))
+                                 fetch=_fetch, season=_season_arg(args), drivers=source_covariates(args))
     n = len(values)
     min_train = max(24, min(60, n // 3))
     try:
@@ -452,6 +452,14 @@ def _run(args: dict, key: str) -> dict[str, Any]:
                                ignored=args.get("ignore_ranges"), q30=q.get("0.3"), q70=q.get("0.7"))
     if not pack.ok:
         raise RuntimeError(f"artefact build failed: {pack.stderr[-500:]}")
+    members = (fc.get("centre") or {}).get("members_final") if isinstance(fc.get("centre"), dict) else None
+    if members:
+        # The combination's candidates, read by scenario_forecast (path_of) to follow one candidate's path.
+        import json as _json
+        from pathlib import Path as _Path
+        target = _Path(pack.workdir) / "data" / "members.json"
+        if target.parent.is_dir():
+            target.write_text(_json.dumps(members), encoding="utf-8")
     return {
         "forecast": {**fc, "level": is_level_name(title)},
         "run_id": pack.run_id,

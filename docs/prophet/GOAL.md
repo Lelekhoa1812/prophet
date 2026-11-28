@@ -2146,3 +2146,39 @@ and combination harness with conformal widening; 3 Vietnam quarterly source; 4 A
 wired into delivered forecasts; 8 live rounds and audits.
 
 **Evidence.** Added below as each batch lands.
+
+### Mission 10, batch 1: combination, market and structural candidates, Vietnam source, season backtest (2026-11-28)
+
+Measured (real staging data unless stated; all on rolling origins, no window scored with information from after its origin):
+- **EPL season backtest (M10-3).** Eight seasons 2018/19 to 2025/26 (football-data.co.uk), final-points MAE after matchdays
+  8, 12 and 19: the rating model with two earlier seasons and closing prices 7.37, 6.53 and 4.67 points; goals of this
+  season only 8.55, 7.49 and 5.46; last season's points 10.56; points pace 12.34, 8.98 and 6.11. A promoted-club prior
+  (attack -0.28, defence -0.20 from the league mean, measured on 27 promoted clubs, applied leave-one-season-out in the test)
+  improved the relegation Brier score in 17 of 24 season cut-offs with no change in points MAE (12 of 24); a 180-day
+  half-life showed no clear difference (12 of 24) and was not adopted. The league_backtest tool runs this on the seasons a
+  mission can fetch, and the harness runs it once for a football league goal.
+- **Vietnam (M10-4).** The statistics office's quarterly releases give the working-age unemployment rate from 2020-Q1 to
+  2026-Q3, 27 quarters, no gaps (2026-Q3: 2.2178 per cent), each value traced to its release workbook. The harness
+  assembles it before any search; the old source (ILOSTAT, age 15 and over) ends in 2024-Q4.
+- **Australian unemployment leading indicators (M10-4).** Direct regressions on ABS data, monthly origins 2005 to 2026:
+  no indicator beat the no-change forecast with the COVID period included; without it, 12-month job-vacancy growth gave MAE
+  0.975 of no-change at 6 months and 0.944 at 12 months (better in 61 per cent of origins), no gain at 18 months and a loss at
+  24. Underemployment, hours, the employment ratio, a vacancies-to-unemployment gap and the cash rate did not help.
+- **Market anchors (M10-2).** Gold 2008-09 to 2026-10 (GVZ): at 12 months the cost-of-carry forward with implied volatility
+  had WIS 6.9 per cent below a random walk with historical volatility; its band held 76 per cent. S&P 500 1990 to 2026
+  (VIX): at 24 months the historical drift was best (15 per cent below the random walk) and the forward second; implied
+  volatility over-covers at 6 months (93 per cent). Cash rate (RBA F1 from 2011, origins from 2016): at 24 months the market
+  path from bill rates and bond yields had the lowest WIS (0.601 against 0.658 for no change).
+- **Combination (M10-1).** Inverse-score weights shrunk to equal (KAPPA 64) are the default after comparing stacked,
+  inverse, trimmed and equal weights on the six cases above: against equal weights, inverse-score was within 0.3 per cent on
+  every case (-0.7 per cent on AU unemployment); stacking averaged 0.45 per cent worse; trimming was worse on four of six.
+  Equal weights are hard to beat; the result is reported, not tuned away. End to end on AU unemployment (TimesFM real, 120
+  origins from 2014-12, 24 months): weights TimesFM 0.46, vacancy model 0.30, the rest 0.06 each; 10 seconds.
+- **Band repair.** A symmetric conformal repair widened the cash-rate 24-month band to 0 to 20 per cent (the 2022 rises
+  counted twice: members' bands already carried them). The repair now tests the final band's own widths against the
+  combination's past errors and widens each tail separately (cash rate: 3.0 to 8.0 per cent around 4.6).
+
+Wired: forecast_report centre 'combination' (with goal); the harness draws it once per forecast source and horizon for the
+driven domains, on the driver scan's adopted file when there is one (adopted drivers become the timesfm_drivers candidate,
+M10-5); answer checks combination_stated and league_backtest_stated. Open: M10-6 scenarios, M10-8 panel, RBA path history
+before 2018 (unemployment) and 2024 (cash rate), F1 history before 2011.
