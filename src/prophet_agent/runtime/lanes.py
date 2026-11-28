@@ -138,6 +138,26 @@ def _lane_keys(spec: dict) -> set[str]:
     return {k for k in (f"task:{task}" if task else "", f"name:{name}" if name else "") if k}
 
 
+# Words that every brief carries ("find the latest ... return each finding with its date and URL"), years and quarters.
+_GENERIC = frozenset("""find search return each finding findings with its for and the of to in on or any from latest newest new
+whether check now state that still more than over this these those their there what which who when where how dated date dates
+quote quotes quoted exact url urls source sources value values unit units period periods figure figures list give report
+reports only not use do does did be is are was were has have had an by at as it if no""".split())
+MIN_TASK_WORDS = 5
+SIMILAR_TASK = 0.5   # Jaccard of content words at which a reworded brief counts as one that already ran
+
+
+def _task_words(task: str) -> frozenset[str]:
+    ws = re.findall(r"[a-z][a-z0-9_.-]+", str(task or "").lower())
+    return frozenset(w for w in ws if len(w) > 2 and w not in _GENERIC
+                     and not re.fullmatch(r"(?:19|20)\d\d(?:-q\d)?|q\d", w))
+
+
+def _similar(a: frozenset[str], b: frozenset[str]) -> float:
+    # Briefs of a few words ("angle 2") say too little to call two of them the same task.
+    return len(a & b) / len(a | b) if len(a) >= MIN_TASK_WORDS and len(b) >= MIN_TASK_WORDS else 0.0
+
+
 def _not_run_before(lane_specs: list[dict], history: list[dict]) -> tuple[list[dict], list[str]]:
     """The briefs that did not run before in this mission, and a line for each one left out.
 
@@ -151,11 +171,23 @@ def _not_run_before(lane_specs: list[dict], history: list[dict]) -> tuple[list[d
         if isinstance(h, dict) and h.get("kind") == "subagent" and h.get("lane"):
             for key in _lane_keys({"task": h.get("task"), "name": h.get("name")}):
                 earlier.setdefault(key, []).append(str(h.get("status") or ""))
+    reported = [(_task_words(h.get("task")), str(h.get("name") or h.get("task") or "")[:40], str(h.get("status") or ""))
+                for h in history if isinstance(h, dict) and h.get("kind") == "subagent" and h.get("lane")
+                and h.get("status") in ("met", "partial", "not_met")]
     keep, skipped = [], []
     for sp in lane_specs:
         seen = [st for key in _lane_keys(sp) for st in earlier.get(key, [])]
         if any(st in ("met", "partial", "not_met") for st in seen) or len(seen) >= 2:
             skipped.append(f"{str(sp.get('name') or sp.get('task'))[:60]}: {seen[-1] or 'ran'}")
+            continue
+        # Live VNUNEMP (round 20261128-173823): the same statistics-office search ran as lanes a2, a16 and a20 under new
+        # names and new year ranges, each ending "DNS error"; its briefs shared 54 to 100 per cent of their content words,
+        # while distinct topics shared at most 44 per cent.
+        words = _task_words(sp.get("task"))
+        twin = next(((nm, st) for w, nm, st in reported if _similar(words, w) >= SIMILAR_TASK), None)
+        if twin:
+            skipped.append(f"{str(sp.get('name') or sp.get('task'))[:60]}: the same task as the earlier lane '{twin[0]}' "
+                           f"({twin[1]})")
             continue
         keep.append(sp)
     return keep, skipped

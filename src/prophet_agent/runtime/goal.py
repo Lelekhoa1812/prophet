@@ -327,11 +327,50 @@ def _tool_lines(tools: dict[str, Tool]) -> str:
     return "\n".join(f"- {name}: {tools[name].doc}" if tools[name].doc else f"- {name}" for name in sorted(tools))
 
 
+# Tools whose later successful call replaces an earlier one with the same key (the tool, and for forecast_report its centre).
+# Audit of round 20261128-173823: the finish evaluator judged AUUNEMP five times on a 24-step forecast_report the lead had
+# already re-run at 25 steps (eval:d0:22-26), AURATE on a superseded scenario run, and SPX read one run's figures as
+# another's. Each older result now says which step replaced it, and only its head is shown.
+SUPERSEDED_TOOLS = ("forecast_report", "scenario_forecast", "simulate_season", "forecast", "season_backtest")
+SUPERSEDED_CHARS = 400
+
+
+def _supersede_key(obs: dict) -> tuple | None:
+    if obs.get("kind") != "tool" or obs.get("tool") not in SUPERSEDED_TOOLS or "error" in obs or "result" not in obs:
+        return None
+    args = obs.get("args") if isinstance(obs.get("args"), dict) else {}
+    return (obs["tool"], str(args.get("centre") or "") if obs["tool"] == "forecast_report" else "")
+
+
+def superseded_by(history: list[dict], start: int = 1) -> dict[int, int]:
+    """{position: position of the later call that replaced it}, positions numbered from ``start`` as in the evidence."""
+    latest: dict[tuple, int] = {}
+    out: dict[int, int] = {}
+    for n in range(len(history) - 1, -1, -1):
+        key = _supersede_key(history[n])
+        if key is None:
+            continue
+        if key in latest:
+            out[n + start] = latest[key]
+        else:
+            latest[key] = n + start
+    return out
+
+
 def _evidence_lines(history: list[dict], start: int = 1) -> str:
     # Each observation is clipped on its own, so the goal and the tool list are never cut off by a long result.
     if not history:
         return "(none yet)"
-    return "\n".join(f"{n}. {_clip(_view(obs), obs.get('step'))}" for n, obs in enumerate(history, start=start))
+    replaced = superseded_by(history, start)
+    lines = []
+    for n, obs in enumerate(history, start=start):
+        if n in replaced:
+            head = canonical(_view(obs))[:SUPERSEDED_CHARS]
+            lines.append(f"{n}. [SUPERSEDED by step {replaced[n]}: a later {obs.get('tool')} call replaced this result; "
+                         f"judge and quote step {replaced[n]}, not this one] {head}...")
+        else:
+            lines.append(f"{n}. {_clip(_view(obs), obs.get('step'))}")
+    return "\n".join(lines)
 
 
 def _question_texts(questions: Any) -> list[tuple[str, str]]:

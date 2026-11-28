@@ -52,10 +52,55 @@ class Pinned(NamedTuple):
     sni: str | None
 
 
+# Measured 2026-11-28: the system resolver failed for www.nso.gov.vn, nso.gov.vn and gso.gov.vn (Vietnam's statistics office,
+# whose zone answers with a 30-second TTL and intermittently fails through the local resolver chain) while a direct query
+# and DNS over HTTPS returned the address, and the site answered on it in under two seconds. Every VNUNEMP mission of round
+# 20261128-173823 therefore forecast from a series ending 2024-Q4 and fifteen research lanes reported "DNS error".
+# When the system lookup fails, the name is asked of two public DNS-over-HTTPS resolvers, reached by address literal so the
+# fallback needs no lookup of its own. The answer goes through the same address checks as any other.
+DOH_ENDPOINTS = ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve")
+DOH_SECONDS = 4.0
+NO_DOH_SUFFIXES = (".invalid", ".test", ".example", ".onion")
+
+
+def _doh_lookup(host: str) -> list[str]:
+    """IPv4 and IPv6 addresses for ``host`` from the DoH endpoints (JSON API), first endpoint that answers wins."""
+    name = host.rstrip(".").lower()
+    if not name or "." not in name or name.endswith(NO_DOH_SUFFIXES):
+        return []
+    for endpoint in DOH_ENDPOINTS:
+        out: list[str] = []
+        try:
+            with httpx.Client(timeout=DOH_SECONDS, follow_redirects=False) as client:
+                for rtype, code in (("A", 1), ("AAAA", 28)):
+                    r = client.get(endpoint, params={"name": name, "type": rtype},
+                                   headers={"accept": "application/dns-json"})
+                    if r.status_code != 200:
+                        raise httpx.HTTPError(f"HTTP {r.status_code}")
+                    data = r.json()
+                    if data.get("Status") == 3:            # NXDOMAIN: the name does not exist; no point asking again
+                        return []
+                    out += [str(a.get("data")) for a in data.get("Answer") or [] if a.get("type") == code]
+        except (httpx.HTTPError, ValueError, OSError):
+            continue
+        valid = []
+        for a in out:
+            try:
+                valid.append(str(ipaddress.ip_address(a)))
+            except ValueError:
+                continue
+        if valid:
+            return list(dict.fromkeys(valid))
+    return []
+
+
 def _default_resolver(host: str, port: int) -> list[str]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except (socket.gaierror, UnicodeError, OSError) as exc:
+        addresses = _doh_lookup(host) if not isinstance(exc, UnicodeError) else []
+        if addresses:
+            return addresses
         raise UnsafeURL(f"host {host!r} did not resolve ({type(exc).__name__})") from None
     return [info[4][0] for info in infos]
 

@@ -770,6 +770,8 @@ def observe(result: dict) -> dict:
                            f"equal weights {cb.get('vs_equal_wis_pct')}%, against the best candidate so far "
                            f"{cb.get('vs_best_so_far_wis_pct')}%, against the best single in hindsight "
                            f"{cb.get('vs_best_single_wis_pct')}% ({cb.get('best_single')})",
+            "gains": {k: cb.get(k) for k in ("vs_equal_wis_pct", "vs_best_so_far_wis_pct", "vs_best_single_wis_pct",
+                                              "best_single")},
             "origins": f"{centre.get('origins')} from {centre.get('first_origin')}", "band": centre.get("band"),
             "significance": {k: {"vs": v.get("name", k), "significant": v.get("significant"),
                                  "p_dm": (v.get("dm") or {}).get("p_cand_better"),

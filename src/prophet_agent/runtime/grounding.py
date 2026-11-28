@@ -288,8 +288,14 @@ def _observed(history: list):
     made by the model, so a figure in it is checked against tool results, not accepted because the model wrote it
     (audit 2026-11-22, item 1)."""
     typed = _typed_numbers(history)
-    for h in history:
+    # A forecast result a later call of the same tool replaced does not ground a figure: the audit of round 20261128-173823
+    # found AURATE's answer quoting a superseded scenario path (4.63% start, 6.0% end) beside the re-run series' 4.85%.
+    from prophet_agent.runtime.goal import superseded_by      # here, not at import: goal imports this module
+    stale = set(superseded_by([h if isinstance(h, dict) else {} for h in history], start=0))
+    for pos, h in enumerate(history):
         kind = h.get("kind")
+        if pos in stale:
+            continue
         if kind == "tool" and "result" in h:
             scrub = typed if h.get("tool") == "sandbox_python" else None
             yield _scrubbed(_as_text(h["result"]), scrub)

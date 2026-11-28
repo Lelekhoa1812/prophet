@@ -1034,6 +1034,55 @@ def check_combination_stated(answer: str, history: Any) -> dict | None:
     return None
 
 
+_BETTER = re.compile(r"\b(?:beat|beats|beating|outperform\w*|better than|improv\w* (?:on|over|upon)|gains? (?:on|over|against)|"
+                     r"lower (?:error|interval score|wis|loss) than|ahead of)\b", re.I)
+_WORSE = re.compile(r"\b(?:not|no|worse|trail\w*|los(?:e|es|ing|t)\b|behind|underperform\w*|higher (?:error|interval score|wis)|"
+                    r"fail\w*|short of|did not|does not)\b", re.I)
+
+
+def check_combination_claims(answer: str, history: Any) -> dict | None:
+    """A sentence that says the combination beats equal weights, the best candidate so far or the best single candidate
+    agrees with the sign of that comparison in the backtest.
+
+    Motivation: the audit of round 20261128-173823 found AURATE's answer saying the combination "beats TimesFM by 9.1%"
+    when the backtest had it 12.95% worse than TimesFM (9.1% was against the best candidate so far), and "beats equal
+    weights by 0.4%" when it was 0.41% worse. Logic: from the newest combination forecast_report, each comparison with a
+    gain of zero or less; a sentence that names that comparison (equal weights; best so far; the best single's name) with a
+    word of improvement and no word of shortfall fails. None without a combination or an answer."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "forecast_report")
+        if not isinstance(r, dict):
+            continue
+        comb = r.get("combination")
+        cb = comb.get("gains") if isinstance(comb, dict) else None
+        if not isinstance(cb, dict):
+            return None
+        rows = [("equal weights", re.compile(r"\bequal[\s-]*weight", re.I), cb.get("vs_equal_wis_pct")),
+                ("the best candidate so far", re.compile(r"\bbest[\s-]+(?:\w+[\s-]+)?so[\s-]+far", re.I),
+                 cb.get("vs_best_so_far_wis_pct"))]
+        if cb.get("best_single"):
+            name = str(cb["best_single"])
+            pat = re.compile(r"\btimes\s*fm\b", re.I) if name.lower().startswith("timesfm") else _alias(name)
+            rows.append((name, pat, cb.get("vs_best_single_wis_pct")))
+        sentences = re.split(r"(?<=[.;!?])\s+|\n+", answer)
+        wrong = []
+        for label, pat, gain in rows:
+            if not isinstance(gain, (int, float)) or gain > 0:
+                continue
+            for sent in sentences:
+                if pat.search(sent) and _BETTER.search(sent) and not _WORSE.search(sent):
+                    wrong.append(f"'{sent.strip()[:120]}' (against {label} the backtest gain was {float(gain):+.2f}%)")
+                    break
+        if not wrong:
+            return _check("combination_claims", True, "the answer's comparisons of the combination agree with the backtest")
+        return _check("combination_claims", False,
+                      "these sentences claim the combination does better than a comparison it lost or tied on the backtest: "
+                      + "; ".join(wrong[:3]) + ". State each comparison with its sign as combination_check gives it")
+    return None
+
+
 def check_calibration_stated(answer: str, history: Any) -> dict | None:
     """When the pack draws the combination, the answer says how its band did on the backtest (M10-7).
 
@@ -1140,7 +1189,7 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_market_probability(history), lambda: check_price_anchor(history, goal),
              lambda: check_combination_stated(answer, history), lambda: check_league_backtest_stated(answer, history),
              lambda: check_calibration_stated(answer, history), lambda: check_scenarios_traced(answer, history),
-             lambda: check_risk_stated(answer, history))
+             lambda: check_risk_stated(answer, history), lambda: check_combination_claims(answer, history))
     for fn in calls:
         try:
             c = fn()
