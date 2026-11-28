@@ -3136,6 +3136,39 @@ def _flat_claim_after_tilt(text: str, obs: list) -> dict | None:
     return None
 
 
+_FLAT_EXEMPT = re.compile(r"\bnot\b|\bwould\b|\bwithout\b|\bif\b|\bwas\b|\bwere\b|timesfm|\bmodel\b|\braw\b|\btilt|\btrend\b",
+                          re.I)
+
+
+def replace_flat_claims(text: str, obs: list) -> str:
+    """The answer with each sentence that calls a moving centre line flat replaced by what the line does.
+
+    Round 20261128-151151: SPX ("the history shows no repeating pattern, so the centre line is a level (the drift
+    baseline)") and AUUNEMP ("The centre line is a flat level") ended partial on this claim after both rewrites kept it;
+    the composer reads the flat_expected health verdict and repeats it although the drawn line moves (+955 index points,
+    +0.38 points). The correct sentence follows from the stored pack alone, like a snapped figure: its first and last
+    centre values. Only when the drawn line moves visibly; the claim is left alone otherwise."""
+    moves = _drawn_line_moves(obs)
+    if not text or not moves or not moves[0]:
+        return text
+    point = None
+    for h in reversed(obs if isinstance(obs, list) else []):
+        if isinstance(h, dict) and isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else {}
+            point = ((full.get("forecast") or {}) if isinstance(full.get("forecast"), dict) else {}).get("point")
+            break
+    if not point:
+        return text
+    first, last = float(point[0]), float(point[-1])
+    way = "rises" if last > first else "falls"
+    fixed = f"The centre line is not flat: it {way} from {first:,.4g} at the first forecast step to {last:,.4g} at the last."
+    out = text
+    for unit in grounding.sentences(text):
+        if _FLAT_CLAIM.search(unit) and not _FLAT_EXEMPT.search(unit):
+            out = out.replace(unit.strip(), fixed, 1)
+    return out
+
+
 def _latest_health_verdict(obs: list) -> str | None:
     return delivered_verdict(obs)
 

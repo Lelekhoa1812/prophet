@@ -171,6 +171,8 @@ def make_run(datasets: dict[str, Path] | None = None):
         out = {"ok": d["ok"], "returncode": d["returncode"], "timed_out": d["timed_out"],
                "stdout": d["stdout"], "stderr": d["stderr"], "run_id": d["run_id"],
                "outputs": d["outputs"], "memory_limit_enforced": d["memory_limit_enforced"]}
+        if not d["ok"] and "FileNotFoundError" in (d["stderr"] or ""):
+            out["mounted_from"] = _mounted_sources(inputs)
         renamed = {f"in/{k}": f"{v.parent.parent.name}/out/{v.name}" for k, v in carried.items() if k != f"carried/{v.name}"}
         if renamed:
             out["carried_as"] = renamed
@@ -276,6 +278,25 @@ FREQ_HINT = ("pandas 3 removed the old frequency codes: use 'YE' (year end) or '
              "'MS', 'W', 'D', 'h', 'min'. pl.freq_alias('A') gives the current code; pl.prepare_series accepts either")
 
 
+def _mounted_sources(inputs: dict[str, Path]) -> dict[str, str]:
+    """in/<name> -> the address the dataset was downloaded from, read from the dataset's meta.json.
+
+    Round 20261128-151151 (EPL): lanes downloaded three football-data seasons, mounted as in/E0.csv, in/E0_2.csv and
+    in/E0_3.csv; the lead read names the lanes had made up, then listed '/in', and the run stalled. The bare names do not
+    say which season each file holds; the address does."""
+    out: dict[str, str] = {}
+    for name, path in list(inputs.items())[:30]:
+        try:
+            meta = json.loads((Path(path).parent / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        prov = meta.get("provenance") if isinstance(meta, dict) else None
+        url = (prov or {}).get("final_url") or (prov or {}).get("url") if isinstance(prov, dict) else None
+        if isinstance(url, str) and url:
+            out[f"in/{name}"] = url[:160]
+    return out
+
+
 def _inputs(run_id: str) -> list[str]:
     root = SANDBOX_ROOT / run_id / "in"
     if not root.is_dir():
@@ -292,9 +313,10 @@ def _error_hint(result: dict) -> str | None:
         return NETWORK_HINT
     if "Invalid frequency" in err or ("is no longer supported" in err and "freq" in err.lower()):
         return FREQ_HINT
-    if "FileNotFoundError" in err and ("in/" in err or "carried" in err):
+    if "FileNotFoundError" in err and ("in/" in err or "carried" in err or "'/in" in err):
         files = _inputs(str(result.get("run_id", "")))
-        listing = ", ".join(files) if files else "no input files"
+        src = result.get("mounted_from") if isinstance(result.get("mounted_from"), dict) else {}
+        listing = ", ".join(f"{f} (from {src[f]})" if f in src else f for f in files) if files else "no input files"
         return (f"that file is not mounted. This run can read: {listing}. A file another run wrote reaches this one only "
                 "through carry=[{run_id, file}]. A tool's result (web_fetch, web_research) is not a file: download the "
                 "address with download_web_data, or save the figures from a cell that read a mounted file")

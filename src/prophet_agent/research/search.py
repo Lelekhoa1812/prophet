@@ -13,8 +13,8 @@ Logic: the backends are tried in order and the first non-empty answer wins. Exce
 backend keeps a streak of bad answers (an exception or an empty answer); three in a row put it in a ten-minute cooldown,
 during which it is skipped, and any good answer clears the streak. A transient exception is retried once after a
 backoff. One process runs many research lanes at once, and round 20261128-125459 showed their bursts make every backend
-refuse together (ConnectError, RequestError, timeouts on 40 to 75 % of web_research calls, while an idle probe answered
-on four backends). Calls to one backend are therefore spaced PACE_S apart across the process (a caller whose slot is more
+refuse together (ConnectError, RequestError and timeouts in the diagnostics of most calls, while an idle probe answered
+on four backends; 86 to 95 % of calls still returned sources from the backends that did answer). Calls to one backend are therefore spaced PACE_S apart across the process (a caller whose slot is more
 than PACE_WAIT_S away skips that backend for this call), and a streak ended by a transient failure cools for 90 seconds
 instead of ten minutes, so a burst does not shut a working backend out of a whole mission. ``discover`` runs the query variants from ``queryplan`` and merges them with ``rank``; registry entries are
 appended last and labelled, never mixed in as search hits. Results are cached as JSON under the Prophet data folder,

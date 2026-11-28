@@ -2003,9 +2003,12 @@ What worked:
 - The focused planner never engaged: no mission was refused twice in a row for the driver checks once the scan had run.
 
 Defects found and confirmed against the ledgers:
-- Web search failed in bursts: 40 to 75 % of web_research calls in every mission returned no sources (ddgs ConnectError,
-  RequestError, timeouts, "No results found"). An idle probe the same afternoon answered on bing, google, yahoo and auto.
-  All research lanes share one process and fired together, so every backend refused at once and cooled for ten minutes.
+- Web search backends refused in bursts: most web_research calls carried ddgs ConnectError, RequestError or timeout
+  diagnostics, and an idle probe the same afternoon answered on bing, google, yahoo and auto. All research lanes share one
+  process and fired together, so backends refused at once and cooled for ten minutes. Correction (measured later the
+  same day): a first count read the planner's trimmed view, which drops the source list, and reported 40 to 75 % of calls
+  as empty; read from the full results, 86 to 95 % of web_research calls in rounds 20261128-125459 and -151151 returned
+  sources. The lanes' "every backend failed" reports describe single queries, not whole calls.
 - GOLD forecast a fertiliser column ($/mt, from 1,737 in 1960 to 6,775 in July 2026) as gold: the Pink Sheet came from a
   dataset stored before the round 26 landing fix (64 columns, units only), because a stored download was reused forever.
   Fetched late-November quotes put gold near $3,650; the live workbook runs to 2026M10.

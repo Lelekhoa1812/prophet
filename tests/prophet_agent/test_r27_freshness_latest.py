@@ -97,3 +97,46 @@ def test_a_price_series_far_from_the_quotes_the_mission_read_is_held():
     right = _fc("2026-10-01", ["2026-11-01"], value=4105.0) + pages
     assert pq.check_price_anchor(right, g)["ok"]
     assert pq.check_price_anchor(wrong, "Forecast Australia's unemployment rate") is None
+
+
+def test_a_missing_file_hint_names_where_each_mounted_file_came_from(tmp_path):
+    """Round 20261128-151151 (EPL): three seasons mounted as E0.csv, E0_2.csv, E0_3.csv; the lead could not tell them apart."""
+    import json as _json
+    from prophet_agent.tools import sandbox_tool
+    folder = tmp_path / "ds1"
+    folder.mkdir()
+    (folder / "data.csv").write_text("a,b\n1,2\n")
+    (folder / "meta.json").write_text(_json.dumps({"provenance": {"url": "https://www.football-data.co.uk/mmz4281/2425/E0.csv"}}))
+    run = sandbox_tool.make_run({"E0_2.csv": folder / "data.csv"})
+    res = run({"code": "import pandas as pd\npd.read_csv('in/epl_results.csv')\n"}, "k")
+    seen = sandbox_tool.observe(res)
+    assert "in/E0_2.csv (from https://www.football-data.co.uk/mmz4281/2425/E0.csv)" in seen["hint"]
+
+
+def test_a_series_indexed_by_date_strings_keeps_its_dates_and_an_undated_save_says_so(tmp_path, monkeypatch, capsys):
+    """Round 20261128-151151 (AUUNEMP): two saves wrote an empty dates list and driver_scan could not align drivers."""
+    import json as _json
+    import pandas as pd
+    from prophet_agent.sandbox import prophet_lib as pl
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    pl.save_series(pd.Series([4.1, 4.3, 4.9], index=["2026M08", "2026M09", "2026M10"]), "out/a.json", name="u")
+    assert _json.loads((tmp_path / "out/a.json").read_text())["dates"] == ["2026-08-01", "2026-09-01", "2026-10-01"]
+    assert "saved without dates" not in capsys.readouterr().out
+    pl.save_series([4.1, 4.3], "out/b.json", freq="MS")
+    assert "saved without dates" in capsys.readouterr().out
+
+
+def test_a_moving_line_called_flat_is_described_by_its_own_values():
+    """Round 20261128-151151: SPX and AUUNEMP ended partial on a flat claim both rewrites kept."""
+    point = [7201.0 + 40 * k for k in range(24)]
+    pack = {"kind": "tool", "tool": "forecast_report", "args": {}, "result": {"ok": True},
+            "full": {"forecast": {"point": point, "quantiles": {"0.1": [p - 300 for p in point], "0.9": [p + 300 for p in point]}}}}
+    text = ("The S&P 500 is forecast to reach 8,121. The history shows no repeating pattern, so the centre line is a level "
+            "(the drift baseline). The raw TimesFM line was flat.")
+    fixed = contracts.replace_flat_claims(text, [pack])
+    assert "centre line is a level" not in fixed and "rises from 7,201 at the first forecast step to 8,121 at the last" in fixed
+    assert "The raw TimesFM line was flat." in fixed
+    assert contracts._flat_claim_after_tilt(fixed, [pack]) is None
+    level = {**pack, "full": {"forecast": {"point": [5.0] * 24, "quantiles": {"0.1": [4.0] * 24, "0.9": [6.0] * 24}}}}
+    assert contracts.replace_flat_claims(text, [level]) == text

@@ -1255,6 +1255,26 @@ def time_policy(df: pd.DataFrame, time: str, value: str, *, timezone: str | None
     return out[~later].reset_index(drop=True), report
 
 
+def _dated_index(s: pd.Series) -> pd.Series:
+    """The Series with its index as dates when every label reads as one (2026-10-01, 2026-10, 2026M10, 2026Q3); else as it is."""
+    if isinstance(s.index, pd.DatetimeIndex) or len(s) == 0:
+        return s
+    if isinstance(s.index, pd.PeriodIndex):
+        return s.set_axis(s.index.to_timestamp())
+    labels = pd.Index(s.index).astype(str).str.strip()
+    labels = labels.str.replace(r"^(\d{4})M(\d{1,2})$", r"\1-\2-01", regex=True)
+    if not labels.str.match(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?|-?Q[1-4])?(?:[ T].*)?$").all():
+        return s
+    try:
+        if labels.str.contains("Q").all():
+            idx = pd.PeriodIndex(labels.str.replace("-", ""), freq="Q").to_timestamp()
+        else:
+            idx = pd.DatetimeIndex(pd.to_datetime(labels))
+    except (ValueError, TypeError):
+        return s
+    return s.set_axis(idx)
+
+
 def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "out/series.json", *, freq: str | None = None,
                 covariates: dict[str, Any] | None = None, name: str | None = None,
                 provenance: dict[str, Any] | None = None) -> str:
@@ -1276,6 +1296,15 @@ def save_series(series: pd.Series | list[float] | dict[str, Any], path: str = "o
     if name is not None and isinstance(series, dict):
         raise ValueError("name= labels one series; for a dict of series, the dict keys are the names")
     items = series if isinstance(series, dict) else {(str(name) if name is not None else "series"): series}
+    # Round 20261128-151151 (AUUNEMP): a Series indexed by date strings ("2026-10", "2026M10") and an array of values were
+    # both saved with an empty dates list, so driver_scan could not align drivers; the cell said nothing. A string index
+    # that reads as dates is converted, and a save without dates says so.
+    items = {k: (_dated_index(v) if isinstance(v, pd.Series) else v) for k, v in items.items()}
+    undated = [k for k, v in items.items() if not (isinstance(v, pd.Series) and isinstance(v.index, pd.DatetimeIndex))]
+    if undated:
+        print(f"note: {', '.join(map(str, undated[:5]))} saved without dates. driver_scan, the horizon and freshness checks "
+              "and the charts need them: save a pandas Series indexed by its dates, "
+              "pl.save_series(pd.Series(values, index=pd.to_datetime(dates)), ...)")
     out: dict[str, Any] = {"series": {}, "dates": {}}
     if covariates:
         clean: dict[str, list[float]] = {}

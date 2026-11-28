@@ -3225,10 +3225,11 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
                 if not claims:
                     break
-            if claims and all(c["name"] == "answer_causes_cited" for c in claims):
+            if claims and {c["name"] for c in claims} & MECHANICAL_FIXES:
                 # Round 13 (AUUNEMP): both rewrites kept "kept as genuine regime changes". The fix the check asks for is to
-                # take the cause out, so it is done here rather than ending the run on that phrase.
-                answer = grounding.drop_uncited_causes(answer)
+                # take the cause out, so it is done here rather than ending the run on that phrase. Round 20261128-151151
+                # (SPX, AUUNEMP): a moving line called flat survived both rewrites; its correct sentence is stored data.
+                answer = _mechanical_fixes(answer, history, claims)
                 claims = contracts.blocking(contracts.check_answer(answer, history, run_root=SANDBOX_ROOT, goal=goal))
             if claims:
                 return {"status": "partial", "iterations": i + 1, "answer": answer, "evidence": history,
@@ -3349,9 +3350,27 @@ def _checked_gap_answer(ctx: Ctx, brain: Any, tag: str, i: int, goal: str, histo
         return text, []
     rewritten = _compose(ctx, brain, f"gapclaims:{tag}:{i}", goal, history, memo, context, text,
                          fixes=contracts.summarise(wrong))
-    if rewritten is None or not rewritten.strip():
-        return text, wrong
-    return rewritten, _gap_answer_claims(rewritten, history, goal)
+    if rewritten is not None and rewritten.strip():
+        text = rewritten
+        wrong = _gap_answer_claims(text, history, goal)
+    if {c["name"] for c in wrong} & MECHANICAL_FIXES:
+        text = _mechanical_fixes(text, history, wrong)
+        wrong = _gap_answer_claims(text, history, goal)
+    return text, wrong
+
+
+MECHANICAL_FIXES = frozenset({"answer_causes_cited", "answer_flat_claim_after_tilt"})
+
+
+def _mechanical_fixes(text: str, history: list[dict], claims: list[dict]) -> str:
+    """The answer with the fixes that follow from stored data alone applied: uncited causes dropped, and a moving centre
+    line called flat described by its first and last values."""
+    names = {c["name"] for c in claims}
+    if "answer_causes_cited" in names:
+        text = grounding.drop_uncited_causes(text)
+    if "answer_flat_claim_after_tilt" in names:
+        text = contracts.replace_flat_claims(text, history)
+    return text
 
 
 DATE_TEXT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s+\d{4})?"
