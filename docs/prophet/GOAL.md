@@ -1986,4 +1986,4 @@ Fixes (commits 3ad7db9, 79a9239, 94ad201, a21d848):
 Assessed, no change: a policy rate carried forward between decisions is the rate in force on each day, so counting it as
 observed is right. The defect in that audit item was the missed 4 November decision, which newest_level_used now blocks.
 
-Open: none of the fixes above has been measured on a live panel round yet; the next round runs on them. **M9-8 is not met.**
+Gate: 3,691 passed on a21d848. Open: none of the fixes above has been measured on a live panel round yet; the next round runs on them. **M9-8 is not met.**
