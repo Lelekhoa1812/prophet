@@ -36,6 +36,8 @@ this table stops the script with an error rather than writing a blank licence.
 | `world_bank` | CC BY 4.0 for World Bank datasets unless the indicator metadata says otherwise. Some indicators are supplied by another publisher and may not be redistributed. Attribute the World Bank. |
 | `ilo` | ILOSTAT data are free to use with attribution to the ILO (ILOSTAT database); check the ILO copyright and permissions page before reuse. |
 | `dbnomics` | DBnomics redistributes each provider's data under that provider's own terms; attribute the original provider and DBnomics. |
+| `gpr` | Not verified: read matteoiacoviello.com/gpr.htm for the use terms before any external use. Cite Caldara and Iacoviello, "Measuring Geopolitical Risk", American Economic Review 2022. Read by `risk_regime` and the combination band (Mission 10 batch 2). |
+| `epu` | Not verified: read policyuncertainty.com for the use terms before any external use. Cite Baker, Bloom and Davis, "Measuring Economic Policy Uncertainty", Quarterly Journal of Economics 2016. The US series is read from FRED (`fred` row). |
 | `eia` | US Energy Information Administration publications on its site are in the public domain and may be used and distributed. Acknowledge the EIA. |
 
 Research-use labelling (owner decision, Liam, 2026-11-23): this project is research use. Outputs built from a dataset whose

@@ -842,6 +842,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
         return step
     if (step := _combination_step(goal, history, tools)) is not None:
         return step
+    if (step := _risk_regime_step(goal, history, tools)) is not None:
+        return step
     panel = _panel_hint(history, full)
     forecast_done = any(contracts._forecast_record(h) for h in history)
     if "panel" not in kinds and panel and not forecast_done and "sandbox_python" in tools:
@@ -1113,6 +1115,29 @@ def _combination_step(goal: str, history: list[dict], tools: dict[str, Tool]) ->
     return {"action": "call_tool", "tool": "forecast_report", "auto": "combination", "args": args,
             "rationale": "the harness scores every candidate (TimesFM, the rules, the market and structural models) on the "
                          "same origins and draws their backtest-weighted combination"}
+
+
+def _risk_regime_step(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """risk_regime once per mission, after the combination (Mission 10 batch 2): geopolitical and policy risk today and the
+    target's measured moves after past spikes, so the answer states the regime and scenario shifts can cite a measurement.
+    Runs for the driven domains on the combination's source and horizon; never repeated."""
+    if "risk_regime" not in tools:
+        return None
+    from prophet_agent.research import driver_families as dfam
+    if dfam.detect(goal or "") not in prediction_quality.DRIVEN_DOMAINS:
+        return None
+    flat = [h for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"]
+    if any(h.get("tool") == "risk_regime" for h in flat):
+        return None
+    comb = next((h for h in reversed(flat) if h.get("tool") == "forecast_report" and not h.get("error")
+                 and isinstance(h.get("args"), dict) and h["args"].get("centre") == "combination"
+                 and isinstance(h["args"].get("source"), dict) and isinstance(h["args"].get("horizon"), int)), None)
+    if comb is None:
+        return None
+    args = {"source": comb["args"]["source"], "horizon": comb["args"]["horizon"], "goal": goal}
+    return {"action": "call_tool", "tool": "risk_regime", "auto": "risk", "args": args,
+            "rationale": "the harness reads geopolitical and policy risk today and measures how the target moved after "
+                         "past risk spikes"}
 
 
 # The checks a refused finish names, and the tools that close each one (owner decision 2026-11-28, "Both": live AUUNEMP refused

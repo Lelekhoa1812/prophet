@@ -118,3 +118,62 @@ def paired_signflip(base: np.ndarray, cand: np.ndarray, *, seed: int = 0, draws:
         p_base = float((1 + np.sum(means <= obs + tol)) / (draws + 1))
         method = "signflip_montecarlo"
     return {"p_cand_better": p_cand, "p_base_better": p_base, "mean_diff": obs, "n": n, "method": method}
+
+
+def diebold_mariano(base: np.ndarray, cand: np.ndarray, lag: int) -> dict:
+    """One-sided Diebold-Mariano test, with the Harvey-Leybourne-Newbold small-sample correction, of base losses against cand.
+
+    Motivation vs Logic
+    Motivation (Mission 10 batch 2): the combination's gain over a comparator is computed on overlapping forecast windows
+    (an origin every step, windows h steps long), so consecutive loss differences are correlated and the sign-flip test above,
+    which assumes independent pairs, overstates the evidence.
+    Logic: d_t = base_t - cand_t. Its long-run variance sums the autocovariances up to ``lag`` (h - 1 for windows of h steps
+    one origin apart) with equal weights, as Diebold and Mariano (1995) and Harvey, Leybourne and Newbold (1997) set it; when
+    that sum is not positive, Bartlett weights are used instead (Newey and West 1987). DM = mean(d) / sqrt(var / n); the HLN
+    factor sqrt((n + 1 - 2h + h(h - 1) / n) / n) rescales it, and the p-value is read from Student t with n - 1 degrees of
+    freedom. Measured on simulated equal-loss differences that are moving averages over h steps (2026-11-28): the test still
+    rejects 7 to 13 per cent of the time at a nominal 5 per cent for n = 60 to 240 and h = 6 to 24, so it is reported beside
+    the sign-flip test on non-overlapping windows (exact) and a gain counts as significant only when both agree.
+    """
+    from scipy import stats
+    b = np.asarray(base, dtype=float).reshape(-1)
+    c = np.asarray(cand, dtype=float).reshape(-1)
+    if b.shape != c.shape:
+        raise ValueError("the two loss arrays must cover the same origins")
+    d = (b - c)[np.isfinite(b) & np.isfinite(c)]
+    n = int(d.size)
+    lag = max(0, min(int(lag), n - 2))
+    out = {"p_cand_better": float("nan"), "stat": float("nan"), "mean_diff": float(d.mean()) if n else float("nan"),
+           "n": n, "lag": lag, "method": "dm_hln"}
+    if n < 8:
+        return {**out, "note": "fewer than 8 pairs"}
+    dc = d - d.mean()
+    gam = [float(dc @ dc) / n] + [float(dc[k:] @ dc[:-k]) / n for k in range(1, lag + 1)]
+    var = gam[0] + 2.0 * sum(gam[1:])
+    if var <= 0:
+        var = gam[0] + 2.0 * sum((1.0 - k / (lag + 1)) * g for k, g in enumerate(gam[1:], start=1))
+        out["kernel"] = "bartlett"
+    if var <= 0:
+        return {**out, "note": "zero variance of the loss difference"}
+    h = lag + 1
+    stat = float(float(d.mean()) / np.sqrt(var / n) * np.sqrt(max((n + 1 - 2 * h + h * (h - 1) / n) / n, 1e-12)))
+    return {**out, "p_cand_better": float(stats.t.sf(stat, df=n - 1)), "stat": stat}
+
+
+def compare_losses(base: np.ndarray, cand: np.ndarray, h: int, step: int = 1) -> dict:
+    """Both tests of base against cand on rolling-origin losses: Diebold-Mariano-HLN on every origin, and the exact sign-flip
+    test on origins at least h steps apart (independent windows). significant is True only when both p-values are below
+    0.05; with fewer than five independent windows the sign-flip test cannot reach 0.05 and nothing is called significant."""
+    b = np.asarray(base, dtype=float).reshape(-1)
+    c = np.asarray(cand, dtype=float).reshape(-1)
+    lag = max(0, -(-int(h) // max(1, int(step))) - 1)
+    dm = diebold_mariano(b, c, lag)
+    every = max(1, -(-int(h) // max(1, int(step))))
+    idx = np.arange(len(b) - 1, -1, -every)[::-1]            # the newest window and every h-th one before it
+    sf = paired_signflip(b[idx], c[idx])
+    sig = bool(np.isfinite(dm["p_cand_better"]) and dm["p_cand_better"] < 0.05 and sf["n"] >= 5
+               and sf["p_cand_better"] < 0.05)
+    return {"dm": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in dm.items()},
+            "independent": {"n": sf["n"], "p_cand_better": round(sf["p_cand_better"], 6) if sf["n"] else None,
+                            "method": sf["method"]},
+            "significant": sig}

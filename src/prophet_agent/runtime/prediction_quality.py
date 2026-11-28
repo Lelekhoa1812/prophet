@@ -1067,6 +1067,35 @@ def check_calibration_stated(answer: str, history: Any) -> dict | None:
     return None
 
 
+def check_risk_stated(answer: str, history: Any) -> dict | None:
+    """When risk_regime ran, the answer states today's reading of the registered risk index (Mission 10 batch 2).
+
+    Motivation (owner review 2026-11-28): forecasts must account for political, geopolitical and policy risk, and the reader
+    must see where that risk stands and what it did to the forecast. Logic: with a successful risk_regime result, the answer
+    must name the index family (policy uncertainty, EPU, geopolitical risk or GPR) and state its value or its percentile
+    (as a percentage or a share). None without such a result or an answer."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "risk_regime")
+        if not isinstance(r, dict):
+            continue
+        today = r.get("today") if isinstance(r.get("today"), dict) else None
+        if not today:
+            return None
+        named = bool(re.search(r"policy[- ]uncertainty|\bEPU\b|geopolitical|\bGPR\b", answer, re.I))
+        pct, val = today.get("percentile_10y"), today.get("value")
+        stated = ((isinstance(pct, (int, float)) and (_stated(answer, 100 * float(pct)) or _stated(answer, float(pct))))
+                  or (isinstance(val, (int, float)) and _stated(answer, float(val))))
+        if named and stated:
+            return _check("risk_stated", True, "the answer states the risk regime with its reading")
+        return _check("risk_stated", False,
+                      f"{today.get('label')} stood at {val} in {today.get('month')}, {float(pct or 0):.0%} of its last ten "
+                      f"years (regime {today.get('regime')}). State it beside the forecast with what it does to the band "
+                      "(coverage by regime) and whether any spike response is measured")
+    return None
+
+
 def check_league_backtest_stated(answer: str, history: Any) -> dict | None:
     """When the season model was scored on past seasons, the answer quotes how far its final table was out.
 
@@ -1110,7 +1139,8 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history),
              lambda: check_market_probability(history), lambda: check_price_anchor(history, goal),
              lambda: check_combination_stated(answer, history), lambda: check_league_backtest_stated(answer, history),
-             lambda: check_calibration_stated(answer, history), lambda: check_scenarios_traced(answer, history))
+             lambda: check_calibration_stated(answer, history), lambda: check_scenarios_traced(answer, history),
+             lambda: check_risk_stated(answer, history))
     for fn in calls:
         try:
             c = fn()

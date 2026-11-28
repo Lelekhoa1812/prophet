@@ -177,7 +177,7 @@ def _summary(rows: list[dict]) -> dict[str, float]:
 
 def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: int = 12, step: int | None = None,
         min_train: int = 24, season: int = 1, relative: bool = False, method: str = "inverse",
-        kappa: float = KAPPA) -> dict[str, Any]:
+        kappa: float = KAPPA, regimes: list[str | None] | None = None, regime_name: str = "") -> dict[str, Any]:
     """Score the candidates, combine them, and forecast from the end of ``values``.
 
     ``season`` sets the MASE scale (the mean absolute change over that many periods in the history before the first origin).
@@ -185,6 +185,9 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
     moves by multiples over the history, so recent windows would otherwise dominate); WIS is then a share of the level.
     ``method`` is "inverse" (inverse mean WIS, the default), "stack" (simplex weights that minimise past WIS), "trimmed"
     (equal weights over the candidates within TRIM of the best) or "equal".
+    ``regimes`` (optional, len(values) + 1 labels such as "low", "mid", "high"; label t is what a risk index said when t values
+    were known) reports the combination's backtest coverage by regime and conditions the band repair on today's regime
+    (forecast.regimes). ``regime_name`` names the index.
     Refuses fewer than two candidates or too short a series. A candidate that fails at an origin is left out there and its
     failure is counted; one that fails at the final origin is left out of the forecast.
     """
@@ -303,7 +306,13 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
             widened = any(x > 1.0 for x in lo_s + hi_s)
             if widened:
                 q_final = apply_side_scales(q_final, lo_s, hi_s)
+    regime = None
+    if regimes is not None and combo:
+        if len(regimes) != len(y) + 1:
+            raise ValueError("regimes needs one label per number of known values (len(values) + 1)")
+        regime, q_final = _regime_repair(regimes, regime_name, orig, comb_rows, actual, norm, q_final, y, relative)
     cs, es, ps = _summary(combo), _summary(equal), _summary(picked)
+    significance = _significance(combo, equal, picked, comb_rows, Q, actual, scale, norm, names, best, h, step)
     calib = calibration(np.stack([actual[i] for i, _ in comb_rows]), np.stack([q for _, q in comb_rows])) if comb_rows else None
     return {
         "horizon": h, "origins": [int(o) for o in orig], "step": step, "scored_origins": len(combo),
@@ -320,7 +329,9 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
         "shrinkage": {"lam": round(lam_final, 4), "kappa": kappa, "complete_windows": len(done), "method": method,
                       "relative": relative},
         "band": {"coverage_scored": cs["coverage"], "target": TARGET_COVERAGE, "widened": widened, "scales": scales,
-                 "final_band_held_past_errors": None if held is None else round(held, 3), "calibration": calib},
+                 "final_band_held_past_errors": None if held is None else round(held, 3), "calibration": calib,
+                 "regime": regime},
+        "significance": significance,
         "forecast": {"quantiles": q_final.tolist(), "median": q_final[:, 4].tolist(), "p10": q_final[:, 0].tolist(),
                      "p90": q_final[:, 8].tolist()},
         "members": {n: final_q[j].tolist() for j, n in enumerate(names) if ok[j]},
@@ -383,6 +394,70 @@ def calibration(actual: np.ndarray, q: np.ndarray) -> dict[str, Any]:
             "coverage_by_third": by_third, "reading": reading,
             "note": "shares over overlapping windows; a calibrated band puts 0.1 in each PIT bin, 0.1 below the 0.1 quantile "
                     "and 0.1 above the 0.9 one, and half the outcomes above the median"}
+
+
+MIN_REGIME_WINDOWS = 24      # windows that share today's regime before the band is conditioned on it
+
+
+def _regime_repair(regimes: list[str | None], name: str, orig: Any, comb_rows: list, actual: np.ndarray, norm: np.ndarray,
+                   q_final: np.ndarray, y: np.ndarray, relative: bool) -> tuple[dict[str, Any], np.ndarray]:
+    """Coverage of the combination's backtest bands by regime, and a class-conditional (Mondrian) split conformal repair: when
+    the windows whose origin shared today's regime would not have been held by today's band at 75 per cent, each tail is
+    widened with side scales fitted on those windows only. Never narrows."""
+    labs = [regimes[orig[i]] for i, _ in comb_rows]
+    inside = {lab: [] for lab in ("low", "mid", "high")}
+    err_abs = {lab: [] for lab in ("low", "mid", "high")}
+    for (i, q), lab in zip(comb_rows, labs):
+        if lab in inside:
+            inside[lab].append(float(np.mean((actual[i] >= q[:, 0]) & (actual[i] <= q[:, 8]))))
+            err_abs[lab].append(float(np.mean(np.abs(actual[i] - q[:, 4]) / norm[i])))
+    all_err = [e for v in err_abs.values() for e in v]
+    base_err = float(np.mean(all_err)) if all_err else float("nan")
+    current = regimes[len(y)]
+    out: dict[str, Any] = {
+        "index": name, "current": current,
+        "coverage_by_regime": {k: round(float(np.mean(v)), 3) for k, v in inside.items() if v},
+        "windows_by_regime": {k: len(v) for k, v in inside.items()},
+        "error_ratio_by_regime": {k: round(float(np.mean(v)) / base_err, 3) for k, v in err_abs.items()
+                                  if v and base_err > 0},
+        "widened": False}
+    mask = [lab == current for lab in labs]
+    if current is None or sum(mask) < MIN_REGIME_WINDOWS:
+        out["note"] = ("today's regime is unknown" if current is None else
+                       f"only {sum(mask)} backtest windows share today's regime ({current}); the band is not conditioned")
+        return out, q_final
+    lv = abs(y[-1]) if relative and y[-1] != 0 else 1.0
+    errs = np.stack([(actual[i] - q[:, 4]) / norm[i] for (i, q), m in zip(comb_rows, mask) if m])
+    cur = q_final[:, 4] / lv + errs
+    held = float(np.mean((cur >= q_final[:, 0] / lv) & (cur <= q_final[:, 8] / lv)))
+    out["held_in_regime"] = round(held, 3)
+    if held < TARGET_COVERAGE - COVERAGE_TOLERANCE:
+        lo_s, hi_s = side_scales(cur, np.broadcast_to(q_final / lv, (len(errs),) + q_final.shape))
+        if any(x > 1.0 for x in lo_s + hi_s):
+            q_final = apply_side_scales(q_final, lo_s, hi_s)
+            out.update(widened=True, scales={"lower": [round(x, 3) for x in lo_s], "upper": [round(x, 3) for x in hi_s]})
+    return out, q_final
+
+
+def _significance(combo: list, equal: list, picked: list, comb_rows: list, Q: np.ndarray, actual: np.ndarray, scale: float,
+                  norm: np.ndarray, names: list[str], best: str | None, h: int, step: int) -> dict[str, Any]:
+    """The combination's per-window WIS against equal weights, the best-so-far rule, no change (naive) and the best single
+    candidate in hindsight, each by Diebold-Mariano-HLN on every window and the exact sign-flip test on independent windows
+    (metrics.compare_losses). significant means both tests give p below 0.05 that the combination has the lower loss."""
+    from prophet_agent.forecast.metrics import compare_losses
+    if not combo:
+        return {}
+    cw = np.array([r["wis"].mean() for r in combo])
+    out = {"equal_weights": compare_losses(np.array([r["wis"].mean() for r in equal]), cw, h, step),
+           "best_so_far": compare_losses(np.array([r["wis"].mean() for r in picked]), cw, h, step)}
+    for label, name in (("naive", "naive" if "naive" in names else None), ("best_single", best)):
+        if name is None:
+            continue
+        j = names.index(name)
+        other = np.array([_score(actual[i], Q[i, j], scale, norm[i])["wis"].mean() if np.isfinite(Q[i, j]).all()
+                          else np.nan for i, _ in comb_rows])
+        out[label] = {"name": name, **compare_losses(other, cw, h, step)}
+    return out
 
 
 TRIM = 0.10                  # "trimmed": equal weights over the candidates within this share of the best past mean WIS

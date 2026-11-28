@@ -2210,3 +2210,51 @@ before 2018 (unemployment) and 2024 (cash rate).
   pass it that way. The mission finished on a simulation without this season's 110 results, and the evaluator refused it
   five times. simulate_season now reads football-data season URLs itself and accepts {run_id, file} for results, history
   and fixtures.
+
+### Mission 10, batch 2: policy and geopolitical risk, significance, structural candidates (opened 2026-11-28)
+
+**Why.** The owner repeated the review on 2026-11-28: forecasts must account for political, geopolitical, economic and other
+fundamentals, with depth a professional desk would recognise. Batch 1 made every candidate earn its weight; nothing in it
+read political or geopolitical risk, and no gain was tested for significance. Research behind the batch:
+`reports/Geopolitical risk and structural drivers.md` and its notes in `research_notes/Geopolitical risk and structural
+drivers/`. Its central finding: no source measures an out-of-sample gain from the GPR or EPU indices in a point forecast, from
+gold's real-yield or central-bank drivers at 1 to 12 months, or from S&P 500 valuation at 12 to 24 months. The effects have to
+be measured on each target's own history, and the build is judged on that.
+
+**Criteria.**
+- **M10-10 Risk layer.** The GPR (global, threats, acts, by country) and EPU (United States, Australia, global) indices are
+  read without a key; the regime each index was in is known at every backtest origin without look-ahead; the combination
+  reports its coverage by regime and conditions its band on today's regime when that regime's windows under-cover
+  (class-conditional split conformal); event studies give the target's move after past spikes, counted as measured only for
+  the index registered for the domain before measuring; the answer states the regime (check risk_stated).
+- **M10-11 Significance.** The combination's gain over equal weights, the best-so-far rule, no change and the best single
+  candidate is tested by Diebold-Mariano with the HLN correction on every window and by the exact sign-flip test on
+  independent windows; a gain is called significant only when both give p below 0.05.
+- **M10-12 Structural candidates.** A reaction-function (Taylor-type) path for the cash rate, an Okun or output-led path for
+  Australian unemployment, a real-yield and dollar model for gold, a valuation or yield-curve model for the S&P 500 and a
+  rating-based model for the EPL compete in the combination or the season backtest; each keeps its weight only by backtest.
+- **M10-13 Panel.** As M10-8, on the code of this batch.
+
+**Evidence.**
+- **Regimes change the band, not the centre (M10-10).** Real staging data, 240 monthly origins each, candidates without
+  TimesFM (rules, market and structural models), each index ranked against its last ten years at each origin:
+
+  | Target, horizon | Registered index | 10-90 coverage, low / mid / high regime | Mean error, high / low | Today | Band |
+  |---|---|---|---|---|---|
+  | Cash rate, 24 months | Australia EPU | 0.86 / 0.79 / 0.64 | 1.27 / 0.65 of average | high (85th percentile) | lower tail widened 1.6 to 3.0 times |
+  | Cash rate, 60 months | Australia EPU | 0.75 / 0.77 / 0.61 | 1.24 / 0.72 | high | widened (lower tail first third, upper tail last third) |
+  | AU unemployment, 24 months | Australia EPU | 0.87 / 0.81 / 0.70 | 1.24 / 0.65 | high | held 0.76 of high-regime errors: not widened |
+  | Gold, 12 months | global GPR | 0.78 / 0.79 / 0.74 | 1.09 / 0.95 | high (85th) | held 0.84: not widened |
+  | S&P 500, 24 months | US EPU | 0.89 / 0.76 / 0.71 | 1.23 / 0.69 | mid (61st) | not widened |
+
+  On every target the bands under-covered in high-risk regimes and over-covered in calm ones. Ranking each index against its
+  whole history instead put 113 of 214 cash-rate windows in "high" and 20 in "low", because newspaper-count indices drift
+  upward, so the trailing ten-year window was fixed before the table above was computed. No spike of a registered index moved
+  a target's centre by an amount whose 80 per cent interval excludes zero (cash rate, AU unemployment, gold, S&P 500). One
+  exploratory result: AU unemployment rose 0.27 points more over 24 months after global EPU spikes (80 per cent interval 0.04
+  to 0.93, 10 onsets). It is not counted, because global EPU is not the registered index and four indices were tried.
+- **Significance (M10-11).** None of the combination's gains over equal weights, the best-so-far rule or the best single
+  candidate is significant on any of the five cases. The S&P 500 combination beats no change at 24 months (DM-HLN p 0.002,
+  sign-flip p 0.018 on 9 independent windows). At 60 months the cash rate has three independent windows, so nothing can be
+  significant there. On simulated equal-loss MA(h) differences the DM-HLN test rejected 7 to 13 per cent of the time at 5
+  per cent, which is why the second test is required.

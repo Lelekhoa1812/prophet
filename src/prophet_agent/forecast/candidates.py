@@ -404,6 +404,23 @@ LEVEL_LOG_DOMAINS = ("precious_metal", "equity_index", "commodity", "currency")
 MEAN_REVERTING = ("labour_market", "policy_rate")
 
 
+def regime_labels(dates: list[str], *, domain: str, place: str | None,
+                  fetch: Fetch | None) -> tuple[list[str | None] | None, str, list[str]]:
+    """The risk regime known at every origin, from the index registered for the domain (opendata.risk_indices): labels for
+    t = 0..n, the index label, and notes. None when the domain has no index, the series has no dates or the index failed."""
+    from prophet_agent.forecast import regimes
+    from prophet_agent.opendata import risk_indices
+    key = risk_indices.domain_index(domain, place)
+    if key is None or fetch is None or not dates:
+        return None, "", []
+    try:
+        idx = risk_indices.fetch_index(key, fetch)
+    except Exception as exc:          # the band then stays unconditioned, and the note says why
+        return None, "", [f"the {risk_indices.INDICES[key][0]} index could not be read: {str(exc)[:120]}"]
+    d = Dated(idx["rows"], idx["label"])
+    return regimes.labels_for(cutoffs(dates), d.days, d.vals), idx["label"], []
+
+
 def build(values: Any, dates: list[str], *, domain: str, place: str | None, target: str = "", engine: Any = None,
           fetch: Fetch | None = None, season: int | None = None,
           drivers: dict[str, Any] | None = None) -> tuple[list[Candidate], list[str], bool]:

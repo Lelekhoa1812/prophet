@@ -157,6 +157,12 @@ def _combination_note(centre: dict) -> str:
     calib = (f" On the backtest, {cal['below_p10']:.0%} of outcomes fell below the 10th percentile and {cal['above_p90']:.0%} "
              f"above the 90th (10% each when calibrated); {cal['above_median']:.0%} came in above the median; the band was "
              f"{cal['reading']}." if cal.get("points") else "")
+    reg = band.get("regime") or {}
+    if reg.get("coverage_by_regime"):
+        cov = ", ".join(f"{k} {v:.0%}" for k, v in reg["coverage_by_regime"].items())
+        calib += (f" By the {reg.get('index')} at each origin, past bands held {cov} of outcomes; today the index is "
+                  f"{reg.get('current') or 'unknown'}" + (", and the band was widened for that regime." if reg.get("widened")
+                                                          else "."))
     return (f"Centre line and range: a weighted average of the quantiles of {len(centre.get('weights', []))} candidates "
             f"({ws}), weighted on {centre.get('origins')} backtest origins from {centre.get('first_origin')} and shrunk towards "
             f"equal weights. On those origins the combination's interval score was {gain(cb.get('vs_equal_wis_pct'))} against "
@@ -369,11 +375,13 @@ def _combination_centre(fc: dict, values: list[float], args: dict, name: str) ->
         dates = None
     cands, notes, rel = cd.build(values, dates or [], domain=domain, place=place, target=target, engine=_engine(),
                                  fetch=_fetch, season=_season_arg(args), drivers=source_covariates(args))
+    labels, regime_name, more = cd.regime_labels(dates or [], domain=domain, place=place, fetch=_fetch)
+    notes = notes + more
     n = len(values)
     min_train = max(24, min(60, n // 3))
     try:
         res = en.run(values, h, cands, n_origins=min(MAX_COMBINATION_ORIGINS, max(1, n - h - min_train)), step=1,
-                     min_train=min_train, relative=rel)
+                     min_train=min_train, relative=rel, regimes=labels, regime_name=regime_name)
     except ValueError as exc:
         return {**fc, "combination_check": {"adopt": False, "reason": str(exc)[:300], "notes": notes}}
     q = np.asarray(res["forecast"]["quantiles"], dtype=float)
@@ -382,7 +390,8 @@ def _combination_centre(fc: dict, values: list[float], args: dict, name: str) ->
     first = dates[res["origins"][0]][:10] if dates else f"value {res['origins'][0]}"
     centre = {"rule": "combination", "weights": res["weights"], "candidates": res["candidates"],
               "combination": res["combination"], "equal_weights": res["equal_weights"], "best_so_far": res["best_so_far"],
-              "band": res["band"], "shrinkage": res["shrinkage"], "origins": len(res["origins"]), "first_origin": first,
+              "band": res["band"], "significance": res["significance"], "shrinkage": res["shrinkage"],
+              "origins": len(res["origins"]), "first_origin": first,
               "notes": notes, "method": res["method"],
               "members_final": {k: [round(float(v), 4) for v in np.asarray(m)[:, 4]] for k, m in res["members"].items()},
               "reason": "every candidate scored on the same rolling origins; the drawn line and band are their weighted "
@@ -762,10 +771,16 @@ def observe(result: dict) -> dict:
                            f"{cb.get('vs_best_so_far_wis_pct')}%, against the best single in hindsight "
                            f"{cb.get('vs_best_single_wis_pct')}% ({cb.get('best_single')})",
             "origins": f"{centre.get('origins')} from {centre.get('first_origin')}", "band": centre.get("band"),
+            "significance": {k: {"vs": v.get("name", k), "significant": v.get("significant"),
+                                 "p_dm": (v.get("dm") or {}).get("p_cand_better"),
+                                 "p_independent": (v.get("independent") or {}).get("p_cand_better"),
+                                 "independent_windows": (v.get("independent") or {}).get("n")}
+                             for k, v in (centre.get("significance") or {}).items()},
             "members_final_median": centre.get("members_final"), "notes": centre.get("notes"),
             "state": "state the weights and the scores beside the forecast, and the band's calibration on the backtest "
-                     "(the share of outcomes below the 10th and above the 90th percentile, and any widening); a candidate "
-                     "with little weight still bounds the scenarios"}
+                     "(the share of outcomes below the 10th and above the 90th percentile, and any widening), the coverage by "
+                     "risk regime and today's regime, and whether the gain over each comparator is significant (both tests "
+                     "below 0.05) or not; a candidate with little weight still bounds the scenarios"}
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
     if result["forecast"].get("tilt_check"):      # the centre was flat: what trend rules were tried, and whether one was delivered
