@@ -176,3 +176,17 @@ def test_harness_runs_the_combination_on_the_driver_scan_file():
     assert step["args"]["source"] == adopted
     done = hist + [{"kind": "tool", "tool": "forecast_report", "args": step["args"]}]
     assert goal._combination_step(g, done, tools) is None
+
+
+def test_rba_monthly_tables_read_day_first_dates_and_sit_before_the_daily_series():
+    from prophet_agent.opendata.market_benchmark import parse_f1
+    body = ("F1.1 INTEREST RATES\nTitle,Cash Rate Target\nSeries ID,FIRMMCRT\n"
+            "31/01/1991,11.5\n28/02/1991,11.0\n31/03/1991,11.0\n").encode()
+    assert parse_f1(body)["FIRMMCRT"][1] == ("1991-02-28", 11.0)
+    us = "Series ID,X\n01/02/2024,1\n12/31/2024,2\n".encode()          # month-first when the second field passes 12
+    assert [d for d, _ in parse_f1(us)["X"]] == ["2024-01-02", "2024-12-31"]
+    monthly = cd.Dated([("1992-07-31", 6.0), ("2011-01-31", 4.9), ("2011-02-28", 4.8)], "m")
+    daily = cd.Dated([("2011-01-04", 4.75), ("2011-01-05", 4.76)], "d")
+    m = cd.merged(daily, monthly, "BAB")
+    assert m.asof(dt.date(1995, 1, 1)) == 6.0 and m.asof(dt.date(2011, 2, 28)) == 4.76     # daily wins once it starts
+    assert cd.merged(None, monthly, "x") is monthly and cd.merged(daily, None, "x") is daily

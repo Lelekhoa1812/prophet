@@ -2181,4 +2181,12 @@ Measured (real staging data unless stated; all on rolling origins, no window sco
 Wired: forecast_report centre 'combination' (with goal); the harness draws it once per forecast source and horizon for the
 driven domains, on the driver scan's adopted file when there is one (adopted drivers become the timesfm_drivers candidate,
 M10-5); answer checks combination_stated and league_backtest_stated. Open: M10-6 scenarios, M10-8 panel, RBA path history
-before 2018 (unemployment) and 2024 (cash rate), F1 history before 2011.
+before 2018 (unemployment) and 2024 (cash rate).
+
+- **Cash-rate history from 1990 (M10-2).** The daily F1 and F2 tables start in 2011 and 2013. The monthly tables (F1.1:
+  cash rate from 1990, bank bills from 1992; F2.1: bonds from 2013) are now laid in front of the daily ones, and their
+  day-first dates are read as such (the parser had taken them month-first). Measured on 240 monthly origins (real staging
+  data, RBA): at 12 months from 2006 the adjusted market path had the lowest WIS (0.386 against 0.436 for no change, 11 per
+  cent lower) and the combination 0.384, 5.0 per cent below best-so-far and level with equal weights; at 24 months the market
+  path 0.713 against 0.741, combination 0.704; at 60 months mean reversion led (1.143) and the combination (1.154) was level
+  with equal weights. Weights stay near equal (0.19 to 0.22): the market path's edge is small against the shrinkage.

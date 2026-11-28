@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import re
 import statistics
 from datetime import date, datetime
 from typing import Any, Callable
@@ -50,8 +51,20 @@ def _float(text: str) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def _iso(text: str) -> str | None:
-    for fmt in ("%d-%b-%Y", "%m/%d/%Y", "%Y-%m-%d"):
+def _slash_order(rows: list[list[str]]) -> tuple[str, ...]:
+    """The order of a file's slashed dates: day first when any first field exceeds 12 (RBA F1.1 writes 30/06/1969), month
+    first when any second field does, else month first as before."""
+    day_first = month_first = False
+    for r in rows:
+        m = re.match(r"^\s*(\d{1,2})/(\d{1,2})/\d{4}\s*$", r[0]) if r else None
+        if m:
+            day_first |= int(m.group(1)) > 12
+            month_first |= int(m.group(2)) > 12
+    return ("%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d") if day_first and not month_first else ("%d-%b-%Y", "%m/%d/%Y", "%Y-%m-%d")
+
+
+def _iso(text: str, formats: tuple[str, ...] = ("%d-%b-%Y", "%m/%d/%Y", "%Y-%m-%d")) -> str | None:
+    for fmt in formats:
         try:
             return datetime.strptime(text.strip(), fmt).date().isoformat()
         except ValueError:
@@ -67,8 +80,9 @@ def parse_f1(body: bytes) -> dict[str, list[tuple[str, float]]]:
     if ids is None:
         raise ValueError("the F1 file has no Series ID row; the RBA may have changed its layout")
     out: dict[str, list[tuple[str, float]]] = {sid.strip(): [] for sid in ids[1:] if sid.strip()}
+    formats = _slash_order(rows)
     for r in rows:
-        day = _iso(r[0]) if r else None
+        day = _iso(r[0], formats) if r else None
         if not day:
             continue
         for k, sid in enumerate(ids[1:], start=1):

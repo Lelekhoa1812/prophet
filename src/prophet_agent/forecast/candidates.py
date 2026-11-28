@@ -104,6 +104,18 @@ def parse_fred(body: bytes, label: str) -> Dated:
     return Dated(rows, label)
 
 
+def merged(daily: "Dated | None", monthly: "Dated | None", label: str) -> "Dated | None":
+    """A daily series with its monthly companion's earlier observations in front of it (RBA F1 and F1.1)."""
+    if monthly is None or not len(monthly.days):
+        return daily
+    if daily is None or not len(daily.days):
+        return monthly
+    early = monthly.days < daily.days[0]
+    rows = [(dt.date.fromordinal(int(d)).isoformat(), float(v)) for d, v in zip(monthly.days[early], monthly.vals[early])]
+    rows += [(dt.date.fromordinal(int(d)).isoformat(), float(v)) for d, v in zip(daily.days, daily.vals)]
+    return Dated(rows, label)
+
+
 def parse_rba(body: bytes) -> dict[str, Dated]:
     from prophet_agent.opendata.market_benchmark import parse_f1
     return {sid: Dated(rows, sid) for sid, rows in parse_f1(body).items() if rows}
@@ -425,6 +437,14 @@ def build(values: Any, dates: list[str], *, domain: str, place: str | None, targ
             cands.append(carry_candidate(y, cut, yrs, iv, bill, label))
         elif domain == "policy_rate" and place == "Australia":
             tables = {**parse_rba(fetch(RBA_CSV.format(table="f1"))), **parse_rba(fetch(RBA_CSV.format(table="f2")))}
+            for table in ("f1.1", "f2.1"):            # monthly tables reach back to 1990 for bills, 2013 for bonds
+                try:
+                    monthly = parse_rba(fetch(RBA_CSV.format(table=table)))
+                except Exception as exc:
+                    notes.append(f"RBA {table} could not be read: {str(exc)[:120]}")
+                    continue
+                for sid, _m in BAB + BONDS:
+                    tables[sid] = merged(tables.get(sid), monthly.get(sid[:-1]), sid)
             if abs(yrs - 1 / 12) > 0.02:
                 notes.append("the market path is monthly; the series is not, so it was left out")
             else:
