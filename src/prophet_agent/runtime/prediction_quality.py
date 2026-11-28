@@ -775,6 +775,25 @@ def check_market_stated(answer: str, history: Any) -> dict | None:
     return None
 
 
+def check_table_cells(answer: str, history: Any) -> dict | None:
+    """An answer table's cells match the tables the tools printed for the same entity and column (runtime/table_cells.py).
+
+    Live EPL: round 20261128-063203 put Nottingham Forest on 18 points (the printed standings say 9); round 20261128-091739
+    typed a standings table of 28, 27, 26, 25, 24... with Brighton first on 28 (printed: second on 22). Blocks with the
+    printed values, so the rewrite can correct each cell. None when no table cell can be judged."""
+    from prophet_agent.runtime import table_cells
+    if not answer or "|" not in answer:
+        return None
+    wrong = table_cells.mismatches(answer, history if isinstance(history, list) else [])
+    if not wrong:
+        return None
+    fixes = "; ".join(f"{w['entity']} {w['label']}: the answer says {w['stated']}, the tools printed "
+                      f"{', '.join(f'{p:g}' for p in w['printed'])}" for w in wrong[:8])
+    return _check("answer_table_matches_data", False,
+                  f"{len(wrong)} table cell(s) disagree with the tables the tools printed: {fixes}. Build the table from the "
+                  "printed or downloaded data (a sandbox cell that prints it), not from memory, and copy its values")
+
+
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
@@ -783,7 +802,8 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_signals_gathered(history, goal), lambda: check_league_signals(history),
              lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
              lambda: check_band_width(history, goal), lambda: check_market_band(history, goal),
-             lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history))
+             lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history),
+             lambda: check_table_cells(answer, history))
     for fn in calls:
         try:
             c = fn()

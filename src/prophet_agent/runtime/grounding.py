@@ -352,6 +352,10 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
     for token in untraced_dates(answer, history, goal):
         if token not in missing:
             missing.append(token)
+    from prophet_agent.runtime import table_cells
+    for cell in table_cells.mismatches(answer, history):
+        if cell["stated"] not in missing:
+            missing.append(cell["stated"])
     return missing
 
 
