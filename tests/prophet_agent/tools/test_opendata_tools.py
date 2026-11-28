@@ -229,7 +229,7 @@ def test_web_research_lands_a_data_table_for_the_sandbox(served, mission, monkey
     body = b"# year month day decimal co2\n" + b"1974 5 19 1974.3781 333.46\n" * 40
     served["content_type"], served["body"] = "text/plain", body
     url = "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt"
-    monkeypatch.setattr(rt, "registry_pages", lambda family: [])
+    monkeypatch.setattr(rt, "registry_pages", lambda family, about=None: [])
     monkeypatch.setattr(rt, "rank_report", lambda hits, **kw: (list(hits), 0))
     monkeypatch.setattr(rt, "web_search", lambda q, **kw: SearchResult(
         [Hit(title="NOAA", url=url, snippet="daily", rank=1, backend="bing")], backend="bing"))
