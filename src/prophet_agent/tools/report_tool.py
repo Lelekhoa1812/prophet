@@ -153,11 +153,15 @@ def _combination_note(centre: dict) -> str:
     gain = lambda v: "n/a" if v is None else f"{v:+.1f}%"
     widened = (" The band was widened, tail by tail, because its widths would have held "
                f"{band.get('final_band_held_past_errors')} of the past errors." if band.get("widened") else "")
+    cal = band.get("calibration") or {}
+    calib = (f" On the backtest, {cal['below_p10']:.0%} of outcomes fell below the 10th percentile and {cal['above_p90']:.0%} "
+             f"above the 90th (10% each when calibrated); {cal['above_median']:.0%} came in above the median; the band was "
+             f"{cal['reading']}." if cal.get("points") else "")
     return (f"Centre line and range: a weighted average of the quantiles of {len(centre.get('weights', []))} candidates "
             f"({ws}), weighted on {centre.get('origins')} backtest origins from {centre.get('first_origin')} and shrunk towards "
             f"equal weights. On those origins the combination's interval score was {gain(cb.get('vs_equal_wis_pct'))} against "
             f"equal weights and {gain(cb.get('vs_best_so_far_wis_pct'))} against picking the best candidate so far; its 10-90 "
-            f"band held {cb.get('coverage', float('nan')):.0%} of outcomes.{widened}")
+            f"band held {cb.get('coverage', float('nan')):.0%} of outcomes.{calib}{widened}")
 
 
 def _method_note(config: dict, centre: dict | None = None) -> str:
@@ -759,8 +763,9 @@ def observe(result: dict) -> dict:
                            f"{cb.get('vs_best_single_wis_pct')}% ({cb.get('best_single')})",
             "origins": f"{centre.get('origins')} from {centre.get('first_origin')}", "band": centre.get("band"),
             "members_final_median": centre.get("members_final"), "notes": centre.get("notes"),
-            "state": "state the weights and the scores beside the forecast; a candidate with little weight still bounds the "
-                     "scenarios"}
+            "state": "state the weights and the scores beside the forecast, and the band's calibration on the backtest "
+                     "(the share of outcomes below the 10th and above the 90th percentile, and any widening); a candidate "
+                     "with little weight still bounds the scenarios"}
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
     if result["forecast"].get("tilt_check"):      # the centre was flat: what trend rules were tried, and whether one was delivered

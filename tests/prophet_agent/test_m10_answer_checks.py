@@ -28,3 +28,22 @@ def test_league_backtest_error_must_be_quoted():
 def test_both_run_inside_prediction_checks():
     names = {c["name"] for c in pq.prediction_checks(COMB + LEAGUE, "goal", "an answer")}
     assert {"combination_stated", "league_backtest_stated"} <= names
+
+
+CAL = [{"kind": "tool", "tool": "forecast_report", "result": {"combination": {
+    "weights": {"timesfm": 0.5, "naive": 0.5},
+    "band": {"coverage_scored": 0.74, "widened": True, "calibration": {
+        "points": 240, "below_p10": 0.14, "above_p90": 0.12, "above_median": 0.55, "reading": "about right in width"}}}}}]
+
+
+def test_band_calibration_must_be_stated_with_any_widening():
+    """M10-7: the answer says how the combination's band did on the backtest, and that it was widened."""
+    bad = pq.check_calibration_stated("The range is 4.2 to 5.6 per cent.", CAL)
+    assert bad["ok"] is False and "74%" in bad["detail"] and "widened" in bad["detail"]
+    half = pq.check_calibration_stated("On the backtest the 10-90 band held 74% of outcomes.", CAL)
+    assert half["ok"] is False                                           # the widening is not mentioned
+    good = pq.check_calibration_stated("On the backtest the band held 74% of outcomes (14% fell below the 10th "
+                                       "percentile, 12% above the 90th), so each tail was widened.", CAL)
+    assert good["ok"] is True
+    assert pq.check_calibration_stated("text", COMB) is None
+    assert "calibration_stated" in {c["name"] for c in pq.prediction_checks(CAL, "goal", "an answer")}

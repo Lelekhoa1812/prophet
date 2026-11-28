@@ -1000,6 +1000,39 @@ def check_combination_stated(answer: str, history: Any) -> dict | None:
     return None
 
 
+def check_calibration_stated(answer: str, history: Any) -> dict | None:
+    """When the pack draws the combination, the answer says how its band did on the backtest (M10-7).
+
+    Motivation (Mission 10, M10-7): a range is only as good as its record; the reader needs to know whether past bands held
+    80 per cent of outcomes. Logic: with a successful combination forecast_report whose band carries a calibration, the
+    answer must state the 10-90 coverage on the backtest, or the shares below the 10th and above the 90th percentile. When
+    the band was widened, the answer must also say so ("widen"). None without such a pack or without an answer."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "forecast_report")
+        if not isinstance(r, dict):
+            continue
+        comb = r.get("combination")
+        band = comb.get("band") if isinstance(comb, dict) else None
+        cal = band.get("calibration") if isinstance(band, dict) else None
+        if not isinstance(cal, dict) or not cal.get("points"):
+            return None
+        cov = band.get("coverage_scored")
+        cov_ok = isinstance(cov, (int, float)) and (_stated(answer, 100 * float(cov)) or _stated(answer, float(cov)))
+        tails_ok = all(isinstance(cal.get(k), (int, float)) and _stated(answer, 100 * float(cal[k]))
+                       for k in ("below_p10", "above_p90"))
+        widened_ok = not band.get("widened") or "widen" in answer.lower()
+        if (cov_ok or tails_ok) and widened_ok:
+            return _check("calibration_stated", True, "the answer states how the band did on the backtest")
+        return _check("calibration_stated", False,
+                      f"the combination's 10-90 band held {float(cov or 0):.0%} of outcomes on the backtest "
+                      f"({cal['below_p10']:.0%} below the 10th percentile, {cal['above_p90']:.0%} above the 90th; "
+                      f"{cal.get('reading')})" + ("; it was widened tail by tail for that" if band.get("widened") else "")
+                      + ". State this beside the range")
+    return None
+
+
 def check_league_backtest_stated(answer: str, history: Any) -> dict | None:
     """When the season model was scored on past seasons, the answer quotes how far its final table was out.
 
@@ -1042,7 +1075,8 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history),
              lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history),
              lambda: check_market_probability(history), lambda: check_price_anchor(history, goal),
-             lambda: check_combination_stated(answer, history), lambda: check_league_backtest_stated(answer, history))
+             lambda: check_combination_stated(answer, history), lambda: check_league_backtest_stated(answer, history),
+             lambda: check_calibration_stated(answer, history))
     for fn in calls:
         try:
             c = fn()

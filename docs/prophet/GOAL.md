@@ -2190,3 +2190,11 @@ before 2018 (unemployment) and 2024 (cash rate).
   cent lower) and the combination 0.384, 5.0 per cent below best-so-far and level with equal weights; at 24 months the market
   path 0.713 against 0.741, combination 0.704; at 60 months mean reversion led (1.143) and the combination (1.154) was level
   with equal weights. Weights stay near equal (0.19 to 0.22): the market path's edge is small against the shrinkage.
+- **Calibration (M10-7).** The combination now reports PIT shares in ten bins, the shares below the 10th and above the 90th
+  percentile, the share above the median and 10-90 coverage by horizon third, with a reading; the answer check
+  calibration_stated asks for the coverage (or both tail shares) and, when the band was widened, says so. Cash rate on the
+  same 240 origins (real staging data): 12 months 10.7 per cent below and 13.3 per cent above, coverage 0.77/0.76/0.76 by
+  third (about right); 24 months 9.5 and 17.1 per cent (the upper tail is thin: rises came faster than the band allowed);
+  60 months 14.7 and 16.3 per cent, coverage falling to 0.59 in the last third and 35 per cent of outcomes above the median
+  (too narrow and centred high: the 1990s and 2010s falls). The final band held 75 per cent or more of the past errors on
+  today's median at every horizon, so no widening was applied; the reading is reported either way.

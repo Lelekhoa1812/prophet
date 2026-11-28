@@ -102,3 +102,16 @@ def test_refuses_short_series_and_single_candidate():
         en.run(y, 4, [_drift_cand(y)])
     with pytest.raises(ValueError, match="too short"):
         en.run(y, 12, [_drift_cand(y), _flat_cand(y)], min_train=24)
+
+
+def test_calibration_reads_pit_shares_and_names_a_narrow_band():
+    """M10-7: PIT shares from the backtest windows; a calibrated normal band puts about 0.1 in each bin."""
+    rng = np.random.default_rng(5)
+    z = np.array([-1.2816, -0.8416, -0.5244, -0.2533, 0.0, 0.2533, 0.5244, 0.8416, 1.2816])
+    q = np.broadcast_to(z, (400, 6, 9)).copy()
+    good = en.calibration(rng.normal(0, 1, (400, 6)), q)
+    assert all(abs(b - 0.1) < 0.03 for b in good["pit_bins"]) and good["reading"].startswith("about right")
+    assert abs(good["below_p10"] - 0.1) < 0.03 and len(good["coverage_by_third"]) == 3
+    narrow = en.calibration(rng.normal(0.8, 2, (400, 6)), q)
+    assert narrow["reading"].startswith("too narrow") and "centre ran low" in narrow["reading"]
+    assert en.pit(np.array([[-5.0, 5.0, 0.0]]), q[:1, :3])[0].tolist() == [0.05, 0.95, 0.5]

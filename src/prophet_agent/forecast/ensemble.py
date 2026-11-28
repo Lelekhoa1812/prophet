@@ -304,6 +304,7 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
             if widened:
                 q_final = apply_side_scales(q_final, lo_s, hi_s)
     cs, es, ps = _summary(combo), _summary(equal), _summary(picked)
+    calib = calibration(np.stack([actual[i] for i, _ in comb_rows]), np.stack([q for _, q in comb_rows])) if comb_rows else None
     return {
         "horizon": h, "origins": [int(o) for o in orig], "step": step, "scored_origins": len(combo),
         "mase_scale": scale, "candidates": table,
@@ -319,7 +320,7 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
         "shrinkage": {"lam": round(lam_final, 4), "kappa": kappa, "complete_windows": len(done), "method": method,
                       "relative": relative},
         "band": {"coverage_scored": cs["coverage"], "target": TARGET_COVERAGE, "widened": widened, "scales": scales,
-                 "final_band_held_past_errors": None if held is None else round(held, 3)},
+                 "final_band_held_past_errors": None if held is None else round(held, 3), "calibration": calib},
         "forecast": {"quantiles": q_final.tolist(), "median": q_final[:, 4].tolist(), "p10": q_final[:, 0].tolist(),
                      "p90": q_final[:, 8].tolist()},
         "members": {n: final_q[j].tolist() for j, n in enumerate(names) if ok[j]},
@@ -331,6 +332,57 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
                    + f"), shrunk towards equal weights by k/(k+{kappa:g}); quantiles are averaged with those weights"
                    + ("; each window scored relative to the level at its origin" if relative else "")),
     }
+
+
+PIT_BINS = 10
+
+
+def pit(actual: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Probability integral transform of each outcome under the nine-quantile forecast: the CDF read off the quantiles by
+    linear interpolation inside 0.1..0.9. Outcomes below the 0.1 quantile or above the 0.9 one get 0.05 and 0.95 (their bin
+    is all that nine quantiles can say). Shapes: actual (..., h), q (..., h, 9)."""
+    a = np.asarray(actual, float)
+    q = np.sort(np.asarray(q, float), axis=-1)
+    out = np.empty(a.shape)
+    for idx in np.ndindex(a.shape):
+        qq, x = q[idx], a[idx]
+        if x < qq[0]:
+            out[idx] = 0.05
+        elif x > qq[-1]:
+            out[idx] = 0.95
+        else:
+            out[idx] = float(np.interp(x, qq, QS)) if np.ptp(qq) > 0 else 0.5
+    return out
+
+
+def calibration(actual: np.ndarray, q: np.ndarray) -> dict[str, Any]:
+    """How well the backtest bands were calibrated (M10-7): PIT shares in ten bins (0.1 each when calibrated), the share of
+    outcomes below the 0.1 quantile and above the 0.9 one, the share above the median, 10-90 coverage by horizon third,
+    and a reading of the pattern. Windows overlap, so the shares are descriptive; no p-value is given."""
+    p = pit(actual, q)
+    flat = p[np.isfinite(p)]
+    if not len(flat):
+        return {"windows": 0}
+    hist = np.histogram(np.clip(flat, 0, 1 - 1e-9), bins=PIT_BINS, range=(0, 1))[0] / len(flat)
+    below, above = float(np.mean(flat < 0.1)), float(np.mean(flat > 0.9))
+    upper_half = float(np.mean(flat > 0.5))
+    inside = (actual >= q[..., 0]) & (actual <= q[..., 8])
+    by_third = [round(float(inside[:, idx].mean()), 3) for idx in _thirds(actual.shape[-1])]
+    if below + above > 0.3:
+        reading = "too narrow: more outcomes fell outside the 10-90 band than the 20 per cent a calibrated band lets out"
+    elif below + above < 0.1:
+        reading = "too wide: fewer than 10 per cent of outcomes fell outside the 10-90 band"
+    else:
+        reading = "about right in width"
+    if upper_half > 0.6:
+        reading += "; outcomes came in above the median more often than not (the centre ran low)"
+    elif upper_half < 0.4:
+        reading += "; outcomes came in below the median more often than not (the centre ran high)"
+    return {"windows": int(actual.shape[0]), "points": int(len(flat)), "pit_bins": [round(float(x), 3) for x in hist],
+            "below_p10": round(below, 3), "above_p90": round(above, 3), "above_median": round(upper_half, 3),
+            "coverage_by_third": by_third, "reading": reading,
+            "note": "shares over overlapping windows; a calibrated band puts 0.1 in each PIT bin, 0.1 below the 0.1 quantile "
+                    "and 0.1 above the 0.9 one, and half the outcomes above the median"}
 
 
 TRIM = 0.10                  # "trimmed": equal weights over the candidates within this share of the best past mean WIS
