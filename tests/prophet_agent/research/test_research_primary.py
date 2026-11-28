@@ -10,7 +10,7 @@ def test_every_registry_page_is_an_official_tier_one_source(family):
     pages = registry_pages(family)
     assert pages, family
     for page in pages:
-        assert set(page) == {"name", "url", "what"}, page
+        assert {"name", "url", "what"} <= set(page) <= {"name", "url", "what", "place"}, page
         assert page["url"].startswith("https://"), page
         assert credibility(page["url"])[0] == 1, (family, page["url"])
 
@@ -81,3 +81,15 @@ def test_round_2_panel_goals_reach_their_official_data_files():
     assert detect_family("monthly global surface temperature anomaly from NASA GISTEMP") == "climate"
     assert "NW2_EPG0_SWO_R48_BCFw.xls" in " ".join(p["url"] for p in registry_pages("gas"))
     assert "M13.3.1599.20.AUS.M" in " ".join(p["url"] for p in registry_pages("labour"))
+
+
+def test_registry_keeps_pages_for_the_place_the_query_names():
+    """Panel AUUNEMP (2026-11-28): an Australian unemployment query was handed the US UNRATE file as a primary page."""
+    urls = lambda about: {p["url"] for p in registry_pages("labour", about)}
+    au = urls("Australia unemployment rate seasonally adjusted latest")
+    assert any("abs.gov.au" in u for u in au) and not any("UNRATE" in u for u in au)
+    us = urls("United States unemployment rate")
+    assert any("UNRATE" in u for u in us) and not any("abs.gov.au" in u for u in us)
+    assert len(urls("unemployment rate")) == len(registry_pages("labour"))        # no place named: every page stays
+    assert {p["name"] for p in registry_pages("inflation", "UK CPI")} >= {"ONS inflation and price indices"}
+    assert not any(p.get("place") == "United States" for p in registry_pages("inflation", "UK CPI"))

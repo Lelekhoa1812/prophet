@@ -257,7 +257,7 @@ def registry_hits(query: str) -> list[Hit]:
     so a caller that filters on ``source`` never presents one as a search hit. The list is empty when no family matches.
     """
     hits: list[Hit] = []
-    for page in registry_pages(detect_family(query)):
+    for page in registry_pages(detect_family(query), query):
         url = normalise_url(page["url"])
         tier, score = credibility(url)
         hits.append(Hit(title=page["name"], url=url, snippet=page.get("what", ""), date=None,

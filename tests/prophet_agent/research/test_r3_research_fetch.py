@@ -157,7 +157,7 @@ def test_web_research_does_not_quote_rows_from_a_data_table(monkeypatch, identit
     table = "\n".join(f"1974 5 19 1974.3781 {333.0 + i:.2f}" for i in range(20))
     hits = [hit("https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_daily_mlo.txt", 1)]
     monkeypatch.setattr(rt, "web_search", lambda q, **kw: SearchResult(hits, backend="bing"))
-    monkeypatch.setattr(rt, "registry_pages", lambda family: [])
+    monkeypatch.setattr(rt, "registry_pages", lambda family, about=None: [])
     monkeypatch.setattr(rt, "fetch_page", lambda url, **kw: Page(
         url=url, final_url=url, text=table, ok=True, note="text clipped to 60000 characters"))
     out = research().fn({"queries": ["Mauna Loa daily CO2"], "fetch_top": 1}, "key")

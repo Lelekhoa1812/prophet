@@ -78,17 +78,17 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
     "inflation": (
         {"name": "FRED CPI-U all items, seasonally adjusted (CPIAUCSL)",
          "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL",
-         "what": "US consumer price index for all urban consumers, monthly, CSV"},
+         "what": "US consumer price index for all urban consumers, monthly, CSV", "place": "United States"},
         {"name": "BLS CPI release schedule", "url": "https://www.bls.gov/schedule/news_release/cpi.htm",
-         "what": "US consumer price index release dates"},
+         "what": "US consumer price index release dates", "place": "United States"},
         {"name": "BLS consumer price index", "url": "https://www.bls.gov/cpi/",
-         "what": "US consumer price index, latest release"},
+         "what": "US consumer price index, latest release", "place": "United States"},
         {"name": "Eurostat release calendar", "url": "https://ec.europa.eu/eurostat/news/release-calendar",
-         "what": "euro area flash HICP and other release dates"},
+         "what": "euro area flash HICP and other release dates", "place": "Euro area"},
         {"name": "ONS inflation and price indices", "url": "https://www.ons.gov.uk/economy/inflationandpriceindices",
-         "what": "UK consumer price inflation"},
+         "what": "UK consumer price inflation", "place": "United Kingdom"},
         {"name": "Japan Statistics Bureau consumer price index", "url": "https://www.stat.go.jp/english/data/cpi/index.html",
-         "what": "Japan consumer price index"},
+         "what": "Japan consumer price index", "place": "Japan"},
     ),
     "gold": (
         {"name": "LBMA prices and data", "url": "https://www.lbma.org.uk/prices-and-data",
@@ -101,9 +101,9 @@ PRIMARY_SOURCES: dict[str, tuple[dict[str, str], ...]] = {
         {"name": "ABS Labour Force, unemployment rate, persons, seasonally adjusted (SDMX CSV)",
          "url": "https://data.api.abs.gov.au/rest/data/ABS,LF,1.0.0/M13.3.1599.20.AUS.M?format=csv",
          "what": "Australia monthly unemployment rate, percent; download_open_data abs_sdmx flow ABS,LF,1.0.0 key "
-                 "M13.3.1599.20.AUS.M"},
+                 "M13.3.1599.20.AUS.M", "place": "Australia"},
         {"name": "FRED US unemployment rate (UNRATE)", "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=UNRATE",
-         "what": "US civilian unemployment rate, monthly, seasonally adjusted, CSV"},
+         "what": "US civilian unemployment rate, monthly, seasonally adjusted, CSV", "place": "United States"},
     ),
     "climate": (
         {"name": "NASA GISTEMP v4 global land-ocean temperature anomaly",
@@ -188,6 +188,25 @@ def detect_family(text: str) -> str | None:
     return best
 
 
-def registry_pages(family: str | None) -> list[dict[str, str]]:
-    """Copies of the primary pages for a family; an empty list for None or an unknown family."""
-    return [dict(page) for page in PRIMARY_SOURCES.get(family or "", ())]
+# Places a query or region can name, for registry pages that describe one country (Panel AUUNEMP, 2026-11-28: a research
+# lane for Australia's unemployment rate was handed the US UNRATE file as a primary page and reported US figures).
+PLACES: dict[str, re.Pattern] = {
+    "Australia": re.compile(r"\baustrali|\babs\b|\brba\b", re.I),
+    "United States": US_REGION,
+    "Vietnam": re.compile(r"\bviet\s?nam", re.I),
+    "United Kingdom": re.compile(r"\b(?:uk|united kingdom|britain|british|ons)\b", re.I),
+    "Euro area": re.compile(r"\b(?:euro area|eurozone|euro zone|eurostat|hicp)\b", re.I),
+    "Japan": re.compile(r"\bjapan", re.I),
+}
+
+
+def places_named(text: str | None) -> set[str]:
+    return {place for place, pattern in PLACES.items() if text and pattern.search(text)}
+
+
+def registry_pages(family: str | None, about: str | None = None) -> list[dict[str, str]]:
+    """Copies of the primary pages for a family; an empty list for None or an unknown family. When ``about`` (the queries
+    or the region) names a place, pages tied to another place are left out; pages tied to no place always stay."""
+    pages = [dict(page) for page in PRIMARY_SOURCES.get(family or "", ())]
+    named = places_named(about)
+    return [p for p in pages if not p.get("place") or not named or p["place"] in named]

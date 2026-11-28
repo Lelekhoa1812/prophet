@@ -300,7 +300,7 @@ def _is_data_file_url(url: str) -> bool:
 
 def _registry_hits(query: str) -> list[dict]:
     """The official pages for the query's family. Search did not return the NOAA daily file, so the planner invented a 404."""
-    pages = registry_pages(detect_family(query))
+    pages = registry_pages(detect_family(query), query)
     hits = []
     for page in pages:
         tier, _score = credibility(page["url"])
@@ -499,7 +499,7 @@ def web_research_tool(args: Any, _key: str) -> dict:
     scoped, dropped_queries = _scope_queries(queries, region, units)
 
     # round 0: the primary pages for the family, read directly without a search
-    registry = registry_pages(family)[:MAX_REGISTRY]
+    registry = registry_pages(family, " ".join([*queries, region]))[:MAX_REGISTRY]
     registry_keys = {normalise_url(p["url"]) for p in registry}
     registry_todo = [p for p in registry if normalise_url(p["url"]) not in exclude]
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
