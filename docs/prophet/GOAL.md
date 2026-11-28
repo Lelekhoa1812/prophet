@@ -2258,3 +2258,20 @@ be measured on each target's own history, and the build is judged on that.
   sign-flip p 0.018 on 9 independent windows). At 60 months the cash rate has three independent windows, so nothing can be
   significant there. On simulated equal-loss MA(h) differences the DM-HLN test rejected 7 to 13 per cent of the time at 5
   per cent, which is why the second test is required.
+- **Structural candidates (M10-12).** Direct regressions, one per step ahead, fitted on windows that ended before each
+  origin with a light ridge penalty (0.1 times the rows on standardised slopes, fixed before measuring), drivers read as
+  published by each cutoff. Real staging data, 240 monthly origins, WIS relative to no change on each model's own windows
+  (below 1 is better):
+
+  | Target, horizon | Structural model | Drivers | WIS against no change | Best candidate (same measure) |
+  |---|---|---|---|---|
+  | Cash rate, 24 months | reaction function | trimmed-mean inflation gap to 2.5 %, unemployment gap, rate level and 3-month change (RBA G1, H5; from 1993) | 1.42 (coverage 0.42) | market path 0.96 |
+  | AU unemployment, 24 months | output-gap (Okun) | year-ended real GDP growth (RBA H1), gap to ten-year mean, 3-month change | 1.05 | vacancy model 0.99 |
+  | Gold, 12 months | real yield and dollar | 10-year TIPS yield and its 12-month change, dollar 12-month change, momentum (FRED) | 0.96 (167 windows from 2011) | drift 0.92 |
+  | S&P 500, 24 months | curve and credit | 10y-3m spread, Baa spread and its 6-month change, NFCI, momentum (FRED) | 1.00 | market forward 0.84 |
+
+  None of the four beats the best simple or market candidate, which matches the research (no measured out-of-sample gain
+  from these drivers at these horizons). They stay in the combination, where the weights shrunk towards equal give them
+  0.14 to 0.26; the cash-rate reaction function costs the combination 0.5 per cent of WIS there. Candidates are now also
+  scored against no change on exactly their own windows, because a model that fails before its drivers exist (gold's
+  real-yield model before 2011) looked best on raw WIS from a calmer stretch.

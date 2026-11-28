@@ -268,9 +268,22 @@ def run(values: Any, horizon: int, candidates: list[Candidate], *, n_origins: in
                             if np.isfinite(Q[i, names.index(n)]).all()]) for n in names}
     # Each candidate is reported on the windows the combination was scored on, so the figures compare; its score over every
     # origin is kept beside it.
+    # Each candidate against no change on exactly its own windows: candidates that fail at some origins are scored on fewer
+    # windows, and a raw WIS from a calmer stretch would flatter them (gold's real-yield model has no data before 2011).
+    rel_naive: dict[str, float | None] = {}
+    if "naive" in names:
+        jn = names.index("naive")
+        for n in names:
+            j = names.index(n)
+            both = [i for i in scored_idx if np.isfinite(Q[i, j]).all() and np.isfinite(Q[i, jn]).all()]
+            a = np.mean([_score(actual[i], Q[i, j], scale, norm[i])["wis"].mean() for i in both]) if both else np.nan
+            b = np.mean([_score(actual[i], Q[i, jn], scale, norm[i])["wis"].mean() for i in both]) if both else np.nan
+            rel_naive[n] = round(float(a / b), 4) if both and b > 0 else None
     table = [{"name": n, "kind": candidates[names.index(n)].kind, **on_same[n], "all_origins": _summary(per_cand[n]),
-              "failed_origins": len(failures[n]), "note": candidates[names.index(n)].note} for n in names]
-    best = min((n for n in names if on_same[n]["origins"]), key=lambda n: on_same[n]["wis"], default=None)
+              "wis_vs_naive_same_windows": rel_naive.get(n), "failed_origins": len(failures[n]),
+              "note": candidates[names.index(n)].note} for n in names]
+    full = [n for n in names if on_same[n]["origins"] >= 0.8 * max(1, len(scored_idx))]
+    best = min(full or [n for n in names if on_same[n]["origins"]], key=lambda n: on_same[n]["wis"], default=None)
     combo_cov = _summary(combo)["coverage"]
     # Forecast from the end of the series.
     T = len(y)

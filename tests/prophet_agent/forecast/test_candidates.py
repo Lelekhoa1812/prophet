@@ -86,7 +86,8 @@ def test_build_adds_the_gold_forward_and_scores_it_with_the_rules():
     urls = []
     cands, notes, rel = cd.build(y, _months(220, (2005, 1)), domain="precious_metal", place=None, target="gold",
                                  fetch=_fake_fetch(urls))
-    assert rel and [c.name for c in cands] == ["naive", "drift", "market_forward"] and not notes
+    assert rel and [c.name for c in cands] == ["naive", "drift", "market_forward"]
+    assert notes and all("real-yield and dollar model" in n for n in notes)       # FRED DFII10 is offline in this fake
     res = en.run(y, 12, cands, n_origins=60, step=1, min_train=80, relative=True)
     assert {w["name"] for w in res["weights"]} == {"naive", "drift", "market_forward"}
     assert all(c["origins"] == res["scored_origins"] for c in res["candidates"])
@@ -190,3 +191,27 @@ def test_rba_monthly_tables_read_day_first_dates_and_sit_before_the_daily_series
     m = cd.merged(daily, monthly, "BAB")
     assert m.asof(dt.date(1995, 1, 1)) == 6.0 and m.asof(dt.date(2011, 2, 28)) == 4.76     # daily wins once it starts
     assert cd.merged(None, monthly, "x") is monthly and cd.merged(daily, None, "x") is daily
+
+
+def test_structural_direct_regressions_fit_only_on_windows_before_the_origin():
+    """Mission 10 batch 2: a structural model's forecast from an origin never changes when later values change."""
+    rng = np.random.default_rng(4)
+    n = 200
+    x = np.cumsum(rng.normal(0, 1, n))
+    y = 5 + 0.3 * np.concatenate([[0.0], x[:-1]]) + rng.normal(0, 0.2, n)
+    F = [np.array([1.0, x[i]]) if i >= 10 else None for i in range(n)]
+    c = cd.direct_candidate("toy", y, F, log=False, note="toy")
+    before = c.predict(150, 6)
+    y2 = y.copy()
+    y2[150:] += 50
+    assert np.allclose(before, cd.direct_candidate("toy", y2, F, log=False, note="toy").predict(150, 6))
+    with pytest.raises(ValueError, match="too few"):
+        c.predict(40, 6)
+
+
+def test_each_structural_model_is_built_on_its_own():
+    urls = []
+    out, notes = cd.structural_candidates(np.linspace(1, 2, 300), cd.cutoffs(_months(300, (2000, 1))),
+                                          domain="equity_index", place=None, target="spx", fetch=_fake_fetch(urls))
+    assert out == [] and notes and "curve and credit model" in notes[0]
+    assert any("T10Y3M" in u for u in urls)

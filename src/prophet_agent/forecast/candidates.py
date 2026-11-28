@@ -342,6 +342,155 @@ def vacancy_candidate(y: np.ndarray, cut: list[dt.date], jv: Dated) -> Candidate
                   note="direct regression on the 3-month change, the gap to the ten-year mean and vacancy growth (ABS)")
 
 
+# ---------------------------------------------------------------- structural direct regressions (Mission 10 batch 2)
+
+RIDGE = 0.1                  # slope penalty as a share of the rows fitted, on standardised features (fixed before measuring)
+MIN_ROWS = 48
+
+
+def direct_candidate(name: str, y: np.ndarray, F: list[np.ndarray | None], *, log: bool, note: str,
+                     min_rows: int = MIN_ROWS, kind: str = "structural") -> Candidate:
+    """A structural model as direct regressions, one per step ahead: the change of the target over k steps (a log ratio when
+    ``log``) on features known at each value (F[i], None where unknown), fitted on windows that ended before the origin, with
+    a light ridge penalty on the standardised slopes (RIDGE times the rows) so a short history cannot fit noise freely."""
+    def path(t: int, h: int) -> np.ndarray:
+        x0 = F[t - 1]
+        if x0 is None:
+            raise ValueError(f"{name}: a driver is unknown at this origin")
+        out = np.empty(h)
+        for k in range(1, h + 1):
+            idx = [i for i in range(t - k) if F[i] is not None]
+            if len(idx) < min_rows:
+                raise ValueError(f"{name}: too few complete windows to fit ({len(idx)})")
+            X = np.array([F[i] for i in idx])
+            Y = np.array([np.log(y[i + k] / y[i]) if log else y[i + k] - y[i] for i in idx])
+            mu, sd = X[:, 1:].mean(axis=0), X[:, 1:].std(axis=0)
+            sd = np.where(sd > 0, sd, 1.0)
+            Z = np.column_stack([np.ones(len(X)), (X[:, 1:] - mu) / sd])
+            P = RIDGE * len(X) * np.eye(Z.shape[1])
+            P[0, 0] = 0.0
+            b = np.linalg.solve(Z.T @ Z + P, Z.T @ Y)
+            z0 = np.concatenate([[1.0], (x0[1:] - mu) / sd])
+            step = float(z0 @ b)
+            out[k - 1] = y[t - 1] * np.exp(step) if log else y[t - 1] + step
+        return out
+    return banded(name, kind, y, path, log=log, note=note)
+
+
+def _asof(d: Dated, day: dt.date) -> float | None:
+    try:
+        return d.asof(day)
+    except ValueError:
+        return None
+
+
+def reaction_function_candidate(y: np.ndarray, cut: list[dt.date], trimmed: Dated, unemp: Dated) -> Candidate:
+    """The cash rate's change over k months on trimmed-mean inflation's gap to 2.5 per cent, the unemployment rate's gap to
+    its ten-year mean, the rate's level and its 3-month change: a Taylor-type reaction function in reduced form, fitted from
+    1993 (inflation targeting) on what was published by each cutoff (CPI 31 days after the quarter, labour force 20 days
+    after the month)."""
+    n = len(y)
+    F: list[np.ndarray | None] = []
+    for i in range(n):
+        if i < 3 or cut[i] < dt.date(1993, 1, 1):
+            F.append(None)
+            continue
+        pi = _asof(trimmed, cut[i] - dt.timedelta(days=31))
+        u = _asof(unemp, cut[i] - dt.timedelta(days=20))
+        hist = [v for v in (_asof(unemp, cut[i] - dt.timedelta(days=20 + 30 * m)) for m in range(0, 120, 3)) if v is not None]
+        if pi is None or u is None or len(hist) < 30:
+            F.append(None)
+            continue
+        F.append(np.array([1.0, pi - 2.5, u - float(np.mean(hist)), y[i], y[i] - y[i - 3]]))
+    return direct_candidate("reaction_function", y, F, log=False,
+                            note="direct regression of the cash rate's change on trimmed-mean inflation's gap to 2.5%, the "
+                                 "unemployment gap to its ten-year mean, the rate's level and its 3-month change (RBA G1, "
+                                 "H5; fitted from 1993)")
+
+
+def output_gap_candidate(y: np.ndarray, cut: list[dt.date], gdp: Dated) -> Candidate:
+    """Okun-type: unemployment's change over k months on year-ended real GDP growth (published 70 days after the quarter),
+    the rate's gap to its ten-year mean and its 3-month change."""
+    n = len(y)
+    F: list[np.ndarray | None] = []
+    for i in range(n):
+        g = _asof(gdp, cut[i] - dt.timedelta(days=70)) if i >= 120 else None
+        F.append(None if g is None else np.array([1.0, g, y[i] - float(np.mean(y[i - 119:i + 1])), y[i] - y[i - 3]]))
+    return direct_candidate("output_gap_model", y, F, log=False,
+                            note="direct regression of unemployment's change on year-ended real GDP growth (RBA H1), its "
+                                 "gap to the ten-year mean and its 3-month change (Okun's law in reduced form)")
+
+
+def _yr_change(d: Dated, day: dt.date, months: int, log: bool = False) -> float | None:
+    a, b = _asof(d, day), _asof(d, day - dt.timedelta(days=round(30.44 * months)))
+    if a is None or b is None or (log and (a <= 0 or b <= 0)):
+        return None
+    return float(np.log(a / b)) if log else float(a - b)
+
+
+def gold_macro_candidate(y: np.ndarray, cut: list[dt.date], real: Dated, dollar: Dated) -> Candidate:
+    """Gold's log change over k months on the 10-year TIPS real yield, its 12-month change, the 12-month log change of the
+    broad trade-weighted dollar and gold's own 12-month momentum (FRED DFII10 and DTWEXBGS, read the day before each
+    cutoff)."""
+    n = len(y)
+    F: list[np.ndarray | None] = []
+    for i in range(n):
+        day = cut[i] - dt.timedelta(days=1)
+        r, dr, dd = _asof(real, day), _yr_change(real, day, 12), _yr_change(dollar, day, 12, log=True)
+        ok = i >= 12 and None not in (r, dr, dd) and real.lag_days(day) < 15 and dollar.lag_days(day) < 15
+        F.append(np.array([1.0, r, dr, dd, float(np.log(y[i] / y[i - 12]))]) if ok else None)
+    return direct_candidate("real_yield_dollar_model", y, F, log=True,
+                            note="direct regression of gold's log change on the 10-year real yield, its 12-month change, "
+                                 "the dollar's 12-month change and gold's 12-month momentum (FRED DFII10, DTWEXBGS)")
+
+
+def equity_macro_candidate(y: np.ndarray, cut: list[dt.date], curve: Dated, credit: Dated, fci: Dated) -> Candidate:
+    """The index's log change over k months on the 10-year minus 3-month Treasury spread, the Baa credit spread and its
+    6-month change, the Chicago Fed financial conditions index and the index's 12-month momentum (FRED T10Y3M, BAA10Y,
+    NFCI, read the day before each cutoff)."""
+    n = len(y)
+    F: list[np.ndarray | None] = []
+    for i in range(n):
+        day = cut[i] - dt.timedelta(days=1)
+        c, s, ds, f = _asof(curve, day), _asof(credit, day), _yr_change(credit, day, 6), _asof(fci, day)
+        ok = i >= 12 and None not in (c, s, ds, f) and curve.lag_days(day) < 15 and fci.lag_days(day) < 21
+        F.append(np.array([1.0, c, s, ds, f, float(np.log(y[i] / y[i - 12]))]) if ok else None)
+    return direct_candidate("curve_credit_model", y, F, log=True,
+                            note="direct regression of the index's log change on the 10-year minus 3-month spread, the Baa "
+                                 "credit spread and its 6-month change, financial conditions (NFCI) and 12-month momentum")
+
+
+def structural_candidates(y: np.ndarray, cut: list[dt.date], *, domain: str, place: str | None, target: str,
+                          fetch: Fetch) -> tuple[list[Candidate], list[str]]:
+    """The structural models for a domain, each built on its own so one failed download never removes the others."""
+    out: list[Candidate] = []
+    notes: list[str] = []
+
+    def attempt(label: str, make: Callable[[], Candidate]) -> None:
+        try:
+            out.append(make())
+        except Exception as exc:          # the model is left out and the note says why
+            notes.append(f"the {label} could not be built: {str(exc)[:160]}")
+
+    if domain == "policy_rate" and place == "Australia":
+        attempt("reaction-function model", lambda: reaction_function_candidate(
+            y, cut, parse_rba(fetch(RBA_CSV.format(table="g1")))["GCPIOCPMTMYP"],
+            parse_rba(fetch(RBA_CSV.format(table="h5")))["GLFSURSA"]))
+    elif domain == "labour_market" and place == "Australia":
+        attempt("output-gap model", lambda: output_gap_candidate(
+            y, cut, parse_rba(fetch(RBA_CSV.format(table="h1")))["GGDPCVGDPY"]))
+    elif domain == "precious_metal" and target == "gold":
+        attempt("real-yield and dollar model", lambda: gold_macro_candidate(
+            y, cut, parse_fred(fetch(FRED_CSV.format(id="DFII10")), "DFII10"),
+            parse_fred(fetch(FRED_CSV.format(id="DTWEXBGS")), "DTWEXBGS")))
+    elif domain == "equity_index" and target == "spx":
+        attempt("curve and credit model", lambda: equity_macro_candidate(
+            y, cut, parse_fred(fetch(FRED_CSV.format(id="T10Y3M")), "T10Y3M"),
+            parse_fred(fetch(FRED_CSV.format(id="BAA10Y")), "BAA10Y"),
+            parse_fred(fetch(FRED_CSV.format(id="NFCI")), "NFCI")))
+    return out, notes
+
+
 def parse_smp_archive(body: bytes, sheet: str = "UR") -> list[tuple[dt.date, dt.date, float]]:
     """(publication month, target quarter-end month, value) from the RBA's SMP forecast archive workbook."""
     import openpyxl
@@ -484,4 +633,8 @@ def build(values: Any, dates: list[str], *, domain: str, place: str | None, targ
                     notes.append(f"the RBA forecast path could not be read: {str(exc)[:160]}")
     except Exception as exc:
         notes.append(f"the {domain} market or structural candidates could not be built: {str(exc)[:200]}")
+    if abs(yrs - 1 / 12) <= 0.02:
+        more, why = structural_candidates(y, cut, domain=domain, place=place, target=target, fetch=fetch)
+        cands.extend(more)
+        notes.extend(why)
     return cands, notes, log
