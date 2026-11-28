@@ -1542,6 +1542,13 @@ def _compose_messages(goal: str, history: list[dict], memo: Memo, context: str, 
                    "unless these facts say so. When they give the total's 80% range, that is the range to quote; any other "
                    "bound is named for what it assumes. When they say the measure is a level, give no total over days or "
                    "series, only averages and each day's or series' own values):\n" + trust + ("\n\n" + outside if outside else ""))
+    from prophet_agent.runtime import league_table
+    if league_table.table_markdown(history):
+        outside = ("A table of every team from the newest season simulation (points now, expected final points, 10-90 range, "
+                   "expected position and probabilities) is appended after your answer by code. Do not write your own "
+                   "table of expected points or probabilities; name the leading teams and their figures only as that "
+                   "simulation gives them, and refer to the appended table for the rest."
+                   + ("\n\n" + outside if outside else ""))
     user = (f"Goal:\n{goal}\n\n{context + chr(10) + chr(10) if context else ''}{_evidence_block(history, memo)}"
             f"\n\n{outside + chr(10) + chr(10) if outside else ''}Draft (the content to keep; its formatting was lost):\n{draft}"
             + _asked_block(goal, "composer"))
@@ -3633,6 +3640,11 @@ def goal_program(goal: str, tools: dict[str, Tool], brain: Brain, cfg: GoalConfi
         hz_note = horizon_note(goal, history, brief.get("today") if isinstance(brief, dict) else None)
         if hz_note and isinstance(result.get("answer"), str) and result["answer"].strip() and hz_note not in result["answer"]:
             result = {**result, "answer": result["answer"].rstrip() + "\n\n" + hz_note}
+        from prophet_agent.runtime import league_table
+        season = league_table.table_markdown(history)
+        if season and isinstance(result.get("answer"), str) and result["answer"].strip() and league_table.HEADER not in result["answer"]:
+            # Written by code from the stored simulation, after grounding (audit of round 20261128-173823, EPL).
+            result = {**result, "answer": result["answer"].rstrip() + "\n\n" + season}
         trust = contracts.trust_statement(history)
         if trust and isinstance(result.get("answer"), str) and result["answer"].strip() and "Accuracy check (computed" not in result["answer"]:
             # Written by code from the stored backtest, after grounding: the figures in it are the ledger's own.

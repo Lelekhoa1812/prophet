@@ -2282,3 +2282,22 @@ be measured on each target's own history, and the build is judged on that.
   matchdays 8, 12 and 19: pi-ratings 7.87, 6.90, 5.04; goals only 8.45, 7.38, 5.30; goals with earlier seasons and closing
   prices (the simulate_season default) 7.09, 6.27, 4.64, better than pi-ratings in 8, 9 and 7 of 9 seasons (10.0, 9.2 and
   7.8 per cent lower MAE). The default stays; pi-ratings are reported beside it in league_backtest.
+
+### Mission 10, batch 2: audit of live round 20261128-173823 (code 93a22ef) and the repairs (2026-11-28)
+
+Five of six missions ended partial_unverified (AURATE, AUUNEMP, GOLD, SPX, EPL); VNUNEMP was still running after 797 steps
+and 27 lanes. Three independent read-only audits (one per pair of missions) and a direct read of the VNUNEMP ledger. Several
+findings were already repaired by commits after 93a22ef (scenario tracing, calibration statement, football-data URLs in
+simulate_season, place filter on the research registry); the rest:
+
+| Finding (missions, evidence) | Cause | Repair (commit 64bae09) |
+|---|---|---|
+| VNUNEMP forecast from a series ending 2024-Q4; 15 lanes ended "DNS error" on the statistics office | `www.nso.gov.vn` and `gso.gov.vn` failed in the system resolver (30-second TTL); a direct query and DNS over HTTPS returned the address, and the site answered on it in 1.8 s | failed lookups ask two DoH resolvers by address; answers pass the same address checks. Measured: the official series now reads 2020-Q1 to 2026-Q3, 27 quarters, latest 2.22 % (real staging data) |
+| Evaluator judged AUUNEMP five times on a 24-step run already replaced by a 25-step one; AURATE on a superseded scenario run; SPX read the combination run as the drift run | every past result was shown in full beside its replacement | a result replaced by a later call of the same tool (forecast_report: same centre) is shown as SUPERSEDED with the replacing step; grounding no longer accepts figures found only in it |
+| AURATE answer: "beats TimesFM by 9.1 %" (backtest −12.95 %), "beats equal weights by 0.4 %" (−0.41 %) | comparison sentences were free text | check combination_claims: a sentence claiming a gain over a comparison the combination lost or tied fails; forecast_report exposes the numeric gains |
+| VNUNEMP re-ran the same statistics-office search as lanes a2, a16, a20 under new names | duplicate test matched exact task or name only | a brief sharing half its content words (measured: rewordings 0.54 to 1.0, distinct topics at most 0.44) with a lane that already reported is not started |
+
+Open from this audit, not yet repaired: EPL's headline table came from no tool result (league_claims_match_fit caught it;
+the answer still shipped labelled partial_unverified) and the lead never re-ran simulate_season after downloading history;
+GOLD's and AURATE's scenario evidence cited refused lanes (check scenarios_traced, added after 93a22ef, now refuses this);
+lanes still waste most steps on search backends that return US data for Vietnamese and Australian queries.

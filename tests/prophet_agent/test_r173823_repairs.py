@@ -53,3 +53,21 @@ def test_a_reworded_lane_brief_that_already_reported_is_left_out():
                                             "and 2026 from the statistics office and S&P Global."}
     keep, skipped = lanes._not_run_before([again, other], hist)
     assert keep == [other] and "same task as the earlier lane" in skipped[0]
+
+
+def test_every_team_of_the_simulation_is_appended_in_order():
+    from prophet_agent.runtime import league_table
+    teams = [{"team": f"Club {k}", "current": 30 - k, "expected_final": 80.0 - 2.5 * k, "expected_position": k + 1.2,
+              "final": {"p10": 70 - 2 * k, "median": 80 - 2 * k, "p90": 90 - 2 * k}, "title": max(0.0, 0.4 - 0.05 * k),
+              "top_places": 0.9 - 0.04 * k, "relegation": 0.01 * k} for k in range(20)]
+    teams.reverse()
+    hist = [{"kind": "tool", "tool": "simulate_season", "result": {"teams": teams[:6]},
+             "full": {"teams": teams, "settings": {"n_sims": 10000, "n_played": 110, "n_remaining": 270,
+                                                   "signals": {"history_matches": 0, "market": 0, "xg": 0}}}}]
+    md = league_table.table_markdown(hist)
+    rows = [ln for ln in md.splitlines() if ln.startswith("| ") and "Pos" not in ln]
+    assert len(rows) == 20 and rows[0].startswith("| 1 | Club 0 | 30 | 80.0 | 70 to 90 |") and "40.0%" in rows[0]
+    assert "signals counted: history_matches 0, market 0, xg 0" in md
+    assert league_table.table_markdown([{"kind": "tool", "tool": "simulate_season", "full": {"teams": teams[:2]}}]) == ""
+    msgs = goal._compose_messages("g", hist, goal.Memo(), "", "draft")
+    assert "appended after your answer by code" in msgs[1]["content"]
