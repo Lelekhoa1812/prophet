@@ -349,7 +349,36 @@ def unverified(answer: str, history: list, goal: str) -> list[str]:
     for token in entity_row_mismatches(answer, history):
         if token not in missing:
             missing.append(token)
+    for token in untraced_dates(answer, history, goal):
+        if token not in missing:
+            missing.append(token)
     return missing
+
+
+_ISO_DATE = re.compile(r"\b(?:19|20)\d\d-[01]\d-[0-3]\d\b")
+_FINDING = re.compile(r"\b(?:shift|break|outlier|spike|peak|trough|jump|drop|fell|rose|high|low|change|level|regime|"
+                      r"anomal|surge|plunge|crash|rall|turning point)", re.I)
+_AS_OF = re.compile(r"\b(?:today|as of|as at|run date|retrieved|accessed|published)\b", re.I)
+
+
+def untraced_dates(answer: str, history: list, goal: str) -> list[str]:
+    """ISO dates the answer gives for a finding in the data (a shift, a break, a peak) that no tool output prints.
+
+    Motivation: live SPX (round 20261128-063203) wrote "three level shifts (2020-11-05, 2024-01-24, 2025-08-08)"; the scan
+    printed one break, on 2020-11-05, and the ledger said no level shifts. The figure check skipped dates. Measured on that
+    round's answers, the only other untraced date was the run's own date ("as of"), which this check leaves alone."""
+    found = _ISO_DATE.findall(answer or "")
+    if not found:
+        return []
+    text = evidence_text(history, goal)
+    out: list[str] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+|\n+", answer):
+        if not _FINDING.search(sentence) or _AS_OF.search(sentence):
+            continue
+        for d in _ISO_DATE.findall(sentence):
+            if d not in text and d not in out:
+                out.append(d)
+    return out
 
 
 # A writer copying a printed 557,051.21 as "557,050", or 352,602 as "352,702", has made a slip, not a claim. When an unmatched

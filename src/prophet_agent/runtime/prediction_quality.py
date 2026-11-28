@@ -333,6 +333,45 @@ def check_league_signals(history: Any) -> dict | None:
     return None
 
 
+_SIGNAL_WORDS = {"xg": re.compile(r"\bx ?g\b|expected[- ]goals?", re.I),
+                 "market": re.compile(r"\b(?:bookmaker|betting|closing)\s+(?:odds|prices?)\b|\bmarket\s+(?:weights?|prices?|odds)\b",
+                                      re.I)}
+_USED = re.compile(r"\b(?:us(?:e|es|ed|ing)|weight(?:s|ed|ing)?|fit(?:s|ted)?|blend(?:s|ed)?|combin(?:es|ed)|based on|"
+                   r"draws? on|includ(?:es|ed|ing)|incorporat(?:es|ed|ing)|with)\b", re.I)
+_NOT = re.compile(r"\b(?:no|not|without|unavailable|missing|lack(?:s|ed)?|absent|could not|couldn't|none)\b", re.I)
+
+
+def check_league_claims(answer: str, history: Any) -> dict | None:
+    """The answer does not say the season model used expected goals or market prices that its fit did not have.
+
+    Live EPL (round 20261128-063203): the answer said the ratings used xG and market weights; the simulation's settings show
+    0 xG pairs and 0 priced fixtures, and the files had no HxG or AxG column. Logic: a sentence that names xG (or bookmaker
+    or market prices) with a word of use (uses, weighted, fitted, based on...) and no negation is a claim of use; it blocks
+    when the newest football simulation counted none of that signal. None without a simulation or such a sentence."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        res = _ok_result(h, "simulate_season")
+        if not isinstance(res, dict):
+            continue
+        full = h.get("full") if isinstance(h.get("full"), dict) else res
+        settings = full.get("settings") if isinstance(full.get("settings"), dict) else (res.get("settings") or {})
+        sig = settings.get("signals") if isinstance(settings.get("signals"), dict) else {}
+        counts = {"xg": int(sig.get("xg") or 0), "market": int(sig.get("market") or 0) + int(sig.get("market_fixtures") or 0)}
+        wrong = []
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", answer):
+            for key, rx in _SIGNAL_WORDS.items():
+                if counts[key] == 0 and rx.search(sentence) and _USED.search(sentence) and not _NOT.search(sentence):
+                    wrong.append(f"{key}: \"{sentence.strip()[:140]}\"")
+        if not wrong:
+            return None
+        return _check("league_claims_match_fit", False,
+                      "the answer says the model used a signal its fit did not have (the simulation counted "
+                      f"{counts['xg']} xG pairs and {counts['market']} priced matches): " + "; ".join(wrong[:3])
+                      + ". Say which signals the ratings were fitted on, as the simulation's settings list them")
+    return None
+
+
 # Calls whose result can show a driver measured against the target, and the code words of a measurement in a cell.
 _TEST_TOOLS = ("control_lab", "backtest_series", "panel_backtest", "build_drivers", "timesfm_forecast", "forecast_report",
                "simulate_season")
@@ -712,7 +751,8 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_grain(goal, history), lambda: check_answer_band(answer, history),
              lambda: check_signals_gathered(history, goal), lambda: check_league_signals(history),
              lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
-             lambda: check_band_width(history, goal), lambda: check_market_band(history, goal))
+             lambda: check_band_width(history, goal), lambda: check_market_band(history, goal),
+             lambda: check_league_claims(answer, history))
     for fn in calls:
         try:
             c = fn()

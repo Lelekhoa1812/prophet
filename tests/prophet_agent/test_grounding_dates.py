@@ -18,3 +18,13 @@ def test_look_alike_words_and_real_figures_are_still_checked():
 def test_invented_interval_widths_stay_unverified_while_promo_dates_pass():
     ans = "Promo 9 runs 16\u201319 January at 528 units, interval \u00b115\u201320%"
     assert unverified(ans, HIST, "forecast") == ["15", "20%"]
+
+
+def test_a_finding_date_no_tool_printed_is_unverified():
+    # Live SPX (round 20261128-063203): two of three level-shift dates appear in no tool output.
+    from prophet_agent.runtime.grounding import unverified
+    h = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"stdout": "break at 2020-11-05 00:00:00, 1.88x"}}]
+    out = unverified("Scan found three level shifts (2020-11-05, 2024-01-24, 2025-08-08).", h, "S&P 500")
+    assert "2024-01-24" in out and "2025-08-08" in out and "2020-11-05" not in out
+    assert unverified("Figures as of 2026-11-28 are the newest.", h, "S&P 500") == []
+    assert unverified("The forecast for 2027-03-31 is in the table.", h, "S&P 500") == []

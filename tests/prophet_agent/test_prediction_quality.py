@@ -292,3 +292,19 @@ def test_a_market_target_needs_a_tested_driver_whatever_the_wording():
     with_driver = [call("control_lab", {"with_covariates": True, "past_covariates": [[1.0]]}), pack(MOVING)]
     assert pq.check_signals_gathered(with_driver, goal)["ok"]
     assert pq.check_signals_gathered([pack(MOVING)], "forecast weekly units for store 4")["severity"] == "warn"
+
+
+def _season(xg=0, market=0):
+    return {"kind": "tool", "tool": "simulate_season", "args": {},
+            "result": {"ok": True, "settings": {"signals": {"history_matches": 760, "xg": xg, "market_fixtures": market}}}}
+
+
+def test_an_answer_cannot_claim_xg_the_fit_did_not_have():
+    # Live EPL (round 20261128-063203): "the ratings use xG and market weights" with 0 xG pairs and 0 priced fixtures.
+    claim = "Arsenal lead the title race. The ratings use xG and market weights from the last two seasons."
+    c = pq.check_league_claims(claim, [_season()])
+    assert not c["ok"] and c["severity"] == "block" and "xg" in c["detail"]
+    assert pq.check_league_claims(claim, [_season(xg=500, market=400)]) is None
+    honest = "No xG columns were available, so the ratings are fitted on goals and two earlier seasons only."
+    assert pq.check_league_claims(honest, [_season()]) is None
+    assert pq.check_league_claims(claim, []) is None
