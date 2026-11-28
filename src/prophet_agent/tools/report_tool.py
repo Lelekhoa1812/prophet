@@ -99,11 +99,11 @@ def _event_spans(args: dict, n: int, horizon: int) -> list[dict]:
         if spans:
             out.append({"name": str(name), "spans": spans})
     return out
-ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre", "season", "tilt"} | CONTROL_ARGS
+ALLOWED_ARGS = {"values", "source", "horizon", "title", "calibrate", "centre", "season", "tilt", "goal"} | CONTROL_ARGS
 # Every simple rule backtest_series can name as best, so the pack can deliver the one that won (live retail: the backtest's
 # best rule was mean_last_season, the pack refused it, and the planner fell back to naive). "blend" is the equal-weight
 # blend of TimesFM and one of those rules, delivered only when this tool's backtest says it wins (see _blend_centre).
-CENTRES = ("timesfm", "naive", "drift", "seasonal_naive", "mean_last_season", "blend")
+CENTRES = ("timesfm", "naive", "drift", "seasonal_naive", "mean_last_season", "blend", "combination")
 # Panel-only centres: one model fitted on every series together, set for the whole panel (never inside a per-series dict).
 GLOBAL_CENTRES = ("global_gbm", "global_blend")
 PANEL_CENTRES = CENTRES + GLOBAL_CENTRES
@@ -145,8 +145,25 @@ def _tilt_rules() -> tuple[str, ...]:
     return TILT_RULES
 
 
+def _combination_note(centre: dict) -> str:
+    """The provenance line for a combined centre: the candidates, their weights, and what the backtest measured."""
+    ws = ", ".join(f"{w['name']} {w['weight']:.2f}" for w in sorted(centre.get("weights", []), key=lambda w: -w["weight"]))
+    cb = centre.get("combination") or {}
+    band = centre.get("band") or {}
+    gain = lambda v: "n/a" if v is None else f"{v:+.1f}%"
+    widened = (" The band was widened, tail by tail, because its widths would have held "
+               f"{band.get('final_band_held_past_errors')} of the past errors." if band.get("widened") else "")
+    return (f"Centre line and range: a weighted average of the quantiles of {len(centre.get('weights', []))} candidates "
+            f"({ws}), weighted on {centre.get('origins')} backtest origins from {centre.get('first_origin')} and shrunk towards "
+            f"equal weights. On those origins the combination's interval score was {gain(cb.get('vs_equal_wis_pct'))} against "
+            f"equal weights and {gain(cb.get('vs_best_so_far_wis_pct'))} against picking the best candidate so far; its 10-90 "
+            f"band held {cb.get('coverage', float('nan')):.0%} of outcomes.{widened}")
+
+
 def _method_note(config: dict, centre: dict | None = None) -> str:
     """One line in the document that says what produced the numbers, so the file is honest on its own."""
+    if centre and centre.get("rule") == "combination":
+        return _combination_note(centre)
     if centre and centre.get("rule") == "blend":
         return _blend_note(centre)
     if centre and centre.get("rule") in _tilt_rules():
@@ -308,6 +325,68 @@ def _blend_centre(fc: dict, values: list[float], args: dict) -> dict:
     return {**_centre(fc, values, "blend", season, rule=ce["rule"], evidence=ce), "blend_check": ce}
 
 
+MAX_COMBINATION_ORIGINS = 120
+
+
+def _engine() -> Any:
+    from prophet_agent.forecast.timesfm import TimesFMEngine
+    return TimesFMEngine.get()
+
+
+def _fetch(url: str) -> bytes:
+    from prophet_agent.opendata import market
+    return market._get(url, timeout_s=45.0, resolver=None)[0]
+
+
+def _combination_centre(fc: dict, values: list[float], args: dict, name: str) -> dict:
+    """The centre and band from the backtest-weighted combination of every candidate for this target (Mission 10).
+
+    Motivation vs Logic
+    Motivation (owner decision 2026-11-28, "earn it on backtest"): TimesFM, the simple rules and the domain's market and
+    structural models compete on the same rolling origins, and the combination weighted by that backtest is what is drawn.
+    Logic: forecast.candidates builds the candidates from the goal's domain and place; forecast.ensemble scores them on up to
+    MAX_COMBINATION_ORIGINS origins one period apart and returns the combined quantiles from the end of the series. A series
+    too short for the backtest keeps TimesFM's centre, and combination_check says why.
+    """
+    import re as _re
+
+    import numpy as np
+
+    from prophet_agent.forecast import candidates as cd
+    from prophet_agent.forecast import ensemble as en
+    from prophet_agent.research import driver_families as dfam
+    h = len(fc["point"])
+    goal = str(args.get("goal") or args.get("title") or "")
+    domain, place = dfam.detect(goal), dfam.place_of(goal)
+    target = ("gold" if _re.search(r"\bgold\b", goal, _re.I) else
+              "spx" if _re.search(r"s&p|\bspx\b|sp ?500", goal, _re.I) else "")
+    dates = run_dates(args, name)
+    if dates is not None and len(dates) != len(values):
+        dates = None
+    cands, notes, rel = cd.build(values, dates or [], domain=domain, place=place, target=target, engine=_engine(),
+                                 fetch=_fetch, season=_season_arg(args))
+    n = len(values)
+    min_train = max(24, min(60, n // 3))
+    try:
+        res = en.run(values, h, cands, n_origins=min(MAX_COMBINATION_ORIGINS, max(1, n - h - min_train)), step=1,
+                     min_train=min_train, relative=rel)
+    except ValueError as exc:
+        return {**fc, "combination_check": {"adopt": False, "reason": str(exc)[:300], "notes": notes}}
+    q = np.asarray(res["forecast"]["quantiles"], dtype=float)
+    keys = ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"]
+    quant = {k: [round(float(v), 4) for v in q[:, j]] for j, k in enumerate(keys)}
+    first = dates[res["origins"][0]][:10] if dates else f"value {res['origins'][0]}"
+    centre = {"rule": "combination", "weights": res["weights"], "candidates": res["candidates"],
+              "combination": res["combination"], "equal_weights": res["equal_weights"], "best_so_far": res["best_so_far"],
+              "band": res["band"], "shrinkage": res["shrinkage"], "origins": len(res["origins"]), "first_origin": first,
+              "notes": notes, "method": res["method"],
+              "members_final": {k: [round(float(v), 4) for v in np.asarray(m)[:, 4]] for k, m in res["members"].items()},
+              "reason": "every candidate scored on the same rolling origins; the drawn line and band are their weighted "
+                        "combination", "figure_label": "measured backtest; the forecast is a model output"}
+    return {**fc, "point": quant["0.5"], "quantiles": quant, "timesfm_point": fc["point"], "centre": centre,
+            "combination_check": {"adopt": True}}
+
+
 def _season_arg(args: dict) -> int | None:
     """season is used only by the seasonal centre rules; 1 or absent means "chosen from the data, as the backtest does"."""
     v = args.get("season")
@@ -330,17 +409,20 @@ def _run(args: dict, key: str) -> dict[str, Any]:
     centre = args.get("centre", "timesfm")
     if centre not in CENTRES:
         raise ValueError(f"centre must be one of {list(CENTRES)}")
-    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season", "tilt")}, key)
+    fc = timesfm_run({k: v for k, v in args.items() if k not in ("title", "calibrate", "centre", "season", "tilt", "goal")}, key)
     if "series" in fc:
         fc = next(iter(fc["series"].values()))
     values = [float(v) for v in named[0][1]]
     if args.get("calibrate") is True:
         fc = _calibrated(fc, values, args)
-    if centre == "blend":
+    if centre == "combination":
+        fc = _combination_centre(fc, values, args, named[0][0])
+    elif centre == "blend":
         fc = _blend_centre(fc, values, args)
     elif centre != "timesfm":
         fc = _centre(fc, values, centre, _season_arg(args))
-    if args.get("tilt", True) is not False and not fc.get("median_point"):
+    combined = (fc.get("centre") or {}).get("rule") == "combination"
+    if args.get("tilt", True) is not False and not fc.get("median_point") and not combined:
         # A flat line over a repeating history used to skip this step and was drawn flat with a warning (owner, VN quarterly
         # unemployment, 2026-11-27: "look too flat"). The seasonal period now goes to the rules that carry the cycle.
         from prophet_agent.forecast.direction import tilt
@@ -654,6 +736,23 @@ def observe(result: dict) -> dict:
            "deliverables": "built and listed in the manifest; no further build is needed"}
     if _window(result["forecast"]):
         out["window"] = _window(result["forecast"])
+    if "combination_check" in result["forecast"]:
+        out["combination_check"] = result["forecast"]["combination_check"]
+    centre = result["forecast"].get("centre")
+    if isinstance(centre, dict) and centre.get("rule") == "combination":
+        cb = centre.get("combination") or {}
+        out["combination"] = {
+            "weights": {w["name"]: w["weight"] for w in centre.get("weights", [])},
+            "scores": [f"{c['name']} ({c['kind']}): WIS {c['wis']:.4g}, MASE {c['mase']:.3g}, 10-90 coverage "
+                       f"{c['coverage']:.0%}, {c['origins']} origins" for c in centre.get("candidates", [])],
+            "combination": f"WIS {cb.get('wis', float('nan')):.4g}, coverage {cb.get('coverage', float('nan')):.0%}; against "
+                           f"equal weights {cb.get('vs_equal_wis_pct')}%, against the best candidate so far "
+                           f"{cb.get('vs_best_so_far_wis_pct')}%, against the best single in hindsight "
+                           f"{cb.get('vs_best_single_wis_pct')}% ({cb.get('best_single')})",
+            "origins": f"{centre.get('origins')} from {centre.get('first_origin')}", "band": centre.get("band"),
+            "members_final_median": centre.get("members_final"), "notes": centre.get("notes"),
+            "state": "state the weights and the scores beside the forecast; a candidate with little weight still bounds the "
+                     "scenarios"}
     if "blend_check" in result["forecast"]:       # the blend was asked for: say whether its own backtest adopted it, and why
         out["blend_check"] = result["forecast"]["blend_check"]
     if result["forecast"].get("tilt_check"):      # the centre was flat: what trend rules were tried, and whether one was delivered
@@ -663,7 +762,8 @@ def observe(result: dict) -> dict:
     if isinstance(result["forecast"].get("centre"), dict):
         # The centre the pack draws. The gate reads it to judge baseline_compared; _compact drops it. The blend's evidence is
         # the backtest behind the choice and is left out of the observation to keep it short.
-        out["forecast"]["centre"] = {k: v for k, v in result["forecast"]["centre"].items() if k != "evidence"}
+        out["forecast"]["centre"] = {k: v for k, v in result["forecast"]["centre"].items()
+                                     if k not in ("evidence", "candidates", "members_final", "weights", "method")}
     return out
 
 
@@ -839,7 +939,9 @@ FORECAST_REPORT_SPEC = {
                    "your backtest, or the pack will show the default forecast. n_origins belongs to backtest_series and is refused "
                    "here; season is used only by the seasonal centre rules and the blend's rule.",
     "args": {"values": VALUES_HELP, "source": SOURCE_HELP, "horizon": "integer, 1 to 512", "title": "short title for the chart and report",
-             "centre": "optional 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm); 'global_gbm' or 'global_blend' (panel only, the whole panel) sets the pooled gradient-boosted model, or its blend with TimesFM, as the centre ('blend' on a panel means global_blend)",
+             "goal": "optional, the forecast asked for in words; with centre 'combination' it names the domain and place, "
+                     "which choose the market and structural candidates",
+             "centre": "optional 'combination' (every candidate - TimesFM, the simple rules and the domain's market and structural models - scored on the same rolling origins, and the line and band drawn from their backtest-weighted combination; pass goal), 'timesfm' (default) or the simple rule backtest_series named as best_baseline ('naive', 'drift', 'seasonal_naive', 'mean_last_season'): when the backtest says the rule was more accurate, chart it as the centre line with TimesFM's band around it. 'blend' is an equal-weight average of TimesFM's centre and the best of those rules; this tool backtests it on the same windows and draws it only when it beats both, otherwise the centre stays TimesFM's and blend_check says why (one series only, not a panel). For a panel, one rule for every series, or a dict {series name: rule} to set it per series (others keep timesfm); 'global_gbm' or 'global_blend' (panel only, the whole panel) sets the pooled gradient-boosted model, or its blend with TimesFM, as the centre ('blend' on a panel means global_blend)",
              "season": "optional integer, only for the seasonal centre rules: the season backtest_series used (default: chosen from the data by the same rule as the backtest)",
              "calibrate": "optional true, one series only (refused for a panel): replace the 10-90 percent band by the calibrated one when a held-out test on past windows shows it covers closer to 80 percent (the point forecast never changes)",
              **CONTROL_HELP},

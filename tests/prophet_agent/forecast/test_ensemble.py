@@ -90,7 +90,7 @@ def test_narrow_band_is_widened_by_conformal_scales():
     y = _walk(seed=7)
     res = en.run(y, 6, [_drift_cand(y, sd=0.05), _drift_cand(y, "drift2", sd=0.06)], n_origins=24, step=2)
     assert res["band"]["coverage_scored"] < 0.75
-    assert res["band"]["widened"] and max(res["band"]["scales"]) > 1.0
+    assert res["band"]["widened"] and max(res["band"]["scales"]["lower"] + res["band"]["scales"]["upper"]) > 1.0
     q = np.array(res["forecast"]["quantiles"])
     raw = np.array(res["members"]["drift"])
     assert (q[:, 8] - q[:, 0]).mean() > (raw[:, 8] - raw[:, 0]).mean()

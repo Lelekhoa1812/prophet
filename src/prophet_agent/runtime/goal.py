@@ -840,6 +840,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
         return step
     if (step := _horizon_backtest_step(history, tools)) is not None:
         return step
+    if (step := _combination_step(goal, history, tools)) is not None:
+        return step
     panel = _panel_hint(history, full)
     forecast_done = any(contracts._forecast_record(h) for h in history)
     if "panel" not in kinds and panel and not forecast_done and "sandbox_python" in tools:
@@ -1072,6 +1074,36 @@ def _horizon_backtest_step(history: list[dict], tools: dict[str, Tool]) -> dict 
     return {"action": "call_tool", "tool": "backtest_series", "auto": "horizon", "args": args,
             "rationale": f"the forecast runs {horizon} periods ahead and no backtest covers that horizon; the harness "
                          "backtests the same series at it"}
+
+
+def _combination_step(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """The backtest-weighted combination, run by the harness once per forecast source and horizon (Mission 10, owner decision
+    2026-11-28, "earn it on backtest"): TimesFM, the simple rules and the domain's market and structural candidates are scored
+    on the same origins, and the pack draws their combination. A ledger audit found every delivered centre came from the
+    target's own history while the market path and the drivers never competed. Runs for the driven domains (rates, labour,
+    prices, indices) once a forecast of a saved series exists; a call already made on that source and horizon is not repeated."""
+    if "forecast_report" not in tools:
+        return None
+    from prophet_agent.research import driver_families as dfam
+    if dfam.detect(goal or "") not in prediction_quality.DRIVEN_DOMAINS:
+        return None
+    flat = [h for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"]
+    fc = next((h for h in reversed(flat) if h.get("tool") in FORECAST_TOOLS and not h.get("error")
+               and isinstance(h.get("args"), dict) and isinstance((h["args"].get("source") or None), dict)
+               and isinstance(h["args"].get("horizon"), int) and not isinstance(h["args"].get("horizon"), bool)), None)
+    if fc is None:
+        return None
+    a = fc["args"]
+    for h in flat:
+        b = h.get("args") if isinstance(h.get("args"), dict) else {}
+        if (h.get("tool") == "forecast_report" and b.get("centre") == "combination" and b.get("source") == a["source"]
+                and b.get("horizon") == a["horizon"]):
+            return None
+    args = {"source": a["source"], "horizon": a["horizon"], "centre": "combination", "goal": goal,
+            "title": str(a.get("title") or "Forecast")[:80]}
+    return {"action": "call_tool", "tool": "forecast_report", "auto": "combination", "args": args,
+            "rationale": "the harness scores every candidate (TimesFM, the rules, the market and structural models) on the "
+                         "same origins and draws their backtest-weighted combination"}
 
 
 # The checks a refused finish names, and the tools that close each one (owner decision 2026-11-28, "Both": live AUUNEMP refused
