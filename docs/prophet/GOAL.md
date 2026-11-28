@@ -1931,4 +1931,13 @@ forecasts beat a random walk in year 1 but not year 2 (RDP 2012-07); job ads and
 for 3 to 6 quarters; no 12-month model reliably beats a random walk for gold or the S&P 500, so for those the market's
 implied range and scenario weighting carry the value; equal-weight combination remains the benchmark to beat (M4, ECB
 SPF). Many figures in the notes are from search snippets and are marked unverified there.
+- Answer checks: an ISO date given for a finding in the data (a shift, a break, a peak) that no tool printed is an
+  unverified figure (measured on round 063203: only SPX's two invented dates); `league_claims_match_fit` blocks an answer
+  that says the ratings used xG or market prices the fit did not count (EPL); `market_stated` blocks an answer that leaves
+  out the market's forecast the mission read.
+- The replay guard first added in 3e396b5 ran before the repeat check and turned a resumed repeat into an unknown tool; the
+  gate caught it and it now applies only where the tool would be called (170e205).
+- Open: EPL's observed table can still pass the row check (it pools every number on any tool line naming the club), and a
+  forward-filled policy-rate series is reported as fully observed. A column-aware table check is the fix for the first.
+Pushed 170e205 (3,676 passed) and 6b3c601 (3,677 passed); the panel restarted on 170e205 at 11:08 on 2026-11-28.
 Not yet measured on a live panel round. **M9-8 is not met.**
