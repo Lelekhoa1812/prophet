@@ -1987,3 +1987,58 @@ Assessed, no change: a policy rate carried forward between decisions is the rate
 observed is right. The defect in that audit item was the missed 4 November decision, which newest_level_used now blocks.
 
 Gate: 3,691 passed on a21d848. Open: none of the fixes above has been measured on a live panel round yet; the next round runs on them. **M9-8 is not met.**
+
+### Round 27: live round 20261128-125459 on 841a23f, three audits, and the fixes (2026-11-28)
+
+Measured (real staging data; six missions, 79 minutes): AURATE, AUUNEMP, EPL, GOLD and VNUNEMP ended partial; SPX spent its
+budget (checkpoint). No mission failed. Three independent read-only Haiku audits covered all six
+(scratchpad files audit_r125459_*.md, 47 defects in all).
+
+What worked:
+- The harness driver and market step ran in five of six missions (EPL has no driver domain): market_benchmark for AURATE
+  (bank bills, implied forwards), GOLD (GVZ) and SPX (VIX), and driver_scan for all five, on FRED, which now answers.
+  Scored live: AURATE 4 drivers (no evidence), AUUNEMP 4 (Australian interbank rate +2.9% MASE, 6 of 9 wins, no
+  evidence), SPX 5 (none adopted), VNUNEMP (US drivers, 55 quarters, horizon 2, none adopted), GOLD adopted the US dollar
+  index (DTWEXBGS).
+- The focused planner never engaged: no mission was refused twice in a row for the driver checks once the scan had run.
+
+Defects found and confirmed against the ledgers:
+- Web search failed in bursts: 40 to 75 % of web_research calls in every mission returned no sources (ddgs ConnectError,
+  RequestError, timeouts, "No results found"). An idle probe the same afternoon answered on bing, google, yahoo and auto.
+  All research lanes share one process and fired together, so every backend refused at once and cooled for ten minutes.
+- GOLD forecast a fertiliser column ($/mt, from 1,737 in 1960 to 6,775 in July 2026) as gold: the Pink Sheet came from a
+  dataset stored before the round 26 landing fix (64 columns, units only), because a stored download was reused forever.
+  Fetched late-November quotes put gold near $3,650; the live workbook runs to 2026M10.
+- GOLD adopted the dollar index and then passed it to forecast_report as a future covariate, which needs values for the
+  forecast months; it failed twice and the driver was dropped.
+- GOLD's data ended four months before the run, so its 12-month forecast ran 16 periods; the backtests ran at 12 and the
+  baseline check held every finish. AUUNEMP the same, 25 against 24.
+- Three missions (AUUNEMP, EPL, VNUNEMP) and AURATE ended through the refused-finish write-up, where no answer check ran.
+  AUUNEMP: "4.1% in October 2026 (the latest official figure)" where the forecast series ends at 4.865 and the ABS release
+  fetched says 4.9; a 2.6 % to 8.2 % band from a scenario whose "market" probability cites a page never fetched. EPL: a
+  standings table with 99 cells that disagree with the printed table and four clubs (West Ham, Wolves, Leicester,
+  Southampton) in no tool output.
+- VNUNEMP's quarterly series ends in 2024-Q4; 7 of its 8 "next two years" quarters were already over on the run date, the
+  answer labelled them 2023-Q4 to 2025-Q3 and never said when the data ends.
+- AURATE was asked for five years of the cash rate, hit the 512-step limit on a daily series and delivered two years
+  without trying a monthly series (60 steps).
+- AURATE's compose loop pasted a prompt example ("sales.xlsx > Q3 > units") into a lane answer.
+
+Fixes (commit 9aff2c8):
+- Search calls to one backend are spaced 1.5 s apart across the process (a caller more than 20 s from its slot skips that
+  backend), and a streak ended by a send error, timeout or rate limit cools for 90 s instead of ten minutes.
+- A stored download is reused only within 12 hours and only when landed by the current landing version.
+- driver_scan saves each adopted driver with the target cut to its span as a past-covariate file and says to forecast and
+  backtest on it with past_covariates, never future_covariates.
+- The harness backtests once at the newest forecast's horizon when no backtest covers it, with the drivers it used.
+- The refused-finish write-up now runs the answer checks (stated claims, table cells, data end, band, league, market) and
+  is rewritten once with the fixes; what is still wrong is named in the reason.
+- answer_latest_value reads a "latest official figure" phrase that follows its number; data_end_stated blocks an answer
+  whose forecast starts two or more periods in the past until it says when the data ends; the table check flags a row for
+  an entity in no printed table once the tools printed ten or more.
+- The horizon-limit errors say how to resample a daily or weekly series to monthly for a longer outlook.
+
+Open, not fixed in this round: a scenario probability labelled "market" is not checked against a fetched page; SPX still
+spends its budget between daily and monthly packs; the prompt-example leak needs the composer prompt's example reworded
+(prompt change, next round); GOLD's anchor is checked only through the fresh download, not against fetched spot quotes.
+Gate: 3,703 passed on 9aff2c8. **M9-8 is not met.**
