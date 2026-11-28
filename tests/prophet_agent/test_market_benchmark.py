@@ -85,3 +85,16 @@ def test_a_band_far_narrower_than_the_options_market_blocks():
     wide = pq.check_market_band([_vix(), _spx_pack(4900, 10200)])
     assert wide["ok"]
     assert pq.check_market_band([_spx_pack(7170, 9135)]) is None, "no market reading, no check"
+
+
+def test_the_answer_states_the_market_forecast_it_read():
+    path = {"kind": "tool", "tool": "market_benchmark", "args": {"kind": "au_cash_rate"},
+            "result": {"ok": True, "kind": "au_cash_rate", "implied_average": {"1m": 4.705, "3m": 4.72, "6m": 4.87},
+                       "implied_forwards": [{"months": "3-6", "rate": 5.02}], "source_url": mb.SOURCES["au_cash_rate"],
+                       "as_of": "2026-11-26"}}
+    silent = pq.check_market_stated("The centre rises to 5.44% by 2031.", [path])
+    assert not silent["ok"] and silent["severity"] == "block"
+    said = pq.check_market_stated("Bank bills imply an average cash rate of 4.72% over three months.", [path])
+    assert said["ok"]
+    assert pq.check_market_stated("VIX is 26.6, implying a wide range.", [_vix()])["ok"]
+    assert pq.check_market_stated("anything", []) is None

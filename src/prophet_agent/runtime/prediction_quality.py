@@ -744,6 +744,37 @@ def check_market_band(history: Any, goal: str = "") -> dict | None:
     return _check("band_vs_market", True, facts)
 
 
+def check_market_stated(answer: str, history: Any) -> dict | None:
+    """The answer states the market's own forecast when the mission read it, so the reader can compare it with the model's.
+
+    Motivation: round 20261128-063203, AURATE's lanes read that the market prices cuts to about 4.34% by the end of 2027 and
+    the answer left it out while its centre rose to 5.44%; SPX's sources quoted a VIX of 26.6 and futures pricing, and the
+    answer named neither. Logic: with a market_benchmark result, the answer must state one of its figures: an implied
+    cash rate (average or forward) for au_cash_rate, or the implied volatility for vix and gvz. None without one."""
+    if not answer:
+        return None
+    for h in reversed(_flatten(history)):
+        r = _ok_result(h, "market_benchmark")
+        if not isinstance(r, dict):
+            continue
+        if r.get("kind") == "au_cash_rate":
+            figures = [float(p["rate"]) for p in r.get("implied_forwards") or [] if isinstance(p, dict)] + \
+                      [float(v) for v in (r.get("implied_average") or {}).values() if isinstance(v, (int, float))]
+            what = "the cash rate the bank bill curve implies (implied_average or implied_forwards)"
+        else:
+            figures = [float(r["implied_vol_pct"])] if isinstance(r.get("implied_vol_pct"), (int, float)) else []
+            what = f"the {str(r.get('kind')).upper()} implied volatility and the range it implies"
+        if not figures:
+            return None
+        if any(_stated(answer, f) for f in figures):
+            return _check("market_stated", True, "the answer states the market's own forecast beside the model's")
+        return _check("market_stated", False,
+                      f"the mission read the market's own forecast ({what}, {r.get('source_url')}, {r.get('as_of')}) and the "
+                      "answer does not state it. Say what the market prices, compare it with the forecast, and say why the "
+                      "forecast differs where it does")
+    return None
+
+
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
     """The checks above that apply, in order. Never raises: a malformed observation skips its check."""
     out: list[dict] = []
@@ -752,7 +783,7 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_signals_gathered(history, goal), lambda: check_league_signals(history),
              lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
              lambda: check_band_width(history, goal), lambda: check_market_band(history, goal),
-             lambda: check_league_claims(answer, history))
+             lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history))
     for fn in calls:
         try:
             c = fn()
