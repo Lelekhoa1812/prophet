@@ -918,6 +918,40 @@ def check_market_probability(history: Any) -> dict | None:
                   "set probability_source 'judgement' and say in the answer that the probability is a judgement")
 
 
+def check_scenarios_traced(answer: str, history: Any) -> dict | None:
+    """Every scenario in the standing scenario forecast traces its shift to a call, and judgement probabilities are called
+    judgement in the answer (Mission 10, M10-6).
+
+    Motivation: scenario shifts set by hand moved delivered ranges with nothing behind them (the M10 ledger audit). Logic:
+    the newest successful scenario_forecast; each scenario's evidence must be traced (_traced) to the text of a call that is
+    not the model's own record; when any probability is 'judgement' (the default), the answer must use the word judgement
+    (or judgment). None without a scenario forecast."""
+    flat = _flatten(history)
+    sc = next((h for h in reversed(flat) if isinstance(_ok_result(h, "scenario_forecast"), dict)), None)
+    if sc is None:
+        return None
+    scen = [s for s in (sc.get("args") or {}).get("scenarios") or [] if isinstance(s, dict)]
+    if not scen:
+        return None
+    texts = [_call_text(h) for h in flat
+             if h.get("kind") == "tool" and h.get("tool") not in _SELF and not h.get("error")]
+    loose = [s for s in scen if not s.get("path_of") and not _traced(str(s.get("evidence") or ""), texts)]
+    judged = [s for s in scen if str(s.get("probability_source") or "judgement").strip().lower() != "market"]
+    unlabelled = bool(judged) and bool(answer) and not re.search(r"\bjudge?ments?\b", answer, re.I)
+    if not loose and not unlabelled:
+        return _check("scenarios_traced", True, f"{len(scen)} scenarios trace their shifts to calls of this mission")
+    parts = []
+    if loose:
+        parts.append(f"{len(loose)} scenario shifts cite nothing a call of this mission returned: "
+                     + "; ".join(f"{str(s.get('name'))[:60]} (evidence {str(s.get('evidence'))[:80] or 'none'})"
+                                 for s in loose[:4])
+                     + ". Take each shift from a fetched page, a market price or a model (path_of), and cite it")
+    if unlabelled:
+        parts.append(f"{len(judged)} scenario probabilities are judgement, not market prices; say so in the answer "
+                     "(the word 'judgement') beside them")
+    return _check("scenarios_traced", False, ". ".join(parts))
+
+
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
            "december")
 
@@ -1076,7 +1110,7 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history),
              lambda: check_market_probability(history), lambda: check_price_anchor(history, goal),
              lambda: check_combination_stated(answer, history), lambda: check_league_backtest_stated(answer, history),
-             lambda: check_calibration_stated(answer, history))
+             lambda: check_calibration_stated(answer, history), lambda: check_scenarios_traced(answer, history))
     for fn in calls:
         try:
             c = fn()

@@ -271,8 +271,8 @@ def _scenario_forecast(args: dict, _key: str) -> dict[str, Any]:
     fc = {"point": mixed["point"], "quantiles": mixed["quantiles"], **({"future_dates": dates} if dates else {})}
     rows = [{"step": i + 1, **({"date": dates[i]} if dates else {}), "median": mixed["point"][i],
              "q10": mixed["quantiles"]["0.1"][i], "q90": mixed["quantiles"]["0.9"][i]} for i in range(h)]
-    return {"forecast": fc, "pack": args["pack"], "scenarios": [{k: s[k] for k in ("name", "probability", "probability_source",
-                                                                                   "start", "last_shift", "why")}
+    return {"forecast": fc, "pack": args["pack"], "scenarios": [{k: s.get(k) for k in ("name", "probability", "probability_source",
+                                                                                       "start", "last_shift", "why", "evidence")}
                                                                 for s in mixed["scenarios"]],
             "base_case_probability": mixed["base_case_probability"], "weighted_last_shift": mixed["weighted_last_shift"],
             "end": {"q10": rows[-1]["q10"], "median": rows[-1]["median"], "q90": rows[-1]["q90"],
@@ -349,7 +349,7 @@ SCENARIO_FORECAST_SPEC = {
                      "follows that candidate's median path), start (step or date, "
                      "default 1), ramp (steps to reach the full shift, default 1), end (optional step after which it "
                      "fades), shift_sd (uncertainty of the shift as a share of it, default 0.3), band_scale (0.5 to 3, "
-                     "default 1), why (one line), evidence (URL or run id behind it), probability_source ('market' when the probability is read from market pricing such as a rate tracker, futures or outright odds, with that URL as evidence; 'judgement' when no market prices it)}",
+                     "default 1), why (one line), evidence (required: the URL or run id of the tool output the shift is read from, which the finish check looks for in this mission's calls; path_of fills it), a shift of 0 is refused, probability_source ('market' when the probability is read from market pricing such as a rate tracker, futures or outright odds, with that URL as evidence; 'judgement' when no market prices it)}",
         "floor": "optional lower bound for the values (0 for a rate or a price)",
         "title": "optional chart title",
         "unit": "optional unit label",

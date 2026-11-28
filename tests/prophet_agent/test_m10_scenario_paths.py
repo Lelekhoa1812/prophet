@@ -11,7 +11,7 @@ ft = importlib.import_module("prophet_agent.tools.fundamentals_tool")
 
 
 def test_shift_path_moves_the_scenario_by_step():
-    scen = sc.validate([{"name": "market path", "probability": 0.4, "shift_path": [0.0, 0.1, 0.3]}], 3, None)
+    scen = sc.validate([{"name": "market path", "probability": 0.4, "shift_path": [0.0, 0.1, 0.3], "evidence": "web_research S1"}], 3, None)
     assert scen[0]["kind"] == "path"
     knots = {0.1: [3.9, 3.8, 3.7], 0.5: [4.0, 4.0, 4.0], 0.9: [4.1, 4.2, 4.3]}
     out = sc.mix(knots, scen, seed=1)

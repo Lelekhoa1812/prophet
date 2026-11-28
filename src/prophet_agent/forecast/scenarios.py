@@ -85,6 +85,12 @@ def validate(scenarios: Any, h: int, dates: list[str] | None) -> list[dict]:
             val = s.get("shift") if has_abs else s.get("shift_pct")
         if not isinstance(val, (int, float)) or isinstance(val, bool) or not np.isfinite(val):
             raise ValueError(f"scenario {name!r}: the shift must be a number")
+        # M10-6: a scenario moves the forecast, and the move comes from somewhere a reader can check.
+        if path is None and val == 0:
+            raise ValueError(f"scenario {name!r}: a shift of 0 moves nothing; that is the base case. Give the shift the "
+                             "event implies, read from a tool output")
+        if path is not None and max(abs(float(v)) for v in path) == 0:
+            raise ValueError(f"scenario {name!r}: this path is the delivered median; it moves nothing")
         start = s.get("start", 1)
         if isinstance(start, str):
             if not dates:
@@ -113,6 +119,9 @@ def validate(scenarios: Any, h: int, dates: list[str] | None) -> list[dict]:
                              "URL as evidence) or 'judgement'")
         if src == "market" and len(str(s.get("evidence") or "").strip()) < 6:
             raise ValueError(f"scenario {name!r}: a market probability needs the URL of the pricing as evidence")
+        if len(str(s.get("evidence") or "").strip()) < 6:
+            raise ValueError(f"scenario {name!r}: evidence must name the tool output the shift is read from: a URL or "
+                             "source id from web_research, a run id, a market price, or path_of a candidate")
         out.append({"name": name, "probability": float(p), "probability_source": src,
                     "kind": "path" if path is not None else ("level" if has_abs else "pct"), "shift": float(val),
                     **({"shift_path": [float(v) for v in path]} if path is not None else {}),
@@ -159,7 +168,8 @@ def mix(quantiles: dict[float, list[float]], scenarios: list[dict], *, n: int = 
         cond = median + prof * full
         per.append({"name": s["name"], "probability": s["probability"],
                     "probability_source": s.get("probability_source", "judgement"), "median": cond.tolist(),
-                    "last_shift": float((prof * full)[-1]), "start": s["start"], "why": s["why"]})
+                    "last_shift": float((prof * full)[-1]), "start": s["start"], "why": s["why"],
+                    "evidence": s.get("evidence", "")})
     if floor is not None:
         out = np.maximum(out, floor)
     qs = np.quantile(out, OUT_LEVELS, axis=0)

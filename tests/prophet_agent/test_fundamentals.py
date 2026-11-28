@@ -43,7 +43,7 @@ def test_record_refuses_findings_without_evidence_or_with_an_unknown_family():
 def test_scenarios_shift_the_distribution_by_their_probability():
     h = 12
     q = {0.1: [9.0] * h, 0.3: [9.6] * h, 0.5: [10.0] * h, 0.7: [10.4] * h, 0.9: [11.0] * h}
-    s = sc.validate([{"name": "hike", "probability": 0.5, "shift": 2.0, "start": 4, "ramp": 2, "shift_sd": 0.0}], h, None)
+    s = sc.validate([{"name": "hike", "probability": 0.5, "shift": 2.0, "start": 4, "ramp": 2, "shift_sd": 0.0, "evidence": "web_research S1"}], h, None)
     m = sc.mix(q, s, n=40000)
     assert abs(m["point"][0] - 10.0) < 0.05                 # before the start: the base
     assert m["quantiles"]["0.9"][-1] > 11.8                 # half the paths moved up by 2
@@ -54,10 +54,11 @@ def test_scenarios_shift_the_distribution_by_their_probability():
 
 def test_scenario_validation_names_the_fix():
     with pytest.raises(ValueError, match="at most 1"):
-        sc.validate([{"name": "a", "probability": 0.7, "shift": 1}, {"name": "b", "probability": 0.6, "shift": 1}], 5, None)
+        sc.validate([{"name": "a", "probability": 0.7, "shift": 1, "evidence": "web_research S1"},
+                     {"name": "b", "probability": 0.6, "shift": 1, "evidence": "web_research S1"}], 5, None)
     with pytest.raises(ValueError, match="exactly one of shift"):
         sc.validate([{"name": "a", "probability": 0.2}], 5, None)
-    got = sc.validate([{"name": "a", "probability": 0.2, "shift_pct": -5, "start": "2027-03"}], 3,
+    got = sc.validate([{"name": "a", "probability": 0.2, "shift_pct": -5, "start": "2027-03", "evidence": "web_research S1"}], 3,
                       ["2027-01-01", "2027-02-01", "2027-03-01"])
     assert got[0]["start"] == 3 and got[0]["kind"] == "pct"
 
@@ -131,7 +132,11 @@ def test_market_probabilities_need_their_pricing_url_and_are_labelled():
                        "evidence": "https://www.asx.com.au/markets/trade-our-derivatives-market/futures-market/rba-rate-tracker"}],
                      6, None)
     assert ok[0]["probability_source"] == "market"
-    assert sc.validate([base], 6, None)[0]["probability_source"] == "judgement"
+    assert sc.validate([{**base, "evidence": "web_research S2"}], 6, None)[0]["probability_source"] == "judgement"
+    with pytest.raises(ValueError, match="evidence must name the tool output"):
+        sc.validate([base], 6, None)                                # M10-6: a judgement shift still names its source
+    with pytest.raises(ValueError, match="moves nothing"):
+        sc.validate([{**base, "shift": 0, "evidence": "web_research S2"}], 6, None)
     mixed = sc.mix({0.1: [3.0] * 6, 0.5: [3.5] * 6, 0.9: [4.0] * 6}, ok)
     assert mixed["scenarios"][0]["probability_source"] == "market"
 

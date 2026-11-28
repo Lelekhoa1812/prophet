@@ -47,3 +47,19 @@ def test_band_calibration_must_be_stated_with_any_widening():
     assert good["ok"] is True
     assert pq.check_calibration_stated("text", COMB) is None
     assert "calibration_stated" in {c["name"] for c in pq.prediction_checks(CAL, "goal", "an answer")}
+
+
+def test_scenario_shifts_trace_to_calls_and_judgement_is_named():
+    """M10-6: every scenario shift cites a call of the mission; judgement probabilities are called judgement."""
+    page = {"kind": "tool", "tool": "web_research", "args": {"queries": ["rba"]},
+            "result": {"sources": [{"url": "https://www.rba.gov.au/media-releases/2026/mr-26-30.html"}]}}
+    sc = {"kind": "tool", "tool": "scenario_forecast", "result": {"end": {}}, "args": {"pack": "r1", "scenarios": [
+        {"name": "RBA hikes", "probability": 0.3, "shift": 0.25, "evidence": "https://www.rba.gov.au/media-releases/2026/mr-26-30.html"},
+        {"name": "market path", "probability": 0.2, "path_of": "market_path"}]}}
+    assert pq.check_scenarios_traced("A 30% judgement that the RBA hikes.", [page, sc])["ok"] is True
+    assert pq.check_scenarios_traced("A 30% chance that the RBA hikes.", [page, sc])["ok"] is False
+    loose = {**sc, "args": {"pack": "r1", "scenarios": [{"name": "war", "probability": 0.1, "shift": 1.0,
+                                                          "evidence": "https://example.org/never-fetched"}]}}
+    bad = pq.check_scenarios_traced("judgement", [page, loose])
+    assert bad["ok"] is False and "war" in bad["detail"]
+    assert pq.check_scenarios_traced("x", [page]) is None

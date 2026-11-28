@@ -2198,3 +2198,10 @@ before 2018 (unemployment) and 2024 (cash rate).
   60 months 14.7 and 16.3 per cent, coverage falling to 0.59 in the last third and 35 per cent of outcomes above the median
   (too narrow and centred high: the 1990s and 2010s falls). The final band held 75 per cent or more of the past errors on
   today's median at every horizon, so no widening was applied; the reading is reported either way.
+- **Scenarios (M10-6).** scenario_forecast refuses a shift of 0 and a path equal to the delivered median, and every
+  scenario names the URL or run id its shift is read from (path_of fills it from the combination's candidate). The answer
+  check scenarios_traced finds each scenario's evidence in a call of the mission (not the model's own records) and asks the
+  answer to call judgement probabilities judgement; market probabilities keep their own trace (market_probability_traced).
+- **Research registry (Panel AUUNEMP, round 20261128-173823).** A research lane for Australia's unemployment rate was
+  handed the US UNRATE file as a primary page and reported US figures. Registry pages now carry their place, and a query or
+  region that names a place keeps only the pages for it.
