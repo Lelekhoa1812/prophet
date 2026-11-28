@@ -293,3 +293,20 @@ def test_report_forwards_controls_to_the_forecast(tool_engine, monkeypatch):
     assert seen["ignore_ranges"] == [[3, 5]] and "title" not in seen
     assert out["forecast"]["config"]["control"]["future_covariates"] == ["promo"]
     assert "promo" in seen["note"]
+
+
+def test_calibrate_on_another_centre_does_not_label_the_band_calibrated(tool_engine, monkeypatch):
+    """Audit of round 20261128-173823 (SPX): a drift band was called calibrated; calibrate true and false gave one output."""
+    import importlib
+    rt = importlib.import_module("prophet_agent.tools.report_tool")
+    monkeypatch.setattr(rt, "_calibrated", lambda fc, values, args: {
+        **fc, "interval_calibration": {"applied": True}, "config": {**(fc.get("config") or {}), "band_source": "calibrated",
+                                                                    "band_coverage": 0.8}})
+    monkeypatch.setattr(rt, "build_forecast_pack", lambda **kw: type(
+        "P", (), {"ok": True, "run_id": "r", "workdir": "w", "outputs": [], "stderr": ""})())
+    vals = [100 + 0.5 * i + (i % 5) for i in range(80)]
+    out = rt._run({"values": vals, "horizon": 6, "title": "t", "centre": "drift", "calibrate": True}, "k")
+    fc = out["forecast"]
+    assert fc["config"].get("band_source") != "calibrated" and fc["interval_calibration"]["applied"] is False
+    kept = rt._run({"values": vals, "horizon": 6, "title": "t", "calibrate": True}, "k")["forecast"]
+    assert kept["config"]["band_source"] == "calibrated"

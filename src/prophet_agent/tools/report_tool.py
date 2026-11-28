@@ -434,6 +434,19 @@ def _run(args: dict, key: str) -> dict[str, Any]:
         fc = _blend_centre(fc, values, args)
     elif centre != "timesfm":
         fc = _centre(fc, values, centre, _season_arg(args))
+    if args.get("calibrate") is True and centre != "timesfm":
+        # The other centres draw their own band, so the calibrated TimesFM band is gone and the label must go with it.
+        # Audit of round 20261128-173823 (SPX): drift and combination bands were called calibrated, and calibrate true and
+        # false gave the same output.
+        cfg = dict(fc.get("config") or {})
+        if cfg.get("band_source") == "calibrated":
+            cfg.pop("band_source", None)
+            cfg.pop("band_coverage", None)
+        fc = {**fc, "config": cfg,
+              "interval_calibration": {"applied": False,
+                                       "reason": f"calibrate re-scales the TimesFM band; the {centre} centre draws its own "
+                                                 "band, so nothing was calibrated (the combination reports its backtest "
+                                                 "calibration under band)"}}
     combined = (fc.get("centre") or {}).get("rule") == "combination"
     if args.get("tilt", True) is not False and not fc.get("median_point") and not combined:
         # A flat line over a repeating history used to skip this step and was drawn flat with a warning (owner, VN quarterly
