@@ -65,3 +65,25 @@ def test_a_workbook_keeps_its_data_sheet_not_its_contents_sheet():
 def test_a_body_that_is_not_an_xls_is_refused():
     with pytest.raises(containers.ContainerError, match="not an XLS workbook"):
         containers.to_csv(b"not a workbook", "xls")
+
+
+def test_a_units_row_is_joined_to_the_names_above_it_and_wide_sheets_keep_their_last_columns():
+    # Live GOLD (round 20261128-110827): the World Bank workbook landed with only its units row as the header and was cut at
+    # 64 columns, so gold (the 69th) was gone and a "($/mt)" column was forecast as gold.
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Monthly Prices"
+    others = [f"Commodity {k}" for k in range(67)]
+    sheet.append(["World Bank Commodity Price Data (The Pink Sheet)"])
+    sheet.append(["Updated on November 04, 2026"])
+    sheet.append([None, *others, "Gold", "Platinum", "Silver"])
+    sheet.append([None, *(["($/mt)"] * 67), "($/troy oz)", "($/troy oz)", "($/troy oz)"])
+    sheet.append(["2026M09", *([100.0] * 67), 3986.2, 1500.0, 46.1])
+    sheet.append(["2026M10", *([101.0] * 67), 4105.1, 1550.0, 48.9])
+    buf = io.BytesIO()
+    book.save(buf)
+    import csv as _csv
+    rows = list(_csv.reader(io.StringIO(containers.to_csv(buf.getvalue(), "xlsx").decode())))
+    assert rows[0][68] == "Gold ($/troy oz)" and rows[0][1] == "Commodity 0 ($/mt)"
+    assert rows[-1][0] == "2026M10" and rows[-1][68] == "4105.1"
+    assert "Updated on" not in ",".join(rows[0])

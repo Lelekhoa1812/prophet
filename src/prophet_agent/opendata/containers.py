@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import date
 from pathlib import Path
 from zipfile import ZipFile
@@ -23,7 +24,9 @@ from prophet_agent.opendata.fetch import DEFAULT_MAX_BYTES
 MAX_MEMBERS = 30
 MAX_RATIO = 20
 MAX_ROWS = 100_000
-MAX_COLS = 64
+# Live GOLD (round 20261128-110827): the World Bank monthly workbook has 71 columns and gold, platinum and silver are the last
+# ones; a 64-column cap cut them off and the mission forecast a $/mt column as gold.
+MAX_COLS = 256
 MAX_SHEETS = 40
 TEXT_SUFFIXES = {".txt", ".csv", ".json"}
 
@@ -151,7 +154,26 @@ def _from_header(rows: list) -> list:
     first = next((i for i, row in enumerate(rows) if numeric(row)), None)
     if not first:
         return rows
+    head = rows[first - 1]
+    if first >= 2 and _units_row(head) and not numeric(rows[first - 2]):
+        # A units row under a names row (the World Bank workbook: "Gold" above "($/troy oz)"). Live GOLD (round
+        # 20261128-110827) kept only the units row, so every column was named "($/mt)" or "($/kg)" and the mission took a
+        # $/mt column for gold. The two rows are joined into one header: "Gold ($/troy oz)".
+        names = rows[first - 2]
+        width = max(len(head), len(names))
+        joined = [" ".join(str(x).strip() for x in (names[k] if k < len(names) else "", head[k] if k < len(head) else "")
+                           if str(x).strip()) for k in range(width)]
+        return [joined] + rows[first:]
     return rows[first - 1:]
+
+
+_UNIT = re.compile(r"^\(.{1,40}\)$")
+
+
+def _units_row(row: list) -> bool:
+    """True when most filled cells of the row are units in brackets, such as "($/bbl)" or "(2010=100)"."""
+    filled = [str(c).strip() for c in row if str(c).strip()]
+    return len(filled) >= 2 and sum(1 for c in filled if _UNIT.match(c)) >= 0.6 * len(filled)
 
 
 def _rows_csv(rows: list) -> bytes:
