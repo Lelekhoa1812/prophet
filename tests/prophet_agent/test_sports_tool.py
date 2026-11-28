@@ -242,7 +242,7 @@ def test_the_current_file_given_as_history_is_not_counted_twice(tmp_path):
 
 
 def test_an_unknown_results_name_points_to_source():
-    with pytest.raises(ValueError, match="source"):
+    with pytest.raises(ValueError, match="run_id, file"):
         simulate_season_tool({}).fn({"results": "out_file.csv"}, "k")
 
 
@@ -265,3 +265,23 @@ def test_a_simulation_comes_with_its_club_compared_chart(tmp_path):
     assert {"league_forecast.png", "league_forecast.svg", "league_forecast.csv"} <= got and out["run_id"]
     view = observe_simulate(out)
     assert view["files"] and view["run_id"] == out["run_id"]
+
+
+def test_history_reads_football_data_urls_since_every_season_lands_as_e0(tmp_path, monkeypatch):
+    """Round 20261128-173823 (EPL): three earlier seasons all landed as E0.csv, so history could name only one, and the
+    mission finished on a simulation without them. The tool now reads the season URLs itself."""
+    from prophet_agent.tools import sports_tool as st
+    files, names = _write_league(tmp_path)
+    body = files["results.csv"].read_bytes()
+    asked = []
+    monkeypatch.setattr(st, "_fetch", lambda url: asked.append(url) or body)
+    tool = simulate_season_tool(files)
+    out = _call(tool, {"results": "results.csv", "fixtures": "fixtures.csv", "simulations": 300, "seed": 1,
+                       "history": ["https://www.football-data.co.uk/mmz4281/2425/E0.csv",
+                                   "https://football-data.co.uk/mmz4281/2526/E0.csv"]})
+    assert asked == ["https://football-data.co.uk/mmz4281/2425/E0.csv", "https://football-data.co.uk/mmz4281/2526/E0.csv"]
+    assert out["teams"]
+    with pytest.raises(ValueError, match="football-data.co.uk season URL"):
+        _call(tool, {"results": "nope.csv"})
+    with pytest.raises(ValueError, match="run_id"):
+        _call(tool, {"results": {"run_id": "zz", "file": "out/x.csv"}})

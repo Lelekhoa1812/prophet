@@ -9,6 +9,7 @@ openfootball football.json is parsed by forecast.sports. The full result is kept
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +25,29 @@ ALLOWED = {"sport", "results", "history", "source", "fixtures", "teams", "simula
            "market_weight"}
 
 
+# A football-data.co.uk season file. Every season of a league lands under the same name (E0.csv), so a mission cannot hold
+# three of them as files; round 20261128-173823 (EPL) never fitted on earlier seasons for that reason and finished on a
+# simulation without this season's results. The tool reads such a URL itself, as league_backtest does.
+FOOTBALL_DATA = re.compile(r"^https://(?:www\.)?football-data\.co\.uk/mmz4281/(\d{4})/([A-Z0-9]+)\.csv$")
+
+
+def _fetch(url: str) -> bytes:
+    from prophet_agent.opendata import market
+    return market._get(url, timeout_s=market.DEFAULT_TIMEOUT_S, resolver=None)[0]
+
+
 def _named_text(name: Any, datasets: dict[str, Path], label: str) -> tuple[str, str]:
+    """The text of a mission file name, a sandbox run's out/ file ({run_id, file}) or a football-data.co.uk season URL."""
+    if isinstance(name, dict):
+        path = source_path({"source": name})
+        return path.read_text(encoding="utf-8"), path.name
+    if isinstance(name, str) and (m := FOOTBALL_DATA.match(name.strip())):
+        url = f"https://football-data.co.uk/mmz4281/{m.group(1)}/{m.group(2)}.csv"
+        return _fetch(url).decode("utf-8-sig", errors="replace"), f"{m.group(2)}_{m.group(1)}.csv"
     if not isinstance(name, str) or name not in datasets:
-        raise ValueError(f"{label} must be one of the mission's file names {sorted(datasets)}; a file a sandbox run "
-                         "wrote is passed as source {run_id, file} instead")
+        raise ValueError(f"{label} must be one of the mission's file names {sorted(datasets)}, a football-data.co.uk "
+                         "season URL (https://football-data.co.uk/mmz4281/2526/E0.csv), or {run_id, file} of a file a "
+                         "sandbox run wrote")
     return Path(datasets[name]).read_text(encoding="utf-8"), name
 
 
@@ -385,9 +405,12 @@ SIMULATE_SEASON_SPEC = {
                    "xG. Every call writes league_forecast (club comparison) and league_paths (points paths) charts.",
     "args": {
         "sport": "football (default) or win_loss",
-        "results": "name of a results file the mission holds (uploaded, or landed by download_web_data; CSV or football.json)",
+        "results": "name of a results file the mission holds (uploaded, or landed by download_web_data; CSV or football.json), "
+                   "a football-data.co.uk season URL (read by the tool), or {run_id, file} of a sandbox run's out/ file",
         "source": "object {run_id, file} naming a results CSV or JSON in an analysis run's out/ folder, instead of results",
-        "history": "optional name, or list of up to 4 names, of earlier seasons' results files; used to fit the ratings only "
+        "history": "optional name, or list of up to 4 names, of earlier seasons' results files, each a mission file, a "
+                   "football-data.co.uk season URL such as https://football-data.co.uk/mmz4281/2526/E0.csv (every season "
+                   "lands as E0.csv, so pass the URLs), or {run_id, file}; used to fit the ratings only "
                    "(early in a season the current results are too few). Club names are matched across sites "
                    "(Manchester City FC = Man City)",
         "xg_weight": "weight of each match's expected goals (HxG, AxG columns) beside its score, 0 to 5 (default 1 when the "

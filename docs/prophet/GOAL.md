@@ -2205,3 +2205,8 @@ before 2018 (unemployment) and 2024 (cash rate).
 - **Research registry (Panel AUUNEMP, round 20261128-173823).** A research lane for Australia's unemployment rate was
   handed the US UNRATE file as a primary page and reported US figures. Registry pages now carry their place, and a query or
   region that names a place keeps only the pages for it.
+- **Season inputs (Panel EPL, round 20261128-173823).** Every football-data.co.uk season lands under one name (E0.csv), so
+  history could name only one earlier season, and a results file a sandbox run wrote was refused although the error said to
+  pass it that way. The mission finished on a simulation without this season's 110 results, and the evaluator refused it
+  five times. simulate_season now reads football-data season URLs itself and accepts {run_id, file} for results, history
+  and fixtures.
