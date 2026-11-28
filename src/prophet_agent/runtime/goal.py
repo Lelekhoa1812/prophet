@@ -828,6 +828,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                                "source. Every number must appear in a fetched passage and carry its source id.",
                 "constraints": "Do not forecast and do not analyse the data file. Primary sources (central banks, "
                                "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
+    if (step := _league_backtest_step(goal, history, tools)) is not None:
+        return step
     if (step := _grain_step(goal, history, tools)) is not None:
         return step
     if (step := _market_driver_step(goal, history, tools)) is not None:
@@ -924,6 +926,27 @@ def _market_driver_step(goal: str, history: list[dict], tools: dict[str, Tool]) 
                 "args": {"source": target[0], "goal": goal, "horizon": max(1, horizon)},
                 "rationale": "the harness scores the domain's named outside drivers against the target series"}
     return None
+
+
+LEAGUE_CODES = ((re.compile(r"premier league|\bepl\b", re.I), "E0"), (re.compile(r"\bchampionship\b", re.I), "E1"),
+                (re.compile(r"la liga", re.I), "SP1"), (re.compile(r"bundesliga", re.I), "D1"),
+                (re.compile(r"serie a\b", re.I), "I1"), (re.compile(r"ligue 1\b", re.I), "F1"))
+
+
+def _league_backtest_step(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """The season simulator scored on the league's past seasons, run once by the harness for a football league-table goal
+    (Mission 10, owner review 2026-11-28: an EPL table was quoted with no measure of how far a final table is usually out).
+    Runs once a mission, before the simulation, so the answer can state the error beside the table."""
+    if "league_backtest" not in tools:
+        return None
+    made = {h.get("tool") for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"}
+    if "league_backtest" in made:
+        return None
+    code = next((c for rx, c in LEAGUE_CODES if rx.search(goal or "")), None)
+    if code is None:
+        return None
+    return {"action": "call_tool", "tool": "league_backtest", "auto": "league_backtest", "args": {"league": code},
+            "rationale": "the harness scores the season model's final table on the league's past seasons"}
 
 
 GRAIN_MARK = "# harness: grain"

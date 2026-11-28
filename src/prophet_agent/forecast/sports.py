@@ -377,7 +377,7 @@ def _tau(x, y, lam, mu, rho):
     return tau
 
 
-def _objective(theta, hi, ai, x, y, w, n_teams, prior_var, real=None):
+def _objective(theta, hi, ai, x, y, w, n_teams, prior_var, real=None, prior_mean=None):
     """Penalised negative log-likelihood and its gradient.
 
     Motivation vs Logic
@@ -387,7 +387,8 @@ def _objective(theta, hi, ai, x, y, w, n_teams, prior_var, real=None):
     log mu = att[away] - dfn[home]; the log tau correction is differentiated term by term. A Gaussian ridge with variance
     prior_var pulls attack and defence toward zero, which also removes the shift between them that the likelihood cannot see.
     ``real`` marks the rows that are played scores; the other rows are pseudo-matches (an xG pair, or the goals a market
-    price implies), fractional counts that get no low-score correction.
+    price implies), fractional counts that get no low-score correction. ``prior_mean`` (length 2T, attack then defence) moves
+    the centre of the ridge for chosen teams (a promoted club starts below the league mean); None centres every team on zero.
     """
     T = n_teams
     att, dfn = theta[:T], theta[T:2 * T]
@@ -401,7 +402,8 @@ def _objective(theta, hi, ai, x, y, w, n_teams, prior_var, real=None):
     tau = np.maximum(raw, 1e-8)
     ll_pois = x * eta_l - lam + y * eta_m - mu
     ll = np.sum(w * (np.log(tau) + ll_pois))
-    f = -ll + 0.5 / prior_var * (att @ att + dfn @ dfn)
+    dev = theta[:2 * T] if prior_mean is None else theta[:2 * T] - prior_mean
+    f = -ll + 0.5 / prior_var * (dev @ dev)
 
     c00 = (x == 0) & (y == 0) & real
     c01 = (x == 0) & (y == 1) & real
@@ -416,7 +418,7 @@ def _objective(theta, hi, ai, x, y, w, n_teams, prior_var, real=None):
     g_att = np.bincount(hi, gl, T) + np.bincount(ai, gm, T)
     g_dfn = -np.bincount(ai, gl, T) - np.bincount(hi, gm, T)
     grad = -np.concatenate([g_att, g_dfn, [gl.sum(), gr.sum()]])
-    grad[:2 * T] += np.concatenate([att, dfn]) / prior_var
+    grad[:2 * T] += dev / prior_var
     return f, grad
 
 
@@ -494,7 +496,7 @@ def signal_rows(matches: list[Match], weights: np.ndarray, *, xg_weight: float, 
 def fit_dixon_coles(matches: list[Match], *, teams: list[str] | None = None,
                     half_life_days: float | None = DEFAULT_HALF_LIFE_DAYS,
                     prior_sd: float = DEFAULT_PRIOR_SD, xg_weight: float = 0.0, market_weight: float = 0.0,
-                    priced_fixtures: list[Match] = ()) -> DixonColes:
+                    priced_fixtures: list[Match] = (), prior_means: dict[str, tuple[float, float]] | None = None) -> DixonColes:
     """Fit the Dixon-Coles model by penalised maximum likelihood on played matches, and on xG and market signals when given.
 
     Motivation vs Logic
@@ -503,7 +505,8 @@ def fit_dixon_coles(matches: list[Match], *, teams: list[str] | None = None,
     can enter as pseudo-matches. Logic: exponential time decay with the given half life (weights relative to the latest match),
     a Gaussian prior on each attack and defence with standard deviation prior_sd, xG and market rows weighted by xg_weight
     and market_weight (0 leaves them out), and the Laplace approximation (inverse Hessian at the optimum) for the spread of the
-    ratings. Refuses when there are fewer than four played matches per team.
+    ratings. ``prior_means`` maps a team to the (attack, defence) its prior is centred on; other teams are centred on zero.
+    Refuses when there are fewer than four played matches per team.
     """
     played, times = _chronological([m for m in matches if m.played])
     teams = teams or _team_list(played)
@@ -522,7 +525,13 @@ def fit_dixon_coles(matches: list[Match], *, teams: list[str] | None = None,
     w = np.array([r[4] for r in rows], dtype=float)
     real = np.array([r[5] for r in rows], dtype=bool)
     T = len(teams)
-    args = (hi, ai, x, y, w, T, prior_sd ** 2, real)
+    pm = None
+    if prior_means:
+        pm = np.zeros(2 * T)
+        for t, (a, d) in prior_means.items():
+            if t in idx:
+                pm[idx[t]], pm[T + idx[t]] = float(a), float(d)
+    args = (hi, ai, x, y, w, T, prior_sd ** 2, real, pm)
     theta0 = np.zeros(2 * T + 2)
     theta0[2 * T] = 0.25
     bounds = [(None, None)] * (2 * T + 1) + [(-0.5, 0.5)]
@@ -970,11 +979,12 @@ def adjustment_offsets(rem: list[Match], adjustments: list[dict]) -> tuple[np.nd
 def _football_season(played: list[Match], rem: list[Match], teams: list[str], *, n_sims: int, seed: int,
                      points, half_life_days, prior_sd, interest: list[str], relegation_places: int, top_places: int,
                      fit_extra: list[Match] = (), xg_weight: float = 0.0, market_weight: float = 0.0,
-                     adjustments: list[dict] = ()) -> dict:
+                     adjustments: list[dict] = (), prior_means: dict[str, tuple[float, float]] | None = None) -> dict:
     """Simulate the remaining football matches; ranking by points, goal difference, goals for, then name. ``fit_extra``
     (earlier seasons) is used to fit the ratings only; the table and the simulation start from ``played``."""
     model = fit_dixon_coles(_chronological(list(fit_extra) + list(played))[0], teams=teams, half_life_days=half_life_days,
-                            prior_sd=prior_sd, xg_weight=xg_weight, market_weight=market_weight, priced_fixtures=rem)
+                            prior_sd=prior_sd, xg_weight=xg_weight, market_weight=market_weight, priced_fixtures=rem,
+                            prior_means=prior_means)
     T = len(teams)
     idx = _team_index(teams)
     hi = np.array([idx[m.home] for m in rem], int)
@@ -1115,6 +1125,26 @@ _CLUB_ALIASES = {"manchester city": "man city", "manchester united": "man united
                  "queens park rangers": "qpr", "birmingham city": "birmingham", "derby county": "derby"}
 
 
+# Measured (2026-11-28, Mission 10): the 27 promoted EPL clubs of 2017/18 to 2025/26, each rated on its own full season
+# (goals only, no decay), sat 0.28 below that season's mean attack and 0.20 below its mean defence (standard errors about 0.04).
+# Shrinking a promoted club toward the league mean overrates it until it has played enough matches.
+PROMOTED_PRIOR = (-0.28, -0.20)
+
+
+def promoted_clubs(history: list[Match] | None, teams: list[str], window_days: int = 330) -> list[str]:
+    """This season's clubs that did not play in the latest season of ``history`` (matches within ``window_days`` of the last
+    history match). Empty when there is no history or the latest history season holds fewer than ten clubs."""
+    dated = [m for m in (history or []) if m.date]
+    if not dated:
+        return []
+    last = max(dt.date.fromisoformat(m.date[:10]) for m in dated)
+    recent = {name for m in dated if (last - dt.date.fromisoformat(m.date[:10])).days <= window_days
+              for name in (m.home, m.away)}
+    if len(recent) < 10:
+        return []
+    return [t for t in teams if t not in recent]
+
+
 def club_key(name: str) -> str:
     """A spelling-free key for a club name: lower case, club-type words and dots dropped, known long forms shortened."""
     k = re.sub(r"\s+", " ", _CLUB_WORDS.sub(" ", re.sub(r"[.'\u2019]", "", str(name).lower()))).strip()
@@ -1198,7 +1228,8 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
                     teams_of_interest: list[str] | None = None, relegation_places: int = 3, top_places: int = 4,
                     playoff_places: int = 8, games_per_team: int | None = None, backtest: bool = True,
                     history: list[Match] | None = None, xg_weight: float | None = None,
-                    market_weight: float | None = None, adjustments: list[dict] | None = None) -> dict[str, Any]:
+                    market_weight: float | None = None, adjustments: list[dict] | None = None,
+                    promoted: list[str] | None = None) -> dict[str, Any]:
     """Fit the model on the played matches and simulate the rest of the season n_sims times.
 
     Motivation vs Logic
@@ -1287,6 +1318,13 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
     else:
         interest = sorted(teams, key=lambda t: (-current[t], t))[:4]
 
+    prior_means = None
+    if sport == FOOTBALL:
+        new_clubs = promoted_clubs(history, teams) if promoted is None else [t for t in promoted if t in in_season]
+        if new_clubs:
+            prior_means = {t: PROMOTED_PRIOR for t in new_clubs}
+            notes.append(f"promoted clubs ({', '.join(new_clubs)}) start from the measured promoted-club prior (attack "
+                         f"{PROMOTED_PRIOR[0]:+.2f}, defence {PROMOTED_PRIOR[1]:+.2f} from the league mean), not the league mean")
     pool = list(fit_extra) + list(played)
     has_xg, has_market = any(m.xg for m in pool), any(m.market for m in pool) or any(m.market for m in rem)
     xg_w = (DEFAULT_XG_WEIGHT if has_xg else 0.0) if xg_weight is None else float(xg_weight)
@@ -1295,7 +1333,7 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
         core = _football_season(played, rem, teams, n_sims=n_sims, seed=seed, points=points, half_life_days=half_life_days,
                                 prior_sd=prior_sd, interest=interest, relegation_places=relegation_places, top_places=top_places,
                                 fit_extra=fit_extra, xg_weight=xg_w, market_weight=mk_w,
-                                adjustments=_known_adjustments(adjustments or [], teams, notes))
+                                adjustments=_known_adjustments(adjustments or [], teams, notes), prior_means=prior_means)
         per_team = len(played) * 2 / max(len(teams), 1)
         if not fit_extra and per_team < 19 and not (xg_w and has_xg) and not (mk_w and has_market):
             notes.append(f"thin ratings: each club's rating rests on about {per_team:.0f} of this season's results and nothing "
@@ -1348,3 +1386,118 @@ def simulate_season(matches: list[Match], fixtures: list[Match] | None = None, *
             **({"finishing": core["finishing"]} if core.get("finishing") else {}),
             "reading": ("Each team's range is its own; do not add ranges across teams. Probabilities and paths are simulated "
                         f"from fitted ratings ({FIGURE_LABEL}), not observed results.")}
+
+
+# ---------------------------------------------------------------- season-level backtest
+#
+# Mission 10 (owner review 2026-11-28): a final-table forecast is judged on the final table, not only match by match. Measured on
+# the eight EPL seasons 2018/19 to 2025/26 (football-data.co.uk, cut after matchdays 8, 12 and 19): the rating model with two
+# earlier seasons and closing prices had a final-points MAE of 7.37, 6.53 and 4.67 points, against 8.55, 7.49 and 5.46 for
+# goals of this season only, 10.56 for last season's points and 12.34, 8.98 and 6.11 for the points pace. A live mission runs
+# the same check on the seasons it can fetch, so the numbers it quotes are its own.
+
+SEASON_MODELS = ("pace", "last_season", "goals_only", "goals_history", "history_market")
+
+
+def _final_points(matches: list[Match], points=DEFAULT_POINTS) -> dict[str, float]:
+    return {r["team"]: float(r["points"]) for r in standings(matches, points)}
+
+
+def season_backtest(seasons: list[tuple[str, list[Match]]], cuts: tuple[int, ...] = (8, 12, 19), *, n_sims: int = 1000,
+                    seed: int = 0, history_seasons: int = 2, points: tuple[int, int, int] = DEFAULT_POINTS) -> dict[str, Any]:
+    """Forecast each complete season's final points from its first ``cut`` matchdays, and score against the final table.
+
+    Motivation vs Logic
+    Motivation: the model's match-level backtest does not say how far its final-table numbers are from what happened; a
+    reader needs the error in points and the calibration of the title, top-four and relegation chances.
+    Logic: ``seasons`` are (label, matches), oldest first. Every season with at least one earlier season is scored. At each
+    cut, the matches of the first cut matchdays (teams / 2 per matchday, in date order) are known and every later match has
+    its score, prices and xG removed. Five forecasts of each club's final points: pace (points per game times games), last
+    season's points (a promoted club gets the mean of the three relegated clubs), the rating model on this season's goals,
+    the same with up to ``history_seasons`` earlier seasons, and that with closing prices too (the simulate_season default).
+    Scores per cut: mean absolute error and RMSE of final points over clubs, and Brier scores of the title, top-four and
+    relegation chances for the three simulated models. Figures are measured on the files given.
+    """
+    if len(seasons) < 2:
+        raise ValueError("a season backtest needs at least two complete seasons (one earlier season and one to score)")
+    rows: list[dict] = []
+    for si in range(1, len(seasons)):
+        label, ms = seasons[si]
+        ms = sorted((m for m in ms if m.played), key=lambda m: (m.date or "", m.home))
+        fin = _final_points(ms, points)
+        teams = sorted(fin)
+        n_teams = len(teams)
+        if n_teams < 4 or len(ms) < n_teams * (n_teams - 1) * 0.9:
+            continue                                   # an unfinished or partial season is not scored
+        games = 2 * (n_teams - 1)
+        prev = [m for _, s in seasons[max(0, si - history_seasons):si] for m in s if m.played]
+        prev_fin = _final_points([m for m in seasons[si - 1][1] if m.played], points)
+        rel_mean = float(np.mean(sorted(prev_fin.values())[:3])) if prev_fin else 0.0
+        order = sorted(teams, key=lambda t: -fin[t])
+        champ, top, bottom = order[0], set(order[:4]), set(order[-3:])
+        for k in cuts:
+            n = k * n_teams // 2
+            if not 0 < n < len(ms):
+                continue
+            known = ms[:n]
+            later = [Match(m.date, m.home, m.away, None, None, m.group) for m in ms[n:]]
+            pts = _final_points(known, points)
+            gp = defaultdict(int)
+            for m in known:
+                gp[m.home] += 1
+                gp[m.away] += 1
+            preds = {"pace": {t: pts.get(t, 0.0) / max(gp[t], 1) * games for t in teams},
+                     "last_season": {t: prev_fin.get(t, rel_mean) for t in teams}}
+            probs: dict[str, dict] = {}
+            for name, kw in (("goals_only", {"history": None, "market_weight": 0.0, "xg_weight": 0.0}),
+                             ("goals_history", {"history": prev, "market_weight": 0.0, "xg_weight": 0.0}),
+                             ("history_market", {"history": prev})):
+                try:
+                    res = simulate_season(known + later, n_sims=n_sims, seed=seed, backtest=False, points=points, **kw)
+                except ValueError:
+                    continue
+                by = {r["team"]: r for r in res["teams"]}
+                preds[name] = {t: by[t]["expected_final"] for t in teams}
+                probs[name] = by
+            for name, p in preds.items():
+                err = np.array([p[t] - fin[t] for t in teams])
+                row = {"season": label, "cut": k, "model": name, "mae": float(np.mean(np.abs(err))),
+                       "rmse": float(np.sqrt(np.mean(err ** 2)))}
+                if name in probs:
+                    by = probs[name]
+                    row["brier_title"] = float(np.mean([(by[t]["title"] - (t == champ)) ** 2 for t in teams]))
+                    row["brier_top4"] = float(np.mean([(by[t]["top_places"] - (t in top)) ** 2 for t in teams]))
+                    row["brier_relegation"] = float(np.mean([(by[t]["relegation"] - (t in bottom)) ** 2 for t in teams]))
+                rows.append(row)
+    if not rows:
+        raise ValueError("no complete season could be scored; give full seasons of results")
+    summary = []
+    for k in cuts:
+        for name in SEASON_MODELS:
+            rs = [r for r in rows if r["cut"] == k and r["model"] == name]
+            if not rs:
+                continue
+            entry = {"cut": k, "model": name, "seasons": len(rs),
+                     "mae": round(float(np.mean([r["mae"] for r in rs])), 2),
+                     "rmse": round(float(np.mean([r["rmse"] for r in rs])), 2)}
+            for key in ("brier_title", "brier_top4", "brier_relegation"):
+                if all(key in r for r in rs):
+                    entry[key] = round(float(np.mean([r[key] for r in rs])), 4)
+            summary.append(entry)
+    paired = []
+    for k in cuts:
+        base = {r["season"]: r["mae"] for r in rows if r["cut"] == k and r["model"] == "history_market"}
+        for other in ("goals_only", "last_season", "pace"):
+            alt = {r["season"]: r["mae"] for r in rows if r["cut"] == k and r["model"] == other}
+            both = sorted(set(base) & set(alt))
+            if both:
+                wins = sum(1 for s in both if base[s] < alt[s])
+                paired.append({"cut": k, "against": other, "seasons": len(both), "wins": wins,
+                               "mae_gain_pct": round(100 * float(1 - np.mean([base[s] for s in both]) /
+                                                            max(np.mean([alt[s] for s in both]), 1e-9)), 1)})
+    return {"summary": summary, "paired": paired, "rows": rows, "cuts": list(cuts),
+            "seasons_scored": sorted({r["season"] for r in rows}), "figure_label": "measured on past seasons",
+            "method": ("each past season cut after the given matchdays; later matches' scores, prices and xG removed; final "
+                       "points forecast by pace, last season, and the rating model on goals, with earlier seasons, and with "
+                       "closing prices too; scored by final-points MAE and RMSE and by Brier scores of title, top four and "
+                       "relegation")}

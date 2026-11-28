@@ -2088,3 +2088,61 @@ Defects and fixes (commit 60807ed):
   last values, which follow from the stored pack, on both answer paths.
 
 Gate: 3,710 passed on 60807ed. Round 20261128-160530 runs on a9d338d (all round 27 fixes); the round after it runs on these. **M9-8 is not met.**
+
+## Mission 10: fundamentals engine (opened 2026-11-28)
+
+**Why (owner review, 2026-11-28).** The forecasts do not account for the political, geopolitical, economic and other
+fundamental forces behind each target; the pipeline surfaces a naive univariate forecast. A ledger audit of the twelve panel
+missions in rounds 20261128-125459 and 20261128-151151 confirms it (measured, read-only):
+- Centre lines come from the target's own history: drift, naive, seasonal naive, mean reversion or TimesFM. 0 of 12
+  delivered forecasts pass any covariate.
+- Two drivers were adopted by the driver scan (DTWEXBGS for GOLD, T10Y2Y for SPX); neither reached a delivered forecast.
+- No sandbox code fits a structural model (Taylor rule, Okun, VAR, logit). The Taylor rule and Okun's law appear only in
+  research text.
+- 60 scenarios were recorded, 55 with judgement probabilities. The market-labelled five do not come from a tool output.
+  Scenario shifts are close to zero (GOLD 0.0, AURATE 0.0, AUUNEMP 0.001).
+- Market figures that tools returned (the bank-bill path 4.705 / 4.72 / 4.87 %, GVZ 35.84 %, VIX 26.8 %) are not stated in
+  any answer; AURATE's answer says no market prices were available, which contradicts its own tool result.
+
+Research behind the design: `reports/Fundamentals models for six panel targets.md` and its notes in
+`research_notes/Fundamentals models for six panel targets/` (source claims, each cited there).
+
+**Owner decisions (2026-11-28, asked through questions).**
+- Centre line: earn it on backtest. Every candidate (TimesFM, the simple rules, the fundamentals models and the market
+  anchor) is scored on the same rolling origins. The centre is a backtest-weighted combination shrunk towards equal weights.
+  Candidates that lose still shape the scenarios and the band.
+- Market anchor: anchor the whole horizon. Where a market prices the target, its implied path or distribution is used for
+  the full horizon; models carry the centre only where no market prices the target.
+- Budget: no fixed cap; a hard mission may run for days. (The panel already has no step, continue or wall-clock limit:
+  `research_panel.py` MAX_CONTINUES and MAX_MINUTES; the lead has no tool-call cap.)
+- Build order: weakest missions first: EPL, VNUNEMP, AUUNEMP, GOLD, then AURATE and SPX.
+
+**Success criteria.** Each needs evidence recorded below, with each figure labelled measured, synthetic or source claim.
+- **M10-1 Scoring and combination.** For each panel target, a shared harness scores every candidate on the same rolling
+  origins (CRPS, pinball at 10/50/90, MASE, 80 % coverage), forms the centre as a weighted combination shrunk towards equal
+  weights, and states the weights and scores in the answer. Tested offline on known series.
+- **M10-2 Market anchor.** AURATE: an implied cash-rate path for the full five years from bank bills and government bond
+  yields. GOLD and SPX: a cost-of-carry forward for the centre and option-implied volatility (GVZ, VIX) for the width.
+  EPL: overround-removed match prices. The anchor is a candidate in M10-1, and the answer states the market figure with its
+  source and date.
+- **M10-3 EPL season model.** Backtested on at least three past seasons from mid-season cut-offs: final-points MAE and
+  ranked probability score against last season's points, a goals-only rating model and the market-blended model, with
+  early-season shrinkage towards the prior season. The panel mission states the backtest.
+- **M10-4 Unemployment.** VNUNEMP uses the national statistics office's quarterly series to the latest quarter, not a
+  series ending in 2024. AUUNEMP scores at least one leading labour indicator over horizons of up to six quarters and
+  reports where it helps and where it stops helping.
+- **M10-5 Drivers reach forecasts.** An adopted driver is in the delivered forecast's arguments, or the answer states the
+  combination weight it lost on.
+- **M10-6 Scenarios.** Each scenario's shift is non-zero and traced to a tool output (an event, an index, a market price);
+  probabilities from a market are traced to it, and judgement probabilities are labelled as judgement.
+- **M10-7 Calibration.** Coverage and PIT of the combination are reported from the backtest; a band that under-covers is
+  widened by the measured shortfall (conformal or adaptive conformal), and the widening is stated.
+- **M10-8 Panel.** Six panel missions completed and verified, checked by independent audits; M9-8 stays open until then.
+- **M10-9 Gate.** `scripts/check.sh` passes on main after every batch.
+
+**Build order (from the report's ranked list, weakest first).** 1 EPL season backtest and market blend; 2 shared scoring
+and combination harness with conformal widening; 3 Vietnam quarterly source; 4 AU unemployment leading-indicator module;
+5 gold and S&P forward and implied-volatility anchors; 6 cash-rate implied path for five years; 7 drivers and scenarios
+wired into delivered forecasts; 8 live rounds and audits.
+
+**Evidence.** Added below as each batch lands.
