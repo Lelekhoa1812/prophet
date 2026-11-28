@@ -2066,3 +2066,25 @@ Fixes (commit 124efd7):
   ledger: 36 quotes, median 3,648, against the series' 6,775: held. A series ending at 4,105 (2026M10) passes.
 
 Gate: 3,707 passed on 124efd7. Round 20261128-151151 runs on 103f6db (the first round 27 batch); the next round runs on these fixes. **M9-8 is not met.**
+
+### Round 28: live round 20261128-151151 on 103f6db (the first round 27 batch) and the fixes (2026-11-28)
+
+Measured (real staging data, 54 minutes): AURATE completed and verified; AUUNEMP, EPL, GOLD, SPX and VNUNEMP partial.
+What engaged: the driver scan in five missions, the market benchmark where it applies, the horizon backtest for GOLD and
+VNUNEMP, and the refused-finish answer checks with their rewrite for AUUNEMP, GOLD and VNUNEMP. The answer checks now
+name what is wrong instead of letting it through: GOLD stated a 12-month range of $2,931 to $5,902 where its pack ends at
+$2,099 to $6,233 (answer_band_matches_pack); SPX listed a "trend change" the scan does not hold (answer_scan_consistent).
+VNUNEMP said plainly that its series ends 637 days before the run date.
+
+Defects and fixes (commit 60807ed):
+- AUUNEMP saved its 585 monthly values twice with an empty dates list (once as an array, once as a Series indexed by
+  date strings), so the driver scan could not align drivers and the mission circled. save_series now turns an index of
+  date strings (2026-10, 2026M10, 2026Q3) into dates and prints a note when a series is saved without dates.
+- EPL stalled: three football-data seasons downloaded by lanes were mounted as in/E0.csv, in/E0_2.csv and in/E0_3.csv;
+  the lead read the names the lanes reported (which do not exist), then listed '/in'. The missing-file hint now names the
+  address each mounted file came from.
+- SPX and AUUNEMP ended partial on a moving centre line called flat ("the centre line is a level (the drift baseline)",
+  where the drawn line rises 955 points); both rewrites kept the sentence. It is now replaced by the line's own first and
+  last values, which follow from the stored pack, on both answer paths.
+
+Gate: 3,710 passed on 60807ed. Round 20261128-160530 runs on a9d338d (all round 27 fixes); the round after it runs on these. **M9-8 is not met.**
