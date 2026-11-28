@@ -2062,4 +2062,4 @@ Fixes (commit 124efd7):
   With three or more, a last value more than 1.5 times from their median is held. On the round 20261128-125459 GOLD
   ledger: 36 quotes, median 3,648, against the series' 6,775: held. A series ending at 4,105 (2026M10) passes.
 
-Gate: 3,707 passed on 124efd7. Round 20261128-151150 runs on 103f6db (the first round 27 batch); the next round runs on these fixes. **M9-8 is not met.**
+Gate: 3,707 passed on 124efd7. Round 20261128-151151 runs on 103f6db (the first round 27 batch); the next round runs on these fixes. **M9-8 is not met.**
