@@ -195,6 +195,13 @@ def run_one(key: str, out_root: Path) -> dict:
                 except RuntimeError as exc:
                     # Round 2 AUUNEMP (2026-11-26): the checkpoint was read while the worker still held its lease, the
                     # continue was refused once and the panel stopped; the mission then ran on unwatched. Retry a few times.
+                    if "already running" in str(exc):
+                        # Round 20261128-205823 (GOLD): the API had continued the mission itself (auto-continue), so every
+                        # continue was refused as "already running", the panel stopped after six and recorded a checkpoint
+                        # while the mission ran on to its finish. A running mission is watched, not counted as a refusal.
+                        record["already_running"] = record.get("already_running", 0) + 1
+                        time.sleep(POLL_SECONDS)
+                        continue
                     refused += 1
                     record.setdefault("continue_refusals", []).append(str(exc)[:200])
                     if refused <= MAX_REFUSALS:
