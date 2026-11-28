@@ -53,7 +53,7 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
         "Takes one slice of the data (one column, entity, period or defect) and analyses it down to the atomic level with "
         "Python: profile, decompose, test, compare, and report what it means for the forecast.",
         tools=("sandbox_python", "inspect_data", "detect_anomalies", "build_drivers", "save_table", "search_open_data",
-               "download_open_data", "download_market_prices", "control_lab", *_COMMON),
+               "download_open_data", "download_market_prices", "control_lab", "driver_scan", *_COMMON),
         skills=("first-contact-profile",), steps=14,
         role="You are an analysis sub-agent. Work in small cells that print what they find. Read the data before you "
              "decide. Report findings with the numbers the cells printed, the decision you recommend and why, and the "
@@ -61,8 +61,8 @@ TYPES: dict[str, AgentType] = {t.name: t for t in (
     AgentType(
         "modeler",
         "Runs forecasts and backtests and measures what helps TimesFM: baselines, control options, combinations.",
-        tools=("sandbox_python", "timesfm_forecast", "backtest_series", "panel_backtest", "control_lab", "forecast_report", "simulate_season",
-               *_COMMON),
+        tools=("sandbox_python", "timesfm_forecast", "backtest_series", "panel_backtest", "control_lab", "driver_scan",
+               "forecast_report", "simulate_season", *_COMMON),
         skills=("choose-model-by-backtest", "timesfm-control-and-flat-forecasts"), steps=14,
         role="You are a modelling sub-agent. Compare against baselines on the same origins, adopt a treatment only when "
              "the lab or backtest says it helped, and report scores with the baseline each was measured against."),

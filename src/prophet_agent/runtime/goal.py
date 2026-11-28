@@ -828,6 +828,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                                "source. Every number must appear in a fetched passage and carry its source id.",
                 "constraints": "Do not forecast and do not analyse the data file. Primary sources (central banks, "
                                "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
+    if (step := _market_driver_step(goal, history, tools)) is not None:
+        return step
     panel = _panel_hint(history, full)
     forecast_done = any(contracts._forecast_record(h) for h in history)
     if "panel" not in kinds and panel and not forecast_done and "sandbox_python" in tools:
@@ -855,6 +857,101 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
         return {"action": "delegate", "auto": "panel", "tasks": tasks,
                 "rationale": f"{n} entities share dates; slices are analysed in parallel before modelling"}
     return None
+
+
+TARGET_TOOLS = ("backtest_series", "timesfm_forecast", "control_lab", "forecast_report")
+SPX_GOAL = re.compile(r"s\s*&\s*p\s*500|\bspx\b|\bsp500\b|\^gspc\b", re.I)
+GOLD_GOAL = re.compile(r"\bgold\b|\bxau\b|\bgc=f\b", re.I)
+SCAN_HORIZON_CAP = 64
+
+
+def _target_source(history: list[dict]) -> tuple[dict, int | None] | None:
+    """The source {run_id, file[, name]} and horizon of the newest successful call that scored or forecast one saved series."""
+    for h in reversed(contracts.with_delegated(history)):
+        if not isinstance(h, dict) or h.get("kind") != "tool" or h.get("tool") not in TARGET_TOOLS or h.get("error"):
+            continue
+        a = h.get("args") if isinstance(h.get("args"), dict) else {}
+        src = a.get("source")
+        if isinstance(src, dict) and isinstance(src.get("run_id"), str):
+            hz = a.get("horizon")
+            return {k: src[k] for k in ("run_id", "file", "name") if k in src}, (hz if isinstance(hz, int) else None)
+    return None
+
+
+def _benchmark_kind(goal: str, domain: str) -> str | None:
+    from prophet_agent.research import driver_families as dfam
+    if domain == "policy_rate" and dfam.place_of(goal) == "Australia":
+        return "au_cash_rate"
+    if domain == "equity_index" and SPX_GOAL.search(goal):
+        return "vix"
+    if domain == "precious_metal" and GOLD_GOAL.search(goal):
+        return "gvz"
+    return None
+
+
+def _market_driver_step(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """The market benchmark and the driver scan, run by the harness once each for a market or macro target (owner decision
+    2026-11-28, after round 20261128-110827: AUUNEMP refused 17 finishes and SPX 3 without scoring a driver or reading the
+    market's own pricing, though the blocking checks named both every time). The benchmark runs as soon as it can (a cash
+    rate path needs no level; a VIX or GVZ range needs the target's last value); the scan once a series has been backtested
+    or forecast, on that series and its horizon. A call made earlier, by the model or a sub-agent, is not made again."""
+    from prophet_agent.research import driver_families as dfam
+    domain = dfam.detect(goal or "")
+    if domain not in prediction_quality.DRIVEN_DOMAINS:
+        return None
+    made = {h.get("tool") for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"}
+    target = _target_source(history)
+    kind = _benchmark_kind(goal, domain)
+    if kind and "market_benchmark" in tools and "market_benchmark" not in made and (kind == "au_cash_rate" or target):
+        args: dict[str, Any] = {"kind": kind}
+        if kind != "au_cash_rate" and target:
+            from prophet_agent.tools.series_io import resolve_series
+            try:
+                named = resolve_series({"source": target[0]})
+                if len(named) == 1 and len(named[0][1]) and float(named[0][1][-1]) > 0:
+                    args["level"] = round(float(named[0][1][-1]), 4)
+            except (ValueError, OSError):
+                pass
+        return {"action": "call_tool", "tool": "market_benchmark", "args": args, "auto": "market",
+                "rationale": "the harness reads what the market prices for this target before the answer is written"}
+    if target and "driver_scan" in tools and "driver_scan" not in made:
+        horizon = min(target[1] or 12, SCAN_HORIZON_CAP)
+        return {"action": "call_tool", "tool": "driver_scan", "auto": "drivers",
+                "args": {"source": target[0], "goal": goal, "horizon": max(1, horizon)},
+                "rationale": "the harness scores the domain's named outside drivers against the target series"}
+    return None
+
+
+# The checks a refused finish names, and the tools that close each one (owner decision 2026-11-28, "Both": live AUUNEMP refused
+# 17 finishes for these checks and spent its calls on 33 web_research and 20 web_fetch calls, never on the test they asked for).
+FOCUS_CHECKS: dict[str, tuple[str, ...]] = {
+    "signals_gathered": ("driver_scan", "control_lab", "download_open_data", "download_market_prices", "backtest_series"),
+    "answer_signal_search": ("driver_scan", "control_lab", "download_open_data", "download_market_prices", "backtest_series"),
+    "centre_not_flat": ("driver_scan", "control_lab", "backtest_series", "scenario_forecast"),
+    "fundamentals_covered": ("driver_map", "scenario_forecast", "market_benchmark", "driver_scan", "web_research", "web_fetch"),
+    "band_vs_market": ("market_benchmark", "calibrate_intervals"),
+    "market_stated": ("market_benchmark",),
+}
+FOCUS_ALWAYS = ("forecast_report", "read_observation", "sandbox_python", "notes")
+FOCUS_AFTER = 2
+
+
+def _focus_tools(history: list[dict], tools: dict[str, Tool]) -> tuple[dict[str, Tool], str]:
+    """After FOCUS_AFTER finishes refused for a driver, fundamentals or market check, and while the newest refusal still names
+    one, the planner is offered only the tools that close the named checks (plus the pack, paging and analysis tools). A
+    later evaluation that names none of them lifts the focus. Derived from the history alone, so a replay sees the same."""
+    evals = [h for h in history if isinstance(h, dict) and h.get("kind") == "evaluation"]
+    refused = [h for h in evals if set(h.get("contract") or ()) & FOCUS_CHECKS.keys()]
+    if len(refused) < FOCUS_AFTER or evals[-1] is not refused[-1]:
+        return tools, ""
+    open_checks = [c for c in refused[-1]["contract"] if c in FOCUS_CHECKS]
+    keep = set(FOCUS_ALWAYS) | {t for c in open_checks for t in FOCUS_CHECKS[c]}
+    offered = {n: t for n, t in tools.items() if n in keep}
+    if not offered:
+        return tools, ""
+    return offered, (f"The finish was refused {len(refused)} times for {', '.join(open_checks)}. Until those checks pass, only "
+                     f"the tools that close them are offered: {', '.join(sorted(offered))}. Do that work (read each refusal "
+                     "for what is missing), rebuild the pack if the forecast changed, then finish.")
 
 
 def _state_card(history: list[dict]) -> str:
@@ -2736,7 +2833,10 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
         else:
             # The allowance decision is stored with the plan (A5-07). A resumed run after a top-up recomputes out_of_calls as
             # False, but the stored plan was made when the allowance was spent, so the gates below read the stored value.
-            plan = ctx.step(f"plan:{tag}:{i}", lambda c: {**_decide_plan(brain, goal, tools, history, memo, context, note,
+            plan_tools, focus = _focus_tools(history, tools) if cfg.depth == 0 else (tools, "")
+            if focus:
+                note += "\n\n" + focus
+            plan = ctx.step(f"plan:{tag}:{i}", lambda c: {**_decide_plan(brain, goal, plan_tools, history, memo, context, note,
                                                                         finish_now=cfg.finish_now, out_of_calls=out_of_calls,
                                                                         nested=cfg.depth > 0),
                                                           "out_of_calls": out_of_calls})

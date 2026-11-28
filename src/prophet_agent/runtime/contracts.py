@@ -3070,6 +3070,10 @@ def _signal_searched(obs: list) -> bool:
             continue
         if h.get("tool") == "control_lab" and "with_covariates" in json.dumps(h, default=str):
             return True
+        # driver_scan (round 20261128-110827): each scored driver is a control_lab with_covariates run against the target.
+        res = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+        if h.get("tool") == "driver_scan" and not h.get("error") and isinstance(res, dict) and res.get("drivers"):
+            return True
         if _COVARIATE_ARG.search(json.dumps(h.get("args") or {}, default=str)):
             return True
     return False

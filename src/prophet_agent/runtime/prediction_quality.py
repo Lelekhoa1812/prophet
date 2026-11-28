@@ -451,10 +451,16 @@ def check_fundamentals(history: Any, goal: str = "") -> dict | None:
             continue
     untraced = [f"{f['family']}: {f['evidence'][:60]}" for f in findings.values() if not _traced(f["evidence"], texts)]
     good = [f for f in findings.values() if _traced(f["evidence"], texts)]
-    researched = sorted({f["family"] for f in good})
-    tested = sorted({f["family"] for f in good if f["kind"] == "tested" and _traced(f["evidence"], test_texts)})
+    # driver_scan rows are tested by construction (each one is a control-lab run of the driver against the target), and a
+    # market_benchmark result is a market-implied benchmark read from its source (owner decision 2026-11-28: the harness runs
+    # both, so their results count without a hand-written driver_map record).
+    scanned = _scanned_families(flat)
+    researched = sorted({f["family"] for f in good} | scanned)
+    tested = sorted({f["family"] for f in good if f["kind"] == "tested" and _traced(f["evidence"], test_texts)} | scanned)
     n_bench = sum(1 for b in benches.values() if _traced(b["evidence"], texts)) + \
-        sum(1 for f in good if f["kind"] == "benchmark")
+        sum(1 for f in good if f["kind"] == "benchmark") + \
+        (1 if any(_ok_result(h, "market_benchmark") is not None and isinstance(h.get("args"), dict)
+                  and h["args"].get("kind") == BENCHMARK_KIND.get(domain) for h in flat) else 0)
     applied = 0
     for h in flat:
         if isinstance(_ok_result(h, "scenario_forecast"), dict) and isinstance(h.get("args"), dict):
@@ -488,6 +494,23 @@ def check_fundamentals(history: Any, goal: str = "") -> dict | None:
               + (f"Evidence not found in any call of this mission (dropped): {', '.join(untraced[:4])}. " if untraced else "")
               + "Search broadly (research lanes per family), then measure, then record.")
     return _check("fundamentals_covered", False, detail, FUNDAMENTALS_SEVERITY)
+
+
+# The market_benchmark kind that benchmarks a target of each domain (a VIX range is the S&P 500's, GVZ is gold's).
+BENCHMARK_KIND = {"policy_rate": "au_cash_rate", "equity_index": "vix", "precious_metal": "gvz"}
+
+
+def _scanned_families(flat: list[dict]) -> set[str]:
+    """The driver families a successful driver_scan scored against the target."""
+    out: set[str] = set()
+    for h in flat:
+        res = _ok_result(h, "driver_scan")
+        if not isinstance(res, dict):
+            continue
+        full = h.get("full") if isinstance(h.get("full"), dict) else {}
+        rows = res.get("scored") or full.get("drivers") or []
+        out |= {str(r["family"]) for r in rows if isinstance(r, dict) and r.get("family")}
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- newest published level

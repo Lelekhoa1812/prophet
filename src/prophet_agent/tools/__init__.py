@@ -20,6 +20,7 @@ from .research_tools import tools as research_tool_pairs
 from .source_table_tools import source_table_tools
 from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .market_benchmark_tool import MARKET_BENCHMARK_SPEC, market_benchmark_tool
+from .driver_scan_tool import DRIVER_SCAN_SPEC, driver_scan_tool
 from .sports_tool import SIMULATE_SEASON_SPEC, simulate_season_tool
 from .fundamentals_tool import (DRIVER_MAP_SPEC, SCENARIO_FORECAST_SPEC, driver_map_tool,
                                 scenario_forecast_tool)
@@ -56,6 +57,7 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         "driver_map": (driver_map_tool(), DRIVER_MAP_SPEC),
         "scenario_forecast": (scenario_forecast_tool(), SCENARIO_FORECAST_SPEC),
         "market_benchmark": (market_benchmark_tool(), MARKET_BENCHMARK_SPEC),
+        "driver_scan": (driver_scan_tool(), DRIVER_SCAN_SPEC),
     }
     for tool, spec in research_tool_pairs():
         specs[tool.name] = (tool, spec)
