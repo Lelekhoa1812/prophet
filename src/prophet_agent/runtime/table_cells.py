@@ -218,6 +218,15 @@ def mismatches(answer: str, history: list) -> list[dict]:
         return []
     found = evidence_cells(history, {c["key"] for c in cells})
     out = []
+    # Round 20261128-125459 (EPL): the answer's standings named West Ham, Wolves, Leicester and Southampton, none of them in
+    # any tool output (the printed table has the 20 clubs of this season), and a row with no evidence was never judged.
+    # When the tools printed points for ten or more entities, a points or played cell for an entity in no printed table is
+    # an invented row.
+    printed_keys = {k for k, _ in found}
+    if sum(1 for _, g in found if g == "points") >= 10:
+        for key in sorted({c["key"] for c in cells if c["group"] in ("points", "played")} - printed_keys):
+            c = next(x for x in cells if x["key"] == key and x["group"] in ("points", "played"))
+            out.append({**c, "printed": [], "absent": True})
     for c in cells:
         printed = found.get((c["key"], c["group"]))
         if not printed:

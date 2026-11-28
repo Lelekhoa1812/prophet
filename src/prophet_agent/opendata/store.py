@@ -13,6 +13,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
+import time
 from typing import Any
 
 from prophet_agent.datasets import DatasetStore
@@ -232,9 +234,18 @@ def preview(body: bytes, fmt: str) -> dict:
     return out
 
 
+# Round 20261128-125459 (GOLD): a Pink Sheet stored days earlier, landed before the units row was joined to the names and
+# with 64 columns kept, was reused, so the gold column could not be found and a fertiliser column ($/mt) was forecast as
+# gold; it also ended in July 2026 while the live workbook runs to October. A stored download is reused only while it is
+# younger than REUSE_S and was landed by the current LANDING_VERSION (raise it whenever a landing changes).
+REUSE_S = float(os.environ.get("PROPHET_DATASET_REUSE_S", str(12 * 3600)))
+LANDING_VERSION = 2
+
+
 def _find_existing(datasets: DatasetStore, source_key: str, digest: str) -> dict | None:
     if not datasets.root.is_dir():
         return None
+    now = time.time()
     matches = []
     for folder in datasets.root.iterdir():
         try:
@@ -242,7 +253,8 @@ def _find_existing(datasets: DatasetStore, source_key: str, digest: str) -> dict
         except KeyError:
             continue
         provenance = meta.get("provenance") or {}
-        if provenance.get("source") == source_key and provenance.get("params_sha256") == digest:
+        if provenance.get("source") == source_key and provenance.get("params_sha256") == digest \
+                and provenance.get("landing") == LANDING_VERSION and now - float(meta.get("created") or 0) <= REUSE_S:
             matches.append(meta)
     return max(matches, key=lambda meta: meta["created"]) if matches else None
 
@@ -395,6 +407,7 @@ def download_to_dataset(source_key: str, params: dict, datasets: DatasetStore, *
         "raw_bytes": len(downloaded),
         "preamble": preamble,
         "licence_key": sources.get(source_key).licence_key,
+        "landing": LANDING_VERSION,
         **extra_provenance,
     }
     suffix = {"json": "json", "csv": "csv", "text": "txt"}[fmt]

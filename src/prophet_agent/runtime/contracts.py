@@ -2326,8 +2326,12 @@ def _invented_categories(text: str, findings: list) -> tuple[str, str] | None:
     return None
 
 
-_LATEST = re.compile(r"\b(?:latest|last|most recent)\s+(?:observed\s+|recorded\s+|actual\s+)?(?:value|reading|level|close|"
-                     r"observation|data point|weekly value|monthly value|daily value)s?\b", re.I)
+# Round 20261128-125459 (AUUNEMP): "was **4.1% in October 2026** (the latest official figure)", where October was 4.865; the
+# phrase named a figure, not a value, and came after it, so the check did not read it.
+_LATEST = re.compile(r"\b(?:latest|last|most recent)\s+(?:(?:observed|recorded|actual|official|published|available|monthly|"
+                     r"weekly|daily|quarterly)\s+){0,2}(?:value|reading|level|close|observation|data point|figure|print|"
+                     r"number)s?\b", re.I)
+_MONTH_YEAR = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d{2}\b", re.I)
 _ON_DAY = re.compile(r"\b(?:closed|close|stood|settled|ended|finished|was|read|recorded)\s+(?:at|of|on)?\b", re.I)
 _OUTSIDE = re.compile(r"\bS\d{1,3}\b|release|reported|according|announced|survey|statement|forecast|predict|expected|"
                       r"range|band|centre|median|naive|baseline|\bMASE\b|\brule\b|repeat|\bmean\b|average", re.I)
@@ -2582,6 +2586,12 @@ def _latest_and_end(text: str, obs: list) -> list[dict]:
             # A count ("882 weekly points", "521 rows") is not a value.
             fig = next((f for f in _FIGURE.finditer(tail) if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1))
                         and not _COUNT_AFTER.match(tail[f.end():])), None)
+            if fig is None:
+                # "was 4.1% in October 2026 (the latest official figure)": the phrase follows the figure it names.
+                head = grounding.DATE_WORDS.sub(" ", _MONTH_YEAR.sub(" ", unit[max(0, m.start() - 80):m.start()]))
+                fig = next((f for f in reversed(list(_FIGURE.finditer(head)))
+                            if not re.fullmatch(r"(?:19|20)\d{2}", f.group(1)) and not _COUNT_AFTER.match(head[f.end():])),
+                           None)
             if fig is None:
                 continue
             token = fig.group(1)

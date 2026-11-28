@@ -177,7 +177,9 @@ def _backtest(args: dict, _key: str) -> dict[str, Any]:
     if horizon > MAX_HORIZON:
         # The backtest forecasts this horizon at every window, so an unbounded one spends the model on steps timesfm_forecast
         # would refuse (round 6m: the same limit, 512, as the forecast tools).
-        raise ValueError(f"horizon must be at most {MAX_HORIZON}, the limit of timesfm_forecast; a longer outlook is not backtested")
+        from prophet_agent.tools.timesfm_tool import LONG_HORIZON_HINT
+        raise ValueError(f"horizon must be at most {MAX_HORIZON}, the limit of timesfm_forecast; a longer outlook is not "
+                         "backtested" + LONG_HORIZON_HINT)
     named = resolve_series(args)
     if len(named) > MAX_BACKTEST_SERIES:
         raise ValueError(f"{len(named)} series in one call; at most {MAX_BACKTEST_SERIES}. Choose with source.name, or split the file")

@@ -830,6 +830,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                                "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
     if (step := _market_driver_step(goal, history, tools)) is not None:
         return step
+    if (step := _horizon_backtest_step(history, tools)) is not None:
+        return step
     panel = _panel_hint(history, full)
     forecast_done = any(contracts._forecast_record(h) for h in history)
     if "panel" not in kinds and panel and not forecast_done and "sandbox_python" in tools:
@@ -920,6 +922,41 @@ def _market_driver_step(goal: str, history: list[dict], tools: dict[str, Tool]) 
                 "args": {"source": target[0], "goal": goal, "horizon": max(1, horizon)},
                 "rationale": "the harness scores the domain's named outside drivers against the target series"}
     return None
+
+
+FORECAST_TOOLS = ("forecast_report", "timesfm_forecast")
+CARRIED_CONTROL = ("past_covariates", "future_covariates", "context_points", "ignore_ranges", "season")
+
+
+def _horizon_backtest_step(history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """A backtest at the horizon of the newest forecast, run by the harness once when no backtest covers it.
+
+    Round 20261128-125459: GOLD's data ended four months before the run, so its 12-month forecast ran 16 periods and the
+    baseline check held every finish ("no backtest covers that horizon (backtests ran at [12])"); AUUNEMP the same at 25
+    against 24. The repair is one deterministic call: backtest_series on the forecast's own source and horizon, with the
+    drivers and context it used. A call already made at that horizon on that source (even a failed one) is not repeated."""
+    if "backtest_series" not in tools:
+        return None
+    flat = [h for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"]
+    fc = next((h for h in reversed(flat) if h.get("tool") in FORECAST_TOOLS and not h.get("error")
+               and isinstance(h.get("args"), dict) and isinstance((h["args"].get("source") or None), dict)
+               and isinstance(h["args"].get("horizon"), int) and not isinstance(h["args"].get("horizon"), bool)), None)
+    if fc is None:
+        return None
+    a = fc["args"]
+    horizon, src = a["horizon"], a["source"]
+    for h in flat:
+        if h.get("tool") != "backtest_series" or not isinstance(h.get("args"), dict):
+            continue
+        hz = h["args"].get("horizon")
+        if not isinstance(hz, int):
+            continue
+        if (not h.get("error") and hz >= horizon) or (hz == horizon and h["args"].get("source") == src):
+            return None
+    args = {"source": src, "horizon": horizon, **{k: a[k] for k in CARRIED_CONTROL if k in a}}
+    return {"action": "call_tool", "tool": "backtest_series", "auto": "horizon", "args": args,
+            "rationale": f"the forecast runs {horizon} periods ahead and no backtest covers that horizon; the harness "
+                         "backtests the same series at it"}
 
 
 # The checks a refused finish names, and the tools that close each one (owner decision 2026-11-28, "Both": live AUUNEMP refused
@@ -3193,8 +3230,16 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 written = _compose(ctx, brain, f"composeloop:{tag}:{i}", goal, history, memo, context, draft)
                 text = written if written is not None and written.strip() else verdict.get("answer", "")
                 if text.strip():
-                    return {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history,
-                            "reason": "The analysis could not close this gap: " + verdict["reason"]}
+                    out = {"status": "partial", "iterations": i + 1, "answer": text, "evidence": history,
+                           "reason": "The analysis could not close this gap: " + verdict["reason"]}
+                    if cfg.depth == 0:
+                        text, wrong = _checked_gap_answer(ctx, brain, tag, i, goal, history, memo, context, text)
+                        out["answer"] = text
+                        if wrong:
+                            out["reason"] += " The answer still states something the analysis output does not support: " \
+                                + contracts.summarise(wrong)
+                            out["contract_failures"] = [c["name"] for c in wrong]
+                    return out
                 return {"status": "stalled", "iterations": i + 1, "evidence": history}
             history.append({"kind": "evaluation", "verdict": "not_met", "missing": verdict["reason"]
                             + " Your last finish was refused. Call a tool that closes this gap; if no tool can, finish again and "
@@ -3205,6 +3250,36 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
     # Unreachable: the last step of the part always returns above. Kept so a future edit cannot fall through silently.
     return {"status": "checkpoint", "iterations": cfg.end, "segment": cfg.segment,
             "reason": "this part of the work is spent", "evidence": history, "memory": memo.text}
+
+
+ANSWER_SCOPED = frozenset({"answer_table_matches_data", "data_end_stated", "answer_band_matches_pack",
+                           "league_claims_match_fit", "market_stated"})
+
+
+def _gap_answer_claims(text: str, history: list[dict], goal: str) -> list[dict]:
+    """The blocking checks on an answer's own words: the stated claims (latest value, data span, cycles...) and the answer
+    checks among the prediction checks (table cells, data end, band, league claims, market)."""
+    claims = contracts.blocking(contracts.check_answer(text, history, run_root=SANDBOX_ROOT, goal=goal))
+    pq = [c for c in prediction_quality.prediction_checks(history, goal, text) if c.get("name") in ANSWER_SCOPED]
+    return claims + contracts.blocking(pq)
+
+
+def _checked_gap_answer(ctx: Ctx, brain: Any, tag: str, i: int, goal: str, history: list[dict], memo: Memo, context: str,
+                        text: str) -> tuple[str, list[dict]]:
+    """A partial answer written after too many refused finishes, checked like a finished one and rewritten once.
+
+    Round 20261128-125459: three of six missions ended through this path, and none of the answer checks ran on it. EPL
+    shipped a standings table with 101 cells that disagree with the printed table and four clubs not in the league, and
+    AUUNEMP "4.1% in October 2026 (the latest official figure)" where the series it forecast ends at 4.865. The checks now
+    run here; the composer rewrites once with the fixes; what is still wrong is returned for the reason."""
+    wrong = _gap_answer_claims(text, history, goal)
+    if not wrong:
+        return text, []
+    rewritten = _compose(ctx, brain, f"gapclaims:{tag}:{i}", goal, history, memo, context, text,
+                         fixes=contracts.summarise(wrong))
+    if rewritten is None or not rewritten.strip():
+        return text, wrong
+    return rewritten, _gap_answer_claims(rewritten, history, goal)
 
 
 DATE_TEXT = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?(?:\s+\d{4})?"

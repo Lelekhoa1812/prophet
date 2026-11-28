@@ -810,11 +810,61 @@ def check_table_cells(answer: str, history: Any) -> dict | None:
     wrong = table_cells.mismatches(answer, history if isinstance(history, list) else [])
     if not wrong:
         return None
-    fixes = "; ".join(f"{w['entity']} {w['label']}: the answer says {w['stated']}, the tools printed "
+    fixes = "; ".join(f"{w['entity']}: in no table the tools printed (leave the row out)" if w.get("absent") else
+                      f"{w['entity']} {w['label']}: the answer says {w['stated']}, the tools printed "
                       f"{', '.join(f'{p:g}' for p in w['printed'])}" for w in wrong[:8])
     return _check("answer_table_matches_data", False,
                   f"{len(wrong)} table cell(s) disagree with the tables the tools printed: {fixes}. Build the table from the "
                   "printed or downloaded data (a sandbox cell that prints it), not from memory, and copy its values")
+
+
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+           "december")
+
+
+def _date_forms(day: str) -> list[str]:
+    """Ways an answer can name the period that ends or contains ``day`` (YYYY-MM-DD): 2024-12, December 2024, Dec 2024,
+    Q4 2024, 2024-Q4, 2024Q4."""
+    y, m = int(day[:4]), int(day[5:7])
+    q = (m - 1) // 3 + 1
+    name = _MONTHS[m - 1]
+    return [day[:7], f"{name} {y}", f"{name[:3]} {y}", f"q{q} {y}", f"{y}-q{q}", f"{y}q{q}", f"{y} q{q}", day]
+
+
+def check_data_fresh(answer: str, history: Any, today: str | None = None) -> dict | None:
+    """When the data ends two or more forecast periods before today, the answer names when the data ends.
+
+    Round 20261128-125459 (VNUNEMP): the quarterly series ended in 2024-Q4, so 7 of its 15 "next two years" periods were
+    already over on the run date; the answer labelled its table 2023-Q4 to 2025-Q3 and never said the data stopped in
+    2024. A reader takes such a table for a forecast of the future. Logic: the newest forecast_report record's last
+    observed date and its future dates; when at least two future dates are on or before today, the answer must name the
+    data's last period (2024-12, December 2024, Q4 2024 ...). Blocks with the count and the fix; looking for newer data
+    first is part of the fix."""
+    import time as _time
+    rec = None
+    for h in reversed(_flatten(history)):
+        if isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+            rec = full.get("forecast") if isinstance(full, dict) else None
+            break
+    if not isinstance(rec, dict) or not isinstance(rec.get("last_observed"), dict):
+        return None
+    last = str(rec["last_observed"].get("date") or "")[:10]
+    future = [str(d)[:10] for d in rec.get("future_dates") or [] if isinstance(d, str)]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", last) or not future:
+        return None
+    now = today or _time.strftime("%Y-%m-%d")
+    past = [d for d in future if d <= now]
+    if len(past) < 2:
+        return None
+    low = re.sub(r"\s+", " ", (answer or "").lower().replace("*", ""))
+    if any(f in low for f in _date_forms(last)):
+        return _check("data_end_stated", True, f"the answer says the data ends {last}; {len(past)} forecast periods are past")
+    return _check("data_end_stated", False,
+                  f"the data ends on {last}, so {len(past)} of the {len(future)} forecast periods ({past[0]} to {past[-1]}) "
+                  f"are already over on {now}. First look for newer data (the publisher's latest release) and forecast "
+                  "from it; if there is none, say in the answer when the data ends, label those periods as estimates of "
+                  "periods already past (not a forecast), and use the forecast record's own dates for every row")
 
 
 def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[dict]:
@@ -826,7 +876,7 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
              lambda: check_band_width(history, goal), lambda: check_market_band(history, goal),
              lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history),
-             lambda: check_table_cells(answer, history))
+             lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history))
     for fn in calls:
         try:
             c = fn()

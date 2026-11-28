@@ -22,6 +22,11 @@ from prophet_agent.tools.series_io import SOURCE_HELP, VALUES_HELP, resolve_seri
 
 QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 MAX_HORIZON = 512
+# Round 20261128-125459 (AURATE): five years of a daily cash rate is about 1,260 trading days; the tools refused 512+ and
+# the mission delivered two years without trying a monthly series, where five years is 60 steps.
+LONG_HORIZON_HINT = ("; for a longer outlook of a daily or weekly series, resample it to a coarser step and save that (for a "
+                     "rate in force or a price, the month's last value: s.resample('MS').last(); for a flow, the month's sum "
+                     "or mean), so five years is 60 monthly steps")
 # season and centre are accepted and ignored: the planner passes them on from backtest_series and forecast_report, as it
 # does for calibrate_intervals (live WTI rep2: a refused "season" cost a call of a 20-call allowance).
 ALLOWED_ARGS = {"values", "source", "horizon", "season", "centre"} | CONTROL_ARGS
@@ -105,7 +110,7 @@ def _run(args: dict, _key: str) -> dict[str, Any]:
                          f"and the control options {sorted(CONTROL_ARGS)}")
     horizon = args.get("horizon")
     if not isinstance(horizon, int) or isinstance(horizon, bool) or not 1 <= horizon <= MAX_HORIZON:
-        raise ValueError(f"horizon must be an integer from 1 to {MAX_HORIZON}")
+        raise ValueError(f"horizon must be an integer from 1 to {MAX_HORIZON}" + LONG_HORIZON_HINT)
     named = resolve_series(args)
     engine = TimesFMEngine.get()
     pool = source_covariates(args)

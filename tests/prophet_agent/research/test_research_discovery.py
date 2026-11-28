@@ -274,3 +274,29 @@ def test_registry_hits_are_labelled_registry_and_tiered():
     assert hits and all(h.source == "registry" and h.backend == "registry" for h in hits)
     assert all(h.tier == 1 for h in hits)
     assert registry_hits("what is nvidia") == []
+
+
+# ---- pacing across research lanes (round 20261128-125459) ----------------------------------------------------------
+
+def test_a_send_error_streak_cools_for_ninety_seconds_not_ten_minutes(fake, clock):
+    fake.handler = lambda backend, query: (DDGSException("ConnectError: error sending request for url")
+                                           if backend == "bing" else ROWS)
+    for i in range(3):
+        web_search(f"s{i}", backends=["bing", "google"], backoff_s=0, use_cache=False)
+    assert 0 < search.backend_health()["bing"]["cooling_s"] <= search.TRANSIENT_COOLDOWN_S
+    clock.now += search.TRANSIENT_COOLDOWN_S + 1
+    assert web_search("back", backends=["bing", "google"], backoff_s=0, use_cache=False).tried == ["bing", "google"]
+
+
+def test_a_backend_whose_slot_is_too_far_off_is_skipped_not_called(fake, monkeypatch):
+    from prophet_agent.research.netguard import HostThrottle
+
+    pace = HostThrottle(100.0, sleep=lambda s: None)
+    monkeypatch.setattr(search, "_PACE", pace)
+    monkeypatch.setattr(search, "PACE_S", 100.0)
+    fake.handler = lambda backend, query: ROWS
+    pace.wait("bing")                                   # another lane took bing's slot; the next is 100 s away
+    result = web_search("paced", backends=["bing", "google"], backoff_s=0.01, use_cache=False)
+    assert result.tried == ["google"] and len(result) == 2
+    assert "bing: busy with other searches, skipped" in result.diagnostics
+    assert [c[0] for c in fake.calls] == ["google"]

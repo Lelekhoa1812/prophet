@@ -179,3 +179,53 @@ def test_two_refusals_for_a_driver_check_focus_the_planner_on_the_tools_that_clo
     assert "refused 2 times for fundamentals_covered" in note
     lifted = twice + [{"kind": "evaluation", "verdict": "not_met", "missing": "figures"}]
     assert goal._focus_tools(lifted, tools) == (tools, "")
+
+
+def test_an_adopted_driver_is_handed_over_as_a_past_covariate_file(saved, monkeypatch):
+    """Round 20261128-125459: GOLD adopted the dollar index, then passed it as a future covariate and failed twice."""
+    source, dates = saved
+    monkeypatch.setattr(driver_scan_tool, "_score", lambda y, x, name, h, eng: (
+        {"table": [{"name": "with_covariates", "decision": "adopt" if name == "IRSTCI01AUM156N" else "no evidence",
+                    "gain_pct": 6.0}], "fold_count": 10}, h))
+    seen = {}
+
+    def save(name, ds_, target, covs):
+        seen.update(name=name, ids=sorted(covs), n=len(target), lens={k: len(v) for k, v in covs.items()})
+        return {"source": {"run_id": "r", "file": "out/series_drivers.json", "name": name}, "past_covariates": sorted(covs)}
+
+    get = lambda url: _fred([(d, 3.0 + 0.01 * k) for k, d in enumerate(dates)], "X")
+    out = driver_scan_tool._run({"source": source, "goal": "Australia monthly unemployment rate", "horizon": 12}, "k",
+                                engine_factory=_Engine, get=get, save=save)
+    assert out["adopted"] == ["IRSTCI01AUM156N"] and seen["ids"] == ["IRSTCI01AUM156N"] and seen["n"] == len(dates)
+    assert out["use"]["past_covariates"] == ["IRSTCI01AUM156N"]
+    assert "never future_covariates" in out["next"] and driver_scan_tool.observe(out)["use"] == out["use"]
+
+
+def test_the_adopted_file_is_the_target_cut_to_the_driver_span_with_dates():
+    from prophet_agent.sandbox.runner import SANDBOX_ROOT
+    dates = _months(30)
+    cov = [None, None] + [float(k) for k in range(28)]
+    use = driver_scan_tool._save_adopted("unemp", dates, [5.0 + k / 10 for k in range(30)], {"USD": cov})
+    doc = json.loads((SANDBOX_ROOT / use["source"]["run_id"] / use["source"]["file"]).read_text())
+    assert doc["series"][0] == 5.2 and len(doc["series"]) == 28 and doc["name"] == "unemp"   # one series: a list
+    assert doc["covariates"]["USD"][:2] == [0.0, 1.0] and doc["dates"][0].startswith("2000-03")
+    named = driver_scan_tool.resolve_series({"source": use["source"]})
+    assert len(named) == 1 and len(named[0][1]) == 28
+    assert use["from"] == "2000-03-01" and use["points"] == 28
+
+
+def test_a_forecast_longer_than_every_backtest_gets_one_backtest_at_its_horizon():
+    """Round 20261128-125459: GOLD forecast 16 periods (data four months old) with backtests only at 12."""
+    src = {"run_id": RUN, "file": "out/series.json"}
+    tools = {"backtest_series": object()}
+    bt12 = {"kind": "tool", "tool": "backtest_series", "args": {"source": src, "horizon": 12}, "result": {"ok": True}}
+    fc16 = {"kind": "tool", "tool": "forecast_report", "result": {"forecast": {}},
+            "args": {"source": src, "horizon": 16, "past_covariates": ["DTWEXBGS"], "title": "Gold"}}
+    step = goal._horizon_backtest_step([bt12, fc16], tools)
+    assert step["tool"] == "backtest_series" and step["auto"] == "horizon"
+    assert step["args"] == {"source": src, "horizon": 16, "past_covariates": ["DTWEXBGS"]}
+    failed = {"kind": "tool", "tool": "backtest_series", "args": step["args"], "error": "needs at least 40 points"}
+    assert goal._horizon_backtest_step([bt12, fc16, failed], tools) is None          # tried once, not again
+    bt24 = {**bt12, "args": {"source": src, "horizon": 24}}
+    assert goal._horizon_backtest_step([bt24, fc16], tools) is None                  # a longer backtest covers it
+    assert goal._horizon_backtest_step([bt12, fc16], {}) is None

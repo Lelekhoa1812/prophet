@@ -12,7 +12,11 @@ Logic: the backends are tried in order and the first non-empty answer wins. Exce
 ``diagnostics`` instead of raised, so the caller always gets a list (possibly empty) and can say why. In process, each
 backend keeps a streak of bad answers (an exception or an empty answer); three in a row put it in a ten-minute cooldown,
 during which it is skipped, and any good answer clears the streak. A transient exception is retried once after a
-backoff. ``discover`` runs the query variants from ``queryplan`` and merges them with ``rank``; registry entries are
+backoff. One process runs many research lanes at once, and round 20261128-125459 showed their bursts make every backend
+refuse together (ConnectError, RequestError, timeouts on 40 to 75 % of web_research calls, while an idle probe answered
+on four backends). Calls to one backend are therefore spaced PACE_S apart across the process (a caller whose slot is more
+than PACE_WAIT_S away skips that backend for this call), and a streak ended by a transient failure cools for 90 seconds
+instead of ten minutes, so a burst does not shut a working backend out of a whole mission. ``discover`` runs the query variants from ``queryplan`` and merges them with ``rank``; registry entries are
 appended last and labelled, never mixed in as search hits. Results are cached as JSON under the Prophet data folder,
 keyed by a hash of the query settings; news expires after six hours, text after a day. Tracking parameters (utm_*,
 fbclid, gclid) and fragments are removed before a URL is stored or compared.
@@ -32,6 +36,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from prophet_agent.config import DATA
+from prophet_agent.research.netguard import HostThrottle
 from prophet_agent.research.queryplan import MAX_VARIANTS, plan_query
 
 DEFAULT_BACKENDS = ("auto", "bing", "google", "yahoo", "brave", "mojeek")
@@ -43,10 +48,13 @@ MAX_QUERY_CHARS = 300
 REGISTRY_SOURCE = "registry"
 COOLDOWN_AFTER = 3          # consecutive bad answers before a backend cools down
 COOLDOWN_S = 600.0          # seconds a cooling backend is skipped
+TRANSIENT_COOLDOWN_S = 90.0 # a streak ended by a timeout, connection error or rate limit cools for this long only
+PACE_S = float(os.environ.get("PROPHET_SEARCH_PACE_S", "1.5"))   # least gap between two calls to one backend
+PACE_WAIT_S = 20.0          # longest wait for a backend's slot; a busier backend is skipped for this call
 DISCOVER_WORKERS = 3
 VARIANT_FETCH = 10          # hits asked from each variant before ranking
 TRANSIENT_NAMES = frozenset({"RatelimitException", "TimeoutException", "ConnectionException"})
-TRANSIENT_TEXT = re.compile(r"\b429\b|rate.?limit|timed? ?out|temporar", re.I)
+TRANSIENT_TEXT = re.compile(r"\b429\b|rate.?limit|timed? ?out|temporar|error sending request|connecterror|requesterror", re.I)
 
 
 @dataclass
@@ -93,6 +101,7 @@ class _BackendState:
 _HEALTH: dict[str, _BackendState] = {}
 _HEALTH_LOCK = threading.Lock()
 _clock = time.monotonic      # tests replace this to move time
+_PACE = HostThrottle(PACE_S)
 
 
 def normalise_url(url: str) -> str:
@@ -162,8 +171,9 @@ def _cooling_left(backend: str) -> float:
         return max(0.0, state.cooling_until - _clock())
 
 
-def _record(backend: str, outcome: str) -> None:
-    """Note one answer: ``ok``, ``empty`` or ``failed``. Three bad answers in a row start a cooldown."""
+def _record(backend: str, outcome: str, transient: bool = False) -> None:
+    """Note one answer: ``ok``, ``empty`` or ``failed``. Three bad answers in a row start a cooldown: ten minutes, or 90
+    seconds when the answer that ended the streak was a transient failure (a timeout, connection error or rate limit)."""
     with _HEALTH_LOCK:
         state = _HEALTH.setdefault(backend, _BackendState())
         state.calls += 1
@@ -176,7 +186,7 @@ def _record(backend: str, outcome: str) -> None:
         state.failed += outcome == "failed"
         state.streak += 1
         if state.streak >= COOLDOWN_AFTER:
-            state.cooling_until = _clock() + COOLDOWN_S
+            state.cooling_until = _clock() + (TRANSIENT_COOLDOWN_S if transient else COOLDOWN_S)
             state.streak = 0
 
 
@@ -287,14 +297,19 @@ def web_search(query: str, *, kind: str = "text", max_results: int = 8, timelimi
     tried: list[str] = []
     answered: list[str] = []
     for index, backend in enumerate(live):
-        if index and backoff_s > 0:
+        if backoff_s > 0 and PACE_S > 0:
+            # One process runs many research lanes at once; unpaced, their bursts make every backend refuse together.
+            if _PACE.wait(backend, deadline=time.monotonic() + PACE_WAIT_S) is None:
+                diagnostics.append(f"{backend}: busy with other searches, skipped")
+                continue
+        elif index and backoff_s > 0:
             time.sleep(backoff_s)
         tried.append(backend)
         raw, error = _ask(kind, query, backend, timelimit=timelimit, region=region, max_results=max_results,
                           backoff_s=backoff_s)
         if error is not None:
             diagnostics.append(f"{backend}: {type(error).__name__}: {_short(error)}")
-            _record(backend, "failed")
+            _record(backend, "failed", transient=_is_transient(error))
             continue
         answered.append(backend)
         hits = _to_hits(raw, kind, backend)

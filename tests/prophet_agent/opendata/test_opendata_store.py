@@ -25,7 +25,7 @@ PUBLIC = "93.184.216.34"
 FORECAST = {"latitude": 52.52, "longitude": 13.41, "daily": "temperature_2m_max,precipitation_sum",
             "timezone": "Europe/Berlin", "forecast_days": 7}
 PROVENANCE_FIELDS = {"source", "url", "params", "params_sha256", "retrieved_at", "final_url", "content_type", "sha256",
-                     "bytes", "raw_sha256", "raw_bytes", "preamble", "licence_key"}
+                     "bytes", "raw_sha256", "raw_bytes", "preamble", "licence_key", "landing"}
 
 
 @pytest.fixture
@@ -306,3 +306,22 @@ def test_a_refused_download_is_not_stored(served, tmp_path):
     with pytest.raises(fetch.DownloadError, match="HTTP 400"):
         store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
     assert not datasets.root.exists() or list(datasets.root.iterdir()) == []
+
+
+def test_a_stored_download_older_than_the_reuse_window_is_fetched_again(served, tmp_path, monkeypatch):
+    """Round 20261128-125459 (GOLD): a Pink Sheet stored days earlier ended in July while the live one ran to October."""
+    datasets = store_at(tmp_path)
+    first = store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    real = store.time.time
+    monkeypatch.setattr(store.time, "time", lambda: real() + store.REUSE_S + 60)
+    again = store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    assert served["calls"] == 2 and again["id"] != first["id"]
+
+
+def test_a_download_landed_by_an_older_landing_is_not_reused(served, tmp_path, monkeypatch):
+    datasets = store_at(tmp_path)
+    first = store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    assert first["provenance"]["landing"] == store.LANDING_VERSION
+    monkeypatch.setattr(store, "LANDING_VERSION", store.LANDING_VERSION + 1)
+    store.download_to_dataset("open_meteo_forecast", FORECAST, datasets)
+    assert served["calls"] == 2
