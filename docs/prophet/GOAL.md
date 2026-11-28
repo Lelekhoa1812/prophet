@@ -1941,3 +1941,49 @@ SPF). Many figures in the notes are from search snippets and are marked unverifi
   forward-filled policy-rate series is reported as fully observed. A column-aware table check is the fix for the first.
 Pushed 170e205 (3,676 passed) and 6b3c601 (3,677 passed); the panel restarted on 170e205 at 11:08 on 2026-11-28.
 Not yet measured on a live panel round. **M9-8 is not met.**
+
+### Round 26: live round 20261128-110827 on 170e205, the owner's choices, and the fixes (2026-11-28)
+
+Measured on the live round (API on 170e205; AURATE, AUUNEMP, GOLD and SPX partial, EPL failed, VNUNEMP still running when
+this was written):
+- EPL failed with "could not convert string to float: '2026-11-28'": a finding date flagged by untraced_dates reached
+  snap, which parsed every flagged figure as a number. Reproduced by replaying the stored ledger; fixed in 3ad7db9.
+- EPL's typed table (Nottingham Forest on 18 points where the file says 9) passed the row check. The column-aware table
+  check (7374b75) compares each answer cell with the same entity and column in the tables the tools printed.
+- SPX stalled: a cell decided 'coverage.gaps', an id the scan does not hold, the raise failed the whole cell and the model
+  resent it three times. decide() now keeps the entry and prints the ids that need a decision.
+- AUUNEMP refused 17 finishes for signals_gathered, fundamentals_covered, answer_signal_search and centre_not_flat, and
+  spent its calls on 33 web_research and 20 web_fetch calls; no control_lab, no market_benchmark, no driver_map. SPX never
+  scored a driver either.
+- GOLD forecast the wrong commodity: the World Bank workbook landed with only its units row as the header and was cut at 64
+  columns, so the $/troy oz columns (69 to 71) were gone; the mission took a "($/mt)" column ending at 2,029 for gold and
+  delivered a range of $1,201 to $3,025 against a measured 2026M10 gold price of 4,105. The grounding checks did not catch
+  it, because every figure did come from a tool.
+- FRED resets every request that names a browser or only the application (HTTP/2 INTERNAL_ERROR, measured 2026-11-28) and
+  answers python-httpx, curl, Wget and python-requests; the FRED price fallback, GVZ and FRED downloads were failing.
+
+Owner decisions (2026-11-28, AskUserQuestion): the harness runs the driver and market step **and** the planner is held to
+the tools that close a refused check ("Both"); a mission that still fails the blocking forecast-quality checks stays
+partial ("Partial, as now"). The checks are not softened.
+
+Fixes (commits 3ad7db9, 79a9239, 94ad201, a21d848):
+- driver_scan: up to five named FRED drivers per domain and place (opendata/driver_series.py), each the mean of its
+  observations in each target period shifted one period later, scored as a past covariate of TimesFM against TimesFM alone
+  on the same rolling origins (control lab, Holm). Measured live (real staging data): AUUNEMP's series at a 24-month
+  horizon, 10 to 12 folds: Australian interbank rate, Australian 10-year yield, US unemployment (+1.7% MASE, the best) and
+  Brent, none adopted. SPX at 64 business days, 12 folds: 10-year yield, 10y-2y slope (+5.7%, 5 of 12 wins), VIX, the
+  dollar and Brent, none adopted. Both runs took under a minute.
+- The harness calls market_benchmark (RBA cash rate path; VIX for the S&P 500 and GVZ for gold at the series' last value)
+  and driver_scan once each, after the first backtest or forecast of a saved series; a scan row counts as a researched and
+  tested family, and a market_benchmark of the target's own kind as a benchmark.
+- After two finishes refused for signals_gathered, answer_signal_search, centre_not_flat, fundamentals_covered,
+  band_vs_market or market_stated, the planner sees only the tools that close the named checks (plus forecast_report,
+  read_observation, sandbox_python and notes) until a later evaluation names none of them.
+- Workbook landing joins a units row to the names row above it ("Gold ($/troy oz)") and keeps up to 256 columns.
+  Measured on the live workbook: 89 columns, Gold 2026M10 = 4105.
+- FRED is sent "python-httpx/<version> ProphetOpenData/1.0"; every other host keeps its User-Agent.
+
+Assessed, no change: a policy rate carried forward between decisions is the rate in force on each day, so counting it as
+observed is right. The defect in that audit item was the missed 4 November decision, which newest_level_used now blocks.
+
+Open: none of the fixes above has been measured on a live panel round yet; the next round runs on them. **M9-8 is not met.**
