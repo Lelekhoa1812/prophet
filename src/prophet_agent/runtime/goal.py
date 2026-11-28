@@ -804,6 +804,12 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                             "Do not invent an address that no page listed.",
                     "deliverable": "The claim, each signal, and any candidate dataset id. Say when the series is still unbound.",
                     "constraints": "Do not forecast. Do not call bind_series."}
+    # Official series and the league backtest need no file of the mission's own, so they run before any inspection: the
+    # VNUNEMP missions never found the statistics office's quarterly rate on their own (Mission 10).
+    if (step := _official_series_step(goal, history, tools)) is not None:
+        return step
+    if (step := _league_backtest_step(goal, history, tools)) is not None:
+        return step
     if not inspected:
         return None
     if "research" not in kinds and EXTERNAL_GOAL.search(goal) and "web_research" in tools and not contracts.researched(history):
@@ -828,8 +834,6 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                                "source. Every number must appear in a fetched passage and carry its source id.",
                 "constraints": "Do not forecast and do not analyse the data file. Primary sources (central banks, "
                                "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
-    if (step := _league_backtest_step(goal, history, tools)) is not None:
-        return step
     if (step := _grain_step(goal, history, tools)) is not None:
         return step
     if (step := _market_driver_step(goal, history, tools)) is not None:
@@ -947,6 +951,22 @@ def _league_backtest_step(goal: str, history: list[dict], tools: dict[str, Tool]
         return None
     return {"action": "call_tool", "tool": "league_backtest", "auto": "league_backtest", "args": {"league": code},
             "rationale": "the harness scores the season model's final table on the league's past seasons"}
+
+
+def _official_series_step(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """An official series the harness assembles once, before any search, when the goal names one (Mission 10, M10-4):
+    Vietnam's unemployment rate comes from the statistics office's quarterly releases, not a series that ends in 2024."""
+    if "official_series" not in tools:
+        return None
+    from prophet_agent.research import driver_families as dfam
+    if dfam.detect(goal or "") != "labour_market" or dfam.place_of(goal or "") != "Vietnam":
+        return None
+    made = {h.get("tool") for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"}
+    if "official_series" in made:
+        return None
+    return {"action": "call_tool", "tool": "official_series", "auto": "official_series",
+            "args": {"series": "vn_unemployment_quarterly"},
+            "rationale": "the harness assembles the statistics office's quarterly rate, the latest published figures"}
 
 
 GRAIN_MARK = "# harness: grain"

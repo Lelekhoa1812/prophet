@@ -22,6 +22,7 @@ from .report_tool import FORECAST_REPORT_SPEC, forecast_report_tool
 from .market_benchmark_tool import MARKET_BENCHMARK_SPEC, market_benchmark_tool
 from .driver_scan_tool import DRIVER_SCAN_SPEC, driver_scan_tool
 from .league_backtest_tool import LEAGUE_BACKTEST_SPEC, league_backtest_tool
+from .official_series_tool import OFFICIAL_SERIES_SPEC, official_series_tool
 from .sports_tool import SIMULATE_SEASON_SPEC, simulate_season_tool
 from .fundamentals_tool import (DRIVER_MAP_SPEC, SCENARIO_FORECAST_SPEC, driver_map_tool,
                                 scenario_forecast_tool)
@@ -60,6 +61,7 @@ def default_tools(datasets: dict[str, Path] | None = None, binding: NotebookBind
         "market_benchmark": (market_benchmark_tool(), MARKET_BENCHMARK_SPEC),
         "driver_scan": (driver_scan_tool(), DRIVER_SCAN_SPEC),
         "league_backtest": (league_backtest_tool(), LEAGUE_BACKTEST_SPEC),
+        "official_series": (official_series_tool(), OFFICIAL_SERIES_SPEC),
     }
     for tool, spec in research_tool_pairs():
         specs[tool.name] = (tool, spec)
