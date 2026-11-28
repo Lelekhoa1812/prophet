@@ -2042,3 +2042,24 @@ Open, not fixed in this round: a scenario probability labelled "market" is not c
 spends its budget between daily and monthly packs; the prompt-example leak needs the composer prompt's example reworded
 (prompt change, next round); GOLD's anchor is checked only through the fresh download, not against fetched spot quotes.
 Gate: 3,703 passed on 9aff2c8. **M9-8 is not met.**
+
+### Round 27, continued: the open items closed (2026-11-28)
+
+Measured first: round 20261128-141421 (on 841a23f, before the round 27 fixes) ended with AURATE and SPX completed and
+verified (done_verified), the first two clean missions on the six-topic panel; AUUNEMP, EPL, GOLD and VNUNEMP partial.
+
+Fixes (commit 124efd7):
+- market_probability_traced: a scenario probability labelled 'market' in the standing scenario forecast must cite a page a
+  call in the mission fetched; the model's own records (driver_map, scenario_forecast, notes, board) do not count.
+- The harness resamples the target once to the grain the forecast is reported in when the saved series is finer (a daily
+  index asked month by month) or is a policy rate kept daily: the value at the end of each period, saved as
+  out/series_<grain>.json. Only for levels (indices, prices, exchange rates, policy rates); flows are left to the planner,
+  because their sum or mean depends on what they count.
+- composer.v9: the source line names the file, sheet and column the evidence names, written as a placeholder form; the
+  concrete example in composer.v8 was copied into a live answer.
+- price_level_matches_quotes: for gold and the S&P 500, quotes in fetched sources dated after the series' last observation
+  (a trading verb then a level; targets, records, averages, support lines, expectations and other currencies skipped).
+  With three or more, a last value more than 1.5 times from their median is held. On the round 20261128-125459 GOLD
+  ledger: 36 quotes, median 3,648, against the series' 6,775: held. A series ending at 4,105 (2026M10) passes.
+
+Gate: 3,707 passed on 124efd7. Round 20261128-151150 runs on 103f6db (the first round 27 batch); the next round runs on these fixes. **M9-8 is not met.**
