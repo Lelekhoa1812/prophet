@@ -2301,3 +2301,20 @@ Open from this audit, not yet repaired: EPL's headline table came from no tool r
 the answer still shipped labelled partial_unverified) and the lead never re-ran simulate_season after downloading history;
 GOLD's and AURATE's scenario evidence cited refused lanes (check scenarios_traced, added after 93a22ef, now refuses this);
 lanes still waste most steps on search backends that return US data for Vietnamese and Australian queries.
+
+### Mission 10, batch 2: live round 20261128-201606 on f6f188d, and the repairs (2026-11-28)
+
+The first round on the repaired code took 42 minutes (the round before took 158); all six missions still ended
+partial_unverified. The earlier repairs held in the live run: VNUNEMP read the statistics office's series from 2020-Q1 to
+2026-Q3 (latest 2.22 %, real staging data) instead of a series ending 2024-Q4; EPL's simulation fitted on three earlier
+seasons read by URL and 722 priced matches (the round before: none of either) and the answer carried the full simulated
+table; no lane brief was re-run under a new name. What remained, read from each ledger:
+
+| Mission | Why it was not verified | Cause | Repair (commit f9710bd) |
+|---|---|---|---|
+| EPL | 22 "unverified" figures, answer_table_matches_data | the answer's table was correct; percentage cells were compared with printed shares (74.2 % with 0.7415), a projected rank with today's standings, matchday columns ("MD 19") not read as paths | percentages matched against shares; ranks in a table of projections not checked; "MD" read as a path column. Two figures stay flagged and are genuine: Man City at matchday 19 is 37 (32 to 41), not 38 (34 to 42), and "460.0000" is a corrupted 46 |
+| AUUNEMP | MASE 0.879 and 0.814 "unverified"; one band value | the figures came from backtest_series, keyed by model name, which the cell reader did not read; a 24-step re-run hid the 25-step run the answer quoted | entity-keyed dicts read; the superseded key includes the horizon |
+| AURATE | answer_total_withheld | a quoted ABS headline ("Total dwelling approvals rise 5.1 %") read as a stated total | quoted sources are not the answer's claims |
+| SPX | refused for "80 % range" against the pack's "10-90 % band" with the same endpoints; "10,260" for a printed 10,255.2 | evaluator wording | evaluator.v13: the two names are one interval; comparisons judged by sign. The rounding flag stays (rounding to tens would undo the snap of near-miss figures, a deliberate earlier rule) |
+| GOLD | stalled after 46 steps with no forecast; "$2,744" from no tool (the market benchmark read the level at $4,105) | the series was saved as an array without dates, the driver scan was refused, the harness waited for a forecast before building the combination | a finished backtest of a saved series starts the combination; save_series takes dates= |
+| VNUNEMP | stalled with no forecast | backtest_series refused every series derived from the official one four times (no provenance on the official file); build_series crashed on a series-file dict | official_series records each page read and saves its six release workbooks as sources; derived series inherit checked provenance from carried files; build_series reads a dict of equal-length lists |
