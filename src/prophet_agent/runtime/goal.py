@@ -2806,13 +2806,15 @@ def _run(ctx: Ctx, brain: Any, goal: str, tools: dict[str, Tool], cfg: GoalConfi
                 _typed_table_refusal(name, args, history, goal)
             if stand_in:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": stand_in}     # derived from args and goal: replays alike
-            elif name not in tools or _ledger_skipped_act(ctx, f"act:{tag}:{i}"):
-                # The second test follows the ledger: a stored run that did not call the tool here (the tool was not offered
-                # then) is replayed the same way, so a tool set that grew between parts cannot shift the step indices.
+            elif name not in tools:
                 obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
             else:
                 if (pos := _repeat_of(name, args, history)) is not None:
                     obs = _repeat_obs(name, args, history, pos)     # not sent again: the earlier result stands
+                elif _ledger_skipped_act(ctx, f"act:{tag}:{i}"):
+                    # Follows the ledger: a stored run that did not call the tool here (it was not offered then) is replayed
+                    # the same way, so a tool set that grew between parts cannot shift the step indices.
+                    obs = {"kind": "tool", "tool": name, "args": args, "error": f"unknown tool {name!r}"}
                 else:
                     obs = ctx.step(f"act:{tag}:{i}", lambda c: _act(c, tools[name], name, args, tools))
         if obs.get("kind") == "tool" and obs.get("args") is args and unsourced:
