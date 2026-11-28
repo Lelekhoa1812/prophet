@@ -413,7 +413,12 @@ def snap(answer: str, history: list, goal: str) -> tuple[str, list[tuple[str, st
             printed[abs(v)] = dec
     fixed: list[tuple[str, str]] = []
     for token in bad:
-        value, decimals, pct = _parse(token)
+        try:
+            value, decimals, pct = _parse(token)
+        except ValueError:
+            # A flagged date (untraced_dates) or table cell is not a transcription slip of a printed number. Live EPL
+            # 28f79257 (round 20261128-110827) failed with "could not convert string to float: '2026-11-28'" here.
+            continue
         v = abs(value)
         if pct or _scale_of(token) != 1.0 or _YEAR.fullmatch(token) or value < 0:
             continue

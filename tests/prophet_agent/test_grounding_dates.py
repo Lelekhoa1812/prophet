@@ -28,3 +28,11 @@ def test_a_finding_date_no_tool_printed_is_unverified():
     assert "2024-01-24" in out and "2025-08-08" in out and "2020-11-05" not in out
     assert unverified("Figures as of 2026-11-28 are the newest.", h, "S&P 500") == []
     assert unverified("The forecast for 2027-03-31 is in the table.", h, "S&P 500") == []
+
+
+def test_a_flagged_date_does_not_break_the_slip_correction():
+    # Live EPL 28f79257 (round 20261128-110827): snap parsed the flagged '2026-11-28' as a number and the mission failed.
+    from prophet_agent.runtime.grounding import snap
+    h = [{"kind": "tool", "tool": "sandbox_python", "args": {}, "result": {"stdout": "total 557,051.21"}}]
+    text, fixed = snap("A level shift on 2026-11-28 lifted the total to 557,050.", h, "sales")
+    assert "2026-11-28" in text and fixed == [("557,050", "557,051")], "no crash, and the slip is still corrected"
