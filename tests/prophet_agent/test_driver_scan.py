@@ -229,3 +229,28 @@ def test_a_forecast_longer_than_every_backtest_gets_one_backtest_at_its_horizon(
     bt24 = {**bt12, "args": {"source": src, "horizon": 24}}
     assert goal._horizon_backtest_step([bt24, fc16], tools) is None                  # a longer backtest covers it
     assert goal._horizon_backtest_step([bt12, fc16], {}) is None
+
+
+def test_a_daily_index_is_resampled_once_to_the_month_the_request_asks_for():
+    """Round 20261128-125459: SPX built two daily packs before a monthly one; AURATE stopped at two years of a daily rate."""
+    from prophet_agent.sandbox.runner import SANDBOX_ROOT, run_python
+    made = run_python("import pandas as pd, prophet_lib as pl\n"
+                      "idx = pd.bdate_range('2024-01-01', periods=300)\n"
+                      "pl.save_series(pd.Series([100 + 0.1 * k for k in range(300)], index=idx), 'out/series.json', name='spx')\n")
+    assert made.ok, made.stderr
+    src = {"run_id": made.run_id, "file": "out/series.json", "name": "spx"}
+    hist = [{"kind": "tool", "tool": "backtest_series", "args": {"source": src, "horizon": 42}, "result": {"ok": True}}]
+    g = "Forecast the S&P 500 month by month over the next 2 years"
+    step = goal._grain_step(g, hist, {"sandbox_python": object()})
+    assert step["auto"] == "grain" and step["args"]["carry"] == [{"run_id": made.run_id, "file": "out/series.json"}]
+    code = step["args"]["code"]
+    res = run_python(code, inputs={"carried/series.json": SANDBOX_ROOT / made.run_id / "out/series.json"})
+    assert res.ok, res.stderr
+    doc = json.loads((SANDBOX_ROOT / res.run_id / "out/series_monthly.json").read_text())
+    assert len(doc["series"]) == 14 and doc["dates"][0] == "2024-01-01" and doc["series"][0] == pytest.approx(102.2)
+    hist.append({"kind": "tool", "tool": "sandbox_python", "args": step["args"], "result": {"ok": True}})
+    assert goal._grain_step(g, hist, {"sandbox_python": object()}) is None              # once a mission
+    assert goal._grain_step("Forecast monthly retail sales", hist[:1], {"sandbox_python": object()}) is None  # a flow
+    rate = goal._grain_step("Forecast the RBA cash rate in Australia over the next 5 years", hist[:1],
+                            {"sandbox_python": object()})
+    assert rate is not None and "series_monthly" in rate["args"]["code"]

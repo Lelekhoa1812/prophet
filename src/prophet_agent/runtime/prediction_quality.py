@@ -818,6 +818,106 @@ def check_table_cells(answer: str, history: Any) -> dict | None:
                   "printed or downloaded data (a sandbox cell that prints it), not from memory, and copy its values")
 
 
+# (goal pattern, sentence target) for priced assets whose news quotes the level in plain numbers.
+_QUOTED_ASSETS = (
+    (re.compile(r"\bgold\b|\bxau\b", re.I), re.compile(r"\bgold\b|\bxau", re.I)),
+    (re.compile(r"s\s*&\s*p\s*500|\bspx\b|\bsp500\b", re.I), re.compile(r"s\s*&\s*p\s*500|\bspx\b", re.I)),
+)
+_QUOTE = re.compile(r"\b(?:trad\w*|settled|closed|ended|rose|fell|slipp\w*|dipp\w*|dropp\w*|gain\w*|los[ets]\w*|up|down|"
+                    r"was|is|at|near|around)\b[^.$\n]{0,25}?\$?\s?(?P<v>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{4,5}(?:\.\d+)?)"
+                    r"(?!\d|,\d|\s*(?:%|per ?cent|bp|basis|tonnes|t\b|million|billion|baht))", re.I)
+_NOT_A_QUOTE = re.compile(r"\brecord\b|\bpeak\b|\btarget|\bforecast|\bsupport\b|\bresistance\b|\bline in\b|\btoward|"
+                          r"\bbelow\b|\babove\b|\bhigh of\b|\blow of\b|\baverage|\brealized\b|\breach\w*|\bby (?:end|december|"
+                          r"january|the end)|\bfrom \$|[₹€£¥]|\bper gram\b|\brupees?\b|\byuan\b|\bbaht\b|\bA\$|\bC\$|\bAUD\b|\bINR\b", re.I)
+QUOTE_RATIO = 1.5      # the series' last value and the median quote may differ by this factor before the check holds
+
+
+def check_price_anchor(history: Any, goal: str = "") -> dict | None:
+    """A price series ends near where the market quotes the asset, in sources the mission read.
+
+    Round 20261128-125459 (GOLD): the series forecast as gold ended at 6,775 (a fertiliser column in $/mt), while 30 and
+    more fetched passages dated November quoted spot gold between $3,445 and $3,875; every figure came from a tool, so no
+    grounding check saw it. Logic: for gold and the S&P 500, sentences in research sources dated on or after the series'
+    last observation that name the asset and quote it (a trading verb, then a level; targets, records, averages,
+    support lines and expectations are skipped) give the market's level. With three quotes or more, a series whose last
+    value is more than QUOTE_RATIO times away from their median is held: check that it is the asset and the unit asked for,
+    and bring it up to date."""
+    asset = next((target for pattern, target in _QUOTED_ASSETS if pattern.search(goal or "")), None)
+    if asset is None:
+        return None
+    fc = None
+    for h in reversed(_flatten(history)):
+        if isinstance(_ok_result(h, "forecast_report"), dict):
+            full = h.get("full") if isinstance(h.get("full"), dict) else h.get("result")
+            fc = full.get("forecast") if isinstance(full, dict) else None
+            break
+    if not isinstance(fc, dict) or not isinstance(fc.get("last_observed"), dict):
+        return None
+    try:
+        end, last_v = str(fc["last_observed"]["date"])[:10], float(fc["last_observed"]["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if last_v <= 0:
+        return None
+    quotes: list[tuple[float, str, str]] = []
+    for h in _flatten(history):
+        if h.get("kind") != "tool" or h.get("tool") not in contracts.RESEARCH_TOOLS or h.get("error"):
+            continue
+        rows: list[tuple[str, str, str]] = []
+        _dated_texts(h.get("full") if isinstance(h.get("full"), dict) else h.get("result"), rows)
+        for date, url, text in rows:
+            if date < end:
+                continue
+            for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+                if not asset.search(sentence) or _LEVEL_FUTURE.search(sentence) or _NOT_A_QUOTE.search(sentence):
+                    continue
+                m = _QUOTE.search(sentence)
+                if m:
+                    quotes.append((float(m.group("v").replace(",", "")), date, sentence.strip()[:160]))
+    uniq = list({(q[0], q[1]): q for q in quotes}.values())
+    if len(uniq) < 3:
+        return None
+    vals = sorted(q[0] for q in uniq)
+    median = vals[len(vals) // 2]
+    if 1 / QUOTE_RATIO <= last_v / median <= QUOTE_RATIO:
+        return _check("price_level_matches_quotes", True,
+                      f"the series ends at {last_v:g} and {len(uniq)} quotes dated after it have a median of {median:g}")
+    newest = max(uniq, key=lambda q: q[1])
+    return _check("price_level_matches_quotes", False,
+                  f"the series ends at {last_v:g} on {end}, but {len(uniq)} quotes in sources dated after it have a median of "
+                  f"{median:g} (newest {newest[1]}: \"{newest[2]}\"). Check that the series is the asset and the unit asked "
+                  "for (the column's name and unit in the file, not its position), bring it up to date, and forecast again")
+
+
+def check_market_probability(history: Any) -> dict | None:
+    """Every scenario probability labelled 'market' in the standing scenario forecast cites a page this mission fetched.
+
+    Round 20261128-125459 (AUUNEMP): "RBA cuts earlier", probability 0.25 from the "market", cited an ASX rate tracker URL
+    that no call ever fetched, and the 2.6 % to 8.2 % band built on it went into the answer. Logic: the newest successful
+    scenario_forecast; each of its scenarios with probability_source 'market' must have its evidence traced (_traced) to
+    the text of a call that is not the model's own record (driver_map, scenario_forecast, notes, board). Blocks with the
+    scenarios that fail and the two ways to fix them."""
+    flat = _flatten(history)
+    sc = next((h for h in reversed(flat) if isinstance(_ok_result(h, "scenario_forecast"), dict)), None)
+    if sc is None:
+        return None
+    market = [s for s in (sc.get("args") or {}).get("scenarios") or []
+              if isinstance(s, dict) and str(s.get("probability_source") or "").strip().lower() == "market"]
+    if not market:
+        return None
+    texts = [_call_text(h) for h in flat
+             if h.get("kind") == "tool" and h.get("tool") not in _SELF and not h.get("error")]
+    loose = [s for s in market if not _traced(str(s.get("evidence") or ""), texts)]
+    if not loose:
+        return _check("market_probability_traced", True, f"{len(market)} market probabilities cite pages this mission read")
+    named = "; ".join(f"{str(s.get('name'))[:60]} ({s.get('probability')}, evidence {str(s.get('evidence'))[:90]})"
+                      for s in loose[:4])
+    return _check("market_probability_traced", False,
+                  f"{len(loose)} scenario probabilities labelled 'market' cite pages no call in this mission fetched: "
+                  f"{named}. Fetch the pricing page (web_fetch or market_benchmark) and take the probability from it, or "
+                  "set probability_source 'judgement' and say in the answer that the probability is a judgement")
+
+
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
            "december")
 
@@ -876,7 +976,8 @@ def prediction_checks(history: Any, goal: str = "", answer: str = "") -> list[di
              lambda: check_fundamentals(history, goal), lambda: check_newest_level(history, goal),
              lambda: check_band_width(history, goal), lambda: check_market_band(history, goal),
              lambda: check_league_claims(answer, history), lambda: check_market_stated(answer, history),
-             lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history))
+             lambda: check_table_cells(answer, history), lambda: check_data_fresh(answer, history),
+             lambda: check_market_probability(history), lambda: check_price_anchor(history, goal))
     for fn in calls:
         try:
             c = fn()

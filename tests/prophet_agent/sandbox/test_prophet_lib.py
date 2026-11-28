@@ -97,7 +97,7 @@ def test_result_prints_the_figure_an_answer_will_quote(capsys):
 def test_the_prompts_tell_the_planner_to_print_and_the_composer_to_quote_as_printed():
     from prophet_agent import prompts
     planner, composer = prompts.current("planner"), prompts.current("composer")
-    assert planner.version == "planner.v42" and composer.version == "composer.v8"
+    assert planner.version == "planner.v42" and composer.version == "composer.v9"
     assert "pl.result" in planner.text and "per-day edges" in planner.text and "total_range_80" in planner.text
     assert "written as the evidence prints it" in composer.text and "per-day" in composer.text
 

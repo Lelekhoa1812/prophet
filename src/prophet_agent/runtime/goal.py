@@ -828,6 +828,8 @@ def _harness_plan(goal: str, history: list[dict], tools: dict[str, Tool],
                                "source. Every number must appear in a fetched passage and carry its source id.",
                 "constraints": "Do not forecast and do not analyse the data file. Primary sources (central banks, "
                                "statistics offices, EIA, OPEC, IEA) before news; report only figures a fetched passage contains."}
+    if (step := _grain_step(goal, history, tools)) is not None:
+        return step
     if (step := _market_driver_step(goal, history, tools)) is not None:
         return step
     if (step := _horizon_backtest_step(history, tools)) is not None:
@@ -922,6 +924,76 @@ def _market_driver_step(goal: str, history: list[dict], tools: dict[str, Tool]) 
                 "args": {"source": target[0], "goal": goal, "horizon": max(1, horizon)},
                 "rationale": "the harness scores the domain's named outside drivers against the target series"}
     return None
+
+
+GRAIN_MARK = "# harness: grain"
+GRAIN_RULE = {"monthly": ("MS", 30.4), "quarterly": ("QS", 91.3), "weekly": ("W-FRI", 7.0), "yearly": ("YS", 365.25)}
+LEVEL_DOMAINS = ("equity_index", "precious_metal", "commodity", "currency", "policy_rate")
+GRAIN_CODE = '''{mark}
+import json
+import prophet_lib as pl
+
+s = pl.load_series("in/carried/{fname}")
+if isinstance(s, dict):
+    s = s[{name!r}] if {name!r} in s else next(iter(s.values()))
+s = s.dropna().sort_index()
+g = s.resample("{rule}").last().dropna()          # the value at the end of each period: a close, or the rate in force
+pl.save_series(g, "out/series_{grain}.json", name={label!r})
+print(json.dumps({{"grain": "{grain}", "points": len(g), "from": str(g.index[0].date()), "to": str(g.index[-1].date()),
+                  "last_value": float(g.iloc[-1]), "last_source_day": str(s.index[-1].date()),
+                  "source_points": len(s)}}))
+print("The last period holds the data up to %s only. Forecast out/series_{grain}.json from this run (source = this run id "
+      "and that file) in {grain} periods; the finer series is not the grain the forecast is reported in." % s.index[-1].date())
+'''
+
+
+def _grain_step(goal: str, history: list[dict], tools: dict[str, Tool]) -> dict | None:
+    """The target series resampled once to the grain the forecast is reported in, by the harness.
+
+    Round 20261128-125459: SPX was asked for "month by month over the next 2 years" and built a 42-step and a 504-step daily
+    pack before a monthly one, then spent its budget; the grain check refuses daily packs only at finish. AURATE was asked
+    for five years of a daily cash rate, hit the 512-step limit and delivered two years. Logic: once a saved series has been
+    backtested or forecast, when its median step is finer than the grain the goal names (monthly, quarterly, weekly, yearly),
+    or the target is a policy rate kept daily, and the domain is a level (a price, an index, a rate), sandbox_python takes
+    the value at the end of each period and saves out/series_<grain>.json. Runs once a mission; flows and other domains are
+    left to the planner, because the aggregation (sum or mean) depends on what the series counts."""
+    if "sandbox_python" not in tools:
+        return None
+    from prophet_agent.research import driver_families as dfam
+    domain = dfam.detect(goal or "")
+    if domain not in LEVEL_DOMAINS:
+        return None
+    flat = [h for h in contracts.with_delegated(history) if isinstance(h, dict) and h.get("kind") == "tool"]
+    if any(h.get("tool") == "sandbox_python" and GRAIN_MARK in str((h.get("args") or {}).get("code") or "") for h in flat):
+        return None
+    asked = [name for name, pattern, _ in prediction_quality._GRAINS if pattern.search(goal or "")]
+    grain = asked[0] if len(asked) == 1 else ("monthly" if domain == "policy_rate" and not asked else None)
+    if grain is None or grain not in GRAIN_RULE:
+        return None
+    target = _target_source(history)
+    if target is None or not isinstance(target[0].get("file"), str):
+        return None
+    from datetime import date as _date
+    from prophet_agent.tools.series_io import resolve_series, run_dates
+    try:
+        named = resolve_series({"source": target[0]})
+        dates = run_dates({"source": target[0]}, named[0][0]) if len(named) == 1 else None
+    except (ValueError, OSError):
+        return None
+    if not dates or len(dates) < 3:
+        return None
+    days = sorted((_date.fromisoformat(str(b)[:10]) - _date.fromisoformat(str(a)[:10])).days for a, b in zip(dates, dates[1:]))
+    rule, period = GRAIN_RULE[grain]
+    if days[len(days) // 2] >= 0.8 * period:
+        return None
+    name = named[0][0]
+    code = GRAIN_CODE.format(mark=GRAIN_MARK, fname=target[0]["file"].split("/")[-1], name=target[0].get("name") or name,
+                             rule=rule, grain=grain, label=str(target[0].get("name") or name))
+    return {"action": "call_tool", "tool": "sandbox_python", "auto": "grain",
+            "args": {"code": code, "carry": [{"run_id": target[0]["run_id"], "file": target[0]["file"]}],
+                     "name": f"Resample the target to {grain} periods"},
+            "rationale": f"the forecast is reported in {grain} periods and the saved series steps every "
+                         f"{days[len(days) // 2]} days; the harness takes the value at the end of each period"}
 
 
 FORECAST_TOOLS = ("forecast_report", "timesfm_forecast")

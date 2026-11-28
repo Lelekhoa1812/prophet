@@ -55,3 +55,45 @@ def test_an_answer_written_after_refused_finishes_is_checked_and_rewritten_once(
         goal._compose = real
     assert seen["step"] == "gapclaims:d0:7" and "4.865" in seen["fixes"]
     assert wrong == [] and "4.9%" in text
+
+
+def test_a_market_probability_must_cite_a_page_the_mission_fetched():
+    """Round 20261128-125459 (AUUNEMP): a 25 % "market" probability cited an ASX page no call fetched."""
+    scen = {"kind": "tool", "tool": "scenario_forecast", "result": {"forecast": {}},
+            "args": {"pack": "r", "scenarios": [
+                {"name": "RBA cuts earlier", "probability": 0.25, "probability_source": "market",
+                 "evidence": "https://www.asx.com.au/markets/trade-our-derivatives-market/futures-market/rba-rate-tracker"},
+                {"name": "Hike again", "probability": 0.2, "probability_source": "judgement", "evidence": "my view"}]}}
+    c = pq.check_market_probability([scen])
+    assert c and not c["ok"] and "RBA cuts earlier" in c["detail"] and "Hike again" not in c["detail"]
+    fetched = {"kind": "tool", "tool": "web_fetch", "args": {"url": "https://www.asx.com.au/markets/trade-our-derivatives-"
+                                                                     "market/futures-market/rba-rate-tracker"},
+               "result": {"text": "Implied probability of a cut ..."}}
+    assert pq.check_market_probability([fetched, scen])["ok"]
+    driver_map = {"kind": "tool", "tool": "driver_map", "args": {"scenarios": [scen["args"]["scenarios"][0]]}, "result": {}}
+    assert not pq.check_market_probability([driver_map, scen])["ok"]      # the model's own record is not a fetch
+
+
+def test_the_composer_gives_no_example_path_to_copy():
+    """Round 20261128-125459 (AURATE): a lane answer ended with "sales.xlsx > Q3 > units [1]", the composer's example."""
+    from prophet_agent.prompts import current
+    text = current("composer").text
+    assert "sales.xlsx" not in text and "<file> > <sheet> > <column>" in text
+
+
+def test_a_price_series_far_from_the_quotes_the_mission_read_is_held():
+    """Round 20261128-125459 (GOLD): a $/mt column ending at 6,775 was forecast as gold while spot gold was near $3,650."""
+    def page(date, text):
+        return {"kind": "tool", "tool": "web_research", "args": {},
+                "result": {"sources": [{"url": f"https://news.example/{date}", "date": date, "text": text}]}}
+    pages = [page("2026-11-24", "Gold ended Monday at about $3,634, up about 3.1% on the day."),
+             page("2026-11-25", "Spot gold was down 3% to $3,445.89 per ounce by 11:13 a.m."),
+             page("2026-11-26", "Gold traded near $3,570 an ounce at 8:30 a.m. UBS sees gold at $5,000 by end-2027."),
+             page("2026-11-27", "Goldman expects gold to reach $4,650. The 24K gold price is ₹12,655 per gram.")]
+    g = "Forecast the gold price month by month over the next year"
+    wrong = _fc("2026-07-01", ["2026-08-01"], value=6775.0) + pages
+    c = pq.check_price_anchor(wrong, g)
+    assert c and not c["ok"] and "median of 3570" in c["detail"] and "3 quotes" in c["detail"]
+    right = _fc("2026-10-01", ["2026-11-01"], value=4105.0) + pages
+    assert pq.check_price_anchor(right, g)["ok"]
+    assert pq.check_price_anchor(wrong, "Forecast Australia's unemployment rate") is None
