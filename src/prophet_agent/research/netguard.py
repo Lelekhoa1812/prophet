@@ -227,6 +227,25 @@ def pinned(parts: SplitResult, address: str) -> Pinned:
     return Pinned(url, name if port is None else f"{name}:{port}", name if scheme == "https" else None)
 
 
+# Hosts that are sent the HTTP library's own name with the application's, in place of the caller's User-Agent. Measured
+# 2026-11-28: fred.stlouisfed.org reset every request (HTTP/2 INTERNAL_ERROR) that named a browser or only the application
+# ("ProphetOpenData/1.0", "prophet-agent/1.0") and answered 200 to "python-httpx/0.28.1 ProphetOpenData/1.0", python-requests,
+# curl and Wget; the FRED price fallback, the GVZ benchmark and FRED downloads all failed with transport errors.
+LIBRARY_AGENT_HOSTS = frozenset({"fred.stlouisfed.org"})
+LIBRARY_AGENT = f"python-httpx/{httpx.__version__} ProphetOpenData/1.0"
+
+
+def agent_headers(url: str, headers: dict[str, str] | None) -> dict[str, str]:
+    """The request headers for url: the caller's, with the User-Agent replaced by LIBRARY_AGENT for LIBRARY_AGENT_HOSTS."""
+    out = dict(headers or {})
+    host = (urlsplit(url).hostname or "").lower()
+    if host in LIBRARY_AGENT_HOSTS:
+        for k in [k for k in out if k.lower() == "user-agent"]:
+            del out[k]
+        out["User-Agent"] = LIBRARY_AGENT
+    return out
+
+
 def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, headers: dict[str, str] | None,
                 timeout: float, deadline: float | None = None) -> httpx.Response:
     """Send one GET whose connection goes to a checked address. The name is resolved once, every address is checked,
@@ -242,7 +261,7 @@ def open_pinned(client: httpx.Client, url: str, *, resolver: Resolver | None, he
         # The pool keys connections by the address in the URL, so two names on one address would share a TLS session
         # verified for the first name. Closing after each response keeps every session matched to its own name.
         request = client.build_request("GET", target.url,
-                                       headers={**(headers or {}), "Host": target.host, "Connection": "close"},
+                                       headers={**agent_headers(url, headers), "Host": target.host, "Connection": "close"},
                                        timeout=timeout,
                                        extensions={"sni_hostname": target.sni} if target.sni else None)
         try:

@@ -37,10 +37,13 @@ def test_decide_reads_the_stage_scope_and_measure_from_the_scan(run):
     assert e[1]["finding"].startswith("censoring.plateau (2 series: MT_001, MT_002)")
 
 
-def test_an_unknown_id_names_the_real_ones(run):
-    with pytest.raises(ValueError) as exc:
-        ps.Ledger().decide("calendar.closed", "x")
-    assert "calendar.closed_days" in str(exc.value) and "values.spikes" not in str(exc.value)
+def test_an_unknown_id_is_kept_and_the_note_names_the_real_ones(run, capsys):
+    # live SPX (round 20261128-110827): the raise failed the cell and the model resent it until the mission stalled
+    led = ps.Ledger()
+    led.decide("calendar.closed", "x")
+    out = capsys.readouterr().out
+    assert "calendar.closed_days" in out and "values.spikes" not in out
+    assert led.entries[0]["finding"] == "calendar.closed" and led.entries[0]["decision"] == "x"
 
 
 def test_without_a_scan_the_id_alone_is_the_finding(tmp_path, monkeypatch):

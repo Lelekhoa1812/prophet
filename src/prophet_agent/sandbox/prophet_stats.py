@@ -1258,14 +1258,19 @@ class Ledger:
         Motivation: live retail_biz rep5, electricity rep9 and Beijing rep5 (2026-11-23) each guessed the scan file's layout
         (scan["calendar"]["closed_days"], scan["blockers"]), found nothing, skipped the add and saved an unchanged ledger, so
         the finished answer was held back three times. Logic: read every scan*.json under in/ and out/; an id the scans do
-        not hold raises ValueError naming the blocker and major ids they do hold; with no scan found, the id alone is the
+        not hold is recorded as written and a printed note names the blocker and major ids they do hold (a raise failed the
+        whole cell: live SPX, round 20261128-110827, resent it until it stalled); with no scan found, the id alone is the
         finding text.
         """
         if not isinstance(finding_id, str) or not finding_id.strip():
             raise ValueError("decide needs a finding id such as 'calendar.closed_days'")
         found, known = _scan_findings(finding_id)
         if known and not found:
-            raise ValueError(f"no scan finding has the id {finding_id!r}; the blocker and major ids are {sorted(known)}")
+            # Live SPX (round 20261128-110827): a cell decided 'coverage.gaps', an id the scan does not hold; the raise failed
+            # the whole cell, the model resent it three times and the mission stopped as stalled. The entry is kept under
+            # the id as written and the cell goes on; the note names the ids that do need a decision.
+            print(f"note: no scan finding has the id {finding_id!r}; it is recorded as written. The blocker and major ids "
+                  f"to decide are {sorted(known)}")
         scopes = list(dict.fromkeys(str(f.get("scope")) for f in found))
         scope = (scopes[0] if len(scopes) == 1 else
                  f"{len(scopes)} series: {', '.join(scopes[:3])}" + (f" and {len(scopes) - 3} more" if len(scopes) > 3 else ""))
